@@ -1,4 +1,10 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+mod framing;
+
+pub use framing::{
+    FrameError, MAX_FRAME_PAYLOAD_BYTES, read_client_message, read_server_message,
+    write_client_message, write_server_message,
+};
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -82,10 +88,12 @@ mod tests {
 
     use super::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
 
+    const TEST_CLIENT_VERSION: &str = "test-client-version";
+    const TEST_SERVER_VERSION: &str = "test-server-version";
+
     #[test]
     fn client_hello_has_stable_json_shape() {
-        let client_version = "0.1.0";
-        let message = ClientMessage::hello(client_version);
+        let message = ClientMessage::hello(TEST_CLIENT_VERSION);
         let encoded = message.encode_json().expect("client hello should encode");
         let actual: Value =
             serde_json::from_slice(&encoded).expect("encoded message should be JSON");
@@ -95,14 +103,14 @@ mod tests {
             json!({
                 "type": "hello",
                 "protocol_version": PROTOCOL_VERSION,
-                "client_version": client_version,
+                "client_version": TEST_CLIENT_VERSION,
             })
         );
     }
 
     #[test]
     fn client_message_round_trips_through_json() {
-        let expected = ClientMessage::hello("0.1.0");
+        let expected = ClientMessage::hello(TEST_CLIENT_VERSION);
         let encoded = expected.encode_json().expect("message should encode");
         let actual = ClientMessage::decode_json(&encoded).expect("message should decode");
 
@@ -111,10 +119,15 @@ mod tests {
 
     #[test]
     fn client_message_rejects_unknown_fields() {
-        let encoded =
-            br#"{"type":"hello","protocol_version":1,"client_version":"0.1.0","extra":true}"#;
+        let encoded = serde_json::to_vec(&json!({
+            "type": "hello",
+            "protocol_version": PROTOCOL_VERSION,
+            "client_version": TEST_CLIENT_VERSION,
+            "extra": true,
+        }))
+        .expect("test message should encode");
 
-        assert!(ClientMessage::decode_json(encoded).is_err());
+        assert!(ClientMessage::decode_json(&encoded).is_err());
     }
 
     #[test]
@@ -151,7 +164,7 @@ mod tests {
 
     #[test]
     fn server_message_round_trips_through_json() {
-        let expected = ServerMessage::hello("0.1.0");
+        let expected = ServerMessage::hello(TEST_SERVER_VERSION);
         let encoded = expected.encode_json().expect("message should encode");
         let actual = ServerMessage::decode_json(&encoded).expect("message should decode");
 
