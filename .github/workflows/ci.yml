@@ -49,3 +49,18 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --locked
+
+  dependency-policy:
+    name: Dependency policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version '=0.20.2' --locked
+
+      - name: Check dependency policy
+        run: cargo deny --all-features check licenses bans sources
