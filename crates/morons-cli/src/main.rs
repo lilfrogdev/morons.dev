@@ -1,6 +1,6 @@
-use morons_protocol::Hello;
+use morons_protocol::ClientMessage;
 
 fn main() {
-    let hello = Hello::current();
-    println!("morons CLI protocol v{}", hello.protocol_version);
+    let hello = ClientMessage::hello(env!("CARGO_PKG_VERSION"));
+    println!("morons CLI prepared {hello:?}");
 }
