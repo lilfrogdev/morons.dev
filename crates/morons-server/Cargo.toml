@@ -15,8 +15,6 @@ name = "morons-server"
 path = "src/main.rs"
 
 [dependencies]
+interprocess.workspace = true
 morons-protocol = { path = "../morons-protocol" }
-tokio = { workspace = true, features = ["io-util"] }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "signal", "time"] }

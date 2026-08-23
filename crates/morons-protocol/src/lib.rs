@@ -1,6 +1,9 @@
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+mod endpoint;
 mod framing;
 
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+pub use endpoint::local_socket_name;
 pub use framing::{
     FrameError, MAX_FRAME_PAYLOAD_BYTES, read_client_message, read_server_message,
     write_client_message, write_server_message,
