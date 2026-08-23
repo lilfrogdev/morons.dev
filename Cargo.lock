@@ -98,6 +98,7 @@ name = "morons-server"
 version = "0.1.0"
 dependencies = [
  "interprocess",
+ "morons-cli",
  "morons-protocol",
  "tokio",
 ]
