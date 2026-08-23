@@ -15,6 +15,7 @@ repository = "https://github.com/lilfrogdev/morons.dev"
 publish = false
 
 [workspace.dependencies]
+interprocess = { version = "=2.4.3", default-features = false, features = ["tokio"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tokio = { version = "=1.53.1", default-features = false }
