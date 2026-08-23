@@ -1,0 +1,22 @@
+[package]
+name = "morons-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "morons"
+path = "src/main.rs"
+
+[dependencies]
+morons-protocol = { path = "../morons-protocol" }
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
