@@ -41,6 +41,7 @@ name = "morons-server"
 version = "0.1.0"
 dependencies = [
  "morons-protocol",
+ "tokio",
 ]
 
 [[package]]
