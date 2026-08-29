@@ -11,10 +11,20 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+getrandom.workspace = true
+hmac.workspace = true
 interprocess.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process", "std"] }
+
+[target.'cfg(windows)'.dependencies]
+fence-windows.workspace = true
+widestring.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

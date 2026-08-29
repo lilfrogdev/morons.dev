@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{ClientMessage, ServerMessage};
 
-const FRAME_HEADER_BYTES: usize = std::mem::size_of::<u32>();
+pub(crate) const FRAME_HEADER_BYTES: usize = std::mem::size_of::<u32>();
 
 /// Maximum JSON payload size, excluding the four-byte frame header.
 pub const MAX_FRAME_PAYLOAD_BYTES: usize = 1024 * 1024;
@@ -101,26 +101,49 @@ where
     T: Serialize,
 {
     let payload = serde_json::to_vec(message)?;
-    let payload_bytes = payload.len();
-
-    validate_payload_size(payload_bytes)?;
-
-    let payload_length = u32::try_from(payload_bytes).map_err(|_| FrameError::PayloadTooLarge {
-        payload_bytes,
-        maximum_payload_bytes: MAX_FRAME_PAYLOAD_BYTES,
-    })?;
-
-    writer.write_all(&payload_length.to_be_bytes()).await?;
-    writer.write_all(&payload).await?;
-    writer.flush().await?;
-
-    Ok(())
+    write_frame(writer, &payload, MAX_FRAME_PAYLOAD_BYTES).await
 }
 
 async fn read_message<R, T>(reader: &mut R) -> Result<Option<T>, FrameError>
 where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
+{
+    read_frame(reader, MAX_FRAME_PAYLOAD_BYTES)
+        .await?
+        .map(|payload| serde_json::from_slice(&payload).map_err(FrameError::from))
+        .transpose()
+}
+
+pub(crate) async fn write_frame<W>(
+    writer: &mut W,
+    payload: &[u8],
+    maximum_payload_bytes: usize,
+) -> Result<(), FrameError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let payload_bytes = payload.len();
+    validate_payload_size(payload_bytes, maximum_payload_bytes)?;
+
+    let payload_length = u32::try_from(payload_bytes).map_err(|_| FrameError::PayloadTooLarge {
+        payload_bytes,
+        maximum_payload_bytes,
+    })?;
+
+    writer.write_all(&payload_length.to_be_bytes()).await?;
+    writer.write_all(payload).await?;
+    writer.flush().await?;
+
+    Ok(())
+}
+
+pub(crate) async fn read_frame<R>(
+    reader: &mut R,
+    maximum_payload_bytes: usize,
+) -> Result<Option<Vec<u8>>, FrameError>
+where
+    R: AsyncRead + Unpin,
 {
     let mut header = [0_u8; FRAME_HEADER_BYTES];
 
@@ -131,19 +154,22 @@ where
     reader.read_exact(&mut header[1..]).await?;
 
     let payload_bytes = u32::from_be_bytes(header) as usize;
-    validate_payload_size(payload_bytes)?;
+    validate_payload_size(payload_bytes, maximum_payload_bytes)?;
 
     let mut payload = vec![0_u8; payload_bytes];
     reader.read_exact(&mut payload).await?;
 
-    Ok(Some(serde_json::from_slice(&payload)?))
+    Ok(Some(payload))
 }
 
-fn validate_payload_size(payload_bytes: usize) -> Result<(), FrameError> {
-    if payload_bytes > MAX_FRAME_PAYLOAD_BYTES {
+fn validate_payload_size(
+    payload_bytes: usize,
+    maximum_payload_bytes: usize,
+) -> Result<(), FrameError> {
+    if payload_bytes > maximum_payload_bytes {
         return Err(FrameError::PayloadTooLarge {
             payload_bytes,
-            maximum_payload_bytes: MAX_FRAME_PAYLOAD_BYTES,
+            maximum_payload_bytes,
         });
     }
 
