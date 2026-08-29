@@ -13,6 +13,7 @@
 
 - IPC clients
 - Authentication and application protocol messages
+- Resource identifiers, mutation request identifiers, pagination cursors, and event cursors
 - Endpoint and registration filesystem state
 - Repository content
 - Model output
@@ -43,6 +44,22 @@
 - Authentication material is exposed through logs, prompts, environments, subprocesses, or sandbox files.
 - An untrusted repository process discovers or reaches the host endpoint or authentication key.
 
+## Application boundary threats
+
+- A transport-authenticated client invokes an operation or accesses a resource it is not authorized to use.
+- A client replays a mutation after a disconnect and duplicates an external side effect.
+- A client supplies another session's resource identifier or event cursor to cross an authorization scope.
+- A stale, malformed, or forged cursor causes events to be omitted, duplicated, or disclosed.
+- A snapshot and event subscription race causes a client to miss committed state.
+- Ephemeral progress is mistaken for authoritative state and cannot be recovered after a disconnect.
+- A slow subscriber causes unbounded queue growth or blocks delivery to other clients.
+- One session reads or modifies another session's workspace, runtime, history, or events.
+- Concurrent commands corrupt authoritative session state or bypass per-session and global limits.
+- Client detachment or disconnection unexpectedly cancels active work or transfers control of a session.
+- A transport adapter bypasses server authorization, limits, idempotency, or audit enforcement.
+- A protocol response exposes persistence fields, provider payloads, credentials, logs, or raw sandbox output.
+- A prematurely exposed network listener admits unauthenticated, cross-origin, or unbounded requests.
+
 ## Mitigations
 
 - Authorize the operating-system peer before reading connection bytes or issuing an authentication challenge.
@@ -66,7 +83,17 @@
 - Remove unregistered Unix sockets only when they are owner-owned and match the complete endpoint grammar inside the dedicated runtime directory.
 - Apply independent size limits and non-resetting deadlines to authentication, framing, and application handshakes.
 - Never treat protocol-version fields as authentication or authorization evidence.
-- Keep authoritative security decisions in the server.
+- Keep authoritative security decisions in concrete server application services rather than transport adapters.
+- Treat resource identifiers as opaque locators and authorize every operation against server-owned state.
+- Give retriable mutations stable request identity and never retry uncertain external side effects blindly.
+- Use scoped, server-validated durable cursors and gap-free snapshot-plus-subscription semantics.
+- Keep token deltas, heartbeats, and temporary progress non-authoritative so their loss cannot corrupt recovered state.
+- Bound every subscriber queue and disconnect slow consumers without blocking other clients.
+- Isolate every session's mutable workspace and execution context, and authorize all cross-resource access explicitly.
+- Serialize authoritative session mutations and enforce per-session and global execution limits.
+- Make session lifetime independent of client attachments and require explicit authorized cancellation.
+- Return deliberate sanitized protocol DTOs rather than persistence records or privileged subsystem payloads.
+- Keep authenticated local IPC as the only current application transport and require a separate architecture decision before adding a network listener.
 - Keep control files and host IPC inaccessible from untrusted execution sandboxes.
 - Exclude keys, nonces, proofs, and credentials from logs, audit payloads, prompts, environments, registrations, and endpoint names.
 
