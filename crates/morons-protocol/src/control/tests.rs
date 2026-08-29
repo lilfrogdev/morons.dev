@@ -1,4 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[cfg(unix)]
 use super::load_authentication_key;
@@ -173,15 +176,35 @@ async fn authentication_key_is_stored_with_owner_only_permissions() {
     std::fs::remove_dir_all(paths.root_directory).expect("test control root should be removable");
 }
 
-fn temporary_control_paths(_label: &str) -> ControlPaths {
+fn temporary_control_paths(label: &str) -> ControlPaths {
+    static NEXT_PATH_ID: AtomicU64 = AtomicU64::new(0);
+
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after the Unix epoch")
         .as_nanos();
+    let path_id = NEXT_PATH_ID.fetch_add(1, Ordering::Relaxed);
+    temporary_control_paths_from_parts(label, std::process::id(), nonce, path_id)
+}
+
+fn temporary_control_paths_from_parts(
+    label: &str,
+    process_id: u32,
+    nonce: u128,
+    path_id: u64,
+) -> ControlPaths {
     #[cfg(unix)]
     let temporary_directory = std::path::PathBuf::from("/tmp");
     #[cfg(not(unix))]
     let temporary_directory = std::env::temp_dir();
-    let root = temporary_directory.join(format!("mct-{}-{nonce:x}", std::process::id()));
+    let root = temporary_directory.join(format!("mct-{label}-{process_id}-{nonce:x}-{path_id:x}"));
     ControlPaths::from_root(root)
+}
+
+#[test]
+fn temporary_control_paths_are_distinct_when_timestamps_collide() {
+    let first = temporary_control_paths_from_parts("collision", 42, 100, 0);
+    let second = temporary_control_paths_from_parts("collision", 42, 100, 1);
+
+    assert_ne!(first.root_directory, second.root_directory);
 }
