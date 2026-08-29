@@ -1,9 +1,17 @@
+mod authentication;
+mod control;
 mod endpoint;
 mod framing;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub use endpoint::local_socket_name;
+pub use authentication::{
+    AUTH_PROTOCOL_VERSION, AUTHENTICATION_KEY_BYTES, AuthenticationError, AuthenticationKey,
+    AuthenticationRecordError, HOST_EPOCH_BYTES, HostEpoch, RandomnessError, authenticate_client,
+    authenticate_server,
+};
+pub use control::{ClientEndpoint, ControlError, ServerEndpoint};
+pub use endpoint::{authorize_accepted_peer, verify_connected_server_peer};
 pub use framing::{
     FrameError, MAX_FRAME_PAYLOAD_BYTES, read_client_message, read_server_message,
     write_client_message, write_server_message,

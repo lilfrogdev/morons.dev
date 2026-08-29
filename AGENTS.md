@@ -19,7 +19,8 @@ The application consists of a long-running local server and a separate terminal 
 - The server and terminal client run as separate processes.
 - The server owns agent execution, sessions, tools, subprocesses, and Python kernels.
 - The terminal client owns input and presentation.
-- Client-server communication uses a typed, versioned protocol.
+- Client-server communication uses an authenticated, typed, versioned protocol.
+- Local transport authentication completes before application protocol messages are exchanged.
 - Application logic must remain independent of Ratatui.
 - Python execution and PTY command execution are separate subsystems.
 - Persistent Python execution uses the standard Jupyter protocol.
@@ -41,8 +42,8 @@ The application consists of a long-running local server and a separate terminal 
 Treat repositories, model output, commands, skills, protocol messages, and external content as untrusted.
 
 - Validate data at process, filesystem, and network boundaries.
-- Keep credentials in the server.
-- Never expose credentials through clients, kernels, subprocesses, prompts, or logs.
+- Keep provider credentials in the server and local IPC authentication material in owner-controlled state.
+- Never expose credentials through kernels, untrusted subprocesses, prompts, or logs.
 - Agent-triggered commands, Python cells, and network requests must support cancellation and must not run indefinitely or produce unbounded output.
 - Fail closed for security-sensitive behavior.
 - Keep security enforcement in trusted server code.
