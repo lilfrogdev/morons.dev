@@ -15,17 +15,20 @@ concurrency:
 
 jobs:
   rust:
-    name: Rust (${{ matrix.os }})
+    name: Build, lint, and test (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
 
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+        include:
+          - os: ubuntu-latest
+            platform: Linux
+          - os: macos-latest
+            platform: macOS
+          - os: windows-latest
+            platform: Windows
 
     steps:
       - name: Check out repository
