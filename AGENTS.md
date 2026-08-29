@@ -17,10 +17,15 @@ The application consists of a long-running local server and a separate terminal 
 ## Architecture
 
 - The server and terminal client run as separate processes.
+- One server manages many independently resumable sessions.
 - The server owns agent execution, sessions, tools, subprocesses, and Python kernels.
+- Session identity and lifetime are independent of client connections and temporary runtimes.
+- Each session owns an isolated mutable workspace and execution context.
 - The terminal client owns input and presentation.
-- Client-server communication uses an authenticated, typed, versioned protocol.
+- Client-server communication uses an authenticated, typed, versioned protocol over local IPC.
 - Local transport authentication completes before application protocol messages are exchanged.
+- Business authorization, limits, idempotency, and audit enforcement belong in server services rather than transport handlers.
+- Protocol DTOs must remain independent of persistence records and presentation code.
 - Application logic must remain independent of Ratatui.
 - Python execution and PTY command execution are separate subsystems.
 - Persistent Python execution uses the standard Jupyter protocol.
@@ -46,6 +51,8 @@ Treat repositories, model output, commands, skills, protocol messages, and exter
 - Never expose credentials through kernels, untrusted subprocesses, prompts, or logs.
 - Agent-triggered commands, Python cells, and network requests must support cancellation and must not run indefinitely or produce unbounded output.
 - Fail closed for security-sensitive behavior.
+- Treat resource identifiers as locators rather than authorization evidence.
+- Bound event subscriber queues and disconnect slow consumers.
 - Keep security enforcement in trusted server code.
 - Process separation provides lifecycle isolation, not a security sandbox.
 - Document changes to security boundaries before implementing them.

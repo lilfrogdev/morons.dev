@@ -10,6 +10,28 @@
 - The server remains authoritative for every privileged operation after connection authentication.
 - Operating-system user authorization does not distinguish the CLI from another process running as the same user.
 
+## Application service boundary
+
+- Transport authentication admits a peer but never authorizes an application operation or resource.
+- Every transport adapter must invoke the same server-owned authorization, capability, limit, idempotency, and audit enforcement.
+- Resource identifiers are opaque locators and must never be treated as authorization evidence.
+- Retriable mutations require stable request identity, and uncertain external side effects must never be retried blindly.
+- Protocol responses and events must be deliberate sanitized DTOs rather than persistence records, provider payloads, logs, or raw sandbox output.
+- Event subscriptions must be scoped to authorized resources, and resumable streams must use server-validated durable cursors.
+- Snapshot and subscription semantics must not lose committed events between the snapshot position and stream attachment.
+- Ephemeral events must never be required to reconstruct authoritative state and need not be replayed after disconnects.
+- Per-subscriber queues must be bounded, and slow consumers must be disconnected rather than permitted unbounded memory growth.
+- Authenticated local IPC is the only current application transport; a network listener requires a separate architecture decision and threat-model update.
+
+## Session isolation and lifecycle
+
+- One authoritative server may manage many sessions, but every operation and subscription must be authorized within its session scope.
+- Session identity and durable lifetime must not depend on a server process, transport endpoint, or client connection.
+- Client detachment or disconnection must not implicitly cancel an active run or transfer control of a session.
+- Each session must have an isolated mutable workspace and execution context that cannot access another session's state without an explicit authorized capability.
+- Temporary runtimes, subprocesses, and Python kernels must not become authoritative session storage or receive control-plane credentials.
+- Session mutations and concurrent execution must obey server-enforced serialization, resource, concurrency, time, output, and budget limits.
+
 ## Authentication key and endpoint registration
 
 - Each control root has a persistent, cryptographically random 256-bit local authentication key created with exclusive owner access.
