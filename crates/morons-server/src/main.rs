@@ -1,7 +1,7 @@
 use std::{error::Error, time::Duration};
 
 use morons_protocol::{ServerEndpoint, authenticate_server, authorize_accepted_peer};
-use morons_server::handle_handshake;
+use morons_server::{handle_handshake, persistence::SessionStore};
 use tokio::time;
 
 const AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -10,6 +10,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     let server = ServerEndpoint::bind()?;
+    let _session_store = SessionStore::open(&server)?;
 
     println!("morons-server ready");
 

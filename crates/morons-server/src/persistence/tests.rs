@@ -1,0 +1,525 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use rusqlite::{Connection, config::DbConfig, params};
+
+use super::{
+    MutationRequestId, PersistenceError, SessionId, SessionListCursor, SessionStore, database,
+    paths::StoragePaths, types::create_session_fingerprint,
+};
+
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+static TEST_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[tokio::test(flavor = "current_thread")]
+async fn sessions_are_idempotent_queryable_paginated_and_durable() {
+    let root = TestRoot::new("session-roundtrip");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let first = store
+        .create_session(
+            MutationRequestId::from_bytes([0x11; 16]),
+            Some("First session".to_owned()),
+        )
+        .await
+        .expect("first session should be created");
+    let retry = store
+        .create_session(
+            MutationRequestId::from_bytes([0x11; 16]),
+            Some("First session".to_owned()),
+        )
+        .await
+        .expect("an exact retry should return the original session");
+    assert_eq!(retry, first);
+
+    let second = store
+        .create_session(
+            MutationRequestId::from_bytes([0x22; 16]),
+            Some("Second session".to_owned()),
+        )
+        .await
+        .expect("second session should be created");
+    let third = store
+        .create_session(MutationRequestId::from_bytes([0x33; 16]), None)
+        .await
+        .expect("third session should be created");
+
+    assert_eq!(
+        store
+            .get_session(first.id)
+            .await
+            .expect("session lookup should succeed"),
+        Some(first.clone())
+    );
+    assert_eq!(
+        store
+            .get_session(SessionId::from_bytes([0xff; 16]))
+            .await
+            .expect("missing session lookup should succeed"),
+        None
+    );
+
+    let first_page = store
+        .list_sessions(None, 2)
+        .await
+        .expect("first page should be listed");
+    assert_eq!(first_page.sessions, vec![first.clone(), second.clone()]);
+    let cursor = first_page
+        .next_cursor
+        .expect("first page should have a continuation cursor");
+    let second_page = store
+        .list_sessions(Some(cursor), 2)
+        .await
+        .expect("second page should be listed");
+    assert_eq!(second_page.sessions, vec![third]);
+    assert_eq!(second_page.next_cursor, None);
+
+    let first_workspace_id = first.workspace_id;
+    drop(store);
+
+    let reopened = SessionStore::open_at(root.path()).expect("session store should reopen");
+    let persisted = reopened
+        .get_session(first.id)
+        .await
+        .expect("persisted session should be readable")
+        .expect("persisted session should exist");
+    assert_eq!(persisted, first);
+    assert_eq!(persisted.workspace_id, first_workspace_id);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn conflicting_request_identifiers_fail_without_creating_another_session() {
+    let root = TestRoot::new("request-conflict");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let request_id = MutationRequestId::from_bytes([0x44; 16]);
+    store
+        .create_session(request_id, Some("Original".to_owned()))
+        .await
+        .expect("original request should succeed");
+
+    let error = store
+        .create_session(request_id, Some("Changed".to_owned()))
+        .await
+        .expect_err("conflicting retry should fail");
+    assert!(matches!(error, PersistenceError::RequestConflict));
+    assert_eq!(
+        store
+            .list_sessions(None, 100)
+            .await
+            .expect("sessions should be listed")
+            .sessions
+            .len(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_requests_fail_before_reaching_the_worker() {
+    let root = TestRoot::new("invalid-input");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+
+    let zero_identifier = store
+        .create_session(MutationRequestId::from_bytes([0; 16]), None)
+        .await
+        .expect_err("zero request identifier should fail");
+    assert!(matches!(
+        zero_identifier,
+        PersistenceError::InvalidInput { .. }
+    ));
+
+    let control_character = store
+        .create_session(
+            MutationRequestId::from_bytes([1; 16]),
+            Some("invalid\nname".to_owned()),
+        )
+        .await
+        .expect_err("control character should fail");
+    assert!(matches!(
+        control_character,
+        PersistenceError::InvalidInput { .. }
+    ));
+
+    let oversized = store
+        .create_session(
+            MutationRequestId::from_bytes([2; 16]),
+            Some("x".repeat(257)),
+        )
+        .await
+        .expect_err("oversized name should fail");
+    assert!(matches!(oversized, PersistenceError::InvalidInput { .. }));
+
+    let empty_page = store
+        .list_sessions(None, 0)
+        .await
+        .expect_err("zero page size should fail");
+    assert!(matches!(empty_page, PersistenceError::InvalidInput { .. }));
+
+    let oversized_cursor = store
+        .list_sessions(Some(SessionListCursor::from_sequence(u64::MAX)), 1)
+        .await
+        .expect_err("oversized cursor should fail");
+    assert!(matches!(
+        oversized_cursor,
+        PersistenceError::InvalidInput { .. }
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn damaged_rebuildable_projections_are_restored_from_canonical_facts() {
+    let root = TestRoot::new("projection-repair");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x55; 16]), None)
+        .await
+        .expect("session should be created");
+    drop(store);
+
+    let database_path = root.path().join("data").join("sessions.sqlite3");
+    let connection =
+        Connection::open(&database_path).expect("database should open for test damage");
+    connection
+        .execute("DELETE FROM sessions", [])
+        .expect("session projection should be deleted");
+    connection
+        .execute("DELETE FROM delivery_events", [])
+        .expect("event projection should be deleted");
+    drop(connection);
+
+    let reopened = SessionStore::open_at(root.path()).expect("projection repair should succeed");
+    assert_eq!(
+        reopened
+            .get_session(session.id)
+            .await
+            .expect("repaired session should be queried"),
+        Some(session)
+    );
+    drop(reopened);
+
+    let connection = Connection::open(database_path).expect("repaired database should open");
+    let delivery_events: i64 = connection
+        .query_row("SELECT COUNT(*) FROM delivery_events", [], |row| row.get(0))
+        .expect("event projection count should be readable");
+    assert_eq!(delivery_events, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_reconciles_a_dispatched_workspace_before_finalizing_the_session() {
+    let root = TestRoot::new("workspace-recovery");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    drop(store);
+
+    let request_id = [0x81; 16];
+    let session_id = [0x82; 16];
+    let workspace_id = [0x83; 16];
+    let fingerprint = create_session_fingerprint(None);
+    let database_path = root.path().join("data").join("sessions.sqlite3");
+    let connection =
+        Connection::open(&database_path).expect("database should open for crash setup");
+    connection
+        .execute(
+            "INSERT INTO session_creation_requests (
+                request_id,
+                operation_fingerprint,
+                session_id,
+                workspace_id,
+                display_name,
+                accepted_sequence,
+                accepted_at_milliseconds,
+                state
+            ) VALUES (?1, ?2, ?3, ?4, NULL, 1, 1000, 1)",
+            params![
+                &request_id[..],
+                &fingerprint[..],
+                &session_id[..],
+                &workspace_id[..]
+            ],
+        )
+        .expect("prepared request should be inserted");
+    connection
+        .execute(
+            "INSERT INTO audit_facts (
+                audit_id,
+                audit_sequence,
+                request_id,
+                session_id,
+                audit_kind,
+                created_at_milliseconds
+            ) VALUES (?1, 2, ?2, ?3, 1, 1000)",
+            params![&[0x85_u8; 16][..], &request_id[..], &session_id[..]],
+        )
+        .expect("accepted audit fact should be inserted");
+    connection
+        .execute(
+            "INSERT INTO workspace_operation_facts (
+                fact_id,
+                fact_sequence,
+                request_id,
+                workspace_id,
+                operation_kind,
+                created_at_milliseconds
+            ) VALUES (?1, 3, ?2, ?3, 1, 1001)",
+            params![&[0x86_u8; 16][..], &request_id[..], &workspace_id[..]],
+        )
+        .expect("dispatch fact should be inserted");
+    connection
+        .execute(
+            "INSERT INTO audit_facts (
+                audit_id,
+                audit_sequence,
+                request_id,
+                session_id,
+                audit_kind,
+                created_at_milliseconds
+            ) VALUES (?1, 4, ?2, ?3, 2, 1001)",
+            params![&[0x87_u8; 16][..], &request_id[..], &session_id[..]],
+        )
+        .expect("dispatch audit fact should be inserted");
+    connection
+        .execute(
+            "UPDATE logical_sequences SET next_value = 5 WHERE singleton = 1",
+            [],
+        )
+        .expect("logical sequence should advance past crash facts");
+    drop(connection);
+
+    let paths = StoragePaths::prepare(root.path()).expect("storage paths should remain valid");
+    paths
+        .provision_workspace(&workspace_id)
+        .expect("workspace effect should complete before simulated crash");
+
+    let recovered = SessionStore::open_at(root.path()).expect("startup recovery should succeed");
+    let session = recovered
+        .get_session(SessionId::from_bytes(session_id))
+        .await
+        .expect("recovered session should be queried")
+        .expect("recovered session should exist");
+    assert_eq!(session.workspace_id, workspace_id);
+    drop(recovered);
+
+    let connection = Connection::open(database_path).expect("recovered database should open");
+    let state: i64 = connection
+        .query_row(
+            "SELECT state FROM session_creation_requests WHERE request_id = ?1",
+            [&request_id[..]],
+            |row| row.get(0),
+        )
+        .expect("request state should be readable");
+    let workspace_facts: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM workspace_operation_facts WHERE request_id = ?1",
+            [&request_id[..]],
+            |row| row.get(0),
+        )
+        .expect("workspace fact count should be readable");
+    assert_eq!(state, 2);
+    assert_eq!(workspace_facts, 2);
+}
+
+#[test]
+fn required_sqlite_configuration_is_applied_and_verified() {
+    let root = TestRoot::new("sqlite-configuration");
+    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
+    let connection = database::open(&paths).expect("database should open");
+
+    assert_eq!(pragma_integer(&connection, "PRAGMA page_size"), 4096);
+    assert_eq!(pragma_integer(&connection, "PRAGMA synchronous"), 3);
+    assert_eq!(pragma_integer(&connection, "PRAGMA fullfsync"), 1);
+    assert_eq!(pragma_integer(&connection, "PRAGMA foreign_keys"), 1);
+    assert_eq!(pragma_integer(&connection, "PRAGMA trusted_schema"), 0);
+    assert_eq!(pragma_integer(&connection, "PRAGMA temp_store"), 2);
+    assert!(
+        connection
+            .db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE)
+            .expect("defensive mode should be queryable")
+    );
+    assert!(
+        !connection
+            .db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE)
+            .expect("attach-write mode should be queryable")
+    );
+}
+
+#[test]
+fn newer_database_schema_fails_closed_without_downgrade() {
+    let root = TestRoot::new("newer-schema");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    drop(store);
+
+    let database_path = root.path().join("data").join("sessions.sqlite3");
+    let connection =
+        Connection::open(&database_path).expect("database should open for test change");
+    connection
+        .execute_batch("PRAGMA user_version = 2;")
+        .expect("test schema version should change");
+    drop(connection);
+
+    let error = session_store_open_error(&root, "newer schema should fail closed");
+    assert!(matches!(error, PersistenceError::InvalidState { .. }));
+
+    let connection = Connection::open(database_path).expect("database should remain readable");
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_canonical_request_fingerprint_fails_closed() {
+    let root = TestRoot::new("invalid-fingerprint");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let request_id = MutationRequestId::from_bytes([0x91; 16]);
+    store
+        .create_session(request_id, Some("Canonical input".to_owned()))
+        .await
+        .expect("session should be created");
+    drop(store);
+
+    let database_path = root.path().join("data").join("sessions.sqlite3");
+    let connection = Connection::open(&database_path).expect("database should open for corruption");
+    connection
+        .execute(
+            "UPDATE session_creation_requests SET operation_fingerprint = ?2 WHERE request_id = ?1",
+            params![&request_id.as_bytes()[..], &[0_u8; 32][..]],
+        )
+        .expect("test fingerprint should be corrupted");
+    drop(connection);
+
+    let error = session_store_open_error(&root, "invalid fingerprint should fail closed");
+    assert!(matches!(error, PersistenceError::InvalidState { .. }));
+}
+
+#[cfg(unix)]
+#[test]
+fn insecure_existing_data_directory_fails_closed() {
+    let root = TestRoot::new("insecure-data-directory");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    drop(store);
+
+    let data_directory = root.path().join("data");
+    fs::set_permissions(&data_directory, fs::Permissions::from_mode(0o755))
+        .expect("test should weaken data permissions");
+    let error = session_store_open_error(&root, "insecure data root should fail closed");
+    assert!(matches!(error, PersistenceError::InvalidState { .. }));
+}
+
+#[cfg(unix)]
+#[test]
+fn linked_database_journal_fails_closed() {
+    let root = TestRoot::new("linked-journal");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    drop(store);
+
+    let journal_path = root.path().join("data").join("sessions.sqlite3-journal");
+    std::os::unix::fs::symlink(root.path().join("missing-journal-target"), journal_path)
+        .expect("test journal symlink should be created");
+
+    let error = session_store_open_error(&root, "linked journal should fail closed");
+    assert!(matches!(error, PersistenceError::InvalidState { .. }));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn database_and_workspace_state_are_owner_only() {
+    let root = TestRoot::new("owner-only-state");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x66; 16]), None)
+        .await
+        .expect("session should be created");
+
+    assert_mode(&root.path().join("data"), 0o700);
+    assert_mode(&root.path().join("workspaces"), 0o700);
+    assert_mode(&root.path().join("data").join("sessions.sqlite3"), 0o600);
+    let workspace = root
+        .path()
+        .join("workspaces")
+        .join(encode_hex(&session.workspace_id));
+    assert_mode(&workspace, 0o700);
+    assert_mode(&workspace.join("identity"), 0o600);
+    assert!(
+        !root
+            .path()
+            .join("data")
+            .join("sessions.sqlite3-journal")
+            .exists()
+    );
+}
+
+fn session_store_open_error(root: &TestRoot, message: &str) -> PersistenceError {
+    match SessionStore::open_at(root.path()) {
+        Ok(store) => {
+            drop(store);
+            panic!("{message}");
+        }
+        Err(error) => error,
+    }
+}
+
+fn pragma_integer(connection: &Connection, pragma: &'static str) -> i64 {
+    connection
+        .query_row(pragma, [], |row| row.get(0))
+        .expect("pragma should return an integer")
+}
+
+#[cfg(unix)]
+fn assert_mode(path: &Path, expected: u32) {
+    let metadata = fs::symlink_metadata(path).expect("path metadata should be readable");
+    assert_eq!(metadata.mode() & 0o777, expected);
+    assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
+}
+
+fn encode_hex(bytes: &[u8; 16]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+struct TestRoot(PathBuf);
+
+impl TestRoot {
+    fn new(label: &str) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock should be after Unix epoch")
+            .as_nanos();
+        let sequence = TEST_PATH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "morons-persistence-{label}-{}-{timestamp}-{sequence}",
+            std::process::id()
+        ));
+
+        #[cfg(unix)]
+        {
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700);
+            builder
+                .create(&path)
+                .expect("private test root should be created");
+        }
+        #[cfg(not(unix))]
+        fs::create_dir(&path).expect("test root should be created");
+        #[cfg(windows)]
+        fence_windows::harden_private_directory(&path)
+            .expect("Windows test root should be hardened");
+
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Ok(metadata) = fs::symlink_metadata(self.path()) {
+            let _ = fs::set_permissions(self.path(), fs::Permissions::from_mode(0o700));
+            if metadata.file_type().is_symlink() {
+                let _ = fs::remove_file(self.path());
+                return;
+            }
+        }
+        let _ = fs::remove_dir_all(self.path());
+    }
+}
