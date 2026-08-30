@@ -2,7 +2,7 @@
 
 ## Protected assets
 
-- Server credentials
+- Provider credentials, account entitlements, and billable usage
 - Local authentication key and endpoint registration
 - Agent and session state
 - Authoritative database, migration backups, and durable event history
@@ -21,13 +21,16 @@
 - Model output
 - Commands and subprocesses
 - External content
+- Provider model catalogs, HTTP headers, error bodies, SSE records, usage values, and identifiers
 
 ## Trust assumptions
 
 - The operating system correctly enforces process identities, filesystem permissions, and Windows DACLs.
 - Root, LocalSystem, administrators, and equivalent privileged accounts are outside the local IPC guarantee.
 - Malicious processes already running as the owning operating-system user are outside the local IPC guarantee.
-- Untrusted repository processes run without access to host control files or IPC endpoints.
+- Untrusted repository processes run without access to host control files, provider credential state, or IPC endpoints.
+- OpenCode and its upstream providers receive only context deliberately selected for an authorized run; their catalogs, responses, errors, and model output remain untrusted.
+- Public certificate authorities and the operating system's network and TLS implementations correctly authenticate the fixed OpenCode HTTPS origin.
 
 ## Local IPC threats
 
@@ -62,6 +65,22 @@
 - A protocol response exposes persistence fields, provider payloads, credentials, logs, or raw sandbox output.
 - A prematurely exposed network listener admits unauthenticated, cross-origin, or unbounded requests.
 
+## Provider and credential threats
+
+- A credential is exposed through command arguments, environments, debug output, logs, errors, audit facts, request fingerprints, SQLite, backups, prompts, workspaces, subprocesses, or sandbox files.
+- A fake client submits a credential before authenticating the server, or a credential-management response returns secret or credential-derived material.
+- A missing, malformed, insecure, linked, stale, or partially replaced credential file is accepted as current configuration.
+- A credential replacement races with another update, is retried after an unknown outcome, or loses its audit and recovery boundary across a crash.
+- Repository input, configuration, model output, or a remote catalog selects an attacker-controlled origin, redirect, protocol, authorization scope, model capability, or provider route.
+- A redirect, proxy, certificate override, or error-handling path forwards the authorization header away from the reviewed OpenCode inference origin.
+- A malicious or compromised provider sends malformed, oversized, stalled, contradictory, or endless headers, errors, SSE records, JSON fields, tool arguments, identifiers, usage, or output.
+- A remote catalog advertises an unreviewed model, protocol, capability, limit, training policy, or inference endpoint and is treated as trusted configuration.
+- A model documented for training, contribution, trial logging, or improvement receives repository or conversation content without deliberate informed opt-in.
+- A dispatched inference request is automatically retried after a timeout, disconnect, malformed stream, or cancellation race and duplicates billable usage.
+- Provider response identifiers or opaque continuation data become authoritative conversation state and make restart recovery depend on provider retention.
+- Raw provider requests, responses, headers, or streams enter canonical history or client DTOs and expose sensitive data or freeze an external wire format.
+- Provider policy, pricing, retention, model availability, or upstream routing changes after a Morons release and invalidates local disclosure metadata or user expectations.
+
 ## Durable state threats
 
 - A database, journal, backup, data directory, or workspace identity is replaced, linked, moved, opened from an unsafe filesystem, or given insecure access controls.
@@ -88,6 +107,17 @@
 - Bind each proof to the authentication protocol version, Host Epoch, and both connection nonces.
 - Verify proofs with a constant-time API and discard all connection authentication state after success or failure.
 - Authenticate the connected server before sending application protocol messages or sensitive data.
+- Accept provider credentials only through non-echoing client input after authenticated local IPC and never through command arguments or environments.
+- Store provider credentials in a dedicated bounded and versioned owner-only root outside SQLite, backups, configuration, workspaces, runtime state, and IPC control state.
+- Reject insecure, malformed, linked, unsupported, unreadable, or ambiguously replaced credential state and use expected generations, atomic publication, synchronization, and non-secret recovery markers for mutations.
+- Expose only configure, replace, remove, and non-secret credential-status operations; never expose retrieval, fingerprints, raw storage, or a credential-bearing provider proxy.
+- Build production OpenCode origins and paths exclusively from reviewed server code, disable redirects, retain certificate and hostname verification, and scope authorization headers to exact inference origins.
+- Treat remote catalogs as availability input that can only narrow a reviewed built-in service, model, protocol, capability, limit, and data-use manifest.
+- Exclude models documented for training, contribution, trial logging, or improvement from the reviewed model manifest.
+- Bound and strictly decode provider requests, headers, error bodies, SSE records, decoded fields, accumulated output, tool arguments, usage, and identifiers under independent connection, header, inactivity, and total deadlines.
+- Normalize provider outcomes into deliberate domain facts and sanitized DTOs without persisting or returning raw provider payloads.
+- Record provider calls as prepared, dispatched, completed, failed, cancelled, interrupted, or uncertain external operations and never retry a dispatched inference request automatically.
+- Keep provider response identifiers and opaque continuation data ephemeral to a live run and rebuild new-run context from canonical Morons history.
 - Require an absolute, owner-controlled, non-group-writable, and non-world-writable Unix home directory before deriving control paths.
 - Use owner-only Unix directories and sockets with bidirectional effective-user-ID verification.
 - Use verified protected current-user-and-LocalSystem DACLs on Windows control, data, backup, and workspace directories before creating inheriting files.
@@ -123,7 +153,7 @@
 - Make session lifetime independent of client attachments and require explicit authorized cancellation.
 - Return deliberate sanitized protocol DTOs rather than persistence records or privileged subsystem payloads.
 - Keep authenticated local IPC as the only current application transport and require a separate architecture decision before adding a network listener.
-- Keep control files and host IPC inaccessible from untrusted execution sandboxes.
+- Keep control files, provider credential state, and host IPC inaccessible from untrusted execution sandboxes.
 - Exclude keys, nonces, proofs, and credentials from logs, audit payloads, prompts, environments, registrations, and endpoint names.
 
 ## Residual risks
@@ -137,4 +167,8 @@
 - Database backups do not recover workspace changes unless a separately bound workspace snapshot exists.
 - Database confidentiality at rest depends on operating-system access controls and storage encryption rather than application-level encryption.
 - Logical deletion and page reuse do not guarantee forensic erasure from filesystems, devices, or backups.
-- Authorized same-user processes can read owner-controlled session data, deny service, or interfere with lifecycle state.
+- Authorized same-user processes can read owner-controlled session and credential data, deny service, consume provider balances, or interfere with lifecycle state.
+- Provider confidentiality depends on OpenCode, its upstream providers, their current policies, and deliberate context selection; submitted repository and conversation content leaves the local trust boundary.
+- Provider availability, entitlement, pricing, retention, model behavior, and upstream routing can change independently of a Morons release.
+- Ordinary certificate validation does not protect against compromise of the provider, a trusted certificate authority, the operating system, or the local server process.
+- Owner-only credential files rely on operating-system access controls and storage encryption and do not provide forensic erasure or protection from the owning user, administrators, crash dumps, or a compromised server.

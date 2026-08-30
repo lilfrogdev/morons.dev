@@ -18,7 +18,9 @@ The application consists of a long-running local server and a separate terminal 
 
 - The server and terminal client run as separate processes.
 - One server manages many independently resumable sessions.
-- The server owns agent execution, sessions, tools, subprocesses, and Python kernels.
+- The server owns agent execution, provider access, sessions, tools, subprocesses, and Python kernels.
+- OpenCode Zen and OpenCode Go use one concrete Responses-compatible integration while remaining distinct service and billing identities.
+- A reviewed built-in manifest, not remote catalog metadata, defines supported service, model, protocol, capability, and data-use combinations.
 - Session identity and lifetime are independent of client connections and temporary runtimes.
 - Each session owns an isolated mutable workspace and execution context.
 - The terminal client owns input and presentation.
@@ -28,7 +30,8 @@ The application consists of a long-running local server and a separate terminal 
 - SQLite is the authoritative local store for durable session and run state.
 - Canonical history is append-only, while current-state and delivery views are transactional, rebuildable projections.
 - The server exclusively owns persistence through one bounded storage worker.
-- Protocol DTOs must remain independent of persistence records and presentation code.
+- Protocol DTOs must remain independent of persistence records, provider wire objects, and presentation code.
+- Provider requests can target only fixed reviewed HTTPS routes.
 - Application logic must remain independent of Ratatui.
 - Python execution and PTY command execution are separate subsystems.
 - Persistent Python execution uses the standard Jupyter protocol.
@@ -51,8 +54,10 @@ The application consists of a long-running local server and a separate terminal 
 Treat repositories, model output, commands, skills, protocol messages, and external content as untrusted.
 
 - Validate data at process, filesystem, and network boundaries.
-- Keep provider credentials in the server and local IPC authentication material in owner-controlled state.
-- Never expose credentials through kernels, untrusted subprocesses, prompts, or logs.
+- Keep provider credentials in dedicated owner-controlled server state outside SQLite, backups, workspaces, configuration, and IPC control state.
+- Accept credentials only through authenticated local IPC after non-echoing terminal input; never accept them from command arguments or environments.
+- Never expose credentials through kernels, untrusted subprocesses, model prompts, protocol responses, audit facts, errors, or logs.
+- Treat remote model catalogs and provider responses as untrusted input that cannot select an origin, protocol, capability, or credential scope.
 - Agent-triggered commands, Python cells, and network requests must support cancellation and must not run indefinitely or produce unbounded output.
 - Fail closed for security-sensitive behavior.
 - Treat resource identifiers as locators rather than authorization evidence.
