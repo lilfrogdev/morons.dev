@@ -15,9 +15,18 @@ name = "morons-server"
 path = "src/main.rs"
 
 [dependencies]
+getrandom.workspace = true
 interprocess.workspace = true
 morons-protocol = { path = "../morons-protocol" }
-tokio = { workspace = true, features = ["io-util", "macros", "rt", "signal", "time"] }
+rusqlite.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "signal", "sync", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process", "std"] }
+
+[target.'cfg(windows)'.dependencies]
+fence-windows.workspace = true
 
 [dev-dependencies]
 morons-cli = { path = "../morons-cli" }

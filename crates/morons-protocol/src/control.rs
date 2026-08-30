@@ -5,6 +5,7 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use interprocess::local_socket::{tokio::Listener, tokio::Stream, tokio::prelude::*};
@@ -105,6 +106,16 @@ impl ServerEndpoint {
         &self.control.host_epoch
     }
 
+    pub fn claim_persistence_root(&self) -> Result<&Path, ControlError> {
+        self.control
+            .persistence_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| ControlError::InvalidState {
+                reason: "the server persistence root was already claimed",
+            })?;
+        Ok(&self.control.paths.root_directory)
+    }
+
     fn bind_with_paths(paths: ControlPaths) -> Result<Self, ControlError> {
         let mut control = ServerControl::acquire(paths)?;
         let listener = control
@@ -170,6 +181,7 @@ struct ServerControl {
     endpoint: LocalEndpoint,
     registration: EndpointRegistration,
     _host_lock: File,
+    persistence_claimed: AtomicBool,
     published: bool,
 }
 
@@ -208,6 +220,7 @@ impl ServerControl {
             endpoint,
             registration,
             _host_lock: host_lock,
+            persistence_claimed: AtomicBool::new(false),
             published: false,
         })
     }

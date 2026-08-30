@@ -24,6 +24,27 @@ async fn duplicate_server_is_rejected_by_lifetime_lock() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn persistence_root_can_be_claimed_only_once() {
+    let paths = temporary_control_paths("persistence-claim");
+    let server =
+        ServerEndpoint::bind_with_paths(paths.clone()).expect("server endpoint should bind");
+
+    assert_eq!(
+        server
+            .claim_persistence_root()
+            .expect("first persistence claim should succeed"),
+        paths.root_directory.as_path()
+    );
+    let error = server
+        .claim_persistence_root()
+        .expect_err("second persistence claim should fail");
+    assert!(matches!(error, ControlError::InvalidState { .. }));
+
+    drop(server);
+    std::fs::remove_dir_all(paths.root_directory).expect("test control root should be removable");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn successor_recovers_constrained_stale_registration() {
     let paths = temporary_control_paths("stale-registration");
     let server =

@@ -1,3 +1,5 @@
+pub mod persistence;
+
 use morons_protocol::{
     ClientMessage, FrameError, PROTOCOL_VERSION, ServerMessage, read_client_message,
     write_server_message,
