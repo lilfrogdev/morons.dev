@@ -85,9 +85,10 @@ where
             expected_protocol_version,
             received_protocol_version,
         }),
-        ServerMessage::Response { .. } | ServerMessage::RequestFailed { .. } => {
-            Err(HandshakeError::UnexpectedServerMessage)
-        }
+        ServerMessage::Response { .. }
+        | ServerMessage::RequestFailed { .. }
+        | ServerMessage::Event { .. }
+        | ServerMessage::SubscriptionEnded { .. } => Err(HandshakeError::UnexpectedServerMessage),
     }
 }
 

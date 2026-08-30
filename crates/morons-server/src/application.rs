@@ -1,18 +1,23 @@
 use std::{error::Error, fmt};
 
 use morons_protocol::{
-    ApplicationError, ApplicationRequest, ApplicationResponse,
+    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse,
     MutationRequestId as ProtocolMutationRequestId, ResourceLimit, ServerEndpoint,
-    SessionId as ProtocolSessionId, SessionListCursor as ProtocolSessionListCursor, SessionSummary,
+    SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor, SessionId as ProtocolSessionId,
+    SessionListCursor as ProtocolSessionListCursor, SessionSummary,
 };
+use tokio::sync::watch;
 
 use crate::persistence::{
-    MutationRequestId, PersistenceError, PersistenceResourceLimit, Session, SessionId,
-    SessionListCursor, SessionStore,
+    MutationRequestId, PersistenceError, PersistenceResourceLimit, Session,
+    SessionCatalogEventCursor, SessionId, SessionListCursor, SessionStore,
 };
+
+const SESSION_CATALOG_REPLAY_PAGE_SIZE: u16 = 100;
 
 pub struct ServerApplication {
     sessions: SessionStore,
+    session_catalog_notifications: watch::Sender<u64>,
 }
 
 #[derive(Debug)]
@@ -34,6 +39,35 @@ impl Error for ApplicationStartupError {
     }
 }
 
+pub(crate) enum ApplicationOutcome {
+    Response(ApplicationResponse),
+    SessionCatalogSubscription(SessionCatalogSubscription),
+}
+
+pub(crate) struct SessionCatalogSubscription {
+    pub(crate) cursor: SessionCatalogEventCursor,
+    pub(crate) notifications: watch::Receiver<u64>,
+}
+
+pub(crate) struct DeliveredSessionCatalogEvent {
+    pub(crate) cursor: SessionCatalogEventCursor,
+    pub(crate) event: ApplicationEvent,
+}
+
+impl SessionCatalogSubscription {
+    pub(crate) fn protocol_cursor(&self) -> ProtocolSessionCatalogEventCursor {
+        to_protocol_catalog_cursor(self.cursor)
+    }
+
+    pub(crate) const fn sequence(&self) -> u64 {
+        self.cursor.sequence()
+    }
+
+    pub(crate) fn advance(&mut self, cursor: SessionCatalogEventCursor) {
+        self.cursor = cursor;
+    }
+}
+
 impl ServerApplication {
     pub fn open(server: &ServerEndpoint) -> Result<Self, ApplicationStartupError> {
         SessionStore::open(server)
@@ -44,22 +78,27 @@ impl ServerApplication {
     pub(crate) async fn execute_for_local_owner(
         &self,
         request: ApplicationRequest,
-    ) -> Result<ApplicationResponse, ApplicationError> {
+    ) -> Result<ApplicationOutcome, ApplicationError> {
         match request {
             ApplicationRequest::CreateSession {
                 mutation_request_id,
                 display_name,
-            } => self
-                .sessions
-                .create_session(
-                    to_persistence_mutation_id(mutation_request_id),
-                    display_name,
-                )
-                .await
-                .map(|session| ApplicationResponse::SessionCreated {
-                    session: to_session_summary(session),
-                })
-                .map_err(to_application_error),
+            } => {
+                let session = self
+                    .sessions
+                    .create_session(
+                        to_persistence_mutation_id(mutation_request_id),
+                        display_name,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                self.publish_session_catalog_event(session.updated_sequence);
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::SessionCreated {
+                        session: to_session_summary(session),
+                    },
+                ))
+            }
             ApplicationRequest::GetSession { session_id } => {
                 match self
                     .sessions
@@ -67,28 +106,85 @@ impl ServerApplication {
                     .await
                     .map_err(to_application_error)?
                 {
-                    Some(session) => Ok(ApplicationResponse::SessionFound {
-                        session: to_session_summary(session),
-                    }),
+                    Some(session) => Ok(ApplicationOutcome::Response(
+                        ApplicationResponse::SessionFound {
+                            session: to_session_summary(session),
+                        },
+                    )),
                     None => Err(ApplicationError::SessionNotFound),
                 }
             }
             ApplicationRequest::ListSessions { cursor, limit } => {
                 let page = self
                     .sessions
-                    .list_sessions(cursor.map(to_persistence_cursor), limit)
+                    .list_sessions(cursor.map(to_persistence_list_cursor), limit)
                     .await
                     .map_err(to_application_error)?;
-                Ok(ApplicationResponse::SessionsListed {
-                    sessions: page.sessions.into_iter().map(to_session_summary).collect(),
-                    next_cursor: page.next_cursor.map(to_protocol_cursor),
-                })
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::SessionsListed {
+                        sessions: page.sessions.into_iter().map(to_session_summary).collect(),
+                        next_cursor: page.next_cursor.map(to_protocol_list_cursor),
+                        catalog_cursor: to_protocol_catalog_cursor(page.catalog_cursor),
+                    },
+                ))
+            }
+            ApplicationRequest::SubscribeSessionCatalog { cursor } => {
+                let cursor = to_persistence_catalog_cursor(cursor);
+                let notifications = self.session_catalog_notifications.subscribe();
+                self.sessions
+                    .read_session_catalog_events(cursor, 1)
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::SessionCatalogSubscription(
+                    SessionCatalogSubscription {
+                        cursor,
+                        notifications,
+                    },
+                ))
             }
         }
     }
 
-    pub(crate) const fn from_session_store(sessions: SessionStore) -> Self {
-        Self { sessions }
+    pub(crate) async fn read_session_catalog_events(
+        &self,
+        cursor: SessionCatalogEventCursor,
+    ) -> Result<Vec<DeliveredSessionCatalogEvent>, ApplicationError> {
+        let page = self
+            .sessions
+            .read_session_catalog_events(cursor, SESSION_CATALOG_REPLAY_PAGE_SIZE)
+            .await
+            .map_err(to_application_error)?;
+        Ok(page
+            .events
+            .into_iter()
+            .map(|event| DeliveredSessionCatalogEvent {
+                cursor: event.cursor,
+                event: ApplicationEvent::SessionCreated {
+                    cursor: to_protocol_catalog_cursor(event.cursor),
+                    session: to_session_summary(event.session),
+                },
+            })
+            .collect())
+    }
+
+    pub(crate) fn from_session_store(sessions: SessionStore) -> Self {
+        let (session_catalog_notifications, _) = watch::channel(0);
+        Self {
+            sessions,
+            session_catalog_notifications,
+        }
+    }
+
+    fn publish_session_catalog_event(&self, event_sequence: u64) {
+        self.session_catalog_notifications
+            .send_if_modified(|current| {
+                if event_sequence > *current {
+                    *current = event_sequence;
+                    true
+                } else {
+                    false
+                }
+            });
     }
 }
 
@@ -100,12 +196,35 @@ fn to_persistence_session_id(session_id: ProtocolSessionId) -> SessionId {
     SessionId::from_bytes(*session_id.as_bytes())
 }
 
-fn to_persistence_cursor(cursor: ProtocolSessionListCursor) -> SessionListCursor {
-    SessionListCursor::from_sequence(u64::from_be_bytes(*cursor.as_bytes()))
+fn to_persistence_list_cursor(cursor: ProtocolSessionListCursor) -> SessionListCursor {
+    let bytes = cursor.as_bytes();
+    let mut snapshot_event_sequence = [0_u8; 8];
+    snapshot_event_sequence.copy_from_slice(&bytes[..8]);
+    let mut after_created_sequence = [0_u8; 8];
+    after_created_sequence.copy_from_slice(&bytes[8..]);
+    SessionListCursor::new(
+        u64::from_be_bytes(snapshot_event_sequence),
+        u64::from_be_bytes(after_created_sequence),
+    )
 }
 
-fn to_protocol_cursor(cursor: SessionListCursor) -> ProtocolSessionListCursor {
-    ProtocolSessionListCursor::from_bytes(cursor.sequence().to_be_bytes())
+fn to_protocol_list_cursor(cursor: SessionListCursor) -> ProtocolSessionListCursor {
+    let mut bytes = [0_u8; 16];
+    bytes[..8].copy_from_slice(&cursor.snapshot_event_sequence().to_be_bytes());
+    bytes[8..].copy_from_slice(&cursor.after_created_sequence().to_be_bytes());
+    ProtocolSessionListCursor::from_bytes(bytes)
+}
+
+fn to_persistence_catalog_cursor(
+    cursor: ProtocolSessionCatalogEventCursor,
+) -> SessionCatalogEventCursor {
+    SessionCatalogEventCursor::from_sequence(u64::from_be_bytes(*cursor.as_bytes()))
+}
+
+fn to_protocol_catalog_cursor(
+    cursor: SessionCatalogEventCursor,
+) -> ProtocolSessionCatalogEventCursor {
+    ProtocolSessionCatalogEventCursor::from_bytes(cursor.sequence().to_be_bytes())
 }
 
 fn to_session_summary(session: Session) -> SessionSummary {

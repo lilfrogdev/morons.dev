@@ -1,9 +1,9 @@
 use std::{error::Error, fmt};
 
 use morons_protocol::{
-    ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
-    MutationRequestId, ResourceLimit, ServerMessage, SessionId, SessionListCursor, SessionSummary,
-    read_server_message, write_client_message,
+    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
+    FrameError, MutationRequestId, ResourceLimit, ServerMessage, SessionCatalogEventCursor,
+    SessionId, SessionListCursor, SessionSummary, read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub struct SessionPage {
     pub sessions: Vec<SessionSummary>,
     pub next_cursor: Option<SessionListCursor>,
+    pub catalog_cursor: SessionCatalogEventCursor,
 }
 
 #[derive(Debug)]
@@ -26,6 +27,8 @@ pub enum SessionClientError {
     },
     UnexpectedServerMessage,
     UnexpectedApplicationResponse,
+    SubscriptionCursorMismatch,
+    EventCursorNotMonotonic,
     Application(ApplicationError),
 }
 
@@ -55,6 +58,12 @@ impl fmt::Display for SessionClientError {
             Self::UnexpectedApplicationResponse => {
                 formatter.write_str("server returned the wrong session response type")
             }
+            Self::SubscriptionCursorMismatch => {
+                formatter.write_str("server accepted a different session catalog cursor")
+            }
+            Self::EventCursorNotMonotonic => {
+                formatter.write_str("server returned a non-monotonic session catalog cursor")
+            }
             Self::Application(error) => write_application_error(formatter, *error),
         }
     }
@@ -70,6 +79,8 @@ impl Error for SessionClientError {
             | Self::ResponseIdentifierMismatch { .. }
             | Self::UnexpectedServerMessage
             | Self::UnexpectedApplicationResponse
+            | Self::SubscriptionCursorMismatch
+            | Self::EventCursorNotMonotonic
             | Self::Application(_) => None,
         }
     }
@@ -171,6 +182,7 @@ where
         let ApplicationResponse::SessionsListed {
             sessions,
             next_cursor,
+            catalog_cursor,
         } = response
         else {
             return Err(self.unexpected_application_response());
@@ -178,6 +190,31 @@ where
         Ok(SessionPage {
             sessions,
             next_cursor,
+            catalog_cursor,
+        })
+    }
+
+    pub async fn subscribe_to_session_catalog(
+        mut self,
+        cursor: SessionCatalogEventCursor,
+    ) -> Result<SessionCatalogSubscription<S>, SessionClientError> {
+        let response = self
+            .request(ApplicationRequest::SubscribeSessionCatalog { cursor })
+            .await?;
+        let ApplicationResponse::SessionCatalogSubscriptionStarted {
+            cursor: accepted_cursor,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        if accepted_cursor != cursor {
+            self.usable = false;
+            return Err(SessionClientError::SubscriptionCursorMismatch);
+        }
+        Ok(SessionCatalogSubscription {
+            connection: self.connection,
+            cursor,
+            usable: self.usable,
         })
     }
 
@@ -243,7 +280,10 @@ where
                     received_request_id,
                 })
             }
-            ServerMessage::Hello { .. } | ServerMessage::ProtocolVersionMismatch { .. } => {
+            ServerMessage::Hello { .. }
+            | ServerMessage::ProtocolVersionMismatch { .. }
+            | ServerMessage::Event { .. }
+            | ServerMessage::SubscriptionEnded { .. } => {
                 self.usable = false;
                 Err(SessionClientError::UnexpectedServerMessage)
             }
@@ -256,198 +296,60 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use morons_protocol::{
-        ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage,
-        MutationRequestId, ServerMessage, SessionId, SessionSummary, read_client_message,
-        write_server_message,
-    };
+pub struct SessionCatalogSubscription<S> {
+    connection: S,
+    cursor: SessionCatalogEventCursor,
+    usable: bool,
+}
 
-    use super::{SessionClient, SessionClientError};
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn session_client_correlates_create_get_and_list_requests() {
-        let (client_connection, mut server) = tokio::io::duplex(4096);
-        let mut client = SessionClient::from_negotiated_connection(client_connection);
-        let mutation_request_id = MutationRequestId::from_bytes([0x11; 16]);
-        let session = SessionSummary {
-            id: SessionId::from_bytes([0x22; 16]),
-            display_name: Some("Client session".to_owned()),
-            created_at_milliseconds: 42,
+impl<S> SessionCatalogSubscription<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    pub async fn next_event(&mut self) -> Result<ApplicationEvent, SessionClientError> {
+        if !self.usable {
+            return Err(SessionClientError::ConnectionUnusable);
+        }
+        let message = match read_server_message(&mut self.connection).await {
+            Ok(Some(message)) => message,
+            Ok(None) => {
+                self.usable = false;
+                return Err(SessionClientError::ServerDisconnected);
+            }
+            Err(error) => {
+                self.usable = false;
+                return Err(SessionClientError::Frame(error));
+            }
         };
-
-        let client_exchange = async {
-            let created = client
-                .create_session(mutation_request_id, session.display_name.clone())
-                .await
-                .expect("client should create a session");
-            assert_eq!(created, session);
-
-            let found = client
-                .get_session(session.id)
-                .await
-                .expect("client should get a session");
-            assert_eq!(found, Some(session.clone()));
-
-            let page = client
-                .list_sessions(None, 10)
-                .await
-                .expect("client should list sessions");
-            assert_eq!(page.sessions, vec![session.clone()]);
-            assert_eq!(page.next_cursor, None);
-        };
-        let server_exchange = async {
-            let create = read_request(&mut server, 1).await;
-            assert_eq!(
-                create,
-                ApplicationRequest::CreateSession {
-                    mutation_request_id,
-                    display_name: Some("Client session".to_owned()),
+        match message {
+            ServerMessage::Event { event } => {
+                let next_cursor = event.cursor();
+                if next_cursor.as_bytes() <= self.cursor.as_bytes() {
+                    self.usable = false;
+                    return Err(SessionClientError::EventCursorNotMonotonic);
                 }
-            );
-            write_server_message(
-                &mut server,
-                &ServerMessage::response(
-                    1,
-                    ApplicationResponse::SessionCreated {
-                        session: session.clone(),
-                    },
-                ),
-            )
-            .await
-            .expect("create response should be written");
-
-            assert_eq!(
-                read_request(&mut server, 2).await,
-                ApplicationRequest::GetSession {
-                    session_id: session.id,
-                }
-            );
-            write_server_message(
-                &mut server,
-                &ServerMessage::response(
-                    2,
-                    ApplicationResponse::SessionFound {
-                        session: session.clone(),
-                    },
-                ),
-            )
-            .await
-            .expect("get response should be written");
-
-            assert_eq!(
-                read_request(&mut server, 3).await,
-                ApplicationRequest::ListSessions {
-                    cursor: None,
-                    limit: 10,
-                }
-            );
-            write_server_message(
-                &mut server,
-                &ServerMessage::response(
-                    3,
-                    ApplicationResponse::SessionsListed {
-                        sessions: vec![session.clone()],
-                        next_cursor: None,
-                    },
-                ),
-            )
-            .await
-            .expect("list response should be written");
-        };
-
-        tokio::join!(client_exchange, server_exchange);
+                self.cursor = next_cursor;
+                Ok(event)
+            }
+            ServerMessage::SubscriptionEnded { error } => {
+                self.usable = false;
+                Err(SessionClientError::Application(error))
+            }
+            ServerMessage::Hello { .. }
+            | ServerMessage::ProtocolVersionMismatch { .. }
+            | ServerMessage::Response { .. }
+            | ServerMessage::RequestFailed { .. } => {
+                self.usable = false;
+                Err(SessionClientError::UnexpectedServerMessage)
+            }
+        }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn missing_session_is_returned_as_none() {
-        let (client_connection, mut server) = tokio::io::duplex(1024);
-        let mut client = SessionClient::from_negotiated_connection(client_connection);
-        let session_id = SessionId::from_bytes([0x33; 16]);
-
-        let client_exchange = async {
-            assert_eq!(
-                client
-                    .get_session(session_id)
-                    .await
-                    .expect("not found should be a valid query result"),
-                None
-            );
-        };
-        let server_exchange = async {
-            read_request(&mut server, 1).await;
-            write_server_message(
-                &mut server,
-                &ServerMessage::request_failed(1, ApplicationError::SessionNotFound),
-            )
-            .await
-            .expect("not-found response should be written");
-        };
-
-        tokio::join!(client_exchange, server_exchange);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn mismatched_response_identifier_is_rejected() {
-        let (client_connection, mut server) = tokio::io::duplex(1024);
-        let mut client = SessionClient::from_negotiated_connection(client_connection);
-
-        let client_exchange = async {
-            let error = client
-                .list_sessions(None, 10)
-                .await
-                .expect_err("mismatched response should fail");
-            assert!(matches!(
-                error,
-                SessionClientError::ResponseIdentifierMismatch {
-                    expected_request_id: 1,
-                    received_request_id: 2,
-                }
-            ));
-            assert!(matches!(
-                client
-                    .list_sessions(None, 10)
-                    .await
-                    .expect_err("protocol failure should poison the connection"),
-                SessionClientError::ConnectionUnusable
-            ));
-        };
-        let server_exchange = async {
-            read_request(&mut server, 1).await;
-            write_server_message(
-                &mut server,
-                &ServerMessage::response(
-                    2,
-                    ApplicationResponse::SessionsListed {
-                        sessions: Vec::new(),
-                        next_cursor: None,
-                    },
-                ),
-            )
-            .await
-            .expect("mismatched response should be written");
-        };
-
-        tokio::join!(client_exchange, server_exchange);
-    }
-
-    async fn read_request<S>(connection: &mut S, expected_request_id: u64) -> ApplicationRequest
-    where
-        S: tokio::io::AsyncRead + Unpin,
-    {
-        let message = read_client_message(connection)
-            .await
-            .expect("client request should be readable")
-            .expect("client should send a request");
-        let ClientMessage::Request {
-            request_id,
-            request,
-        } = message
-        else {
-            panic!("client sent an unexpected message");
-        };
-        assert_eq!(request_id, expected_request_id);
-        request
+    #[must_use]
+    pub const fn cursor(&self) -> SessionCatalogEventCursor {
+        self.cursor
     }
 }
+
+#[cfg(test)]
+mod tests;

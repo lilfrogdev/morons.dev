@@ -138,13 +138,20 @@ pub(super) fn load_session(
 }
 
 pub(super) fn session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
+    session_from_row_at(row, 0)
+}
+
+pub(super) fn session_from_row_at(
+    row: &rusqlite::Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<Session> {
     Ok(Session {
-        id: SessionId::from_bytes(row.get(0)?),
-        workspace_id: row.get(1)?,
-        display_name: row.get(2)?,
-        created_sequence: nonnegative_integer_from_row(row, 3)?,
-        updated_sequence: nonnegative_integer_from_row(row, 4)?,
-        created_at_milliseconds: nonnegative_integer_from_row(row, 5)?,
+        id: SessionId::from_bytes(row.get(offset)?),
+        workspace_id: row.get(offset + 1)?,
+        display_name: row.get(offset + 2)?,
+        created_sequence: nonnegative_integer_from_row(row, offset + 3)?,
+        updated_sequence: nonnegative_integer_from_row(row, offset + 4)?,
+        created_at_milliseconds: nonnegative_integer_from_row(row, offset + 5)?,
     })
 }
 
@@ -178,7 +185,10 @@ pub(super) fn random_identifier() -> Result<[u8; IDENTIFIER_BYTES], PersistenceE
     Ok(bytes)
 }
 
-fn nonnegative_integer_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+pub(super) fn nonnegative_integer_from_row(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<u64> {
     let value = row.get::<_, i64>(index)?;
     u64::try_from(value).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(

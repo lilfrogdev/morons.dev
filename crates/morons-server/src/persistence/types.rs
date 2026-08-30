@@ -8,6 +8,7 @@ use super::paths::PathError;
 pub(super) const IDENTIFIER_BYTES: usize = 16;
 pub(super) const REQUEST_FINGERPRINT_BYTES: usize = 32;
 pub(super) const MAX_SESSION_PAGE_SIZE: u16 = 100;
+pub(super) const MAX_SESSION_CATALOG_EVENT_PAGE_SIZE: u16 = 100;
 const MAX_SESSION_NAME_BYTES: usize = 256;
 const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1\0";
 
@@ -69,9 +70,35 @@ impl fmt::Debug for MutationRequestId {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SessionListCursor(u64);
+pub struct SessionListCursor {
+    snapshot_event_sequence: u64,
+    after_created_sequence: u64,
+}
 
 impl SessionListCursor {
+    #[must_use]
+    pub const fn new(snapshot_event_sequence: u64, after_created_sequence: u64) -> Self {
+        Self {
+            snapshot_event_sequence,
+            after_created_sequence,
+        }
+    }
+
+    #[must_use]
+    pub const fn snapshot_event_sequence(self) -> u64 {
+        self.snapshot_event_sequence
+    }
+
+    #[must_use]
+    pub const fn after_created_sequence(self) -> u64 {
+        self.after_created_sequence
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SessionCatalogEventCursor(u64);
+
+impl SessionCatalogEventCursor {
     #[must_use]
     pub const fn from_sequence(sequence: u64) -> Self {
         Self(sequence)
@@ -97,6 +124,19 @@ pub struct Session {
 pub struct SessionPage {
     pub sessions: Vec<Session>,
     pub next_cursor: Option<SessionListCursor>,
+    pub catalog_cursor: SessionCatalogEventCursor,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionCatalogEvent {
+    pub cursor: SessionCatalogEventCursor,
+    pub session: Session,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionCatalogEventPage {
+    pub events: Vec<SessionCatalogEvent>,
+    pub high_water: SessionCatalogEventCursor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
