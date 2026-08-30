@@ -470,6 +470,7 @@ fn assert_mode(path: &Path, expected: u32) {
     assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
 }
 
+#[cfg(unix)]
 fn encode_hex(bytes: &[u8; 16]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
