@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use super::super::{
-    MutationRequestId, PersistenceError, Session, SessionId,
+    MutationRequestId, PersistenceError, PersistenceResourceLimit, Session, SessionId,
     types::{IDENTIFIER_BYTES, REQUEST_FINGERPRINT_BYTES},
 };
 
@@ -108,7 +108,7 @@ pub(super) fn next_sequence(transaction: &Transaction<'_>) -> Result<u64, Persis
         )
         .optional()?
         .ok_or(PersistenceError::ResourceLimit {
-            resource: "logical sequence",
+            resource: PersistenceResourceLimit::LogicalSequence,
         })?;
     u64::try_from(sequence).map_err(|_| PersistenceError::InvalidState {
         reason: "a logical sequence is outside its supported range",

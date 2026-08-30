@@ -9,7 +9,7 @@ use super::{
     },
 };
 use crate::persistence::{
-    MutationRequestId, PersistenceError, Session, SessionId,
+    MutationRequestId, PersistenceError, PersistenceResourceLimit, Session, SessionId,
     types::{IDENTIFIER_BYTES, REQUEST_FINGERPRINT_BYTES},
 };
 
@@ -58,7 +58,7 @@ impl Backend {
 
         if count_session_creation_requests(&transaction)? >= MAX_SESSIONS {
             return Err(PersistenceError::ResourceLimit {
-                resource: "session count",
+                resource: PersistenceResourceLimit::Sessions,
             });
         }
         let accepted_sequence = next_sequence(&transaction)?;

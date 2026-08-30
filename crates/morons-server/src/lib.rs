@@ -1,38 +1,20 @@
-pub mod persistence;
+mod application;
+mod connection;
+mod persistence;
 
-use morons_protocol::{
-    ClientMessage, FrameError, PROTOCOL_VERSION, ServerMessage, read_client_message,
-    write_server_message,
+pub use application::{ApplicationStartupError, ServerApplication};
+pub use connection::{
+    ConnectionError, HandshakeOutcome, handle_handshake, handle_local_owner_requests,
 };
-use tokio::io::{AsyncRead, AsyncWrite};
-
-/// Handles one authoritative server-side protocol handshake.
-pub async fn handle_handshake<S>(connection: &mut S, server_version: &str) -> Result<(), FrameError>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let Some(message) = read_client_message(connection).await? else {
-        return Ok(());
-    };
-
-    let response = match message {
-        ClientMessage::Hello {
-            protocol_version, ..
-        } if protocol_version == PROTOCOL_VERSION => ServerMessage::hello(server_version),
-        ClientMessage::Hello {
-            protocol_version, ..
-        } => ServerMessage::protocol_version_mismatch(protocol_version),
-    };
-
-    write_server_message(connection, &response).await
-}
 
 #[cfg(test)]
 mod tests {
-    use super::handle_handshake;
     use morons_protocol::{
-        ClientMessage, PROTOCOL_VERSION, ServerMessage, read_server_message, write_client_message,
+        ApplicationRequest, ClientMessage, MutationRequestId, PROTOCOL_VERSION, ServerMessage,
+        read_server_message, write_client_message,
     };
+
+    use super::{ConnectionError, HandshakeOutcome, handle_handshake};
 
     const TEST_CLIENT_VERSION: &str = "test-client-version";
     const TEST_SERVER_VERSION: &str = "test-server-version";
@@ -46,9 +28,10 @@ mod tests {
             .await
             .expect("client hello should be written");
 
-        handle_handshake(&mut server, TEST_SERVER_VERSION)
+        let outcome = handle_handshake(&mut server, TEST_SERVER_VERSION)
             .await
             .expect("server handshake succeeded");
+        assert_eq!(outcome, HandshakeOutcome::Accepted);
 
         let response = read_server_message(&mut client)
             .await
@@ -71,9 +54,10 @@ mod tests {
             .await
             .expect("client hello should be written");
 
-        handle_handshake(&mut server, TEST_SERVER_VERSION)
+        let outcome = handle_handshake(&mut server, TEST_SERVER_VERSION)
             .await
             .expect("server should report mismatch");
+        assert_eq!(outcome, HandshakeOutcome::Rejected);
 
         let response = read_server_message(&mut client)
             .await
@@ -90,12 +74,35 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn disconnect_before_hello_is_clean() {
+    async fn disconnect_before_hello_is_clean_rejection() {
         let (client, mut server) = tokio::io::duplex(64);
         drop(client);
 
-        handle_handshake(&mut server, TEST_SERVER_VERSION)
+        let outcome = handle_handshake(&mut server, TEST_SERVER_VERSION)
             .await
             .expect("client disconnect should be handled cleanly");
+
+        assert_eq!(outcome, HandshakeOutcome::Rejected);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn application_request_before_hello_is_rejected() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let request = ClientMessage::request(
+            1,
+            ApplicationRequest::CreateSession {
+                mutation_request_id: MutationRequestId::from_bytes([0x11; 16]),
+                display_name: None,
+            },
+        );
+        write_client_message(&mut client, &request)
+            .await
+            .expect("client request should be written");
+
+        let error = handle_handshake(&mut server, TEST_SERVER_VERSION)
+            .await
+            .expect_err("application request before hello should fail");
+
+        assert!(matches!(error, ConnectionError::UnexpectedClientMessage));
     }
 }

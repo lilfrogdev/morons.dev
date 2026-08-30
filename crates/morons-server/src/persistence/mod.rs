@@ -18,7 +18,8 @@ use self::{
 };
 
 pub use self::types::{
-    MutationRequestId, PersistenceError, Session, SessionId, SessionListCursor, SessionPage,
+    MutationRequestId, PersistenceError, PersistenceResourceLimit, Session, SessionId,
+    SessionListCursor, SessionPage,
 };
 
 const WORKER_QUEUE_CAPACITY: usize = 64;
