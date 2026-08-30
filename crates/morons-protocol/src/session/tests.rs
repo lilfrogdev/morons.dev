@@ -5,6 +5,9 @@ use super::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, MutationRequestId,
     ResourceLimit, SessionCatalogEventCursor, SessionId, SessionListCursor, SessionSummary,
 };
+use crate::{ClientMessage, OpenCodeApiKey, OpenCodeCredentialStatus};
+
+const TEST_API_KEY: &str = "not-a-real-protocol-key";
 
 #[test]
 fn application_request_has_stable_json_shape() {
@@ -20,6 +23,51 @@ fn application_request_has_stable_json_shape() {
             "operation": "create_session",
             "mutation_request_id": "mut_11111111111111111111111111111111",
             "display_name": "A session",
+        })
+    );
+}
+
+#[test]
+fn credential_request_has_stable_json_shape_and_redacted_debug() {
+    let request = ApplicationRequest::SetOpenCodeCredential {
+        mutation_request_id: MutationRequestId::from_bytes([0x12; 16]),
+        expected_generation: 7,
+        api_key: OpenCodeApiKey::new(TEST_API_KEY).expect("test API key should be valid"),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains(TEST_API_KEY));
+    assert!(debug.contains("[REDACTED]"));
+    let framed_debug = format!("{:?}", ClientMessage::request(1, request.clone()));
+    assert!(!framed_debug.contains(TEST_API_KEY));
+    assert!(framed_debug.contains("[REDACTED]"));
+
+    assert_eq!(
+        serde_json::to_value(request).expect("credential request should encode"),
+        json!({
+            "operation": "set_open_code_credential",
+            "mutation_request_id": "mut_12121212121212121212121212121212",
+            "expected_generation": 7,
+            "api_key": TEST_API_KEY,
+        })
+    );
+}
+
+#[test]
+fn credential_status_has_stable_json_shape() {
+    let response = ApplicationResponse::OpenCodeCredentialStatus {
+        credential: OpenCodeCredentialStatus {
+            configured: true,
+            generation: 7,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("credential status should encode"),
+        json!({
+            "result": "open_code_credential_status",
+            "credential": {
+                "configured": true,
+                "generation": 7,
+            },
         })
     );
 }

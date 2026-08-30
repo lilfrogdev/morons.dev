@@ -21,6 +21,7 @@ morons-protocol = { path = "../morons-protocol" }
 rusqlite.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "signal", "sync", "time"] }
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process", "std"] }

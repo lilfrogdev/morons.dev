@@ -1,4 +1,5 @@
 mod backend;
+mod credentials;
 mod database;
 mod paths;
 mod types;
@@ -11,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use self::{
     backend::Backend,
+    credentials::StoredOpenCodeApiKey,
     types::{
         MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE, REQUEST_FINGERPRINT_BYTES,
         create_session_fingerprint, validate_display_name,
@@ -18,8 +20,9 @@ use self::{
 };
 
 pub use self::types::{
-    MutationRequestId, PersistenceError, PersistenceResourceLimit, Session, SessionCatalogEvent,
-    SessionCatalogEventCursor, SessionCatalogEventPage, SessionId, SessionListCursor, SessionPage,
+    MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
+    Session, SessionCatalogEvent, SessionCatalogEventCursor, SessionCatalogEventPage, SessionId,
+    SessionListCursor, SessionPage,
 };
 
 const WORKER_QUEUE_CAPACITY: usize = 64;
@@ -64,6 +67,72 @@ impl SessionStore {
                 request_id,
                 fingerprint,
                 display_name,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub async fn open_code_credential_status(
+        &self,
+    ) -> Result<OpenCodeCredentialStatus, PersistenceError> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::GetOpenCodeCredentialStatus {
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub async fn set_open_code_credential(
+        &self,
+        request_id: MutationRequestId,
+        expected_generation: u64,
+        api_key: Vec<u8>,
+    ) -> Result<OpenCodeCredentialStatus, PersistenceError> {
+        if request_id.is_zero() {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a mutation request identifier must not be all zeroes",
+            });
+        }
+        let api_key = StoredOpenCodeApiKey::new(api_key)?;
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::SetOpenCodeCredential {
+                request_id,
+                expected_generation,
+                api_key,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub async fn remove_open_code_credential(
+        &self,
+        request_id: MutationRequestId,
+        expected_generation: u64,
+    ) -> Result<OpenCodeCredentialStatus, PersistenceError> {
+        if request_id.is_zero() {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a mutation request identifier must not be all zeroes",
+            });
+        }
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::RemoveOpenCodeCredential {
+                request_id,
+                expected_generation,
                 response: response_sender,
             })
             .await
@@ -159,6 +228,20 @@ enum WorkerRequest {
         display_name: Option<String>,
         response: oneshot::Sender<Result<Session, PersistenceError>>,
     },
+    GetOpenCodeCredentialStatus {
+        response: oneshot::Sender<Result<OpenCodeCredentialStatus, PersistenceError>>,
+    },
+    SetOpenCodeCredential {
+        request_id: MutationRequestId,
+        expected_generation: u64,
+        api_key: StoredOpenCodeApiKey,
+        response: oneshot::Sender<Result<OpenCodeCredentialStatus, PersistenceError>>,
+    },
+    RemoveOpenCodeCredential {
+        request_id: MutationRequestId,
+        expected_generation: u64,
+        response: oneshot::Sender<Result<OpenCodeCredentialStatus, PersistenceError>>,
+    },
     GetSession {
         session_id: SessionId,
         response: oneshot::Sender<Result<Option<Session>, PersistenceError>>,
@@ -187,6 +270,29 @@ fn run_worker(mut backend: Backend, mut receiver: mpsc::Receiver<WorkerRequest>)
                 let _ =
                     response.send(backend.create_session(request_id, fingerprint, display_name));
             }
+            WorkerRequest::GetOpenCodeCredentialStatus { response } => {
+                let _ = response.send(backend.open_code_credential_status());
+            }
+            WorkerRequest::SetOpenCodeCredential {
+                request_id,
+                expected_generation,
+                api_key,
+                response,
+            } => {
+                let _ = response.send(backend.set_open_code_credential(
+                    request_id,
+                    expected_generation,
+                    api_key,
+                ));
+            }
+            WorkerRequest::RemoveOpenCodeCredential {
+                request_id,
+                expected_generation,
+                response,
+            } => {
+                let _ = response
+                    .send(backend.remove_open_code_credential(request_id, expected_generation));
+            }
             WorkerRequest::GetSession {
                 session_id,
                 response,
@@ -211,5 +317,7 @@ fn run_worker(mut backend: Backend, mut receiver: mpsc::Receiver<WorkerRequest>)
     }
 }
 
+#[cfg(test)]
+mod credential_tests;
 #[cfg(test)]
 mod tests;

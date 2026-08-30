@@ -154,6 +154,30 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
 }
 
 fn validate_request_payloads(connection: &Connection) -> Result<(), PersistenceError> {
+    let mutation_registry_invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1
+            FROM session_creation_requests AS request
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
+            WHERE mutation.request_id IS NULL
+               OR mutation.operation_kind != 1
+               OR mutation.accepted_sequence IS NOT request.accepted_sequence
+               OR mutation.accepted_at_milliseconds IS NOT request.accepted_at_milliseconds
+            UNION ALL
+            SELECT 1
+            FROM mutation_requests AS mutation
+            LEFT JOIN session_creation_requests AS request ON request.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 1 AND request.request_id IS NULL
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if mutation_registry_invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "session creation requests conflict with the mutation registry",
+        });
+    }
+
     let mut statement = connection
         .prepare("SELECT operation_fingerprint, display_name FROM session_creation_requests")?;
     let requests = statement

@@ -5,7 +5,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use morons_cli::{SessionClient, SessionClientError};
+use morons_cli::{ApplicationClient, ApplicationClientError};
 use morons_protocol::{
     ApplicationError, ApplicationEvent, MutationRequestId as ProtocolMutationRequestId,
     SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor, SessionId as ProtocolSessionId,
@@ -146,7 +146,7 @@ async fn session_commands_cross_the_application_and_transport_boundaries() {
     let (client_connection, mut server_connection) = tokio::io::duplex(16 * 1024);
 
     let client_exchange = async {
-        let mut client = SessionClient::from_negotiated_connection(client_connection);
+        let mut client = ApplicationClient::from_negotiated_connection(client_connection);
         let session = client
             .create_session(mutation_request_id, Some("Application session".to_owned()))
             .await
@@ -165,7 +165,7 @@ async fn session_commands_cross_the_application_and_transport_boundaries() {
             .expect_err("conflicting request should fail");
         assert!(matches!(
             conflict,
-            SessionClientError::Application(ApplicationError::RequestConflict)
+            ApplicationClientError::Application(ApplicationError::RequestConflict)
         ));
 
         assert_eq!(
@@ -189,7 +189,7 @@ async fn session_commands_cross_the_application_and_transport_boundaries() {
             .expect_err("unsupported cursor should fail");
         assert!(matches!(
             invalid_cursor,
-            SessionClientError::Application(ApplicationError::InvalidRequest)
+            ApplicationClientError::Application(ApplicationError::InvalidRequest)
         ));
 
         let page = client
@@ -217,7 +217,7 @@ async fn session_subscription_replays_commits_after_a_gap_free_snapshot() {
     let (subscription_connection, mut subscription_server) = tokio::io::duplex(16 * 1024);
 
     let client_exchange = async {
-        let mut commands = SessionClient::from_negotiated_connection(command_connection);
+        let mut commands = ApplicationClient::from_negotiated_connection(command_connection);
         commands
             .create_session(
                 ProtocolMutationRequestId::from_bytes([0x31; 16]),
@@ -237,10 +237,11 @@ async fn session_subscription_replays_commits_after_a_gap_free_snapshot() {
             )
             .await
             .expect("session after snapshot should be created");
-        let mut subscription = SessionClient::from_negotiated_connection(subscription_connection)
-            .subscribe_to_session_catalog(snapshot.catalog_cursor)
-            .await
-            .expect("session event subscription should start");
+        let mut subscription =
+            ApplicationClient::from_negotiated_connection(subscription_connection)
+                .subscribe_to_session_catalog(snapshot.catalog_cursor)
+                .await
+                .expect("session event subscription should start");
         let event = subscription
             .next_event()
             .await
@@ -312,7 +313,7 @@ async fn slow_session_catalog_subscriber_is_disconnected() {
     let (client_connection, mut server_connection) = tokio::io::duplex(64);
 
     let client_exchange = async {
-        let subscription = SessionClient::from_negotiated_connection(client_connection)
+        let subscription = ApplicationClient::from_negotiated_connection(client_connection)
             .subscribe_to_session_catalog(ProtocolSessionCatalogEventCursor::beginning())
             .await
             .expect("subscription should start");
@@ -365,6 +366,32 @@ async fn invalid_requests_fail_before_reaching_the_worker() {
         .expect_err("zero request identifier should fail");
     assert!(matches!(
         zero_identifier,
+        PersistenceError::InvalidInput { .. }
+    ));
+
+    let zero_credential_identifier = store
+        .set_open_code_credential(
+            MutationRequestId::from_bytes([0; 16]),
+            0,
+            b"not-a-real-key".to_vec(),
+        )
+        .await
+        .expect_err("zero credential request identifier should fail");
+    assert!(matches!(
+        zero_credential_identifier,
+        PersistenceError::InvalidInput { .. }
+    ));
+
+    let invalid_api_key = store
+        .set_open_code_credential(
+            MutationRequestId::from_bytes([3; 16]),
+            0,
+            b"invalid key".to_vec(),
+        )
+        .await
+        .expect_err("invalid API key should fail");
+    assert!(matches!(
+        invalid_api_key,
         PersistenceError::InvalidInput { .. }
     ));
 
@@ -476,6 +503,17 @@ async fn startup_reconciles_a_dispatched_workspace_before_finalizing_the_session
         Connection::open(&database_path).expect("database should open for crash setup");
     connection
         .execute(
+            "INSERT INTO mutation_requests (
+                request_id,
+                operation_kind,
+                accepted_sequence,
+                accepted_at_milliseconds
+            ) VALUES (?1, 1, 1, 1000)",
+            [&request_id[..]],
+        )
+        .expect("mutation registry record should be inserted");
+    connection
+        .execute(
             "INSERT INTO session_creation_requests (
                 request_id,
                 operation_fingerprint,
@@ -575,6 +613,79 @@ async fn startup_reconciles_a_dispatched_workspace_before_finalizing_the_session
 }
 
 #[test]
+fn schema_version_one_migrates_to_version_two() {
+    let root = TestRoot::new("schema-v1-migration");
+    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
+    let (initialization_path, file) = paths
+        .create_database_initialization_file(&[0xe1; 16])
+        .expect("initialization file should be created");
+    drop(file);
+    let connection =
+        Connection::open(&initialization_path).expect("version one migration fixture should open");
+    connection
+        .execute_batch(include_str!("schema_v1.sql"))
+        .expect("version one schema should initialize");
+    let request_id = [0xe5_u8; 16];
+    let session_id = [0xe6_u8; 16];
+    let workspace_id = [0xe7_u8; 16];
+    let fingerprint = create_session_fingerprint(None);
+    connection
+        .execute(
+            "INSERT INTO session_creation_requests (
+                request_id,
+                operation_fingerprint,
+                session_id,
+                workspace_id,
+                display_name,
+                accepted_sequence,
+                accepted_at_milliseconds,
+                state
+             ) VALUES (?1, ?2, ?3, ?4, NULL, 1, 1000, 0)",
+            params![
+                &request_id[..],
+                &fingerprint[..],
+                &session_id[..],
+                &workspace_id[..]
+            ],
+        )
+        .expect("version one request fixture should be inserted");
+    connection
+        .execute(
+            "INSERT INTO audit_facts (
+                audit_id,
+                audit_sequence,
+                request_id,
+                session_id,
+                audit_kind,
+                created_at_milliseconds
+             ) VALUES (?1, 2, ?2, ?3, 1, 1000)",
+            params![&[0xe8_u8; 16][..], &request_id[..], &session_id[..]],
+        )
+        .expect("version one audit fixture should be inserted");
+    connection
+        .execute(
+            "UPDATE logical_sequences SET next_value = 3 WHERE singleton = 1",
+            [],
+        )
+        .expect("version one sequence should advance past fixtures");
+    drop(connection);
+    paths
+        .install_database(&initialization_path)
+        .expect("version one database should install");
+
+    let connection = database::open(&paths).expect("version one database should migrate");
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 2);
+    let mutation_operation: i64 = connection
+        .query_row(
+            "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
+            [&request_id[..]],
+            |row| row.get(0),
+        )
+        .expect("migrated request should be registered");
+    assert_eq!(mutation_operation, 1);
+}
+
+#[test]
 fn required_sqlite_configuration_is_applied_and_verified() {
     let root = TestRoot::new("sqlite-configuration");
     let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
@@ -608,7 +719,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     let connection =
         Connection::open(&database_path).expect("database should open for test change");
     connection
-        .execute_batch("PRAGMA user_version = 2;")
+        .execute_batch("PRAGMA user_version = 3;")
         .expect("test schema version should change");
     drop(connection);
 
@@ -616,7 +727,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
 
     let connection = Connection::open(database_path).expect("database should remain readable");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 2);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 3);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -682,10 +793,23 @@ async fn database_and_workspace_state_are_owner_only() {
         .create_session(MutationRequestId::from_bytes([0x66; 16]), None)
         .await
         .expect("session should be created");
+    store
+        .set_open_code_credential(
+            MutationRequestId::from_bytes([0x67; 16]),
+            0,
+            b"not-a-real-permission-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
 
     assert_mode(&root.path().join("data"), 0o700);
     assert_mode(&root.path().join("workspaces"), 0o700);
+    assert_mode(&root.path().join("credentials"), 0o700);
     assert_mode(&root.path().join("data").join("sessions.sqlite3"), 0o600);
+    assert_mode(
+        &root.path().join("credentials").join("opencode.state"),
+        0o600,
+    );
     let workspace = root
         .path()
         .join("workspaces")

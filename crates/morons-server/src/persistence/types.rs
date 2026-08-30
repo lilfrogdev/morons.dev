@@ -140,9 +140,17 @@ pub struct SessionCatalogEventPage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenCodeCredentialStatus {
+    pub configured: bool,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersistenceResourceLimit {
     Sessions,
     LogicalSequence,
+    CredentialGeneration,
+    CredentialMutations,
 }
 
 #[derive(Debug)]
@@ -155,6 +163,8 @@ pub enum PersistenceError {
     InvalidInput { reason: &'static str },
     InvalidState { reason: &'static str },
     RequestConflict,
+    CredentialGenerationConflict,
+    CredentialMutationNotApplied,
     ResourceLimit { resource: PersistenceResourceLimit },
     WorkerStopped,
 }
@@ -177,12 +187,24 @@ impl fmt::Display for PersistenceError {
             Self::RequestConflict => {
                 formatter.write_str("the mutation request identifier conflicts with prior input")
             }
+            Self::CredentialGenerationConflict => {
+                formatter.write_str("the credential generation changed")
+            }
+            Self::CredentialMutationNotApplied => {
+                formatter.write_str("the credential mutation was not applied")
+            }
             Self::ResourceLimit { resource } => match resource {
                 PersistenceResourceLimit::Sessions => {
                     formatter.write_str("the persistence session count limit was reached")
                 }
                 PersistenceResourceLimit::LogicalSequence => {
                     formatter.write_str("the persistence logical sequence limit was reached")
+                }
+                PersistenceResourceLimit::CredentialGeneration => {
+                    formatter.write_str("the credential generation limit was reached")
+                }
+                PersistenceResourceLimit::CredentialMutations => {
+                    formatter.write_str("the credential mutation limit was reached")
                 }
             },
             Self::WorkerStopped => formatter.write_str("the persistence worker stopped"),
@@ -200,6 +222,8 @@ impl Error for PersistenceError {
             Self::InvalidInput { .. }
             | Self::InvalidState { .. }
             | Self::RequestConflict
+            | Self::CredentialGenerationConflict
+            | Self::CredentialMutationNotApplied
             | Self::ResourceLimit { .. }
             | Self::WorkerStopped => None,
         }

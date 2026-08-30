@@ -3,8 +3,9 @@ use rusqlite::{Transaction, TransactionBehavior, params};
 use super::{
     Backend,
     records::{
-        CREATION_STATE_PREPARED, CREATION_STATE_READY, CreationRequest, creation_request_from_row,
-        current_time_milliseconds, load_creation_request, next_sequence, random_identifier,
+        CREATION_STATE_PREPARED, CREATION_STATE_READY, CreationRequest,
+        MUTATION_OPERATION_SESSION_CREATE, creation_request_from_row, current_time_milliseconds,
+        load_creation_request, load_mutation_operation, next_sequence, random_identifier,
         sequence_to_sql, time_to_sql, validate_request_retry,
     },
 };
@@ -23,12 +24,22 @@ impl Backend {
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
         display_name: Option<String>,
     ) -> Result<Session, PersistenceError> {
-        let creation = match load_creation_request(&self.connection, request_id)? {
-            Some(existing) => {
+        let mutation_operation = load_mutation_operation(&self.connection, request_id)?;
+        let creation = match (
+            load_creation_request(&self.connection, request_id)?,
+            mutation_operation,
+        ) {
+            (Some(existing), Some(MUTATION_OPERATION_SESSION_CREATE)) => {
                 validate_request_retry(&existing, &fingerprint, display_name.as_deref())?;
                 existing
             }
-            None => self.prepare_session_creation(request_id, fingerprint, display_name)?,
+            (Some(_), _) => {
+                return Err(PersistenceError::InvalidState {
+                    reason: "a session creation request is missing its mutation registry record",
+                });
+            }
+            (None, Some(_)) => return Err(PersistenceError::RequestConflict),
+            (None, None) => self.prepare_session_creation(request_id, fingerprint, display_name)?,
         };
 
         if creation.state == CREATION_STATE_READY {
@@ -63,6 +74,20 @@ impl Backend {
         }
         let accepted_sequence = next_sequence(&transaction)?;
         let audit_sequence = next_sequence(&transaction)?;
+        transaction.execute(
+            "INSERT INTO mutation_requests (
+                request_id,
+                operation_kind,
+                accepted_sequence,
+                accepted_at_milliseconds
+            ) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                &request_id.as_bytes()[..],
+                MUTATION_OPERATION_SESSION_CREATE,
+                sequence_to_sql(accepted_sequence)?,
+                time_to_sql(accepted_at_milliseconds)?,
+            ],
+        )?;
         transaction.execute(
             "INSERT INTO session_creation_requests (
                 request_id,

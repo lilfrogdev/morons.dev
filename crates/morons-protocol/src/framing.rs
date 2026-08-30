@@ -2,6 +2,7 @@ use std::{error::Error, fmt, io};
 
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use zeroize::Zeroizing;
 
 use crate::{ClientMessage, ServerMessage};
 
@@ -100,7 +101,7 @@ where
     W: AsyncWrite + Unpin,
     T: Serialize,
 {
-    let payload = serde_json::to_vec(message)?;
+    let payload = Zeroizing::new(serde_json::to_vec(message)?);
     write_frame(writer, &payload, MAX_FRAME_PAYLOAD_BYTES).await
 }
 
@@ -109,10 +110,12 @@ where
     R: AsyncRead + Unpin,
     T: DeserializeOwned,
 {
-    read_frame(reader, MAX_FRAME_PAYLOAD_BYTES)
-        .await?
-        .map(|payload| serde_json::from_slice(&payload).map_err(FrameError::from))
-        .transpose()
+    let Some(payload) = read_frame(reader, MAX_FRAME_PAYLOAD_BYTES).await? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&payload)
+        .map(Some)
+        .map_err(FrameError::from)
 }
 
 pub(crate) async fn write_frame<W>(
@@ -141,7 +144,7 @@ where
 pub(crate) async fn read_frame<R>(
     reader: &mut R,
     maximum_payload_bytes: usize,
-) -> Result<Option<Vec<u8>>, FrameError>
+) -> Result<Option<Zeroizing<Vec<u8>>>, FrameError>
 where
     R: AsyncRead + Unpin,
 {
@@ -156,7 +159,7 @@ where
     let payload_bytes = u32::from_be_bytes(header) as usize;
     validate_payload_size(payload_bytes, maximum_payload_bytes)?;
 
-    let mut payload = vec![0_u8; payload_bytes];
+    let mut payload = Zeroizing::new(vec![0_u8; payload_bytes]);
     reader.read_exact(&mut payload).await?;
 
     Ok(Some(payload))

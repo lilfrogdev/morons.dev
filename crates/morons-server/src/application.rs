@@ -2,15 +2,16 @@ use std::{error::Error, fmt};
 
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse,
-    MutationRequestId as ProtocolMutationRequestId, ResourceLimit, ServerEndpoint,
+    MutationRequestId as ProtocolMutationRequestId,
+    OpenCodeCredentialStatus as ProtocolOpenCodeCredentialStatus, ResourceLimit, ServerEndpoint,
     SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor, SessionId as ProtocolSessionId,
     SessionListCursor as ProtocolSessionListCursor, SessionSummary,
 };
 use tokio::sync::watch;
 
 use crate::persistence::{
-    MutationRequestId, PersistenceError, PersistenceResourceLimit, Session,
-    SessionCatalogEventCursor, SessionId, SessionListCursor, SessionStore,
+    MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
+    Session, SessionCatalogEventCursor, SessionId, SessionListCursor, SessionStore,
 };
 
 const SESSION_CATALOG_REPLAY_PAGE_SIZE: u16 = 100;
@@ -142,6 +143,56 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::GetOpenCodeCredentialStatus => {
+                let credential = self
+                    .sessions
+                    .open_code_credential_status()
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::OpenCodeCredentialStatus {
+                        credential: to_protocol_credential_status(credential),
+                    },
+                ))
+            }
+            ApplicationRequest::SetOpenCodeCredential {
+                mutation_request_id,
+                expected_generation,
+                api_key,
+            } => {
+                let credential = self
+                    .sessions
+                    .set_open_code_credential(
+                        to_persistence_mutation_id(mutation_request_id),
+                        expected_generation,
+                        api_key.into_bytes(),
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::OpenCodeCredentialUpdated {
+                        credential: to_protocol_credential_status(credential),
+                    },
+                ))
+            }
+            ApplicationRequest::RemoveOpenCodeCredential {
+                mutation_request_id,
+                expected_generation,
+            } => {
+                let credential = self
+                    .sessions
+                    .remove_open_code_credential(
+                        to_persistence_mutation_id(mutation_request_id),
+                        expected_generation,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::OpenCodeCredentialUpdated {
+                        credential: to_protocol_credential_status(credential),
+                    },
+                ))
+            }
         }
     }
 
@@ -227,6 +278,15 @@ fn to_protocol_catalog_cursor(
     ProtocolSessionCatalogEventCursor::from_bytes(cursor.sequence().to_be_bytes())
 }
 
+const fn to_protocol_credential_status(
+    credential: OpenCodeCredentialStatus,
+) -> ProtocolOpenCodeCredentialStatus {
+    ProtocolOpenCodeCredentialStatus {
+        configured: credential.configured,
+        generation: credential.generation,
+    }
+}
+
 fn to_session_summary(session: Session) -> SessionSummary {
     SessionSummary {
         id: ProtocolSessionId::from_bytes(*session.id.as_bytes()),
@@ -251,13 +311,22 @@ fn to_application_error(error: PersistenceError) -> ApplicationError {
     match error {
         PersistenceError::InvalidInput { .. } => ApplicationError::InvalidRequest,
         PersistenceError::RequestConflict => ApplicationError::RequestConflict,
+        PersistenceError::CredentialGenerationConflict => {
+            ApplicationError::CredentialGenerationConflict
+        }
+        PersistenceError::CredentialMutationNotApplied => {
+            ApplicationError::CredentialMutationNotApplied
+        }
         PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Sessions,
         } => ApplicationError::ResourceLimit {
             resource: ResourceLimit::Sessions,
         },
         PersistenceError::ResourceLimit {
-            resource: PersistenceResourceLimit::LogicalSequence,
+            resource:
+                PersistenceResourceLimit::LogicalSequence
+                | PersistenceResourceLimit::CredentialGeneration
+                | PersistenceResourceLimit::CredentialMutations,
         } => ApplicationError::ResourceLimit {
             resource: ResourceLimit::Storage,
         },
