@@ -4,12 +4,12 @@ use morons_protocol::{
     read_client_message, write_server_message,
 };
 
-use super::{SessionClient, SessionClientError};
+use super::{ApplicationClient, ApplicationClientError};
 
 #[tokio::test(flavor = "current_thread")]
 async fn session_client_correlates_create_get_and_list_requests() {
     let (client_connection, mut server) = tokio::io::duplex(4096);
-    let mut client = SessionClient::from_negotiated_connection(client_connection);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
     let mutation_request_id = MutationRequestId::from_bytes([0x11; 16]);
     let session = SessionSummary {
         id: SessionId::from_bytes([0x22; 16]),
@@ -106,7 +106,7 @@ async fn session_client_correlates_create_get_and_list_requests() {
 #[tokio::test(flavor = "current_thread")]
 async fn session_subscription_tracks_durable_catalog_cursor() {
     let (client_connection, mut server) = tokio::io::duplex(2048);
-    let client = SessionClient::from_negotiated_connection(client_connection);
+    let client = ApplicationClient::from_negotiated_connection(client_connection);
     let initial_cursor = SessionCatalogEventCursor::from_bytes(9_u64.to_be_bytes());
     let next_cursor = SessionCatalogEventCursor::from_bytes(10_u64.to_be_bytes());
     let session = SessionSummary {
@@ -138,7 +138,7 @@ async fn session_subscription_tracks_durable_catalog_cursor() {
                 .next_event()
                 .await
                 .expect_err("duplicate catalog cursor should fail"),
-            SessionClientError::EventCursorNotMonotonic
+            ApplicationClientError::EventCursorNotMonotonic
         ));
     };
     let server_exchange = async {
@@ -185,7 +185,7 @@ async fn session_subscription_tracks_durable_catalog_cursor() {
 #[tokio::test(flavor = "current_thread")]
 async fn missing_session_is_returned_as_none() {
     let (client_connection, mut server) = tokio::io::duplex(1024);
-    let mut client = SessionClient::from_negotiated_connection(client_connection);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
     let session_id = SessionId::from_bytes([0x33; 16]);
 
     let client_exchange = async {
@@ -213,7 +213,7 @@ async fn missing_session_is_returned_as_none() {
 #[tokio::test(flavor = "current_thread")]
 async fn mismatched_response_identifier_is_rejected() {
     let (client_connection, mut server) = tokio::io::duplex(1024);
-    let mut client = SessionClient::from_negotiated_connection(client_connection);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
 
     let client_exchange = async {
         let error = client
@@ -222,7 +222,7 @@ async fn mismatched_response_identifier_is_rejected() {
             .expect_err("mismatched response should fail");
         assert!(matches!(
             error,
-            SessionClientError::ResponseIdentifierMismatch {
+            ApplicationClientError::ResponseIdentifierMismatch {
                 expected_request_id: 1,
                 received_request_id: 2,
             }
@@ -232,7 +232,7 @@ async fn mismatched_response_identifier_is_rejected() {
                 .list_sessions(None, 10)
                 .await
                 .expect_err("protocol failure should poison the connection"),
-            SessionClientError::ConnectionUnusable
+            ApplicationClientError::ConnectionUnusable
         ));
     };
     let server_exchange = async {

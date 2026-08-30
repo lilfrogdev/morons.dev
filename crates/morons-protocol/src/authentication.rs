@@ -3,6 +3,7 @@ use std::{error::Error, fmt};
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncWrite};
+use zeroize::Zeroizing;
 
 use crate::framing::{FrameError, read_frame, write_frame};
 
@@ -491,12 +492,8 @@ async fn write_authentication_record<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    write_frame(
-        writer,
-        &record.encode(),
-        MAX_AUTHENTICATION_FRAME_PAYLOAD_BYTES,
-    )
-    .await?;
+    let payload = Zeroizing::new(record.encode());
+    write_frame(writer, &payload, MAX_AUTHENTICATION_FRAME_PAYLOAD_BYTES).await?;
     Ok(())
 }
 

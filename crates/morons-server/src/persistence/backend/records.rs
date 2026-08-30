@@ -7,6 +7,10 @@ use super::super::{
     types::{IDENTIFIER_BYTES, REQUEST_FINGERPRINT_BYTES},
 };
 
+pub(super) const MUTATION_OPERATION_SESSION_CREATE: i64 = 1;
+pub(super) const MUTATION_OPERATION_CREDENTIAL_SET: i64 = 2;
+pub(super) const MUTATION_OPERATION_CREDENTIAL_REMOVE: i64 = 3;
+
 pub(super) const CREATION_STATE_PREPARED: i64 = 0;
 pub(super) const CREATION_STATE_WORKSPACE_DISPATCHED: i64 = 1;
 pub(super) const CREATION_STATE_READY: i64 = 2;
@@ -21,6 +25,20 @@ pub(super) struct CreationRequest {
     pub(super) accepted_sequence: u64,
     pub(super) accepted_at_milliseconds: u64,
     pub(super) state: i64,
+}
+
+pub(super) fn load_mutation_operation(
+    connection: &Connection,
+    request_id: MutationRequestId,
+) -> Result<Option<i64>, PersistenceError> {
+    connection
+        .query_row(
+            "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
+            [&request_id.as_bytes()[..]],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(PersistenceError::from)
 }
 
 pub(super) fn load_creation_request(

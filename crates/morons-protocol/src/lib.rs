@@ -1,5 +1,6 @@
 mod authentication;
 mod control;
+mod credential;
 mod endpoint;
 mod framing;
 mod messages;
@@ -11,6 +12,9 @@ pub use authentication::{
     authenticate_server,
 };
 pub use control::{ClientEndpoint, ControlError, ServerEndpoint};
+pub use credential::{
+    MAX_OPENCODE_API_KEY_BYTES, OpenCodeApiKey, OpenCodeApiKeyError, OpenCodeCredentialStatus,
+};
 pub use endpoint::{authorize_accepted_peer, verify_connected_server_peer};
 pub use framing::{
     FrameError, MAX_FRAME_PAYLOAD_BYTES, read_client_message, read_server_message,
@@ -23,4 +27,4 @@ pub use session::{
     SessionListCursor, SessionSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;

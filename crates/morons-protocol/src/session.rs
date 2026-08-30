@@ -200,6 +200,16 @@ pub enum ApplicationRequest {
     SubscribeSessionCatalog {
         cursor: SessionCatalogEventCursor,
     },
+    GetOpenCodeCredentialStatus,
+    SetOpenCodeCredential {
+        mutation_request_id: MutationRequestId,
+        expected_generation: u64,
+        api_key: crate::OpenCodeApiKey,
+    },
+    RemoveOpenCodeCredential {
+        mutation_request_id: MutationRequestId,
+        expected_generation: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +228,12 @@ pub enum ApplicationResponse {
     },
     SessionCatalogSubscriptionStarted {
         cursor: SessionCatalogEventCursor,
+    },
+    OpenCodeCredentialStatus {
+        credential: crate::OpenCodeCredentialStatus,
+    },
+    OpenCodeCredentialUpdated {
+        credential: crate::OpenCodeCredentialStatus,
     },
 }
 
@@ -253,6 +269,8 @@ pub enum ApplicationError {
     InvalidRequest,
     RequestConflict,
     SessionNotFound,
+    CredentialGenerationConflict,
+    CredentialMutationNotApplied,
     ResourceLimit { resource: ResourceLimit },
     ServiceUnavailable,
     Internal,

@@ -15,17 +15,23 @@ use self::configuration::MAXIMUM_DATABASE_BYTES;
 use super::{PersistenceError, paths::StoragePaths};
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
 const SCHEMA_V1: &str = include_str!("../schema_v1.sql");
+const SCHEMA_V2: &str = include_str!("../schema_v2.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("audit_facts", "table"),
+    ("credential_audit_facts", "table"),
+    ("credential_mutation_requests", "table"),
+    ("credential_mutation_requests_by_state", "index"),
+    ("credential_operation_facts", "table"),
     ("delivery_events", "table"),
     ("delivery_events_by_session", "index"),
     ("logical_sequences", "table"),
+    ("mutation_requests", "table"),
     ("session_created_facts", "table"),
     ("session_creation_requests", "table"),
     ("session_creation_requests_by_state", "index"),
@@ -43,6 +49,7 @@ pub(crate) fn open(paths: &StoragePaths) -> Result<Connection, PersistenceError>
 
     let mut connection = open_connection(paths.database_path())?;
     configuration::configure(&connection, false)?;
+    migrate(&connection)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     projections::repair(&mut connection)?;
@@ -70,6 +77,7 @@ fn initialize_at_path(
     let connection = open_connection(initialization_path)?;
     configuration::configure(&connection, true)?;
     connection.execute_batch(SCHEMA_V1)?;
+    connection.execute_batch(SCHEMA_V2)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -132,6 +140,30 @@ fn validate_header(path: &Path) -> Result<(), PersistenceError> {
         });
     }
     Ok(())
+}
+
+fn migrate(connection: &Connection) -> Result<(), PersistenceError> {
+    let application_id: i64 =
+        connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+    if application_id != APPLICATION_ID {
+        return Err(PersistenceError::InvalidState {
+            reason: "the authoritative database application identifier changed",
+        });
+    }
+
+    let schema_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    match schema_version {
+        1 => connection
+            .execute_batch(SCHEMA_V2)
+            .map_err(PersistenceError::from),
+        SCHEMA_VERSION => Ok(()),
+        version if version > SCHEMA_VERSION => Err(PersistenceError::InvalidState {
+            reason: "the authoritative database schema is newer than this server",
+        }),
+        _ => Err(PersistenceError::InvalidState {
+            reason: "the authoritative database schema version is unsupported",
+        }),
+    }
 }
 
 fn validate_identity_and_schema(connection: &Connection) -> Result<(), PersistenceError> {
