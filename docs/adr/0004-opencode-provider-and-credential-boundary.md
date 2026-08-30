@@ -85,6 +85,8 @@ The client never automatically retries a credential-bearing mutation after a dis
 
 Configuring a credential does not make a network request and does not claim that the key is valid or entitled to either service. Authentication and entitlement errors are reported only when a deliberate provider operation occurs.
 
+Input acceptance records the current non-secret credential generation. Credential mutation and provider dispatch checks are serialized. Every provider turn requires the run's recorded generation to remain current immediately before dispatch; a changed generation fails the run without sending that request. Removing or replacing a credential cannot retract a request that was already dispatched under its recorded generation.
+
 ### Outbound provider boundary
 
 Only trusted server code can attach the OpenCode credential to an inference request. Production code constructs the origin and path from the selected service; protocol messages, repository content, model output, configuration files, and catalog responses cannot supply or override them.

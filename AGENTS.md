@@ -22,6 +22,10 @@ The application consists of a long-running local server and a separate terminal 
 - OpenCode Zen and OpenCode Go use one concrete Responses-compatible integration while remaining distinct service and billing identities.
 - A reviewed built-in manifest, not remote catalog metadata, defines supported service, model, protocol, capability, and data-use combinations.
 - Session identity and lifetime are independent of client connections and temporary runtimes.
+- Direct user input is durably attributed to `LocalOwner` and commits atomically with a new run identity.
+- Every run records an explicit OpenCode service and model, and each session permits one nonterminal top-level run without an input queue.
+- Canonical transcripts contain complete attributed entries; assistant text deltas are ephemeral presentation events.
+- Session snapshots and durable event subscriptions compose through one gap-free cursor boundary.
 - Each session owns an isolated mutable workspace and execution context.
 - The terminal client owns input and presentation.
 - Client-server communication uses an authenticated, typed, versioned protocol over local IPC.
@@ -58,6 +62,9 @@ Treat repositories, model output, commands, skills, protocol messages, and exter
 - Accept credentials only through authenticated local IPC after non-echoing terminal input; never accept them from command arguments or environments.
 - Never expose credentials through kernels, untrusted subprocesses, model prompts, protocol responses, audit facts, errors, or logs.
 - Treat remote model catalogs and provider responses as untrusted input that cannot select an origin, protocol, capability, or credential scope.
+- IPC clients may submit attributed user input and cancellation intent but cannot submit assistant messages, tool calls, tool results, or run outcomes.
+- Cancellation targets an exact run and becomes terminal only after controlled execution stops.
+- Uncertain tool or workspace effects block new input until an attributed acknowledgement preserves and parks the uncertainty.
 - Agent-triggered commands, Python cells, and network requests must support cancellation and must not run indefinitely or produce unbounded output.
 - Fail closed for security-sensitive behavior.
 - Treat resource identifiers as locators rather than authorization evidence.

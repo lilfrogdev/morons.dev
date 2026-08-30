@@ -22,7 +22,7 @@ One authoritative server manages many independently resumable sessions. Session 
 
 A session is durable conversation and workspace state. A run is a bounded execution within that session. A runtime, subprocess, or Python kernel is temporary execution state and is not the authoritative session record. Inactive sessions require no live runtime, while multiple sessions may run concurrently within server-enforced global and per-session limits.
 
-Each session has an isolated mutable workspace and execution context. The first session implementation permits at most one active top-level agent run per session and serializes mutations to authoritative session state. Queries and subscriptions may coexist with that run. Persistence and recovery rules for sessions, runs, and temporary runtimes will be defined before implementation.
+Each session has an isolated mutable workspace and execution context. A session permits at most one nonterminal top-level agent run and serializes mutations to authoritative session state. Queries and subscriptions may coexist with that run. ADR 0005 defines input acceptance, run execution, transcript snapshots, cancellation, and session subscriptions.
 
 Subagents, agent teams, and workflows are outside this decision. Future decisions may add separately scoped execution and coordination resources, but they must preserve session isolation, explicit capabilities, bounded concurrency, and server authority.
 
