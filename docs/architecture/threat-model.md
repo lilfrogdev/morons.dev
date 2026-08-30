@@ -5,8 +5,9 @@
 - Server credentials
 - Local authentication key and endpoint registration
 - Agent and session state
+- Authoritative database, migration backups, and durable event history
 - Tool and execution capabilities
-- Repository and project data
+- Repository, project, and isolated workspace data
 - Provider and kernel connections
 
 ## Untrusted inputs
@@ -14,7 +15,8 @@
 - IPC clients
 - Authentication and application protocol messages
 - Resource identifiers, mutation request identifiers, pagination cursors, and event cursors
-- Endpoint and registration filesystem state
+- Endpoint, registration, database, backup, and workspace filesystem state
+- Persisted payloads, schema versions, projections, and compaction checkpoints
 - Repository content
 - Model output
 - Commands and subprocesses
@@ -60,6 +62,21 @@
 - A protocol response exposes persistence fields, provider payloads, credentials, logs, or raw sandbox output.
 - A prematurely exposed network listener admits unauthenticated, cross-origin, or unbounded requests.
 
+## Durable state threats
+
+- A database, journal, backup, data directory, or workspace identity is replaced, linked, moved, opened from an unsafe filesystem, or given insecure access controls.
+- A malformed or newer schema, corrupt canonical fact, or invalid persistent payload is accepted and interpreted as trusted state.
+- A crash commits a projection, idempotency result, delivery event, or audit fact without its canonical fact, or publishes success before commit.
+- A provider, tool, subprocess, or filesystem effect occurs but its outcome is not durably recorded before a crash.
+- Startup recovery retries uncertain work, revives an old execution, or infers success from missing records.
+- A cancellation is recorded as terminal while controlled execution may still be running.
+- A partial assistant response or temporary progress update becomes authoritative history.
+- A lossy compaction summary replaces or rewrites canonical history without validated source coverage.
+- A migration partially applies, destroys the only usable state, silently downgrades, or recreates an unreadable database.
+- Unbounded histories, tool results, event backlogs, idempotency records, or workspaces exhaust disk or memory.
+- Workspace provisioning or deletion follows a forged path and modifies data outside the session workspace root.
+- A live database file is copied inconsistently, a backup is disclosed, or a database-only backup is mistaken for complete workspace recovery.
+
 ## Mitigations
 
 - Authorize the operating-system peer before reading connection bytes or issuing an authentication challenge.
@@ -73,7 +90,7 @@
 - Authenticate the connected server before sending application protocol messages or sensitive data.
 - Require an absolute, owner-controlled, non-group-writable, and non-world-writable Unix home directory before deriving control paths.
 - Use owner-only Unix directories and sockets with bidirectional effective-user-ID verification.
-- Use verified protected current-user-and-LocalSystem DACLs on Windows control directories before creating inheriting control files.
+- Use verified protected current-user-and-LocalSystem DACLs on Windows control, data, backup, and workspace directories before creating inheriting files.
 - Install the protected owner-only named-pipe DACL atomically when the listener is created.
 - Treat process IDs as advisory and require successful mutual proof.
 - Reject insecure ownership, permissions, DACLs, links, malformed control files, unavailable peer identity, and inconsistent registrations.
@@ -86,6 +103,18 @@
 - Keep authoritative security decisions in concrete server application services rather than transport adapters.
 - Treat resource identifiers as opaque locators and authorize every operation against server-owned state.
 - Give retriable mutations stable request identity and never retry uncertain external side effects blindly.
+- Keep the authoritative database on a local owner-controlled filesystem and permit only the host-lock owner to access it through a bounded storage worker.
+- Use a pinned bundled SQLite implementation with verified durable journaling, integrity, schema, foreign-key, defensive, extension, and resource-limit settings.
+- Commit canonical facts, projections, idempotency outcomes, delivery events, and audit facts atomically, and publish durable results only after commit.
+- Record prepared, dispatched, outcome, and recovery facts around external effects without holding a transaction across an effect.
+- Terminate nonterminal runs from committed facts on startup, park uncertainty, and require a new run identity for continuation.
+- Record cancellation as terminal only after controlled execution is known to have stopped; otherwise preserve an interrupted or uncertain outcome.
+- Persist only complete validated assistant messages while keeping token deltas and temporary progress ephemeral.
+- Preserve canonical history through compaction and validate checkpoint coverage and source digests before replay.
+- Run ordered transactional migrations, back up destructive migrations, and fail closed on newer, foreign, corrupt, or unsupported databases.
+- Enforce database, payload, event, idempotency, and workspace quotas before accepting additional work.
+- Confine workspace provisioning, recovery, and deletion to verified server-generated identities beneath the private workspace root.
+- Use SQLite's online backup API, protect backup files like authoritative data, and distinguish database recovery from workspace recovery.
 - Use scoped, server-validated durable cursors and gap-free snapshot-plus-subscription semantics.
 - Keep token deltas, heartbeats, and temporary progress non-authoritative so their loss cannot corrupt recovered state.
 - Bound every subscriber queue and disconnect slow consumers without blocking other clients.
@@ -103,5 +132,9 @@
 - Processes running as the same operating-system user are not distinguished from the legitimate CLI.
 - Process separation alone does not sandbox untrusted commands.
 - Compromise of the local authentication key permits impersonation until an explicit offline key replacement invalidates existing registrations and endpoints.
-- Operating-system, filesystem, or cryptographic-randomness failures can invalidate the assumptions behind local authentication.
-- Authorized same-user processes can deny service by exhausting resources or interfering with lifecycle state.
+- Operating-system, filesystem, storage-device, SQLite, or cryptographic-randomness failures can invalidate durability and authentication assumptions.
+- SQLite transactions cannot atomically commit external effects or mutable workspace files, so unresolved effects must remain interrupted or uncertain.
+- Database backups do not recover workspace changes unless a separately bound workspace snapshot exists.
+- Database confidentiality at rest depends on operating-system access controls and storage encryption rather than application-level encryption.
+- Logical deletion and page reuse do not guarantee forensic erasure from filesystems, devices, or backups.
+- Authorized same-user processes can read owner-controlled session data, deny service, or interfere with lifecycle state.

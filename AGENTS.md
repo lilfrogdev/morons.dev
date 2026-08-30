@@ -25,11 +25,15 @@ The application consists of a long-running local server and a separate terminal 
 - Client-server communication uses an authenticated, typed, versioned protocol over local IPC.
 - Local transport authentication completes before application protocol messages are exchanged.
 - Business authorization, limits, idempotency, and audit enforcement belong in server services rather than transport handlers.
+- SQLite is the authoritative local store for durable session and run state.
+- Canonical history is append-only, while current-state and delivery views are transactional, rebuildable projections.
+- The server exclusively owns persistence through one bounded storage worker.
 - Protocol DTOs must remain independent of persistence records and presentation code.
 - Application logic must remain independent of Ratatui.
 - Python execution and PTY command execution are separate subsystems.
 - Persistent Python execution uses the standard Jupyter protocol.
 - Kernel memory is temporary working state, not authoritative session storage.
+- Restart recovery terminates interrupted runs durably and never retries uncertain external effects automatically.
 
 ## Engineering principles
 
@@ -52,6 +56,8 @@ Treat repositories, model output, commands, skills, protocol messages, and exter
 - Agent-triggered commands, Python cells, and network requests must support cancellation and must not run indefinitely or produce unbounded output.
 - Fail closed for security-sensitive behavior.
 - Treat resource identifiers as locators rather than authorization evidence.
+- Keep the database, backups, and other sessions' workspaces inaccessible to untrusted execution.
+- Publish durable results only after their database transaction commits.
 - Bound event subscriber queues and disconnect slow consumers.
 - Keep security enforcement in trusted server code.
 - Process separation provides lifecycle isolation, not a security sandbox.
