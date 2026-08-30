@@ -23,6 +23,24 @@
 - Per-subscriber queues must be bounded, and slow consumers must be disconnected rather than permitted unbounded memory growth.
 - Authenticated local IPC is the only current application transport; a network listener requires a separate architecture decision and threat-model update.
 
+## Provider credentials and model egress
+
+- Only trusted server code may read provider credentials or attach them to an outbound request.
+- Persistent provider credentials must reside in a dedicated owner-controlled credential root separate from IPC control state, SQLite data, backups, configuration, workspaces, and runtime directories.
+- Provider credentials must never appear in command arguments, environments, SQLite, backups, request fingerprints, audit facts, registrations, model prompts, workspaces, sandbox files, protocol responses, errors, or logs.
+- A missing credential is an unconfigured provider; an existing malformed, insecure, unsupported, unreadable, or ambiguously replaced credential state must fail closed rather than be treated as missing.
+- Credential input may cross local IPC only after operating-system peer authorization, mutual authentication, and protocol negotiation complete, and secret-bearing types must redact debug output.
+- Credential application services may configure, replace, remove, or report non-secret status and generation, but they must never return credential bytes or credential-derived fingerprints.
+- Credential replacement and removal must use expected-generation checks, atomic owner-only publication, durable non-secret recovery markers, and no automatic retry after an unknown outcome.
+- Production provider requests must use server-selected fixed HTTPS origins and paths; clients, repositories, configuration, model output, catalogs, and provider responses must not override an origin, protocol, credential scope, or inference route.
+- Redirects must be disabled, certificate and hostname verification must remain enabled, and provider authorization headers must be scoped to the exact reviewed inference origin.
+- A remote model catalog may reduce availability but must never enlarge the reviewed built-in service, model, protocol, capability, limit, or data-use manifest.
+- The reviewed model manifest must exclude models documented for training, contributor programs, trials, or improvement.
+- Provider requests, headers, response bodies, SSE records, decoded fields, accumulated output, tool arguments, identifiers, and errors must be bounded, strictly decoded, and sanitized before crossing the application boundary.
+- Provider response identifiers and continuation data are ephemeral run state and must not become authoritative session or recovery state.
+- A dispatched inference request must never be retried automatically because an uncertain outcome may already have incurred usage or billing.
+- Provider failures and cancellations must preserve prepared, dispatched, outcome, and uncertainty facts without storing credentials or raw provider payloads.
+
 ## Session isolation and lifecycle
 
 - One authoritative server may manage many sessions, but every operation and subscription must be authorized within its session scope.
@@ -36,7 +54,7 @@
 
 - SQLite is the sole authoritative database for durable session, run, idempotency, event, compaction, and audit state.
 - Only the server holding the lifetime host lock may open the authoritative database, and database access must pass through one bounded server-owned storage worker.
-- The data, backup, and workspace roots must be owner-controlled, local, link-safe, separate from local IPC control state, and inaccessible to untrusted execution.
+- The data, backup, credential, and workspace roots must be owner-controlled, local, link-safe, separate from local IPC control state, and inaccessible to untrusted execution.
 - The authoritative connection must verify rollback journaling, `synchronous=EXTRA`, platform-supported full synchronization, foreign keys, untrusted schema handling, defensive mode, disabled extensions, and resource limits before serving operations.
 - Durable payloads must be bounded, strictly decoded, and explicitly versioned independently of Rust layouts, SQLite rows, and protocol DTOs.
 - Canonical facts and affected projections, idempotency outcomes, delivery events, and audit facts must commit atomically.
@@ -82,8 +100,8 @@
 ## Unix
 
 - `HOME` must be absolute, owned by the effective user, and not writable by group or other users before it anchors control paths.
-- Runtime, control, data, backup, and workspace directories must be owned by the server's effective user and accessible only to that user.
-- Database, journal, backup, and workspace identity files must be ordinary owner-owned files and use mode `0600`.
+- Runtime, control, data, backup, credential, and workspace directories must be owned by the server's effective user and accessible only to that user.
+- Database, journal, backup, credential, and workspace identity files must be ordinary owner-owned files and use mode `0600`.
 - Socket files must be owned by the server's effective user, use mode `0600`, and reside beneath a mode `0700` owner-controlled directory.
 - The server must verify that an accepted client's effective user ID equals its own before reading connection bytes.
 - The client must verify that the connected server's effective user ID equals its own before beginning mutual proof.
@@ -91,8 +109,8 @@
 
 ## Windows
 
-- Control, data, backup, and workspace directories must use verified protected DACLs granting inheritable full control only to the current user and LocalSystem.
-- Authentication keys, host locks, registrations, databases, journals, backups, and workspace identity files must be ordinary children of verified protected directories and inherit no access for untrusted principals.
+- Control, data, backup, credential, and workspace directories must use verified protected DACLs granting inheritable full control only to the current user and LocalSystem.
+- Authentication keys, provider credentials, host locks, registrations, databases, journals, backups, and workspace identity files must be ordinary children of verified protected directories and inherit no access for untrusted principals.
 - Named pipes must use `D:P(A;;GA;;;OW)`, installed when the listener is created.
 - The connected server process ID must match the registered process ID when the platform provides it, but process IDs must not be the sole authentication boundary.
 - Failure to construct, install, or verify required access controls must fail closed.
@@ -103,5 +121,5 @@
 - Authentication records and application frames must have independent size limits and strict decoding.
 - Connections admitted before endpoint security and registration publication are complete must be rejected.
 - Authentication nonces and proofs must not be accepted more than once or retained after the connection attempt ends.
-- Untrusted repository processes must not receive or be able to access the control directory, authentication key, endpoint registration, host IPC endpoint, data root, backup root, or another session's workspace.
+- Untrusted repository processes must not receive or be able to access the control directory, authentication key, provider credential root, endpoint registration, host IPC endpoint, data root, backup root, or another session's workspace.
 - Authentication and authorization audit events must not contain keys, nonces, proofs, or other authentication material.

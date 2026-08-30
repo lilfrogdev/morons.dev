@@ -66,7 +66,7 @@ Authenticated local IPC is the only current application transport. The existing 
 
 Application operations are independent of IPC framing, but this does not require a second wire protocol. The local client will use typed request, response, and event DTOs over the existing authenticated connection.
 
-The server will not currently expose HTTP, OpenAPI, SSE, WebSocket, raw database, raw filesystem, raw shell, PTY, provider-proxy, credential-management, or generic privileged endpoints.
+The authenticated local IPC surface consists of typed application operations. ADR 0004 adds narrow local-owner operations to configure, replace, remove, and inspect non-secret credential status. Subsystem access remains mediated by server application services.
 
 A future network API must be introduced by a separate architecture decision and threat-model update. It must define TLS termination, authentication, authorization, tenant isolation, origin policy, request limits, rate limits, event replay, deployment topology, and compatibility guarantees. Loopback binding alone is not authentication and is not equivalent to owner-controlled local IPC.
 
