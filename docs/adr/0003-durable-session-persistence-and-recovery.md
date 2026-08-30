@@ -88,7 +88,7 @@ Idempotency records for resource creation and external effects remain at least a
 
 ### Run lifecycle and restart recovery
 
-A run is accepted, active, optionally waiting for explicit input, and then terminal. Terminal outcomes are succeeded, failed, cancelled, interrupted, or uncertain. Terminal state never reopens; continuation creates a new run identity. A cancellation request is durable intent, and a run becomes cancelled only after the server establishes that its controlled execution has stopped; an unprovable outcome remains interrupted or uncertain.
+A run is accepted, active, and then terminal. Terminal outcomes are succeeded, failed, cancelled, interrupted, or uncertain. Terminal state never reopens; continuation creates a new run identity. A cancellation request is durable intent, and a run becomes cancelled only after the server establishes that its controlled execution has stopped; an unprovable outcome remains interrupted or uncertain. ADR 0005 defines the exact input, state, transcript, and cancellation contract.
 
 Accepted user input and the new run identity commit before model execution begins. Completed assistant messages commit only after a complete provider result is validated. Partial model text and temporary progress remain ephemeral. Durable tool calls commit before dispatch, and durable tool results commit before they may be supplied to another model request.
 

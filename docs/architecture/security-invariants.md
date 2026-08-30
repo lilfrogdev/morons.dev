@@ -32,6 +32,7 @@
 - Credential input may cross local IPC only after operating-system peer authorization, mutual authentication, and protocol negotiation complete, and secret-bearing types must redact debug output.
 - Credential application services may configure, replace, remove, or report non-secret status and generation, but they must never return credential bytes or credential-derived fingerprints.
 - Credential replacement and removal must use expected-generation checks, atomic owner-only publication, durable non-secret recovery markers, and no automatic retry after an unknown outcome.
+- Every run must record the accepted credential generation, and each provider dispatch must fail before network transmission when that generation is no longer current.
 - Production provider requests must use server-selected fixed HTTPS origins and paths; clients, repositories, configuration, model output, catalogs, and provider responses must not override an origin, protocol, credential scope, or inference route.
 - Redirects must be disabled, certificate and hostname verification must remain enabled, and provider authorization headers must be scoped to the exact reviewed inference origin.
 - A remote model catalog may reduce availability but must never enlarge the reviewed built-in service, model, protocol, capability, limit, or data-use manifest.
@@ -45,10 +46,17 @@
 
 - One authoritative server may manage many sessions, but every operation and subscription must be authorized within its session scope.
 - Session identity and durable lifetime must not depend on a server process, transport endpoint, or client connection.
+- Direct user input must be durably attributed to `LocalOwner` and commit atomically with one new run identity before execution begins.
+- An exact input retry must return its original user message and run even when the run is active or terminal; conflicting reuse must fail closed.
+- A session must have at most one nonterminal top-level run, and rejected or concurrent input must never enter an implicit queue.
+- Every run must bind an explicit reviewed OpenCode service, model, protocol revision, context-policy version, limits, and credential generation.
+- IPC clients must not submit assistant messages, tool calls, tool results, run transitions, or terminal outcomes as authoritative facts.
 - Client detachment or disconnection must not implicitly cancel an active run or transfer control of a session.
+- Cancellation must target an exact session and run, commit durable intent before signaling execution, and become terminal only after controlled execution stops.
+- An unresolved tool or workspace effect must block new input until the local owner durably acknowledges the exact uncertain run without changing the effect's uncertain outcome.
 - Each session must have an isolated mutable workspace and execution context that cannot access another session's state without an explicit authorized capability.
-- Temporary runtimes, subprocesses, and Python kernels must not become authoritative session storage or receive control-plane credentials.
-- Session mutations and concurrent execution must obey server-enforced serialization, resource, concurrency, time, output, and budget limits.
+- Temporary runtimes, subprocesses, Python kernels, provider response identifiers, and provider continuation state must not become authoritative session storage or receive control-plane credentials.
+- Session mutations and concurrent execution must obey server-enforced serialization, resource, concurrency, time, output, call-count, and budget limits.
 
 ## Durable state and recovery
 
@@ -58,6 +66,9 @@
 - The authoritative connection must verify rollback journaling, `synchronous=EXTRA`, platform-supported full synchronization, foreign keys, untrusted schema handling, defensive mode, disabled extensions, and resource limits before serving operations.
 - Durable payloads must be bounded, strictly decoded, and explicitly versioned independently of Rust layouts, SQLite rows, and protocol DTOs.
 - Canonical facts and affected projections, idempotency outcomes, delivery events, and audit facts must commit atomically.
+- Canonical transcript entries must contain only complete bounded attributed user messages, assistant messages, tool calls, and tool results in monotonic session-entry order.
+- Partial assistant text must remain ephemeral, must never be replayed, and must be replaced in clients by the complete committed assistant message.
+- Session transcript pagination must use an immutable entry high water and return a session-event cursor from the same transaction so snapshot and replay remain gap-free.
 - A durable result or event must never be published before its transaction commits, and an unknown commit outcome must never be reported as success.
 - External effects require durable prepared, dispatched, and outcome boundaries without holding a database transaction across the effect.
 - A dispatched effect without a committed outcome is uncertain and must never be retried automatically.
