@@ -32,6 +32,25 @@
 - Temporary runtimes, subprocesses, and Python kernels must not become authoritative session storage or receive control-plane credentials.
 - Session mutations and concurrent execution must obey server-enforced serialization, resource, concurrency, time, output, and budget limits.
 
+## Durable state and recovery
+
+- SQLite is the sole authoritative database for durable session, run, idempotency, event, compaction, and audit state.
+- Only the server holding the lifetime host lock may open the authoritative database, and database access must pass through one bounded server-owned storage worker.
+- The data, backup, and workspace roots must be owner-controlled, local, link-safe, separate from local IPC control state, and inaccessible to untrusted execution.
+- The authoritative connection must verify rollback journaling, `synchronous=EXTRA`, platform-supported full synchronization, foreign keys, untrusted schema handling, defensive mode, disabled extensions, and resource limits before serving operations.
+- Durable payloads must be bounded, strictly decoded, and explicitly versioned independently of Rust layouts, SQLite rows, and protocol DTOs.
+- Canonical facts and affected projections, idempotency outcomes, delivery events, and audit facts must commit atomically.
+- A durable result or event must never be published before its transaction commits, and an unknown commit outcome must never be reported as success.
+- External effects require durable prepared, dispatched, and outcome boundaries without holding a database transaction across the effect.
+- A dispatched effect without a committed outcome is uncertain and must never be retried automatically.
+- A run must not become cancelled until its controlled execution is known to have stopped; an unprovable cancellation remains interrupted or uncertain.
+- Startup recovery must terminate nonterminal runs idempotently from committed facts before accepting application operations and must perform no external effect.
+- Context compaction must preserve canonical history and bind every checkpoint to a validated ordered source prefix and digest.
+- Schema migrations must be ordered and transactional, and newer, corrupt, foreign, or unsupported state must fail closed without automatic recreation or downgrade.
+- Storage quotas must reject new work before uncontrolled growth and must never trigger silent deletion of canonical history.
+- Live database backups must use SQLite's online backup API, receive owner-only controls, and never be represented as complete workspace backups.
+- The database, backups, audit facts, request fingerprints, and workspace identity metadata must not contain server-managed credentials or local IPC authentication material.
+
 ## Authentication key and endpoint registration
 
 - Each control root has a persistent, cryptographically random 256-bit local authentication key created with exclusive owner access.
@@ -63,7 +82,8 @@
 ## Unix
 
 - `HOME` must be absolute, owned by the effective user, and not writable by group or other users before it anchors control paths.
-- Runtime and control directories must be owned by the server's effective user and accessible only to that user.
+- Runtime, control, data, backup, and workspace directories must be owned by the server's effective user and accessible only to that user.
+- Database, journal, backup, and workspace identity files must be ordinary owner-owned files and use mode `0600`.
 - Socket files must be owned by the server's effective user, use mode `0600`, and reside beneath a mode `0700` owner-controlled directory.
 - The server must verify that an accepted client's effective user ID equals its own before reading connection bytes.
 - The client must verify that the connected server's effective user ID equals its own before beginning mutual proof.
@@ -71,8 +91,8 @@
 
 ## Windows
 
-- Control directories must use a verified protected DACL granting inheritable full control only to the current user and LocalSystem.
-- Authentication keys, host locks, and registrations must be ordinary files created within the verified control directory and inherit no access for untrusted principals.
+- Control, data, backup, and workspace directories must use verified protected DACLs granting inheritable full control only to the current user and LocalSystem.
+- Authentication keys, host locks, registrations, databases, journals, backups, and workspace identity files must be ordinary children of verified protected directories and inherit no access for untrusted principals.
 - Named pipes must use `D:P(A;;GA;;;OW)`, installed when the listener is created.
 - The connected server process ID must match the registered process ID when the platform provides it, but process IDs must not be the sole authentication boundary.
 - Failure to construct, install, or verify required access controls must fail closed.
@@ -83,5 +103,5 @@
 - Authentication records and application frames must have independent size limits and strict decoding.
 - Connections admitted before endpoint security and registration publication are complete must be rejected.
 - Authentication nonces and proofs must not be accepted more than once or retained after the connection attempt ends.
-- Untrusted repository processes must not receive or be able to access the control directory, authentication key, endpoint registration, or host IPC endpoint.
+- Untrusted repository processes must not receive or be able to access the control directory, authentication key, endpoint registration, host IPC endpoint, data root, backup root, or another session's workspace.
 - Authentication and authorization audit events must not contain keys, nonces, proofs, or other authentication material.
