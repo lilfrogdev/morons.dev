@@ -99,6 +99,12 @@ pub struct SessionPage {
     pub next_cursor: Option<SessionListCursor>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistenceResourceLimit {
+    Sessions,
+    LogicalSequence,
+}
+
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum PersistenceError {
@@ -109,7 +115,7 @@ pub enum PersistenceError {
     InvalidInput { reason: &'static str },
     InvalidState { reason: &'static str },
     RequestConflict,
-    ResourceLimit { resource: &'static str },
+    ResourceLimit { resource: PersistenceResourceLimit },
     WorkerStopped,
 }
 
@@ -131,9 +137,14 @@ impl fmt::Display for PersistenceError {
             Self::RequestConflict => {
                 formatter.write_str("the mutation request identifier conflicts with prior input")
             }
-            Self::ResourceLimit { resource } => {
-                write!(formatter, "the persistence {resource} limit was reached")
-            }
+            Self::ResourceLimit { resource } => match resource {
+                PersistenceResourceLimit::Sessions => {
+                    formatter.write_str("the persistence session count limit was reached")
+                }
+                PersistenceResourceLimit::LogicalSequence => {
+                    formatter.write_str("the persistence logical sequence limit was reached")
+                }
+            },
             Self::WorkerStopped => formatter.write_str("the persistence worker stopped"),
         }
     }

@@ -15,6 +15,7 @@ name = "morons"
 path = "src/main.rs"
 
 [dependencies]
+getrandom.workspace = true
 interprocess.workspace = true
 morons-protocol = { path = "../morons-protocol" }
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "time"] }

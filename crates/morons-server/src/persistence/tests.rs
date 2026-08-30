@@ -5,7 +5,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use morons_cli::{SessionClient, SessionClientError};
+use morons_protocol::{
+    ApplicationError, MutationRequestId as ProtocolMutationRequestId,
+    SessionId as ProtocolSessionId, SessionListCursor as ProtocolSessionListCursor,
+};
 use rusqlite::{Connection, config::DbConfig, params};
+
+use crate::{application::ServerApplication, handle_local_owner_requests};
 
 use super::{
     MutationRequestId, PersistenceError, SessionId, SessionListCursor, SessionStore, database,
@@ -90,6 +97,82 @@ async fn sessions_are_idempotent_queryable_paginated_and_durable() {
         .expect("persisted session should exist");
     assert_eq!(persisted, first);
     assert_eq!(persisted.workspace_id, first_workspace_id);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_commands_cross_the_application_and_transport_boundaries() {
+    let root = TestRoot::new("application-boundary");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let application = ServerApplication::from_session_store(store);
+    let mutation_request_id = ProtocolMutationRequestId::from_bytes([0x17; 16]);
+    let (client_connection, mut server_connection) = tokio::io::duplex(16 * 1024);
+
+    let client_exchange = async {
+        let mut client = SessionClient::from_negotiated_connection(client_connection);
+        let session = client
+            .create_session(mutation_request_id, Some("Application session".to_owned()))
+            .await
+            .expect("client should create a session");
+        assert_eq!(session.display_name.as_deref(), Some("Application session"));
+
+        let retry = client
+            .create_session(mutation_request_id, Some("Application session".to_owned()))
+            .await
+            .expect("client retry should return the same session");
+        assert_eq!(retry, session);
+
+        let conflict = client
+            .create_session(mutation_request_id, Some("Changed".to_owned()))
+            .await
+            .expect_err("conflicting request should fail");
+        assert!(matches!(
+            conflict,
+            SessionClientError::Application(ApplicationError::RequestConflict)
+        ));
+
+        assert_eq!(
+            client
+                .get_session(session.id)
+                .await
+                .expect("client should get a session"),
+            Some(session.clone())
+        );
+        assert_eq!(
+            client
+                .get_session(ProtocolSessionId::from_bytes([0x18; 16]))
+                .await
+                .expect("missing session should be a valid result"),
+            None
+        );
+
+        let invalid_cursor = client
+            .list_sessions(
+                Some(ProtocolSessionListCursor::from_bytes(
+                    u64::MAX.to_be_bytes(),
+                )),
+                10,
+            )
+            .await
+            .expect_err("unsupported cursor should fail");
+        assert!(matches!(
+            invalid_cursor,
+            SessionClientError::Application(ApplicationError::InvalidRequest)
+        ));
+
+        let page = client
+            .list_sessions(None, 10)
+            .await
+            .expect("client should list sessions");
+        assert_eq!(page.sessions, vec![session]);
+        assert_eq!(page.next_cursor, None);
+    };
+    let server_exchange = async {
+        handle_local_owner_requests(&mut server_connection, &application)
+            .await
+            .expect("server should handle session requests");
+    };
+
+    tokio::join!(client_exchange, server_exchange);
 }
 
 #[tokio::test(flavor = "current_thread")]

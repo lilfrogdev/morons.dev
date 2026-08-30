@@ -12,7 +12,7 @@ use morons_protocol::{
     AUTHENTICATION_KEY_BYTES, AuthenticationKey, HOST_EPOCH_BYTES, HostEpoch, authenticate_client,
     authenticate_server, authorize_accepted_peer, verify_connected_server_peer,
 };
-use morons_server::handle_handshake;
+use morons_server::{HandshakeOutcome, handle_handshake};
 
 #[cfg(unix)]
 use {interprocess::local_socket::GenericFilePath, std::path::PathBuf};
@@ -45,9 +45,10 @@ async fn client_and_server_authenticate_before_protocol_handshake() {
             authenticate_server(&mut connection, &key, &host_epoch)
                 .await
                 .expect("server should authenticate client");
-            handle_handshake(&mut connection, TEST_SERVER_VERSION)
+            let outcome = handle_handshake(&mut connection, TEST_SERVER_VERSION)
                 .await
                 .expect("server handshake should succeed");
+            assert_eq!(outcome, HandshakeOutcome::Accepted);
         };
 
         let client = async {
