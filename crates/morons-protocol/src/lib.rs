@@ -18,8 +18,9 @@ pub use framing::{
 };
 pub use messages::{ClientMessage, ServerMessage};
 pub use session::{
-    APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationRequest, ApplicationResponse,
-    MutationRequestId, ResourceLimit, SessionId, SessionListCursor, SessionSummary,
+    APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
+    ApplicationResponse, MutationRequestId, ResourceLimit, SessionCatalogEventCursor, SessionId,
+    SessionListCursor, SessionSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;

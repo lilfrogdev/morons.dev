@@ -1,12 +1,20 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, time::Duration};
 
 use morons_protocol::{
-    ClientMessage, FrameError, PROTOCOL_VERSION, ServerMessage, read_client_message,
-    write_server_message,
+    ApplicationResponse, ClientMessage, FrameError, PROTOCOL_VERSION, ServerMessage,
+    read_client_message, write_server_message,
 };
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    time,
+};
 
-use crate::application::ServerApplication;
+use crate::application::{ApplicationOutcome, ServerApplication, SessionCatalogSubscription};
+
+#[cfg(not(test))]
+const SUBSCRIPTION_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const SUBSCRIPTION_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandshakeOutcome {
@@ -19,6 +27,7 @@ pub enum HandshakeOutcome {
 pub enum ConnectionError {
     Frame(FrameError),
     UnexpectedClientMessage,
+    SubscriptionWriteTimedOut,
 }
 
 impl fmt::Display for ConnectionError {
@@ -28,6 +37,9 @@ impl fmt::Display for ConnectionError {
             Self::UnexpectedClientMessage => {
                 formatter.write_str("client message is invalid in the current protocol state")
             }
+            Self::SubscriptionWriteTimedOut => {
+                formatter.write_str("session catalog subscriber stopped accepting events")
+            }
         }
     }
 }
@@ -36,7 +48,7 @@ impl Error for ConnectionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Frame(error) => Some(error),
-            Self::UnexpectedClientMessage => None,
+            Self::UnexpectedClientMessage | Self::SubscriptionWriteTimedOut => None,
         }
     }
 }
@@ -94,10 +106,102 @@ where
             return Err(ConnectionError::UnexpectedClientMessage);
         };
 
-        let response = match application.execute_for_local_owner(request).await {
-            Ok(response) => ServerMessage::response(request_id, response),
-            Err(error) => ServerMessage::request_failed(request_id, error),
+        match application.execute_for_local_owner(request).await {
+            Ok(ApplicationOutcome::Response(response)) => {
+                write_server_message(connection, &ServerMessage::response(request_id, response))
+                    .await?;
+            }
+            Ok(ApplicationOutcome::SessionCatalogSubscription(subscription)) => {
+                write_server_message(
+                    connection,
+                    &ServerMessage::response(
+                        request_id,
+                        ApplicationResponse::SessionCatalogSubscriptionStarted {
+                            cursor: subscription.protocol_cursor(),
+                        },
+                    ),
+                )
+                .await?;
+                return stream_session_catalog_events(connection, application, subscription).await;
+            }
+            Err(error) => {
+                write_server_message(
+                    connection,
+                    &ServerMessage::request_failed(request_id, error),
+                )
+                .await?;
+            }
+        }
+    }
+}
+
+async fn stream_session_catalog_events<S>(
+    connection: &mut S,
+    application: &ServerApplication,
+    mut subscription: SessionCatalogSubscription,
+) -> Result<(), ConnectionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut reader, mut writer) = tokio::io::split(connection);
+    let client_message = read_client_message(&mut reader);
+    tokio::pin!(client_message);
+
+    loop {
+        let events = match application
+            .read_session_catalog_events(subscription.cursor)
+            .await
+        {
+            Ok(events) => events,
+            Err(error) => {
+                write_subscription_message(&mut writer, &ServerMessage::subscription_ended(error))
+                    .await?;
+                return Ok(());
+            }
         };
-        write_server_message(connection, &response).await?;
+        if !events.is_empty() {
+            for event in events {
+                write_subscription_message(&mut writer, &ServerMessage::event(event.event)).await?;
+                subscription.advance(event.cursor);
+            }
+            continue;
+        }
+
+        let latest_notification = *subscription.notifications.borrow_and_update();
+        if latest_notification > subscription.sequence() {
+            continue;
+        }
+
+        tokio::select! {
+            incoming = &mut client_message => {
+                match incoming? {
+                    None => return Ok(()),
+                    Some(_) => return Err(ConnectionError::UnexpectedClientMessage),
+                }
+            }
+            changed = subscription.notifications.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+async fn write_subscription_message<W>(
+    writer: &mut W,
+    message: &ServerMessage,
+) -> Result<(), ConnectionError>
+where
+    W: AsyncWrite + Unpin,
+{
+    match time::timeout(
+        SUBSCRIPTION_WRITE_TIMEOUT,
+        write_server_message(writer, message),
+    )
+    .await
+    {
+        Ok(result) => result.map_err(ConnectionError::from),
+        Err(_) => Err(ConnectionError::SubscriptionWriteTimedOut),
     }
 }

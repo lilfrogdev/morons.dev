@@ -12,14 +12,14 @@ use tokio::sync::{mpsc, oneshot};
 use self::{
     backend::Backend,
     types::{
-        MAX_SESSION_PAGE_SIZE, REQUEST_FINGERPRINT_BYTES, create_session_fingerprint,
-        validate_display_name,
+        MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE, REQUEST_FINGERPRINT_BYTES,
+        create_session_fingerprint, validate_display_name,
     },
 };
 
 pub use self::types::{
-    MutationRequestId, PersistenceError, PersistenceResourceLimit, Session, SessionId,
-    SessionListCursor, SessionPage,
+    MutationRequestId, PersistenceError, PersistenceResourceLimit, Session, SessionCatalogEvent,
+    SessionCatalogEventCursor, SessionCatalogEventPage, SessionId, SessionListCursor, SessionPage,
 };
 
 const WORKER_QUEUE_CAPACITY: usize = 64;
@@ -114,6 +114,30 @@ impl SessionStore {
             .map_err(|_| PersistenceError::WorkerStopped)?
     }
 
+    pub async fn read_session_catalog_events(
+        &self,
+        cursor: SessionCatalogEventCursor,
+        limit: u16,
+    ) -> Result<SessionCatalogEventPage, PersistenceError> {
+        if limit == 0 || limit > MAX_SESSION_CATALOG_EVENT_PAGE_SIZE {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a session event page size must be between 1 and 100",
+            });
+        }
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::ReadSessionCatalogEvents {
+                cursor,
+                limit,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
     fn sender(&self) -> Result<&mpsc::Sender<WorkerRequest>, PersistenceError> {
         self.sender.as_ref().ok_or(PersistenceError::WorkerStopped)
     }
@@ -144,6 +168,11 @@ enum WorkerRequest {
         limit: u16,
         response: oneshot::Sender<Result<SessionPage, PersistenceError>>,
     },
+    ReadSessionCatalogEvents {
+        cursor: SessionCatalogEventCursor,
+        limit: u16,
+        response: oneshot::Sender<Result<SessionCatalogEventPage, PersistenceError>>,
+    },
 }
 
 fn run_worker(mut backend: Backend, mut receiver: mpsc::Receiver<WorkerRequest>) {
@@ -170,6 +199,13 @@ fn run_worker(mut backend: Backend, mut receiver: mpsc::Receiver<WorkerRequest>)
                 response,
             } => {
                 let _ = response.send(backend.list_sessions(cursor, limit));
+            }
+            WorkerRequest::ReadSessionCatalogEvents {
+                cursor,
+                limit,
+                response,
+            } => {
+                let _ = response.send(backend.read_session_catalog_events(cursor, limit));
             }
         }
     }

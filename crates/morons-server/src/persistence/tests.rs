@@ -2,21 +2,22 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use morons_cli::{SessionClient, SessionClientError};
 use morons_protocol::{
-    ApplicationError, MutationRequestId as ProtocolMutationRequestId,
-    SessionId as ProtocolSessionId, SessionListCursor as ProtocolSessionListCursor,
+    ApplicationError, ApplicationEvent, MutationRequestId as ProtocolMutationRequestId,
+    SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor, SessionId as ProtocolSessionId,
+    SessionListCursor as ProtocolSessionListCursor,
 };
 use rusqlite::{Connection, config::DbConfig, params};
 
-use crate::{application::ServerApplication, handle_local_owner_requests};
+use crate::{ConnectionError, application::ServerApplication, handle_local_owner_requests};
 
 use super::{
-    MutationRequestId, PersistenceError, SessionId, SessionListCursor, SessionStore, database,
-    paths::StoragePaths, types::create_session_fingerprint,
+    MutationRequestId, PersistenceError, SessionCatalogEventCursor, SessionId, SessionListCursor,
+    SessionStore, database, paths::StoragePaths, types::create_session_fingerprint,
 };
 
 #[cfg(unix)]
@@ -79,12 +80,43 @@ async fn sessions_are_idempotent_queryable_paginated_and_durable() {
     let cursor = first_page
         .next_cursor
         .expect("first page should have a continuation cursor");
+    let snapshot_catalog_cursor = first_page.catalog_cursor;
+    let fourth = store
+        .create_session(
+            MutationRequestId::from_bytes([0x34; 16]),
+            Some("Fourth session".to_owned()),
+        )
+        .await
+        .expect("fourth session should be created");
     let second_page = store
         .list_sessions(Some(cursor), 2)
         .await
         .expect("second page should be listed");
-    assert_eq!(second_page.sessions, vec![third]);
+    assert_eq!(second_page.sessions, vec![third.clone()]);
     assert_eq!(second_page.next_cursor, None);
+    assert_eq!(second_page.catalog_cursor, snapshot_catalog_cursor);
+
+    let replay = store
+        .read_session_catalog_events(snapshot_catalog_cursor, 100)
+        .await
+        .expect("events after the snapshot should replay");
+    assert_eq!(replay.events.len(), 1);
+    assert_eq!(replay.events[0].session, fourth.clone());
+    assert_eq!(replay.events[0].cursor, replay.high_water);
+
+    let complete_replay = store
+        .read_session_catalog_events(SessionCatalogEventCursor::from_sequence(0), 100)
+        .await
+        .expect("complete event history should replay");
+    assert_eq!(complete_replay.events.len(), 4);
+    assert_eq!(
+        complete_replay
+            .events
+            .iter()
+            .map(|event| event.session.id)
+            .collect::<Vec<_>>(),
+        vec![first.id, second.id, third.id, fourth.id]
+    );
 
     let first_workspace_id = first.workspace_id;
     drop(store);
@@ -97,6 +129,12 @@ async fn sessions_are_idempotent_queryable_paginated_and_durable() {
         .expect("persisted session should exist");
     assert_eq!(persisted, first);
     assert_eq!(persisted.workspace_id, first_workspace_id);
+    let replay_after_restart = reopened
+        .read_session_catalog_events(snapshot_catalog_cursor, 100)
+        .await
+        .expect("durable events should replay after restart");
+    assert_eq!(replay_after_restart.events.len(), 1);
+    assert_eq!(replay_after_restart.events[0].session, fourth);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -146,12 +184,7 @@ async fn session_commands_cross_the_application_and_transport_boundaries() {
         );
 
         let invalid_cursor = client
-            .list_sessions(
-                Some(ProtocolSessionListCursor::from_bytes(
-                    u64::MAX.to_be_bytes(),
-                )),
-                10,
-            )
+            .list_sessions(Some(ProtocolSessionListCursor::from_bytes([0xff; 16])), 10)
             .await
             .expect_err("unsupported cursor should fail");
         assert!(matches!(
@@ -173,6 +206,126 @@ async fn session_commands_cross_the_application_and_transport_boundaries() {
     };
 
     tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_subscription_replays_commits_after_a_gap_free_snapshot() {
+    let root = TestRoot::new("session-subscription");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let application = ServerApplication::from_session_store(store);
+    let (command_connection, mut command_server) = tokio::io::duplex(16 * 1024);
+    let (subscription_connection, mut subscription_server) = tokio::io::duplex(16 * 1024);
+
+    let client_exchange = async {
+        let mut commands = SessionClient::from_negotiated_connection(command_connection);
+        commands
+            .create_session(
+                ProtocolMutationRequestId::from_bytes([0x31; 16]),
+                Some("Snapshot session".to_owned()),
+            )
+            .await
+            .expect("initial session should be created");
+        let snapshot = commands
+            .list_sessions(None, 100)
+            .await
+            .expect("session snapshot should be listed");
+
+        let created_after_snapshot = commands
+            .create_session(
+                ProtocolMutationRequestId::from_bytes([0x32; 16]),
+                Some("Event session".to_owned()),
+            )
+            .await
+            .expect("session after snapshot should be created");
+        let mut subscription = SessionClient::from_negotiated_connection(subscription_connection)
+            .subscribe_to_session_catalog(snapshot.catalog_cursor)
+            .await
+            .expect("session event subscription should start");
+        let event = subscription
+            .next_event()
+            .await
+            .expect("committed event should be delivered");
+        assert_eq!(
+            event,
+            ApplicationEvent::SessionCreated {
+                cursor: subscription.cursor(),
+                session: created_after_snapshot,
+            }
+        );
+        assert!(subscription.cursor().as_bytes() > snapshot.catalog_cursor.as_bytes());
+
+        let created_while_subscribed = commands
+            .create_session(
+                ProtocolMutationRequestId::from_bytes([0x33; 16]),
+                Some("Live event session".to_owned()),
+            )
+            .await
+            .expect("session during subscription should be created");
+        let live_event = subscription
+            .next_event()
+            .await
+            .expect("live committed event should be delivered");
+        assert_eq!(
+            live_event,
+            ApplicationEvent::SessionCreated {
+                cursor: subscription.cursor(),
+                session: created_while_subscribed,
+            }
+        );
+        drop(subscription);
+        drop(commands);
+    };
+    let command_server_exchange = async {
+        handle_local_owner_requests(&mut command_server, &application)
+            .await
+            .expect("server should handle session commands");
+    };
+    let subscription_server_exchange = async {
+        handle_local_owner_requests(&mut subscription_server, &application)
+            .await
+            .expect("server should handle session subscription");
+    };
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(
+            client_exchange,
+            command_server_exchange,
+            subscription_server_exchange
+        );
+    })
+    .await
+    .expect("session subscription exchange should not time out");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn slow_session_catalog_subscriber_is_disconnected() {
+    let root = TestRoot::new("slow-subscriber");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    store
+        .create_session(
+            MutationRequestId::from_bytes([0x41; 16]),
+            Some("Buffered event".to_owned()),
+        )
+        .await
+        .expect("session should be created");
+    let application = ServerApplication::from_session_store(store);
+    let (client_connection, mut server_connection) = tokio::io::duplex(64);
+
+    let client_exchange = async {
+        let subscription = SessionClient::from_negotiated_connection(client_connection)
+            .subscribe_to_session_catalog(ProtocolSessionCatalogEventCursor::beginning())
+            .await
+            .expect("subscription should start");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(subscription);
+    };
+    let server_exchange = async {
+        handle_local_owner_requests(&mut server_connection, &application)
+            .await
+            .expect_err("slow subscriber should be disconnected")
+    };
+    let ((), error) = tokio::join!(client_exchange, server_exchange);
+    assert!(matches!(error, ConnectionError::SubscriptionWriteTimedOut));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -243,11 +396,29 @@ async fn invalid_requests_fail_before_reaching_the_worker() {
     assert!(matches!(empty_page, PersistenceError::InvalidInput { .. }));
 
     let oversized_cursor = store
-        .list_sessions(Some(SessionListCursor::from_sequence(u64::MAX)), 1)
+        .list_sessions(Some(SessionListCursor::new(u64::MAX, 0)), 1)
         .await
         .expect_err("oversized cursor should fail");
     assert!(matches!(
         oversized_cursor,
+        PersistenceError::InvalidInput { .. }
+    ));
+
+    let empty_event_page = store
+        .read_session_catalog_events(SessionCatalogEventCursor::from_sequence(0), 0)
+        .await
+        .expect_err("zero event page size should fail");
+    assert!(matches!(
+        empty_event_page,
+        PersistenceError::InvalidInput { .. }
+    ));
+
+    let future_catalog_cursor = store
+        .read_session_catalog_events(SessionCatalogEventCursor::from_sequence(1), 1)
+        .await
+        .expect_err("future event cursor should fail");
+    assert!(matches!(
+        future_catalog_cursor,
         PersistenceError::InvalidInput { .. }
     ));
 }
