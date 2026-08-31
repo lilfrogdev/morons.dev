@@ -169,7 +169,7 @@ fn validate_binary_format(path: &Path) -> Result<(), ConnectOrStartError> {
         let pe_offset = u64::from(u32::from_le_bytes(
             dos_header[60..64].try_into().map_err(|_| invalid())?,
         ));
-        if pe_offset < 64 || pe_offset > 1024 * 1024 {
+        if !(64..=1024 * 1024).contains(&pe_offset) {
             return Err(invalid());
         }
         file.seek(SeekFrom::Start(pe_offset))
