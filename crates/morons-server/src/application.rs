@@ -1,7 +1,14 @@
 mod conversions;
 pub(crate) mod events;
 
-use std::{error::Error, fmt, sync::Arc};
+use std::{
+    error::Error,
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 pub(crate) use self::events::{SessionCatalogSubscription, SessionSubscription};
 use self::{
@@ -12,6 +19,7 @@ use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ResourceLimit,
     ServerEndpoint,
 };
+use tokio::sync::{Mutex, watch};
 
 use crate::{
     persistence::{
@@ -33,6 +41,10 @@ pub struct ServerApplication {
     open_code: Arc<OpenCodeProvider>,
     run_supervisor: Arc<RunSupervisor>,
     session_event_hub: Arc<SessionEventHub>,
+    host_epoch: [u8; 16],
+    stopping: AtomicBool,
+    lifecycle_mutations: Mutex<()>,
+    shutdown_requests: watch::Sender<bool>,
 }
 
 #[derive(Debug)]
@@ -58,6 +70,7 @@ pub(crate) enum ApplicationOutcome {
     Response(ApplicationResponse),
     SessionCatalogSubscription(SessionCatalogSubscription),
     SessionSubscription(SessionSubscription),
+    StopServerAccepted { current_server_stopping: bool },
 }
 
 pub(crate) struct DeliveredSessionCatalogEvent {
@@ -72,8 +85,9 @@ pub(crate) struct DeliveredSessionEvent {
 
 impl ServerApplication {
     pub fn open(server: &ServerEndpoint) -> Result<Self, ApplicationStartupError> {
+        let host_epoch = *server.host_epoch().as_bytes();
         SessionStore::open(server)
-            .map(Self::from_session_store)
+            .map(|sessions| Self::from_session_store_with_epoch(sessions, host_epoch))
             .map_err(ApplicationStartupError)
     }
 
@@ -84,7 +98,12 @@ impl ServerApplication {
         self.open_code.fetch_catalog(service).await
     }
 
+    pub fn subscribe_shutdown_requests(&self) -> watch::Receiver<bool> {
+        self.shutdown_requests.subscribe()
+    }
+
     pub async fn shutdown(&self) {
+        self.stopping.store(true, Ordering::Release);
         self.run_supervisor.shutdown().await;
     }
 
@@ -232,7 +251,8 @@ impl ServerApplication {
                 let provider_service = to_provider_service(service);
                 let model = find_open_code_model(provider_service, &model_id)
                     .ok_or(ApplicationError::UnsupportedModel)?;
-                if self.run_supervisor.is_stopping() {
+                let lifecycle_guard = self.lifecycle_mutations.lock().await;
+                if self.stopping.load(Ordering::Acquire) || self.run_supervisor.is_stopping() {
                     return Err(ApplicationError::ServiceUnavailable);
                 }
                 let permit = match self.run_supervisor.try_reserve() {
@@ -262,6 +282,7 @@ impl ServerApplication {
                     )
                     .await
                     .map_err(to_application_error)?;
+                drop(lifecycle_guard);
                 if accepted.newly_accepted {
                     let run_id = accepted.run.id;
                     if let Err(error) = self.run_supervisor.start(run_id, permit).await {
@@ -364,6 +385,30 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::StopServer {
+                mutation_request_id,
+            } => {
+                let _lifecycle_guard = self.lifecycle_mutations.lock().await;
+                let result = self
+                    .sessions
+                    .request_server_stop(
+                        to_persistence_mutation_id(mutation_request_id),
+                        self.host_epoch,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                if result.signal_current_supervisor {
+                    if result.accepted_host_epoch != self.host_epoch {
+                        return Err(ApplicationError::Internal);
+                    }
+                    self.stopping.store(true, Ordering::Release);
+                    self.shutdown_requests.send_replace(true);
+                }
+                Ok(ApplicationOutcome::StopServerAccepted {
+                    current_server_stopping: result.accepted_host_epoch == self.host_epoch
+                        && self.stopping.load(Ordering::Acquire),
+                })
+            }
         }
     }
 
@@ -432,31 +477,45 @@ impl ServerApplication {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn from_session_store(sessions: SessionStore) -> Self {
+        Self::from_session_store_with_epoch(sessions, [0x7f; 16])
+    }
+
+    fn from_session_store_with_epoch(sessions: SessionStore, host_epoch: [u8; 16]) -> Self {
         let sessions = Arc::new(sessions);
         let open_code = Arc::new(OpenCodeProvider::new(Arc::clone(&sessions)));
-        Self::from_shared_parts(sessions, open_code)
+        Self::from_shared_parts(sessions, open_code, host_epoch)
     }
 
     #[cfg(test)]
     pub(crate) fn from_session_store_for_test(sessions: SessionStore, base: &str) -> Self {
         let sessions = Arc::new(sessions);
         let open_code = Arc::new(OpenCodeProvider::for_test(Arc::clone(&sessions), base));
-        Self::from_shared_parts(sessions, open_code)
+        Self::from_shared_parts(sessions, open_code, [0x7f; 16])
     }
 
-    fn from_shared_parts(sessions: Arc<SessionStore>, open_code: Arc<OpenCodeProvider>) -> Self {
+    fn from_shared_parts(
+        sessions: Arc<SessionStore>,
+        open_code: Arc<OpenCodeProvider>,
+        host_epoch: [u8; 16],
+    ) -> Self {
         let session_event_hub = SessionEventHub::new();
         let run_supervisor = RunSupervisor::new(
             Arc::clone(&sessions),
             Arc::clone(&open_code),
             Arc::clone(&session_event_hub),
         );
+        let (shutdown_requests, _) = watch::channel(false);
         Self {
             sessions,
             open_code,
             run_supervisor,
             session_event_hub,
+            host_epoch,
+            stopping: AtomicBool::new(false),
+            lifecycle_mutations: Mutex::new(()),
+            shutdown_requests,
         }
     }
 }

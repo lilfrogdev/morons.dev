@@ -421,9 +421,11 @@ dependencies = [
 name = "morons-cli"
 version = "0.1.0"
 dependencies = [
+ "fence-windows",
  "getrandom 0.4.3",
  "interprocess",
  "morons-protocol",
+ "rustix",
  "tokio",
 ]
 

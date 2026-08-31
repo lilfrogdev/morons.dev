@@ -19,13 +19,14 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
 const SCHEMA_V1: &str = include_str!("../schema_v1.sql");
 const SCHEMA_V2: &str = include_str!("../schema_v2.sql");
 const SCHEMA_V3: &str = include_str!("../schema_v3.sql");
+const SCHEMA_V4: &str = include_str!("../schema_v4.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("audit_facts", "table"),
@@ -50,6 +51,9 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("run_state_facts", "table"),
     ("run_state_facts_by_run", "index"),
     ("runs", "table"),
+    ("server_audit_facts", "table"),
+    ("server_stop_requests", "table"),
+    ("server_stop_signal_by_host_epoch", "index"),
     ("runs_by_session", "index"),
     ("session_created_facts", "table"),
     ("session_creation_requests", "table"),
@@ -101,6 +105,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V1)?;
     connection.execute_batch(SCHEMA_V2)?;
     connection.execute_batch(SCHEMA_V3)?;
+    connection.execute_batch(SCHEMA_V4)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -179,11 +184,17 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         1 => {
             ensure_migration_backup(connection, paths, schema_version)?;
             connection.execute_batch(SCHEMA_V2)?;
-            migrate_to_v3(connection)
+            migrate_schema(connection, SCHEMA_V3)?;
+            migrate_schema(connection, SCHEMA_V4)
         }
         2 => {
             ensure_migration_backup(connection, paths, schema_version)?;
-            migrate_to_v3(connection)
+            migrate_schema(connection, SCHEMA_V3)?;
+            migrate_schema(connection, SCHEMA_V4)
+        }
+        3 => {
+            ensure_migration_backup(connection, paths, schema_version)?;
+            migrate_schema(connection, SCHEMA_V4)
         }
         SCHEMA_VERSION => Ok(()),
         version if version > SCHEMA_VERSION => Err(PersistenceError::InvalidState {
@@ -254,7 +265,7 @@ fn validate_migration_backup_snapshot(
     validate_integrity(&connection)
 }
 
-fn migrate_to_v3(connection: &Connection) -> Result<(), PersistenceError> {
+fn migrate_schema(connection: &Connection, schema: &str) -> Result<(), PersistenceError> {
     connection.pragma_update(None, "foreign_keys", false)?;
     let disabled: i64 = connection.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
     if disabled != 0 {
@@ -262,7 +273,7 @@ fn migrate_to_v3(connection: &Connection) -> Result<(), PersistenceError> {
             reason: "foreign-key enforcement could not be suspended for migration",
         });
     }
-    let migration = connection.execute_batch(SCHEMA_V3);
+    let migration = connection.execute_batch(schema);
     if migration.is_err() {
         let _ = connection.execute_batch("ROLLBACK");
     }

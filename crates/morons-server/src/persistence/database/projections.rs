@@ -7,8 +7,9 @@ use crate::persistence::{
     PersistenceError, RunModelSelection, RunOpenCodeService, SessionId,
     run_types::{CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES, conservative_input_token_estimate},
     types::{
-        cancel_run_fingerprint, create_session_fingerprint, submit_session_input_fingerprint,
-        validate_display_name, validate_model_selection, validate_user_text,
+        cancel_run_fingerprint, create_session_fingerprint, stop_server_fingerprint,
+        submit_session_input_fingerprint, validate_display_name, validate_model_selection,
+        validate_user_text,
     },
 };
 
@@ -16,6 +17,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_session_creation_facts(connection)?;
     validate_mutation_registry(connection)?;
     validate_run_request_payloads(connection)?;
+    validate_server_stop_facts(connection)?;
     validate_run_canonical_facts(connection)?;
     validate_logical_sequences(connection)?;
     rebuild::rebuild(connection)?;
@@ -129,6 +131,15 @@ fn validate_mutation_registry(connection: &Connection) -> Result<(), Persistence
                 OR mutation.accepted_at_milliseconds IS NOT request.accepted_at_milliseconds
             )
             UNION ALL
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN server_stop_requests AS request
+              ON request.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 6 AND (
+                request.request_id IS NULL
+                OR mutation.accepted_sequence IS NOT request.accepted_sequence
+                OR mutation.accepted_at_milliseconds IS NOT request.accepted_at_milliseconds
+            )
+            UNION ALL
             SELECT 1 FROM session_creation_requests AS request
             LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
             WHERE mutation.operation_kind IS NOT 1
@@ -144,6 +155,10 @@ fn validate_mutation_registry(connection: &Connection) -> Result<(), Persistence
             SELECT 1 FROM run_cancellation_requests AS request
             LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
             WHERE mutation.operation_kind IS NOT 5
+            UNION ALL
+            SELECT 1 FROM server_stop_requests AS request
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
+            WHERE mutation.operation_kind IS NOT 6
         )",
         [],
         |row| row.get(0),
@@ -151,6 +166,48 @@ fn validate_mutation_registry(connection: &Connection) -> Result<(), Persistence
     if invalid {
         return Err(PersistenceError::InvalidState {
             reason: "mutation requests conflict with their canonical operation records",
+        });
+    }
+    Ok(())
+}
+
+fn validate_server_stop_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM server_stop_requests AS request
+            WHERE (SELECT COUNT(*) FROM server_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id
+                     AND audit.audit_kind = 1
+                     AND audit.host_epoch IS request.host_epoch
+                     AND audit.created_at_milliseconds IS request.accepted_at_milliseconds) != 1
+            UNION ALL
+            SELECT 1 FROM server_audit_facts AS audit
+            LEFT JOIN server_stop_requests AS request ON request.request_id = audit.request_id
+            WHERE request.request_id IS NULL OR audit.host_epoch IS NOT request.host_epoch
+            UNION ALL
+            SELECT 1 FROM server_stop_requests
+            GROUP BY host_epoch
+            HAVING SUM(signal_applied) != 1
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "server stop audit facts conflict with idempotency state",
+        });
+    }
+    let mut statement =
+        connection.prepare("SELECT operation_fingerprint FROM server_stop_requests")?;
+    let fingerprints = statement
+        .query_map([], |row| row.get::<_, [u8; 32]>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if fingerprints
+        .into_iter()
+        .any(|fingerprint| fingerprint != stop_server_fingerprint())
+    {
+        return Err(PersistenceError::InvalidState {
+            reason: "a persisted server stop request has invalid canonical input",
         });
     }
     Ok(())
@@ -563,6 +620,8 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
             UNION ALL SELECT accepted_sequence FROM credential_mutation_requests
             UNION ALL SELECT fact_sequence FROM credential_operation_facts
             UNION ALL SELECT audit_sequence FROM credential_audit_facts
+            UNION ALL SELECT accepted_sequence FROM server_stop_requests
+            UNION ALL SELECT audit_sequence FROM server_audit_facts
             UNION ALL SELECT fact_sequence FROM session_entries
             UNION ALL SELECT fact_sequence FROM run_accepted_facts
             UNION ALL SELECT fact_sequence FROM run_state_facts
