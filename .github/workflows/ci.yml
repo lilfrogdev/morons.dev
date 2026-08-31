@@ -17,41 +17,84 @@ jobs:
   rust:
     name: Build, lint, and test (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.timeout_minutes }}
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             platform: Linux
+            runner_arch: X64
+            target: x86_64-unknown-linux-gnu
+            cross_target: ""
+            timeout_minutes: 15
+          - os: ubuntu-24.04-arm
+            platform: Linux aarch64
+            runner_arch: ARM64
+            target: aarch64-unknown-linux-gnu
+            cross_target: ""
+            timeout_minutes: 20
           - os: macos-latest
             platform: macOS
+            runner_arch: ARM64
+            target: aarch64-apple-darwin
+            cross_target: x86_64-apple-darwin
+            timeout_minutes: 20
           - os: windows-latest
             platform: Windows
+            runner_arch: X64
+            target: x86_64-pc-windows-msvc
+            cross_target: ""
+            timeout_minutes: 20
+          - os: windows-11-arm
+            platform: Windows aarch64
+            runner_arch: ARM64
+            target: aarch64-pc-windows-msvc
+            cross_target: ""
+            timeout_minutes: 30
 
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Show pinned Rust toolchain
+      - name: Show pinned Rust toolchain and target
         run: |
-          rustc --version
+          echo "Runner architecture: ${{ runner.arch }}"
+          echo "Expected target: ${{ matrix.target }}"
+          rustc -vV
           cargo --version
           rustfmt --version
           cargo clippy --version
 
+      - name: Reject an unexpected runner architecture
+        if: ${{ runner.arch != matrix.runner_arch }}
+        run: |
+          echo "Expected ${{ matrix.runner_arch }}, received ${{ runner.arch }}"
+          exit 1
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Install native target
+        run: rustup target add ${{ matrix.target }}
+
       - name: Check workspace
-        run: cargo check --workspace --locked
+        run: cargo check --workspace --target ${{ matrix.target }} --locked
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --target ${{ matrix.target }} --locked -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --target ${{ matrix.target }} --locked
+
+      - name: Install cross-compilation target
+        if: ${{ matrix.cross_target != '' }}
+        run: rustup target add ${{ matrix.cross_target }}
+
+      - name: Check cross-compilation target
+        if: ${{ matrix.cross_target != '' }}
+        run: cargo check --workspace --all-targets --target ${{ matrix.cross_target }} --locked
 
   dependency-policy:
     name: Dependency policy
