@@ -7,6 +7,9 @@
 - The server must authorize the operating-system peer before reading bytes from it or disclosing authentication challenges.
 - The client must authenticate the connected server before sending application messages, credentials, repository data, or capabilities.
 - Authentication failures must close the connection without an application protocol response.
+- Automatic server startup is allowed only after secure control-state classification; malformed, insecure, authentication-failed, or protocol-mismatched state must fail closed without replacement.
+- A client-started server must be the exact packaged companion executable, launched without a shell, untrusted path selection, sensitive arguments, or inherited repository, provider, credential, proxy, certificate, or dynamic-loader state.
+- A spawned process, process identifier, exit status, or readiness string is never server-authentication evidence; readiness requires the complete registered endpoint, peer authorization, mutual proof, and protocol negotiation boundary.
 - The server remains authoritative for every privileged operation after connection authentication.
 - Operating-system user authorization does not distinguish the CLI from another process running as the same user.
 
@@ -20,6 +23,7 @@
 - Event subscriptions must be scoped to authorized resources, and resumable streams must use server-validated durable cursors.
 - Snapshot and subscription semantics must not lose committed events between the snapshot position and stream attachment.
 - Ephemeral events must never be required to reconstruct authoritative state and need not be replayed after disconnects.
+- Assistant deltas must identify an exact session and run, use a bounded run-local monotonic sequence, follow the durable active transition, and be replaced by a complete committed assistant message.
 - Per-subscriber queues must be bounded, and slow consumers must be disconnected rather than permitted unbounded memory growth.
 - Authenticated local IPC is the only current application transport; a network listener requires a separate architecture decision and threat-model update.
 
@@ -30,6 +34,8 @@
 - Provider credentials must never appear in command arguments, environments, SQLite, backups, request fingerprints, audit facts, registrations, model prompts, workspaces, sandbox files, protocol responses, errors, or logs.
 - A missing credential is an unconfigured provider; an existing malformed, insecure, unsupported, unreadable, or ambiguously replaced credential state must fail closed rather than be treated as missing.
 - Credential input may cross local IPC only after operating-system peer authorization, mutual authentication, and protocol negotiation complete, and secret-bearing types must redact debug output.
+- The terminal client must collect credentials without echo, retain them only in a bounded zeroizing transient buffer, and never place them in input history, client configuration, clipboard output, command arguments, environments, logs, panic output, or rendered cells.
+- Credential-bearing mutations must never be retried automatically after an unknown outcome; the client must discard the secret and inspect non-secret status before requesting deliberate re-entry.
 - Credential application services may configure, replace, remove, or report non-secret status and generation, but they must never return credential bytes or credential-derived fingerprints.
 - Credential replacement and removal must use expected-generation checks, atomic owner-only publication, durable non-secret recovery markers, and no automatic retry after an unknown outcome.
 - Every run must record the accepted credential generation, and each provider dispatch must fail before network transmission when that generation is no longer current.
@@ -125,6 +131,25 @@
 - Named pipes must use `D:P(A;;GA;;;OW)`, installed when the listener is created.
 - The connected server process ID must match the registered process ID when the platform provides it, but process IDs must not be the sole authentication boundary.
 - Failure to construct, install, or verify required access controls must fail closed.
+
+## Terminal and local process lifecycle
+
+- Closing a terminal client detaches it and must not cancel a run, stop the server, or change session lifetime.
+- Server shutdown requires an explicit authenticated idempotent local-owner mutation, may signal only on first acceptance, and must use graceful run shutdown; clients must not kill a process based only on registration state.
+- Concurrent client startup may launch contenders, but only the lifetime host-lock owner may publish or clean control state.
+- Untrusted user, provider, catalog, error, and future tool text must be converted to bounded terminal cells without forwarding control sequences, operating-system commands, hyperlinks, title changes, device controls, or bidirectional formatting controls.
+- Untrusted text must never be written through raw ANSI or terminal-control output paths.
+- Terminal mode and screen ownership must be restored on every ordinary exit and handled error path, and restoration diagnostics must not contain credential or transcript buffers.
+- The terminal client is not a terminal emulator, PTY, shell, editor, or raw sandbox view and must not expose arbitrary user command submission.
+
+## Processor architecture portability
+
+- Release-supported processor architectures are 64-bit `x86_64` and `aarch64` for the selected macOS, Linux, and Windows targets.
+- Protocol, authentication, persistence, fingerprints, and cursors must use explicit widths and byte order and must never serialize pointers, `usize`, host-endian values, native layouts, or processor architecture.
+- Conversions among protocol lengths, SQLite integers, filesystem sizes, and `usize` must reject overflow and truncation.
+- Processor architecture is never authentication evidence, authorization evidence, a capability, or a reason to weaken limits or security behavior.
+- Native tests are required for release support because cross-compilation and emulation cannot prove IPC peer identity, filesystem controls, synchronization, process lifecycle, or terminal behavior.
+- Distribution artifacts must pair client and server executables built from the same revision for one target and must not download or select executables from untrusted state.
 
 ## Failure handling and isolation
 
