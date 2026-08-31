@@ -479,11 +479,19 @@ async fn spawn_stalled_provider() -> (String, oneshot::Receiver<()>, tokio::task
             .send(())
             .unwrap_or_else(|_| panic!("dispatch should be observed"));
         let mut byte = [0_u8; 1];
-        let closed = time::timeout(Duration::from_secs(5), stream.read(&mut byte))
-            .await
-            .expect("cancelled request should close promptly")
-            .expect("closure should be readable");
-        assert_eq!(closed, 0);
+        match time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await {
+            Ok(Ok(0)) => {}
+            Ok(Err(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ) => {}
+            Ok(Ok(_)) => panic!("cancelled request should not send more bytes"),
+            Ok(Err(error)) => panic!("cancelled request closed unexpectedly: {error}"),
+            Err(_) => panic!("cancelled request should close promptly"),
+        }
     });
     (format!("http://{address}"), dispatched_receiver, server)
 }
