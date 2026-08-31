@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
-    ApplicationError, FrameError, MutationRequestId, OpenCodeCredentialStatus,
+    ApplicationError, FrameError, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelSummary, OpenCodeService, RunId, RunSummary, SessionCatalogEventCursor,
     SessionEventCursor, SessionId, SessionSummary, TranscriptEntry,
 };
@@ -23,7 +23,6 @@ const MAX_TRANSCRIPT_PAGES: usize = 512;
 
 type Client = ApplicationClient<Stream>;
 
-#[derive(Clone)]
 pub(super) enum RequestCommand {
     LoadSessions,
     LoadModels(OpenCodeService),
@@ -43,6 +42,15 @@ pub(super) enum RequestCommand {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
         run_id: RunId,
+    },
+    SetCredential {
+        mutation_request_id: MutationRequestId,
+        expected_generation: u64,
+        api_key: OpenCodeApiKey,
+    },
+    RemoveCredential {
+        mutation_request_id: MutationRequestId,
+        expected_generation: u64,
     },
     StopServer {
         mutation_request_id: MutationRequestId,
@@ -67,6 +75,14 @@ impl RequestCommand {
                 mutation_request_id,
                 ..
             }
+            | Self::SetCredential {
+                mutation_request_id,
+                ..
+            }
+            | Self::RemoveCredential {
+                mutation_request_id,
+                ..
+            }
             | Self::StopServer {
                 mutation_request_id,
             } => Some(*mutation_request_id),
@@ -82,7 +98,58 @@ impl RequestCommand {
             Self::CreateSession { .. } => "session creation",
             Self::SubmitInput { .. } => "message submission",
             Self::CancelRun { .. } => "run cancellation",
+            Self::SetCredential { .. } => "credential configuration",
+            Self::RemoveCredential { .. } => "credential removal",
             Self::StopServer { .. } => "server stop",
+        }
+    }
+
+    const fn is_credential_mutation(&self) -> bool {
+        matches!(
+            self,
+            Self::SetCredential { .. } | Self::RemoveCredential { .. }
+        )
+    }
+
+    pub(super) fn clone_for_retry(&self) -> Option<Self> {
+        match self {
+            Self::LoadSessions => Some(Self::LoadSessions),
+            Self::LoadModels(service) => Some(Self::LoadModels(*service)),
+            Self::LoadCredentialStatus => Some(Self::LoadCredentialStatus),
+            Self::LoadSession(session_id) => Some(Self::LoadSession(*session_id)),
+            Self::CreateSession {
+                mutation_request_id,
+            } => Some(Self::CreateSession {
+                mutation_request_id: *mutation_request_id,
+            }),
+            Self::SubmitInput {
+                mutation_request_id,
+                session_id,
+                text,
+                service,
+                model_id,
+            } => Some(Self::SubmitInput {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
+                text: text.clone(),
+                service: *service,
+                model_id: model_id.clone(),
+            }),
+            Self::CancelRun {
+                mutation_request_id,
+                session_id,
+                run_id,
+            } => Some(Self::CancelRun {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
+                run_id: *run_id,
+            }),
+            Self::StopServer {
+                mutation_request_id,
+            } => Some(Self::StopServer {
+                mutation_request_id: *mutation_request_id,
+            }),
+            Self::SetCredential { .. } | Self::RemoveCredential { .. } => None,
         }
     }
 }
@@ -112,6 +179,16 @@ pub(super) enum RequestEvent {
     CancellationResolved {
         mutation_request_id: MutationRequestId,
         result: RunCancellationResult,
+    },
+    CredentialUpdated {
+        mutation_request_id: MutationRequestId,
+        credential: OpenCodeCredentialStatus,
+    },
+    CredentialMutationFailed {
+        mutation_request_id: MutationRequestId,
+        context: &'static str,
+        error: String,
+        outcome_unknown: bool,
     },
     ServerStopAccepted {
         mutation_request_id: MutationRequestId,
@@ -148,6 +225,15 @@ pub(super) async fn run_request_worker(
     events: mpsc::Sender<RequestEvent>,
 ) {
     while let Some(command) = commands.recv().await {
+        if command.is_credential_mutation() {
+            if send_credential_result(&mut client, command, &events)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            continue;
+        }
         let mut last_error = None;
         let mut completed = false;
         for attempt in 0..MAX_REQUEST_ATTEMPTS {
@@ -215,6 +301,85 @@ pub(super) async fn run_request_worker(
     }
 }
 
+async fn send_credential_result(
+    client: &mut Client,
+    command: RequestCommand,
+    events: &mpsc::Sender<RequestEvent>,
+) -> Result<(), ()> {
+    let Some(mutation_request_id) = command.mutation_request_id() else {
+        return Err(());
+    };
+    let context = command.context();
+    let result = time::timeout(REQUEST_TIMEOUT, execute_credential(client, command)).await;
+    let (event, connection_unknown) = match result {
+        Ok(Ok(result)) => (result.into_event(), false),
+        Ok(Err(error)) => {
+            let outcome_unknown = !is_known_application_result(&error);
+            (
+                RequestEvent::CredentialMutationFailed {
+                    mutation_request_id,
+                    context,
+                    error: error.to_string(),
+                    outcome_unknown,
+                },
+                outcome_unknown,
+            )
+        }
+        Err(_) => (
+            RequestEvent::CredentialMutationFailed {
+                mutation_request_id,
+                context,
+                error: "local application request timed out".to_owned(),
+                outcome_unknown: true,
+            },
+            true,
+        ),
+    };
+    if connection_unknown {
+        client.invalidate();
+    }
+    events.send(event).await.map_err(|_| ())
+}
+
+async fn execute_credential(
+    client: &mut Client,
+    command: RequestCommand,
+) -> Result<RequestResult, ApplicationClientError> {
+    match command {
+        RequestCommand::SetCredential {
+            mutation_request_id,
+            expected_generation,
+            api_key,
+        } => client
+            .set_open_code_credential(mutation_request_id, expected_generation, api_key)
+            .await
+            .map(|credential| RequestResult::CredentialUpdated {
+                mutation_request_id,
+                credential,
+            }),
+        RequestCommand::RemoveCredential {
+            mutation_request_id,
+            expected_generation,
+        } => client
+            .remove_open_code_credential(mutation_request_id, expected_generation)
+            .await
+            .map(|credential| RequestResult::CredentialUpdated {
+                mutation_request_id,
+                credential,
+            }),
+        RequestCommand::LoadSessions
+        | RequestCommand::LoadModels(_)
+        | RequestCommand::LoadCredentialStatus
+        | RequestCommand::LoadSession(_)
+        | RequestCommand::CreateSession { .. }
+        | RequestCommand::SubmitInput { .. }
+        | RequestCommand::CancelRun { .. }
+        | RequestCommand::StopServer { .. } => {
+            unreachable!("only credential mutations use credential execution")
+        }
+    }
+}
+
 async fn execute(
     client: &mut Client,
     command: &RequestCommand,
@@ -276,6 +441,9 @@ async fn execute(
                 mutation_request_id: *mutation_request_id,
                 result,
             }),
+        RequestCommand::SetCredential { .. } | RequestCommand::RemoveCredential { .. } => {
+            unreachable!("credential mutations use single-attempt execution")
+        }
         RequestCommand::StopServer {
             mutation_request_id,
         } => client
@@ -396,6 +564,10 @@ enum RequestResult {
         mutation_request_id: MutationRequestId,
         result: RunCancellationResult,
     },
+    CredentialUpdated {
+        mutation_request_id: MutationRequestId,
+        credential: OpenCodeCredentialStatus,
+    },
     ServerStopAccepted {
         mutation_request_id: MutationRequestId,
         result: ServerStopAcceptance,
@@ -430,6 +602,13 @@ impl RequestResult {
                 mutation_request_id,
                 result,
             },
+            Self::CredentialUpdated {
+                mutation_request_id,
+                credential,
+            } => RequestEvent::CredentialUpdated {
+                mutation_request_id,
+                credential,
+            },
             Self::ServerStopAccepted {
                 mutation_request_id,
                 result,
@@ -463,6 +642,8 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 RequestCommand::CreateSession { .. }
                 | RequestCommand::SubmitInput { .. }
                 | RequestCommand::CancelRun { .. }
+                | RequestCommand::SetCredential { .. }
+                | RequestCommand::RemoveCredential { .. }
                 | RequestCommand::StopServer { .. } => None,
             },
             error,
@@ -500,5 +681,27 @@ mod tests {
         };
         assert_eq!(command.mutation_request_id(), Some(mutation_request_id));
         assert_eq!(command.context(), "message submission");
+        assert!(command.clone_for_retry().is_some());
+    }
+
+    #[test]
+    fn credential_mutations_cannot_enter_the_automatic_retry_path() {
+        let mutation_request_id = MutationRequestId::from_bytes([0x33; 16]);
+        let set = RequestCommand::SetCredential {
+            mutation_request_id,
+            expected_generation: 2,
+            api_key: OpenCodeApiKey::new("not-a-real-key")
+                .expect("test credential should be valid"),
+        };
+        assert!(set.is_credential_mutation());
+        assert!(set.clone_for_retry().is_none());
+        assert_eq!(set.mutation_request_id(), Some(mutation_request_id));
+
+        let remove = RequestCommand::RemoveCredential {
+            mutation_request_id,
+            expected_generation: 2,
+        };
+        assert!(remove.is_credential_mutation());
+        assert!(remove.clone_for_retry().is_none());
     }
 }

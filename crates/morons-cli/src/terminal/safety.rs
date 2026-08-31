@@ -1,5 +1,8 @@
 use std::fmt;
 
+use morons_protocol::{MAX_OPENCODE_API_KEY_BYTES, OpenCodeApiKey, OpenCodeApiKeyError};
+use zeroize::{Zeroize, Zeroizing};
+
 pub const MAX_PRESENTED_TEXT_BYTES: usize = 32 * 1024;
 pub const MAX_PRESENTED_TEXT_SCALARS: usize = 16 * 1024;
 pub const MAX_PRESENTED_LINES: usize = 1024;
@@ -165,6 +168,77 @@ impl fmt::Debug for PromptBuffer {
     }
 }
 
+pub struct CredentialBuffer {
+    bytes: Zeroizing<Vec<u8>>,
+}
+
+impl Default for CredentialBuffer {
+    fn default() -> Self {
+        Self {
+            bytes: Zeroizing::new(Vec::with_capacity(MAX_OPENCODE_API_KEY_BYTES)),
+        }
+    }
+}
+
+impl CredentialBuffer {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    pub fn push_character(&mut self, character: char) -> bool {
+        if !character.is_ascii() || !matches!(character as u8, 0x21..=0x7e) {
+            return false;
+        }
+        if self.bytes.len() >= MAX_OPENCODE_API_KEY_BYTES {
+            return false;
+        }
+        self.bytes.push(character as u8);
+        true
+    }
+
+    pub fn push_paste(&mut self, paste: &str) -> bool {
+        let bytes = paste.as_bytes();
+        if !bytes.iter().all(|byte| matches!(byte, 0x21..=0x7e))
+            || self
+                .bytes
+                .len()
+                .checked_add(bytes.len())
+                .is_none_or(|length| length > MAX_OPENCODE_API_KEY_BYTES)
+        {
+            return false;
+        }
+        self.bytes.extend_from_slice(bytes);
+        true
+    }
+
+    pub fn backspace(&mut self) {
+        if let Some(byte) = self.bytes.last_mut() {
+            byte.zeroize();
+            self.bytes.pop();
+        }
+    }
+
+    pub fn into_api_key(mut self) -> Result<OpenCodeApiKey, OpenCodeApiKeyError> {
+        OpenCodeApiKey::new(std::mem::take(&mut *self.bytes))
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub fn len_bytes(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
+impl fmt::Debug for CredentialBuffer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialBuffer")
+            .field("secret_bytes", &"[REDACTED]")
+            .finish()
+    }
+}
+
 fn push_bounded(text: &mut String, character: char, scalars: &mut usize) -> bool {
     if *scalars >= MAX_PRESENTED_TEXT_SCALARS
         || text
@@ -252,5 +326,28 @@ mod tests {
         assert_eq!(prompt.len_bytes(), MAX_PROMPT_BYTES - 1);
         prompt.clear();
         assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn credential_input_is_atomic_bounded_and_redacted() {
+        let mut credential = CredentialBuffer::default();
+        assert!(credential.push_paste("not-a-real-key"));
+        assert!(!credential.push_paste(" invalid"));
+        assert_eq!(credential.len_bytes(), 14);
+        assert!(!format!("{credential:?}").contains("not-a-real-key"));
+
+        credential.backspace();
+        assert!(credential.push_character('y'));
+        let key = credential
+            .into_api_key()
+            .expect("visible ASCII credential should be valid");
+        assert_eq!(
+            key,
+            OpenCodeApiKey::new("not-a-real-key").expect("test credential should be valid")
+        );
+
+        let mut oversized = CredentialBuffer::default();
+        assert!(!oversized.push_paste(&"x".repeat(MAX_OPENCODE_API_KEY_BYTES + 1)));
+        assert!(oversized.is_empty());
     }
 }

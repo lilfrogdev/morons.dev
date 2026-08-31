@@ -9,7 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use super::{AppState, PendingOperation, PresentedModel, SessionView, View};
+use super::{AppState, CredentialDialog, PendingOperation, PresentedModel, SessionView, View};
 use crate::terminal::SafeText;
 
 pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
@@ -31,13 +31,21 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
     if app.confirm_stop {
         render_stop_confirmation(frame, area);
     }
+    if let Some(dialog) = app.credential_dialog.as_ref() {
+        render_credential_dialog(frame, area, dialog);
+    }
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let credential = match app.credential {
-        Some(status) if status.configured => "credential configured",
-        Some(_) => "credential not configured",
-        None => "credential status loading",
+        Some(status) if status.configured => {
+            format!("credential configured · generation {}", status.generation)
+        }
+        Some(status) => format!(
+            "credential not configured · generation {}",
+            status.generation
+        ),
+        None => "credential status loading".to_owned(),
     };
     let line = Line::from(vec![
         Span::styled(" morons ", Style::default().add_modifier(Modifier::BOLD)),
@@ -221,8 +229,12 @@ fn render_model_disclosure(frame: &mut Frame<'_>, area: Rect, model: Option<&Pre
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let help = match app.view {
-        View::Sessions => "↑↓ select · Enter open · n new · Tab model · Ctrl+S stop · q detach",
-        View::Session => "Esc sessions · Tab model · Ctrl+X cancel run · Ctrl+S stop",
+        View::Sessions => {
+            "↑↓ select · Enter open · n new · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
+        }
+        View::Session => {
+            "Esc sessions · Tab model · Ctrl+K credential · Ctrl+X cancel run · Ctrl+S stop"
+        }
     };
     let status = Line::from(vec![
         Span::styled(" ", Style::default()),
@@ -231,6 +243,50 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     frame.render_widget(
         Paragraph::new(vec![Line::from(help), status]).style(Style::default().fg(Color::DarkGray)),
         area,
+    );
+}
+
+fn render_credential_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &CredentialDialog) {
+    let (height, title, message) = match dialog {
+        CredentialDialog::ChooseAction => (
+            7,
+            " OpenCode credential ",
+            "The credential is configured.\n\nr replace · d remove · Esc cancel",
+        ),
+        CredentialDialog::Enter {
+            replacing: true, ..
+        } => (
+            7,
+            " Replace OpenCode credential ",
+            "Enter the replacement API key. Input is hidden.\n\nEnter save · Backspace edit · Esc clear",
+        ),
+        CredentialDialog::Enter {
+            replacing: false, ..
+        } => (
+            7,
+            " Configure OpenCode credential ",
+            "Enter the API key. Input is hidden.\n\nEnter save · Backspace edit · Esc clear",
+        ),
+        CredentialDialog::ConfirmRemove => (
+            7,
+            " Remove OpenCode credential ",
+            "Remove the stored credential? Dispatched requests cannot be retracted.\n\ny remove · n cancel",
+        ),
+    };
+    let width = area.width.min(68);
+    let height = area.height.min(height);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(message)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: false }),
+        popup,
     );
 }
 

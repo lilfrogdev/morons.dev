@@ -4,12 +4,12 @@ mod render;
 use std::{error::Error, fmt};
 
 use morons_protocol::{
-    ApplicationEvent, MessageId, OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService,
-    RunId, RunState, RunSummary, SessionId, SessionSummary, TranscriptEntry,
+    ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
+    OpenCodeService, RunId, RunState, RunSummary, SessionId, SessionSummary, TranscriptEntry,
 };
 use ratatui::Frame;
 
-use crate::terminal::{PromptBuffer, SafeText};
+use crate::terminal::{CredentialBuffer, PromptBuffer, SafeText};
 
 const MAX_CLIENT_SESSIONS: usize = 10_000;
 const MAX_CLIENT_TRANSCRIPT_ENTRIES: usize = 512;
@@ -27,10 +27,20 @@ pub(super) enum PendingOperation {
     CreateSession,
     SubmitInput,
     CancelRun,
+    UpdateCredential,
     StopServer,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+pub(super) enum CredentialDialog {
+    ChooseAction,
+    Enter {
+        replacing: bool,
+        input: CredentialBuffer,
+    },
+    ConfirmRemove,
+}
+
+#[derive(PartialEq, Eq)]
 pub(super) enum AppAction {
     None,
     Quit,
@@ -47,6 +57,13 @@ pub(super) enum AppAction {
     CancelRun {
         session_id: SessionId,
         run_id: RunId,
+    },
+    SetCredential {
+        expected_generation: u64,
+        api_key: OpenCodeApiKey,
+    },
+    RemoveCredential {
+        expected_generation: u64,
     },
     StopServer,
     RetryPending,
@@ -82,6 +99,20 @@ impl fmt::Debug for AppAction {
                 .field("session_id", session_id)
                 .field("run_id", run_id)
                 .finish(),
+            Self::SetCredential {
+                expected_generation,
+                ..
+            } => formatter
+                .debug_struct("SetCredential")
+                .field("expected_generation", expected_generation)
+                .field("api_key", &"[REDACTED]")
+                .finish(),
+            Self::RemoveCredential {
+                expected_generation,
+            } => formatter
+                .debug_struct("RemoveCredential")
+                .field("expected_generation", expected_generation)
+                .finish(),
             Self::StopServer => formatter.write_str("StopServer"),
             Self::RetryPending => formatter.write_str("RetryPending"),
             Self::AbandonPending => formatter.write_str("AbandonPending"),
@@ -116,6 +147,7 @@ pub(super) struct AppState {
     pub(super) models: Vec<PresentedModel>,
     pub(super) selected_model: Option<usize>,
     pub(super) credential: Option<OpenCodeCredentialStatus>,
+    pub(super) credential_dialog: Option<CredentialDialog>,
     pub(super) view: View,
     pub(super) session: Option<SessionView>,
     pub(super) prompt: PromptBuffer,
@@ -135,6 +167,7 @@ impl AppState {
             models: Vec::new(),
             selected_model: None,
             credential: None,
+            credential_dialog: None,
             view: View::Sessions,
             session: None,
             prompt: PromptBuffer::default(),
@@ -155,6 +188,15 @@ impl AppState {
 
     pub(super) fn set_credential_status(&mut self, credential: OpenCodeCredentialStatus) {
         self.credential = Some(credential);
+    }
+
+    pub(super) fn clear_credential_interaction(&mut self) {
+        self.credential_dialog = None;
+    }
+
+    pub(super) fn mark_credential_status_unknown(&mut self) {
+        self.credential = None;
+        self.clear_credential_interaction();
     }
 
     pub(super) fn replace_sessions(

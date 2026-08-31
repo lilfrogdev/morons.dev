@@ -21,6 +21,7 @@ morons-protocol = { path = "../morons-protocol" }
 ratatui.workspace = true
 ratatui-crossterm.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process", "std"] }

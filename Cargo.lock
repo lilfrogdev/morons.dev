@@ -726,6 +726,7 @@ dependencies = [
  "ratatui-crossterm",
  "rustix",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
