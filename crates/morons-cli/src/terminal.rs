@@ -21,8 +21,9 @@ use ratatui_crossterm::{
     },
 };
 use tokio::sync::mpsc;
+use zeroize::Zeroizing;
 
-pub use safety::{MAX_PROMPT_BYTES, PromptBuffer, SafeText};
+pub use safety::{CredentialBuffer, MAX_PROMPT_BYTES, PromptBuffer, SafeText};
 
 const TERMINAL_EVENT_QUEUE_CAPACITY: usize = 64;
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -32,7 +33,7 @@ type AppTerminal = Terminal<CrosstermBackend<Stdout>>;
 
 pub enum TerminalInput {
     Key(KeyEvent),
-    Paste(String),
+    Paste(Zeroizing<String>),
     Resize,
 }
 
@@ -178,7 +179,7 @@ fn read_terminal_events(sender: mpsc::Sender<io::Result<TerminalInput>>, stop: &
                     }
                 }
                 Ok(Event::Paste(paste)) => {
-                    let paste = bounded_utf8_prefix(paste, MAX_PASTE_BYTES);
+                    let paste = Zeroizing::new(bounded_utf8_prefix(paste, MAX_PASTE_BYTES));
                     if sender.try_send(Ok(TerminalInput::Paste(paste))).is_err()
                         && sender.is_closed()
                     {
@@ -228,7 +229,7 @@ mod tests {
 
     #[test]
     fn terminal_input_debug_omits_key_and_paste_content() {
-        let input = TerminalInput::Paste("sensitive paste".to_owned());
+        let input = TerminalInput::Paste(zeroize::Zeroizing::new("sensitive paste".to_owned()));
         let debug = format!("{input:?}");
         assert!(!debug.contains("sensitive paste"));
         assert!(debug.contains("paste_bytes"));

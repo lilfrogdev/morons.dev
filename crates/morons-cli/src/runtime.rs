@@ -170,6 +170,8 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
 struct RuntimeState {
     app: AppState,
     pending_command: Option<RequestCommand>,
+    pending_credential_mutation: Option<MutationRequestId>,
+    credential_reconciliation_unknown: Option<bool>,
     requested_session: Option<SessionId>,
     session_generation: u64,
     refresh_remaining: u8,
@@ -183,6 +185,8 @@ impl RuntimeState {
         Self {
             app: AppState::new(&server_version),
             pending_command: None,
+            pending_credential_mutation: None,
+            credential_reconciliation_unknown: None,
             requested_session: None,
             session_generation: 0,
             refresh_remaining: 4,
@@ -258,6 +262,31 @@ impl RuntimeState {
                 self.start_mutation(command, PendingOperation::CancelRun, commands)?;
                 self.app.set_status("Requesting exact-run cancellation");
             }
+            AppAction::SetCredential {
+                expected_generation,
+                api_key,
+            } => {
+                let mutation_request_id = generate_mutation_request_id()?;
+                let command = RequestCommand::SetCredential {
+                    mutation_request_id,
+                    expected_generation,
+                    api_key,
+                };
+                self.start_credential_mutation(mutation_request_id, command, commands)?;
+                self.app
+                    .set_status("Saving credential without network validation");
+            }
+            AppAction::RemoveCredential {
+                expected_generation,
+            } => {
+                let mutation_request_id = generate_mutation_request_id()?;
+                let command = RequestCommand::RemoveCredential {
+                    mutation_request_id,
+                    expected_generation,
+                };
+                self.start_credential_mutation(mutation_request_id, command, commands)?;
+                self.app.set_status("Removing stored credential");
+            }
             AppAction::StopServer => {
                 let command = RequestCommand::StopServer {
                     mutation_request_id: generate_mutation_request_id()?,
@@ -269,7 +298,7 @@ impl RuntimeState {
                 let command = self
                     .pending_command
                     .as_ref()
-                    .cloned()
+                    .and_then(RequestCommand::clone_for_retry)
                     .ok_or(TerminalApplicationError::RequestWorkerStopped)?;
                 send_command(commands, command)?;
                 if let Some(operation) = self.app.pending {
@@ -296,6 +325,7 @@ impl RuntimeState {
     ) -> Result<bool, TerminalApplicationError> {
         match event {
             RequestEvent::ConnectionRestored { server_version } => {
+                self.app.clear_credential_interaction();
                 self.app.server_version = SafeText::from_untrusted(&server_version);
                 self.app.replace_models(OpenCodeService::Zen, Vec::new())?;
                 self.app.replace_models(OpenCodeService::Go, Vec::new())?;
@@ -321,6 +351,13 @@ impl RuntimeState {
             RequestEvent::CredentialStatusLoaded(status) => {
                 self.complete_refresh_query();
                 self.app.set_credential_status(status);
+                if let Some(outcome_unknown) = self.credential_reconciliation_unknown.take() {
+                    self.app.set_status(if outcome_unknown {
+                        "Credential state reloaded after an unknown outcome; the secret was cleared and the mutation was not retried"
+                    } else {
+                        "Credential state reloaded after the rejected mutation"
+                    });
+                }
             }
             RequestEvent::SessionLoaded(snapshot) => {
                 self.install_session_snapshot(snapshot, subscription_events)?;
@@ -359,6 +396,36 @@ impl RuntimeState {
                     "Cancellation intent committed; waiting for controlled execution to stop"
                 } else {
                     "Run was already terminal"
+                });
+            }
+            RequestEvent::CredentialUpdated {
+                mutation_request_id,
+                credential,
+            } => {
+                self.finish_credential_mutation(mutation_request_id)?;
+                self.app.set_credential_status(credential);
+                self.app.set_status(if credential.configured {
+                    "OpenCode credential stored; validity is checked only by a deliberate provider request"
+                } else {
+                    "OpenCode credential removed"
+                });
+            }
+            RequestEvent::CredentialMutationFailed {
+                mutation_request_id,
+                context,
+                error,
+                outcome_unknown,
+            } => {
+                self.finish_credential_mutation(mutation_request_id)?;
+                self.app.mark_credential_status_unknown();
+                self.credential_reconciliation_unknown = Some(outcome_unknown);
+                send_command(commands, RequestCommand::LoadCredentialStatus)?;
+                self.app.set_status(if outcome_unknown {
+                    format!(
+                        "{context} outcome is unknown: {error}; the secret was cleared, the mutation was not retried, and status is being reloaded"
+                    )
+                } else {
+                    format!("{context} failed: {error}; credential status is being reloaded")
                 });
             }
             RequestEvent::ServerStopAccepted {
@@ -424,15 +491,19 @@ impl RuntimeState {
             }
             SubscriptionEvent::Session { .. } => {}
             SubscriptionEvent::CatalogConnectionLost => {
-                self.app
-                    .set_status("Session catalog connection lost; reconnecting");
+                self.app.clear_credential_interaction();
+                self.app.set_status(
+                    "Session catalog connection lost; reconnecting and clearing transient credential input",
+                );
             }
             SubscriptionEvent::SessionConnectionLost { generation }
                 if generation == self.session_generation =>
             {
                 self.app.clear_transient_assistant();
-                self.app
-                    .set_status("Session connection lost; transient output was discarded");
+                self.app.clear_credential_interaction();
+                self.app.set_status(
+                    "Session connection lost; transient output and credential input were discarded",
+                );
             }
             SubscriptionEvent::SessionConnectionLost { .. } => {}
             SubscriptionEvent::CatalogSnapshotRequired => {
@@ -455,6 +526,7 @@ impl RuntimeState {
                 if scope == "session subscription" {
                     self.app.clear_transient_assistant();
                 }
+                self.app.clear_credential_interaction();
                 self.app.set_status(format!("{scope} stopped: {error}"));
             }
         }
@@ -471,12 +543,35 @@ impl RuntimeState {
         operation: PendingOperation,
         commands: &mpsc::Sender<RequestCommand>,
     ) -> Result<(), TerminalApplicationError> {
-        if self.pending_command.is_some() {
+        if self.pending_command.is_some() || self.pending_credential_mutation.is_some() {
             return Ok(());
         }
-        send_command(commands, command.clone())?;
-        self.pending_command = Some(command);
+        let retry_command = command
+            .clone_for_retry()
+            .ok_or(TerminalApplicationError::State)?;
+        send_command(commands, command)?;
+        self.pending_command = Some(retry_command);
         self.app.mark_pending(operation);
+        Ok(())
+    }
+
+    fn start_credential_mutation(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        command: RequestCommand,
+        commands: &mpsc::Sender<RequestCommand>,
+    ) -> Result<(), TerminalApplicationError> {
+        if self.pending_command.is_some() || self.pending_credential_mutation.is_some() {
+            return Err(TerminalApplicationError::State);
+        }
+        if command.clone_for_retry().is_some()
+            || command.mutation_request_id() != Some(mutation_request_id)
+        {
+            return Err(TerminalApplicationError::State);
+        }
+        send_command(commands, command)?;
+        self.pending_credential_mutation = Some(mutation_request_id);
+        self.app.mark_pending(PendingOperation::UpdateCredential);
         Ok(())
     }
 
@@ -486,6 +581,18 @@ impl RuntimeState {
     ) -> Result<(), TerminalApplicationError> {
         self.require_pending_mutation(mutation_request_id)?;
         self.pending_command = None;
+        self.app.clear_pending();
+        Ok(())
+    }
+
+    fn finish_credential_mutation(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+    ) -> Result<(), TerminalApplicationError> {
+        if self.pending_credential_mutation != Some(mutation_request_id) {
+            return Err(TerminalApplicationError::State);
+        }
+        self.pending_credential_mutation = None;
         self.app.clear_pending();
         Ok(())
     }
@@ -580,5 +687,41 @@ mod tests {
         ));
         assert_eq!(error.to_string(), "terminal application failed");
         assert_eq!(format!("{error:?}"), "TerminalApplicationError::Terminal");
+    }
+
+    #[tokio::test]
+    async fn unknown_credential_outcome_is_not_retried_and_reloads_status() {
+        let request_worker = tokio::spawn(async {});
+        let mut runtime = RuntimeState::new("test-server".to_owned(), request_worker);
+        let mutation_request_id = MutationRequestId::from_bytes([0x44; 16]);
+        runtime.pending_credential_mutation = Some(mutation_request_id);
+        runtime.app.mark_pending(PendingOperation::UpdateCredential);
+        let (commands, mut command_receiver) = mpsc::channel(2);
+        let (subscription_events, _subscription_receiver) = mpsc::channel(2);
+
+        let should_exit = runtime
+            .handle_request_event(
+                RequestEvent::CredentialMutationFailed {
+                    mutation_request_id,
+                    context: "credential configuration",
+                    error: "connection ended".to_owned(),
+                    outcome_unknown: true,
+                },
+                &commands,
+                &subscription_events,
+            )
+            .await
+            .expect("unknown outcome should reconcile");
+
+        assert!(!should_exit);
+        assert!(runtime.pending_credential_mutation.is_none());
+        assert!(runtime.pending_command.is_none());
+        assert!(runtime.app.pending.is_none());
+        assert!(runtime.app.credential.is_none());
+        assert_eq!(runtime.credential_reconciliation_unknown, Some(true));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(RequestCommand::LoadCredentialStatus)
+        ));
     }
 }

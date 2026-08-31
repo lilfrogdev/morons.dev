@@ -1,7 +1,8 @@
 use morons_protocol::{
-    ApplicationEvent, MessageId, OpenCodeModelCapabilities, OpenCodeModelRetention,
-    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary,
-    SessionEventCursor, SessionId, SessionSummary, TranscriptEntry,
+    ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
+    OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
+    OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, SessionEventCursor,
+    SessionId, SessionSummary, TranscriptEntry,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -129,6 +130,88 @@ fn unknown_mutation_requires_exact_retry_or_abandonment() {
     assert_eq!(
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
         AppAction::AbandonPending
+    );
+}
+
+#[test]
+fn credential_entry_is_hidden_and_emits_generation_bound_actions() {
+    let mut app = AppState::new("test-server");
+    app.set_credential_status(OpenCodeCredentialStatus {
+        configured: false,
+        generation: 4,
+    });
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
+        AppAction::None
+    );
+    app.handle_paste("not-a-real-key");
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("credential dialog should render");
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(!rendered.contains("not-a-real-key"));
+    assert!(rendered.contains("Input is hidden"));
+
+    let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let debug = format!("{action:?}");
+    let AppAction::SetCredential {
+        expected_generation,
+        api_key,
+    } = action
+    else {
+        panic!("credential entry should produce a set action");
+    };
+    assert_eq!(expected_generation, 4);
+    assert_eq!(
+        api_key,
+        OpenCodeApiKey::new("not-a-real-key").expect("test credential should be valid")
+    );
+    assert!(!debug.contains("not-a-real-key"));
+    assert!(app.credential_dialog.is_none());
+}
+
+#[test]
+fn credential_replacement_and_removal_use_observed_generation() {
+    let mut app = AppState::new("test-server");
+    app.set_credential_status(OpenCodeCredentialStatus {
+        configured: true,
+        generation: 9,
+    });
+    let control_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
+
+    assert_eq!(app.handle_key(control_k), AppAction::None);
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+        AppAction::None
+    );
+    app.handle_paste("replacement-test-key");
+    assert!(matches!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::SetCredential {
+            expected_generation: 9,
+            ..
+        }
+    ));
+
+    assert_eq!(app.handle_key(control_k), AppAction::None);
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+        AppAction::RemoveCredential {
+            expected_generation: 9
+        }
     );
 }
 

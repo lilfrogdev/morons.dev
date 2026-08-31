@@ -1,6 +1,8 @@
+use morons_protocol::MAX_OPENCODE_API_KEY_BYTES;
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::{AppAction, AppState, View};
+use super::{AppAction, AppState, CredentialDialog, View};
+use crate::terminal::CredentialBuffer;
 
 impl AppState {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> AppAction {
@@ -27,6 +29,9 @@ impl AppState {
                 _ => AppAction::None,
             };
         }
+        if self.credential_dialog.is_some() {
+            return self.handle_credential_key(key.code, key.modifiers);
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.handle_control_key(key.code);
         }
@@ -37,13 +42,27 @@ impl AppState {
     }
 
     pub(crate) fn handle_paste(&mut self, paste: &str) {
-        if self.view == View::Session && self.pending.is_none() && !self.confirm_stop {
+        if let Some(CredentialDialog::Enter { input, .. }) = self.credential_dialog.as_mut() {
+            if !input.push_paste(paste) {
+                self.set_status(credential_input_constraint());
+            }
+            return;
+        }
+        if self.credential_dialog.is_none()
+            && self.view == View::Session
+            && self.pending.is_none()
+            && !self.confirm_stop
+        {
             self.prompt.push_paste(paste);
         }
     }
 
     fn handle_control_key(&mut self, code: KeyCode) -> AppAction {
         match code {
+            KeyCode::Char('k') if self.pending.is_none() => {
+                self.open_credential_dialog();
+                AppAction::None
+            }
             KeyCode::Char('l') => AppAction::Refresh,
             KeyCode::Char('s') if self.pending.is_none() => {
                 self.confirm_stop = true;
@@ -60,6 +79,128 @@ impl AppState {
                 })
                 .unwrap_or(AppAction::None),
             _ => AppAction::None,
+        }
+    }
+
+    fn open_credential_dialog(&mut self) {
+        match self.credential {
+            Some(status) if status.configured => {
+                self.credential_dialog = Some(CredentialDialog::ChooseAction);
+                self.set_status("Choose whether to replace or remove the OpenCode credential");
+            }
+            Some(_) => {
+                self.credential_dialog = Some(CredentialDialog::Enter {
+                    replacing: false,
+                    input: CredentialBuffer::default(),
+                });
+                self.set_status("Enter the OpenCode credential; input is hidden");
+            }
+            None => self.set_status("Credential status is still loading"),
+        }
+    }
+
+    fn handle_credential_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> AppAction {
+        if matches!(self.credential_dialog, Some(CredentialDialog::ChooseAction)) {
+            return match code {
+                KeyCode::Char('r') => {
+                    self.credential_dialog = Some(CredentialDialog::Enter {
+                        replacing: true,
+                        input: CredentialBuffer::default(),
+                    });
+                    self.set_status("Enter the replacement credential; input is hidden");
+                    AppAction::None
+                }
+                KeyCode::Char('d') => {
+                    self.credential_dialog = Some(CredentialDialog::ConfirmRemove);
+                    AppAction::None
+                }
+                KeyCode::Esc => {
+                    self.clear_credential_interaction();
+                    self.set_status("Credential operation cancelled");
+                    AppAction::None
+                }
+                _ => AppAction::None,
+            };
+        }
+        if matches!(
+            self.credential_dialog,
+            Some(CredentialDialog::ConfirmRemove)
+        ) {
+            return match code {
+                KeyCode::Char('y') => self.remove_credential_action(),
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.clear_credential_interaction();
+                    self.set_status("Credential removal cancelled");
+                    AppAction::None
+                }
+                _ => AppAction::None,
+            };
+        }
+        match code {
+            KeyCode::Esc => {
+                self.clear_credential_interaction();
+                self.set_status("Credential entry cancelled and cleared");
+                AppAction::None
+            }
+            KeyCode::Backspace => {
+                if let Some(CredentialDialog::Enter { input, .. }) = self.credential_dialog.as_mut()
+                {
+                    input.backspace();
+                }
+                AppAction::None
+            }
+            KeyCode::Enter => self.set_credential_action(),
+            KeyCode::Char(character)
+                if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let accepted = match self.credential_dialog.as_mut() {
+                    Some(CredentialDialog::Enter { input, .. }) => input.push_character(character),
+                    _ => false,
+                };
+                if !accepted {
+                    self.set_status(credential_input_constraint());
+                }
+                AppAction::None
+            }
+            _ => AppAction::None,
+        }
+    }
+
+    fn set_credential_action(&mut self) -> AppAction {
+        let Some(status) = self.credential else {
+            self.clear_credential_interaction();
+            self.set_status("Credential status changed; refresh before trying again");
+            return AppAction::None;
+        };
+        let empty = matches!(
+            self.credential_dialog.as_ref(),
+            Some(CredentialDialog::Enter { input, .. }) if input.is_empty()
+        );
+        if empty {
+            self.set_status("Enter an OpenCode credential before saving");
+            return AppAction::None;
+        }
+        let Some(CredentialDialog::Enter { input, .. }) = self.credential_dialog.take() else {
+            return AppAction::None;
+        };
+        let Ok(api_key) = input.into_api_key() else {
+            self.set_status("The OpenCode credential is invalid and was cleared");
+            return AppAction::None;
+        };
+        AppAction::SetCredential {
+            expected_generation: status.generation,
+            api_key,
+        }
+    }
+
+    fn remove_credential_action(&mut self) -> AppAction {
+        self.clear_credential_interaction();
+        let Some(status) = self.credential.filter(|status| status.configured) else {
+            self.set_status("The OpenCode credential is no longer configured");
+            return AppAction::None;
+        };
+        AppAction::RemoveCredential {
+            expected_generation: status.generation,
         }
     }
 
@@ -176,4 +317,10 @@ impl AppState {
         };
         self.selected_model = Some(available[next]);
     }
+}
+
+fn credential_input_constraint() -> String {
+    format!(
+        "Credential input accepts at most {MAX_OPENCODE_API_KEY_BYTES} visible ASCII characters"
+    )
 }

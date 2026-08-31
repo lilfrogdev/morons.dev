@@ -644,6 +644,10 @@ where
         self.connection
     }
 
+    pub(crate) fn invalidate(&mut self) {
+        self.usable = false;
+    }
+
     async fn request(
         &mut self,
         request: ApplicationRequest,
