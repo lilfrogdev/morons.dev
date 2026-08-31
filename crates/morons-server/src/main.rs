@@ -50,6 +50,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    application.shutdown().await;
     connections.abort_all();
     while connections.join_next().await.is_some() {}
     Ok(())

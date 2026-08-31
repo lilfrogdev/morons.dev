@@ -4,6 +4,7 @@ mod credential;
 mod endpoint;
 mod framing;
 mod messages;
+mod run;
 mod session;
 
 pub use authentication::{
@@ -21,10 +22,14 @@ pub use framing::{
     write_client_message, write_server_message,
 };
 pub use messages::{ClientMessage, ServerMessage};
+pub use run::{
+    MessageId, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary, TranscriptCursor,
+    TranscriptEntry,
+};
 pub use session::{
     APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
     ApplicationResponse, MutationRequestId, ResourceLimit, SessionCatalogEventCursor, SessionId,
     SessionListCursor, SessionSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;

@@ -3,7 +3,12 @@ use std::{error::Error, fmt};
 use morons_protocol::ControlError;
 use sha2::{Digest, Sha256};
 
-use super::paths::PathError;
+use super::{
+    paths::PathError,
+    run_types::{
+        MAX_MODEL_ID_BYTES, MAX_USER_MESSAGE_BYTES, RunId, RunModelSelection, RunOpenCodeService,
+    },
+};
 
 pub(super) const IDENTIFIER_BYTES: usize = 16;
 pub(super) const REQUEST_FINGERPRINT_BYTES: usize = 32;
@@ -11,6 +16,8 @@ pub(super) const MAX_SESSION_PAGE_SIZE: u16 = 100;
 pub(super) const MAX_SESSION_CATALOG_EVENT_PAGE_SIZE: u16 = 100;
 const MAX_SESSION_NAME_BYTES: usize = 256;
 const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1\0";
+const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
+const CANCEL_RUN_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/cancel-run/v1\0";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId([u8; IDENTIFIER_BYTES]);
@@ -148,6 +155,9 @@ pub struct OpenCodeCredentialStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersistenceResourceLimit {
     Sessions,
+    Runs,
+    Context,
+    Transcript,
     LogicalSequence,
     CredentialGeneration,
     CredentialMutations,
@@ -163,6 +173,9 @@ pub enum PersistenceError {
     InvalidInput { reason: &'static str },
     InvalidState { reason: &'static str },
     RequestConflict,
+    SessionNotFound,
+    RunNotFound,
+    SessionBusy { active_run_id: RunId },
     CredentialGenerationConflict,
     CredentialNotConfigured,
     CredentialMutationNotApplied,
@@ -188,6 +201,11 @@ impl fmt::Display for PersistenceError {
             Self::RequestConflict => {
                 formatter.write_str("the mutation request identifier conflicts with prior input")
             }
+            Self::SessionNotFound => formatter.write_str("the session was not found"),
+            Self::RunNotFound => formatter.write_str("the run was not found"),
+            Self::SessionBusy { active_run_id } => {
+                write!(formatter, "the session is busy with {active_run_id:?}")
+            }
             Self::CredentialGenerationConflict => {
                 formatter.write_str("the credential generation changed")
             }
@@ -200,6 +218,15 @@ impl fmt::Display for PersistenceError {
             Self::ResourceLimit { resource } => match resource {
                 PersistenceResourceLimit::Sessions => {
                     formatter.write_str("the persistence session count limit was reached")
+                }
+                PersistenceResourceLimit::Runs => {
+                    formatter.write_str("the persistence run count limit was reached")
+                }
+                PersistenceResourceLimit::Context => {
+                    formatter.write_str("the run context limit was reached")
+                }
+                PersistenceResourceLimit::Transcript => {
+                    formatter.write_str("the session transcript limit was reached")
                 }
                 PersistenceResourceLimit::LogicalSequence => {
                     formatter.write_str("the persistence logical sequence limit was reached")
@@ -226,6 +253,9 @@ impl Error for PersistenceError {
             Self::InvalidInput { .. }
             | Self::InvalidState { .. }
             | Self::RequestConflict
+            | Self::SessionNotFound
+            | Self::RunNotFound
+            | Self::SessionBusy { .. }
             | Self::CredentialGenerationConflict
             | Self::CredentialNotConfigured
             | Self::CredentialMutationNotApplied
@@ -283,6 +313,75 @@ pub(super) fn validate_display_name(display_name: Option<&str>) -> Result<(), Pe
         });
     }
     Ok(())
+}
+
+pub(super) fn validate_user_text(text: &str) -> Result<(), PersistenceError> {
+    if text.is_empty() || text.len() > MAX_USER_MESSAGE_BYTES {
+        return Err(PersistenceError::InvalidInput {
+            reason: "session input must contain between 1 and 65536 UTF-8 bytes",
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn validate_model_identifier(model_id: &str) -> Result<(), PersistenceError> {
+    if model_id.is_empty()
+        || model_id.len() > MAX_MODEL_ID_BYTES
+        || !model_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
+        })
+    {
+        return Err(PersistenceError::InvalidInput {
+            reason: "the run model identifier is invalid",
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn validate_model_selection(
+    selection: &RunModelSelection,
+) -> Result<(), PersistenceError> {
+    validate_model_identifier(&selection.model_id)?;
+    if selection.protocol_revision == 0
+        || selection.maximum_input_tokens == 0
+        || selection.maximum_output_tokens == 0
+    {
+        return Err(PersistenceError::InvalidInput {
+            reason: "the run model selection is invalid",
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn submit_session_input_fingerprint(
+    session_id: SessionId,
+    text: &str,
+    service: RunOpenCodeService,
+    model_id: &str,
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT);
+    digest.update(session_id.as_bytes());
+    digest.update((text.len() as u32).to_be_bytes());
+    digest.update(text.as_bytes());
+    digest.update([match service {
+        RunOpenCodeService::Zen => 1,
+        RunOpenCodeService::Go => 2,
+    }]);
+    digest.update((model_id.len() as u16).to_be_bytes());
+    digest.update(model_id.as_bytes());
+    digest.finalize().into()
+}
+
+pub(super) fn cancel_run_fingerprint(
+    session_id: SessionId,
+    run_id: RunId,
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(CANCEL_RUN_FINGERPRINT_CONTEXT);
+    digest.update(session_id.as_bytes());
+    digest.update(run_id.as_bytes());
+    digest.finalize().into()
 }
 
 pub(super) fn create_session_fingerprint(

@@ -1,0 +1,370 @@
+use std::fmt;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+use crate::{APPLICATION_IDENTIFIER_BYTES, SessionId};
+
+const RUN_ID_PREFIX: &str = "run_";
+const MESSAGE_ID_PREFIX: &str = "msg_";
+const TRANSCRIPT_CURSOR_PREFIX: &str = "tc1_";
+const TRANSCRIPT_CURSOR_BYTES: usize = 32;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RunId([u8; APPLICATION_IDENTIFIER_BYTES]);
+
+impl RunId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; APPLICATION_IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; APPLICATION_IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for RunId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_prefixed_hex(formatter, RUN_ID_PREFIX, &self.0)
+    }
+}
+
+impl Serialize for RunId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&encode_prefixed_hex(RUN_ID_PREFIX, &self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for RunId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        decode_prefixed_hex(&encoded, RUN_ID_PREFIX)
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MessageId([u8; APPLICATION_IDENTIFIER_BYTES]);
+
+impl MessageId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; APPLICATION_IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; APPLICATION_IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for MessageId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_prefixed_hex(formatter, MESSAGE_ID_PREFIX, &self.0)
+    }
+}
+
+impl Serialize for MessageId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&encode_prefixed_hex(MESSAGE_ID_PREFIX, &self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for MessageId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        decode_prefixed_hex(&encoded, MESSAGE_ID_PREFIX)
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TranscriptCursor([u8; TRANSCRIPT_CURSOR_BYTES]);
+
+impl TranscriptCursor {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; TRANSCRIPT_CURSOR_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; TRANSCRIPT_CURSOR_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for TranscriptCursor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_prefixed_hex(formatter, TRANSCRIPT_CURSOR_PREFIX, &self.0)
+    }
+}
+
+impl Serialize for TranscriptCursor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&encode_prefixed_hex(TRANSCRIPT_CURSOR_PREFIX, &self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for TranscriptCursor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        decode_prefixed_hex(&encoded, TRANSCRIPT_CURSOR_PREFIX)
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenCodeService {
+    Zen,
+    Go,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    Accepted,
+    Active,
+    Succeeded,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+impl RunState {
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunFailureKind {
+    CredentialChanged,
+    CredentialNotConfigured,
+    AuthenticationOrEntitlement,
+    RateLimited,
+    ProviderUnavailable,
+    ProviderRejected,
+    ProviderProtocol,
+    InvalidProviderOutput,
+    ResourceLimit,
+    Internal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunSummary {
+    pub id: RunId,
+    pub session_id: SessionId,
+    pub user_message_id: MessageId,
+    pub service: OpenCodeService,
+    pub model_id: String,
+    pub protocol_revision: u16,
+    pub credential_generation: u64,
+    pub context_policy_version: u16,
+    pub state: RunState,
+    pub cancellation_requested: bool,
+    pub failure: Option<RunFailureKind>,
+    pub accepted_at_milliseconds: u64,
+    pub updated_at_milliseconds: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "entry", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TranscriptEntry {
+    UserMessage {
+        id: MessageId,
+        run_id: RunId,
+        text: String,
+        created_at_milliseconds: u64,
+    },
+    AssistantMessage {
+        id: MessageId,
+        run_id: RunId,
+        service: OpenCodeService,
+        model_id: String,
+        text: String,
+        refusal: bool,
+        created_at_milliseconds: u64,
+    },
+}
+
+impl fmt::Debug for TranscriptEntry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UserMessage {
+                id,
+                run_id,
+                text,
+                created_at_milliseconds,
+            } => formatter
+                .debug_struct("UserMessage")
+                .field("id", id)
+                .field("run_id", run_id)
+                .field("text_bytes", &text.len())
+                .field("created_at_milliseconds", created_at_milliseconds)
+                .finish(),
+            Self::AssistantMessage {
+                id,
+                run_id,
+                service,
+                model_id,
+                text,
+                refusal,
+                created_at_milliseconds,
+            } => formatter
+                .debug_struct("AssistantMessage")
+                .field("id", id)
+                .field("run_id", run_id)
+                .field("service", service)
+                .field("model_id", model_id)
+                .field("text_bytes", &text.len())
+                .field("refusal", refusal)
+                .field("created_at_milliseconds", created_at_milliseconds)
+                .finish(),
+        }
+    }
+}
+
+fn encode_prefixed_hex(prefix: &str, bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(prefix.len() + bytes.len() * 2);
+    encoded.push_str(prefix);
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn decode_prefixed_hex<const N: usize>(
+    encoded: &str,
+    prefix: &str,
+) -> Result<[u8; N], &'static str> {
+    let Some(hex) = encoded.strip_prefix(prefix) else {
+        return Err("an opaque identifier has an unexpected prefix");
+    };
+    if hex.len() != N * 2 {
+        return Err("an opaque identifier has an unexpected length");
+    }
+
+    let mut decoded = [0_u8; N];
+    let (pairs, _) = hex.as_bytes().as_chunks::<2>();
+    for (index, pair) in pairs.iter().enumerate() {
+        let high = decode_hex_digit(pair[0])?;
+        let low = decode_hex_digit(pair[1])?;
+        decoded[index] = high << 4 | low;
+    }
+    Ok(decoded)
+}
+
+fn decode_hex_digit(byte: u8) -> Result<u8, &'static str> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        _ => Err("an opaque identifier must use lowercase hexadecimal digits"),
+    }
+}
+
+fn write_prefixed_hex(
+    formatter: &mut fmt::Formatter<'_>,
+    prefix: &str,
+    bytes: &[u8],
+) -> fmt::Result {
+    formatter.write_str(prefix)?;
+    for byte in bytes {
+        write!(formatter, "{byte:02x}")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_and_message_identifiers_round_trip() {
+        let run = RunId::from_bytes([0x11; APPLICATION_IDENTIFIER_BYTES]);
+        let message = MessageId::from_bytes([0x22; APPLICATION_IDENTIFIER_BYTES]);
+
+        let run_json = serde_json::to_vec(&run).expect("run identifier should encode");
+        let message_json = serde_json::to_vec(&message).expect("message identifier should encode");
+
+        assert_eq!(
+            serde_json::from_slice::<RunId>(&run_json).expect("run identifier should decode"),
+            run
+        );
+        assert_eq!(
+            serde_json::from_slice::<MessageId>(&message_json)
+                .expect("message identifier should decode"),
+            message
+        );
+        assert!(format!("{run:?}").starts_with(RUN_ID_PREFIX));
+        assert!(format!("{message:?}").starts_with(MESSAGE_ID_PREFIX));
+    }
+
+    #[test]
+    fn transcript_cursor_is_strict_and_opaque() {
+        let cursor = TranscriptCursor::from_bytes([0x33; TRANSCRIPT_CURSOR_BYTES]);
+        let encoded = serde_json::to_vec(&cursor).expect("cursor should encode");
+        assert_eq!(
+            serde_json::from_slice::<TranscriptCursor>(&encoded).expect("cursor should decode"),
+            cursor
+        );
+        assert!(serde_json::from_str::<TranscriptCursor>("\"tc1_AA\"").is_err());
+    }
+
+    #[test]
+    fn transcript_debug_omits_message_text() {
+        let entry = TranscriptEntry::UserMessage {
+            id: MessageId::from_bytes([0x44; APPLICATION_IDENTIFIER_BYTES]),
+            run_id: RunId::from_bytes([0x55; APPLICATION_IDENTIFIER_BYTES]),
+            text: "sensitive transcript text".to_owned(),
+            created_at_milliseconds: 1,
+        };
+        let debug = format!("{entry:?}");
+        assert!(!debug.contains("sensitive transcript text"));
+        assert!(debug.contains("text_bytes"));
+    }
+
+    #[test]
+    fn only_terminal_run_states_are_terminal() {
+        assert!(!RunState::Accepted.is_terminal());
+        assert!(!RunState::Active.is_terminal());
+        for state in [
+            RunState::Succeeded,
+            RunState::Failed,
+            RunState::Cancelled,
+            RunState::Interrupted,
+        ] {
+            assert!(state.is_terminal());
+        }
+    }
+}

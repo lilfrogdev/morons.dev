@@ -2,6 +2,8 @@ mod backend;
 mod credentials;
 mod database;
 mod paths;
+mod run_types;
+mod runs;
 mod types;
 mod workspace;
 
@@ -13,16 +15,29 @@ use tokio::sync::{Mutex, MutexGuard, mpsc, oneshot};
 use self::{
     backend::Backend,
     credentials::StoredOpenCodeApiKey,
+    runs::RunWorkerRequest,
     types::{
         MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE, REQUEST_FINGERPRINT_BYTES,
         create_session_fingerprint, validate_display_name,
     },
 };
 
-pub use self::types::{
-    MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
-    Session, SessionCatalogEvent, SessionCatalogEventCursor, SessionCatalogEventPage, SessionId,
-    SessionListCursor, SessionPage,
+pub use self::{
+    run_types::{
+        AcceptedRun, MessageId, Run, RunCancellationResult, RunFailureKind, RunId,
+        RunModelSelection, RunOpenCodeService, RunState, TranscriptCursor, TranscriptEntry,
+        TranscriptPage,
+    },
+    types::{
+        MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
+        Session, SessionCatalogEvent, SessionCatalogEventCursor, SessionCatalogEventPage,
+        SessionId, SessionListCursor, SessionPage,
+    },
+};
+
+pub(crate) use self::run_types::{
+    ActivationOutcome, CompletedAssistant, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
+    PrepareOperationOutcome, ProviderOperationFailureState, ProviderUsage, RunContext,
 };
 
 const WORKER_QUEUE_CAPACITY: usize = 64;
@@ -40,6 +55,7 @@ pub struct OpenCodeCredentialLease<'a> {
 }
 
 impl OpenCodeCredentialLease<'_> {
+    #[cfg(test)]
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.generation
@@ -63,6 +79,11 @@ impl fmt::Debug for OpenCodeCredentialLease<'_> {
 impl SessionStore {
     pub fn open(server: &ServerEndpoint) -> Result<Self, PersistenceError> {
         Self::open_at(server.claim_persistence_root()?)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_test(application_root: &Path) -> Result<Self, PersistenceError> {
+        Self::open_at(application_root)
     }
 
     fn open_at(application_root: &Path) -> Result<Self, PersistenceError> {
@@ -282,6 +303,7 @@ enum WorkerRequest {
         display_name: Option<String>,
         response: oneshot::Sender<Result<Session, PersistenceError>>,
     },
+    Run(RunWorkerRequest),
     GetOpenCodeCredentialStatus {
         response: oneshot::Sender<Result<OpenCodeCredentialStatus, PersistenceError>>,
     },
@@ -328,6 +350,7 @@ fn run_worker(mut backend: Backend, mut receiver: mpsc::Receiver<WorkerRequest>)
                 let _ =
                     response.send(backend.create_session(request_id, fingerprint, display_name));
             }
+            WorkerRequest::Run(request) => request.execute(&mut backend),
             WorkerRequest::GetOpenCodeCredentialStatus { response } => {
                 let _ = response.send(backend.open_code_credential_status());
             }
@@ -387,5 +410,7 @@ fn run_worker(mut backend: Backend, mut receiver: mpsc::Receiver<WorkerRequest>)
 
 #[cfg(test)]
 mod credential_tests;
+#[cfg(test)]
+mod run_tests;
 #[cfg(test)]
 mod tests;

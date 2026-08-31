@@ -12,9 +12,14 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 
 const DATA_DIRECTORY_NAME: &str = "data";
 const WORKSPACE_DIRECTORY_NAME: &str = "workspaces";
+const BACKUP_DIRECTORY_NAME: &str = "backups";
 const DATABASE_FILE_NAME: &str = "sessions.sqlite3";
 const DATABASE_INITIALIZATION_PREFIX: &str = ".sessions.sqlite3.initializing-";
 const DATABASE_JOURNAL_SUFFIX: &str = "-journal";
+const MIGRATION_BACKUP_PREFIX: &str = "sessions-before-schema-v";
+const MIGRATION_BACKUP_SUFFIX: &str = ".sqlite3";
+const MIGRATION_BACKUP_TEMPORARY_PREFIX: &str = ".sessions-before-schema-v";
+const MIGRATION_BACKUP_TEMPORARY_SUFFIX: &str = ".tmp";
 const IDENTIFIER_BYTES: usize = 16;
 const HEX_IDENTIFIER_BYTES: usize = IDENTIFIER_BYTES * 2;
 
@@ -59,6 +64,7 @@ impl From<io::Error> for PathError {
 #[derive(Debug)]
 pub(crate) struct StoragePaths {
     data_directory: PathBuf,
+    backup_directory: PathBuf,
     pub(super) workspace_directory: PathBuf,
     database_path: PathBuf,
 }
@@ -68,16 +74,20 @@ impl StoragePaths {
         validate_private_directory(application_root)?;
 
         let data_directory = application_root.join(DATA_DIRECTORY_NAME);
+        let backup_directory = application_root.join(BACKUP_DIRECTORY_NAME);
         let workspace_directory = application_root.join(WORKSPACE_DIRECTORY_NAME);
         ensure_private_directory(&data_directory)?;
+        ensure_private_directory(&backup_directory)?;
         ensure_private_directory(&workspace_directory)?;
 
         let paths = Self {
             database_path: data_directory.join(DATABASE_FILE_NAME),
             data_directory,
+            backup_directory,
             workspace_directory,
         };
         paths.cleanup_stale_database_initialization_files()?;
+        paths.cleanup_and_validate_migration_backups()?;
         Ok(paths)
     }
 
@@ -87,6 +97,108 @@ impl StoragePaths {
 
     pub(crate) fn database_exists(&self) -> Result<bool, PathError> {
         path_entry_exists(&self.database_path).map_err(PathError::from)
+    }
+
+    pub(crate) fn migration_backup_path(&self, source_version: i64) -> Result<PathBuf, PathError> {
+        validate_schema_version(source_version)?;
+        Ok(self.backup_directory.join(format!(
+            "{MIGRATION_BACKUP_PREFIX}{source_version}{MIGRATION_BACKUP_SUFFIX}"
+        )))
+    }
+
+    pub(crate) fn create_migration_backup_file(
+        &self,
+        source_version: i64,
+        nonce: &[u8; IDENTIFIER_BYTES],
+    ) -> Result<(PathBuf, File), PathError> {
+        validate_schema_version(source_version)?;
+        let path = self.backup_directory.join(format!(
+            "{MIGRATION_BACKUP_TEMPORARY_PREFIX}{source_version}-{}{MIGRATION_BACKUP_TEMPORARY_SUFFIX}",
+            encode_hex(nonce)
+        ));
+        let file = create_private_file(&path)?;
+        Ok((path, file))
+    }
+
+    pub(crate) fn install_migration_backup(
+        &self,
+        temporary_path: &Path,
+        source_version: i64,
+    ) -> Result<PathBuf, PathError> {
+        if temporary_path.parent() != Some(self.backup_directory.as_path())
+            || !is_migration_backup_temporary_name(temporary_path.file_name())
+        {
+            return Err(PathError::InvalidState {
+                reason: "migration backup publication escaped its expected path",
+            });
+        }
+        validate_private_file(temporary_path, None)?;
+        let final_path = self.migration_backup_path(source_version)?;
+        if path_entry_exists(&final_path)? {
+            return Err(PathError::InvalidState {
+                reason: "a migration backup already exists",
+            });
+        }
+        fs::rename(temporary_path, &final_path)?;
+        sync_directory(&self.backup_directory)?;
+        validate_private_file(&final_path, None)?;
+        Ok(final_path)
+    }
+
+    pub(crate) fn validate_migration_backup_temporary_file(
+        &self,
+        path: &Path,
+        maximum_bytes: u64,
+    ) -> Result<(), PathError> {
+        if path.parent() != Some(self.backup_directory.as_path())
+            || !is_migration_backup_temporary_name(path.file_name())
+        {
+            return Err(PathError::InvalidState {
+                reason: "migration backup validation escaped its expected temporary path",
+            });
+        }
+        validate_private_file(path, Some(maximum_bytes))
+    }
+
+    pub(crate) fn remove_migration_backup_temporary_file(
+        &self,
+        path: &Path,
+    ) -> Result<(), PathError> {
+        if path.parent() != Some(self.backup_directory.as_path())
+            || !is_migration_backup_temporary_name(path.file_name())
+        {
+            return Err(PathError::InvalidState {
+                reason: "migration backup cleanup escaped its expected path",
+            });
+        }
+        let journal_path = database_sidecar_path(path, DATABASE_JOURNAL_SUFFIX);
+        let mut removed = false;
+        for artifact in [journal_path.as_path(), path] {
+            if path_entry_exists(artifact)? {
+                validate_private_file(artifact, None)?;
+                fs::remove_file(artifact)?;
+                removed = true;
+            }
+        }
+        if removed {
+            sync_directory(&self.backup_directory)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_migration_backup_file(
+        &self,
+        path: &Path,
+        maximum_bytes: u64,
+    ) -> Result<(), PathError> {
+        if path.parent() != Some(self.backup_directory.as_path())
+            || !is_migration_backup_final_name(path.file_name())
+        {
+            return Err(PathError::InvalidState {
+                reason: "migration backup validation escaped its expected path",
+            });
+        }
+        validate_private_file(path, Some(maximum_bytes))
     }
 
     pub(crate) fn create_database_initialization_file(
@@ -158,6 +270,28 @@ impl StoragePaths {
             });
         }
         validate_private_file(path, Some(maximum_bytes))
+    }
+
+    fn cleanup_and_validate_migration_backups(&self) -> Result<(), PathError> {
+        let mut removed = false;
+        for entry in fs::read_dir(&self.backup_directory)? {
+            let path = entry?.path();
+            if is_migration_backup_final_name(path.file_name()) {
+                validate_private_file(&path, None)?;
+            } else if is_migration_backup_temporary_artifact_name(path.file_name()) {
+                validate_private_file(&path, None)?;
+                fs::remove_file(path)?;
+                removed = true;
+            } else {
+                return Err(PathError::InvalidState {
+                    reason: "the migration backup directory contains unexpected state",
+                });
+            }
+        }
+        if removed {
+            sync_directory(&self.backup_directory)?;
+        }
+        Ok(())
     }
 
     fn cleanup_stale_database_initialization_files(&self) -> Result<(), PathError> {
@@ -293,6 +427,63 @@ pub(super) fn validate_private_file(
     })?)?;
 
     Ok(())
+}
+
+fn validate_schema_version(version: i64) -> Result<(), PathError> {
+    if version <= 0 {
+        return Err(PathError::InvalidState {
+            reason: "a migration backup schema version is invalid",
+        });
+    }
+    Ok(())
+}
+
+fn is_migration_backup_final_name(file_name: Option<&OsStr>) -> bool {
+    let Some(file_name) = file_name.and_then(OsStr::to_str) else {
+        return false;
+    };
+    file_name
+        .strip_prefix(MIGRATION_BACKUP_PREFIX)
+        .and_then(|value| value.strip_suffix(MIGRATION_BACKUP_SUFFIX))
+        .is_some_and(is_schema_version_text)
+}
+
+fn is_migration_backup_temporary_artifact_name(file_name: Option<&OsStr>) -> bool {
+    let Some(file_name) = file_name.and_then(OsStr::to_str) else {
+        return false;
+    };
+    let primary = file_name
+        .strip_suffix(DATABASE_JOURNAL_SUFFIX)
+        .unwrap_or(file_name);
+    is_migration_backup_temporary_name(Some(OsStr::new(primary)))
+}
+
+fn is_migration_backup_temporary_name(file_name: Option<&OsStr>) -> bool {
+    let Some(file_name) = file_name.and_then(OsStr::to_str) else {
+        return false;
+    };
+    let Some(value) = file_name
+        .strip_prefix(MIGRATION_BACKUP_TEMPORARY_PREFIX)
+        .and_then(|value| value.strip_suffix(MIGRATION_BACKUP_TEMPORARY_SUFFIX))
+    else {
+        return false;
+    };
+    let Some((version, nonce)) = value.split_once('-') else {
+        return false;
+    };
+    is_schema_version_text(version)
+        && nonce.len() == HEX_IDENTIFIER_BYTES
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_schema_version_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && value
+            .parse::<i64>()
+            .is_ok_and(|version| version > 0 && version.to_string() == value)
 }
 
 fn is_database_initialization_name(file_name: Option<&OsStr>) -> bool {

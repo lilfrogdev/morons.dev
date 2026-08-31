@@ -74,9 +74,37 @@ impl EndpointSet {
     }
 }
 
-pub struct OpenCodeProvider {
+pub(crate) struct OpenCodeProvider {
     sessions: Arc<SessionStore>,
     client: OpenCodeClient,
+}
+
+pub(crate) struct PreparedOpenCodeDispatch<'a> {
+    credential: OpenCodeCredentialLease<'a>,
+    client: &'a OpenCodeClient,
+    request: &'a OpenCodeResponseRequest,
+    body: Vec<u8>,
+}
+
+impl PreparedOpenCodeDispatch<'_> {
+    pub(crate) async fn execute<F>(
+        self,
+        cancellation: &mut ProviderCancellation,
+        on_event: F,
+    ) -> Result<ProviderOutcome, ProviderError>
+    where
+        F: FnMut(ProviderStreamEvent),
+    {
+        self.client
+            .execute(
+                self.credential,
+                self.request,
+                self.body,
+                cancellation,
+                on_event,
+            )
+            .await
+    }
 }
 
 impl OpenCodeProvider {
@@ -87,32 +115,44 @@ impl OpenCodeProvider {
         }
     }
 
-    pub async fn fetch_catalog(
+    #[cfg(test)]
+    pub(crate) fn for_test(sessions: Arc<SessionStore>, base: &str) -> Self {
+        let endpoints = EndpointSet {
+            zen_inference: format!("{base}/zen/v1/responses"),
+            zen_catalog: format!("{base}/zen/v1/models"),
+            go_inference: format!("{base}/zen/go/v1/responses"),
+            go_catalog: format!("{base}/zen/go/v1/models"),
+        };
+        Self {
+            sessions,
+            client: OpenCodeClient::for_test(endpoints),
+        }
+    }
+
+    pub(crate) async fn fetch_catalog(
         &self,
         service: OpenCodeService,
     ) -> Result<Vec<OpenCodeModelAvailability>, ProviderError> {
         self.client.fetch_catalog(service).await
     }
 
-    pub async fn execute<F>(
-        &self,
+    pub(crate) async fn prepare_dispatch<'a>(
+        &'a self,
         expected_credential_generation: u64,
-        request: &OpenCodeResponseRequest,
-        cancellation: &mut ProviderCancellation,
-        on_event: F,
-    ) -> Result<ProviderOutcome, ProviderError>
-    where
-        F: FnMut(ProviderStreamEvent),
-    {
+        request: &'a OpenCodeResponseRequest,
+    ) -> Result<PreparedOpenCodeDispatch<'a>, ProviderError> {
         let body = request.encode_body()?;
         let credential = self
             .sessions
             .lease_open_code_credential(expected_credential_generation)
             .await
             .map_err(map_credential_error)?;
-        self.client
-            .execute(credential, request, body, cancellation, on_event)
-            .await
+        Ok(PreparedOpenCodeDispatch {
+            credential,
+            client: &self.client,
+            request,
+            body,
+        })
     }
 }
 

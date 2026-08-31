@@ -28,7 +28,7 @@ impl ProviderCancellationHandle {
 }
 
 impl ProviderCancellation {
-    pub(super) fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         *self.receiver.borrow()
     }
 

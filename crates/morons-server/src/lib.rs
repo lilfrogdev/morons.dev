@@ -2,6 +2,7 @@ mod application;
 mod connection;
 mod persistence;
 pub mod provider;
+mod run_supervisor;
 
 pub use application::{ApplicationStartupError, ServerApplication};
 pub use connection::{

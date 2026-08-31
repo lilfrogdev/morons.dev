@@ -1,0 +1,570 @@
+use std::{fs, path::PathBuf, process, sync::Arc, time::Duration};
+
+use morons_cli::ApplicationClient;
+
+use morons_protocol::{
+    ApplicationError, ApplicationRequest, ApplicationResponse, MutationRequestId, OpenCodeService,
+    RunId, RunState, SessionId,
+};
+use tokio::{
+    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    net::TcpListener,
+    sync::oneshot,
+    time,
+};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use super::{RunSupervisor, build_provider_request, completed_assistant};
+use crate::{
+    application::{ApplicationOutcome, ServerApplication},
+    handle_local_owner_requests,
+    persistence::{
+        ActivationOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
+        MutationRequestId as PersistenceMutationRequestId, PrepareOperationOutcome,
+        ProviderOperationFailureState, RunFailureKind, RunModelSelection, RunOpenCodeService,
+        RunState as PersistenceRunState, SessionStore,
+    },
+    provider::{
+        OpenCodeProvider, ProviderAssistantMessage, ProviderError, ProviderOutcome,
+        ProviderOutputItem, ProviderUsage,
+    },
+};
+
+#[test]
+fn global_run_capacity_is_bounded_without_queueing() {
+    let root = TestRoot::new("global-capacity");
+    let sessions =
+        Arc::new(SessionStore::open_for_test(root.path()).expect("session store should open"));
+    let provider = Arc::new(OpenCodeProvider::for_test(
+        Arc::clone(&sessions),
+        "http://127.0.0.1:9",
+    ));
+    let supervisor = RunSupervisor::new(sessions, provider);
+    let permits = (0..4)
+        .map(|_| supervisor.try_reserve().expect("capacity should remain"))
+        .collect::<Vec<_>>();
+    assert!(supervisor.try_reserve().is_none());
+    drop(permits);
+    assert!(supervisor.try_reserve().is_some());
+}
+
+#[test]
+fn oversized_complete_assistant_is_a_run_resource_failure() {
+    let outcome = ProviderOutcome {
+        provider_response_id: "resp_oversized".to_owned(),
+        output: vec![ProviderOutputItem::AssistantMessage(
+            ProviderAssistantMessage {
+                provider_item_id: "msg_oversized".to_owned(),
+                phase: None,
+                text: "x".repeat(MAX_TRANSCRIPT_TEXT_BYTES + 1),
+                refusal: false,
+            },
+        )],
+        usage: ProviderUsage {
+            input_tokens: 1,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 1,
+            reasoning_output_tokens: 0,
+            total_tokens: 2,
+        },
+    };
+    assert_eq!(
+        completed_assistant(outcome).expect_err("oversized assistant should fail"),
+        RunFailureKind::ResourceLimit
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn changed_credential_generation_fails_before_network_dispatch() {
+    let root = TestRoot::new("credential-generation");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x71; 16]),
+            0,
+            b"not-a-real-original-key".to_vec(),
+        )
+        .await
+        .expect("original credential should be configured");
+    let session = store
+        .create_session(PersistenceMutationRequestId::from_bytes([0x72; 16]), None)
+        .await
+        .expect("session should be created");
+    let accepted = store
+        .accept_session_input(
+            PersistenceMutationRequestId::from_bytes([0x73; 16]),
+            session.id,
+            "bind the original generation".to_owned(),
+            RunModelSelection {
+                service: RunOpenCodeService::Zen,
+                model_id: "muse-spark-1.2".to_owned(),
+                protocol_revision: 1,
+                maximum_input_tokens: 96_000,
+                maximum_output_tokens: 32_000,
+            },
+        )
+        .await
+        .expect("run should bind generation one");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x74; 16]),
+            1,
+            b"not-a-real-replacement-key".to_vec(),
+        )
+        .await
+        .expect("credential should be replaced");
+    assert_eq!(
+        store
+            .activate_run(accepted.run.id)
+            .await
+            .expect("run should activate"),
+        ActivationOutcome::Active
+    );
+    let context = store
+        .load_run_context(accepted.run.id)
+        .await
+        .expect("run context should load");
+    let request = build_provider_request(&context).expect("request should build");
+    let operation_id = match store
+        .prepare_provider_operation(accepted.run.id)
+        .await
+        .expect("provider operation should prepare")
+    {
+        PrepareOperationOutcome::Prepared(operation_id) => operation_id,
+        other => panic!("unexpected preparation outcome: {other:?}"),
+    };
+    let sessions = Arc::new(store);
+    let provider = OpenCodeProvider::for_test(Arc::clone(&sessions), "http://127.0.0.1:9");
+    let error = match provider
+        .prepare_dispatch(accepted.run.credential_generation, &request)
+        .await
+    {
+        Ok(_) => panic!("changed generation must not prepare network dispatch"),
+        Err(error) => error,
+    };
+    assert_eq!(error, ProviderError::CredentialGenerationChanged);
+    let failed = sessions
+        .finish_run_failure(
+            accepted.run.id,
+            Some(operation_id),
+            RunFailureKind::CredentialChanged,
+            ProviderOperationFailureState::Failed,
+        )
+        .await
+        .expect("run should fail durably");
+    assert_eq!(failed.state, PersistenceRunState::Failed);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn accepted_run_outlives_request_and_commits_complete_assistant() {
+    let root = TestRoot::new("supervised-success");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x01; 16]),
+            0,
+            b"not-a-real-supervisor-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session(PersistenceMutationRequestId::from_bytes([0x02; 16]), None)
+        .await
+        .expect("session should be created");
+    let (base, captured_request, server) = spawn_successful_provider().await;
+    let application = Arc::new(ServerApplication::from_session_store_for_test(store, &base));
+    let (client_connection, mut server_connection) = tokio::io::duplex(1024 * 1024);
+    let server_application = Arc::clone(&application);
+    let requests = tokio::spawn(async move {
+        handle_local_owner_requests(&mut server_connection, &server_application).await
+    });
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let accepted = client
+        .submit_session_input(
+            MutationRequestId::from_bytes([0x03; 16]),
+            SessionId::from_bytes(*session.id.as_bytes()),
+            "return a durable answer".to_owned(),
+            OpenCodeService::Zen,
+            "muse-spark-1.2".to_owned(),
+        )
+        .await
+        .expect("input should be accepted over the application transport");
+    let run = accepted.run;
+    drop(client);
+    requests
+        .await
+        .expect("request task should join")
+        .expect("client disconnect should close the request loop cleanly");
+
+    let captured = time::timeout(Duration::from_secs(5), captured_request)
+        .await
+        .expect("provider request should be dispatched")
+        .expect("provider request capture should complete");
+    assert!(captured.contains("POST /zen/v1/responses HTTP/1.1"));
+    assert!(captured.contains("authorization: Bearer not-a-real-supervisor-key"));
+    server.await.expect("provider fixture should finish");
+
+    let terminal = wait_for_terminal(&application, run.session_id, run.id).await;
+    assert_eq!(terminal, RunState::Succeeded);
+    let first = application
+        .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+            session_id: run.session_id,
+            cursor: None,
+            limit: 1,
+        })
+        .await
+        .expect("first transcript page should load");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+        entries,
+        next_cursor,
+    }) = first
+    else {
+        panic!("transcript should return a page");
+    };
+    assert_eq!(entries.len(), 1);
+    let second = application
+        .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+            session_id: run.session_id,
+            cursor: next_cursor,
+            limit: 1,
+        })
+        .await
+        .expect("second transcript page should load");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+        entries,
+        next_cursor,
+    }) = second
+    else {
+        panic!("transcript should return a page");
+    };
+    assert!(next_cursor.is_none());
+    assert!(matches!(
+        &entries[..],
+        [morons_protocol::TranscriptEntry::AssistantMessage { text, .. }]
+            if text == "durable answer"
+    ));
+    application.shutdown().await;
+    drop(application);
+    let database = fs::read(root.path().join("data").join("sessions.sqlite3"))
+        .expect("database should be readable");
+    assert!(!contains_bytes(&database, b"not-a-real-supervisor-key"));
+    assert!(!contains_bytes(&database, b"response.completed"));
+    assert!(!contains_bytes(&database, b"Bearer "));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn exact_cancellation_stops_the_supervised_provider_task() {
+    let root = TestRoot::new("supervised-cancellation");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x11; 16]),
+            0,
+            b"not-a-real-cancellation-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session(PersistenceMutationRequestId::from_bytes([0x12; 16]), None)
+        .await
+        .expect("session should be created");
+    let (base, dispatched, server) = spawn_stalled_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x13; 16]),
+            session_id: SessionId::from_bytes(*session.id.as_bytes()),
+            text: "cancel the network request".to_owned(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("input should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run acceptance");
+    };
+    time::timeout(Duration::from_secs(5), dispatched)
+        .await
+        .expect("provider request should dispatch")
+        .expect("dispatch signal should arrive");
+
+    let cancellation = application
+        .execute_for_local_owner(ApplicationRequest::CancelRun {
+            mutation_request_id: MutationRequestId::from_bytes([0x14; 16]),
+            session_id: run.session_id,
+            run_id: run.id,
+        })
+        .await
+        .expect("cancellation should commit");
+    assert!(matches!(
+        cancellation,
+        ApplicationOutcome::Response(ApplicationResponse::RunCancellationResolved {
+            run_id,
+            cancellation_requested: true,
+            ..
+        }) if run_id == run.id
+    ));
+    assert_eq!(
+        wait_for_terminal(&application, run.session_id, run.id).await,
+        RunState::Cancelled
+    );
+    server
+        .await
+        .expect("stalled provider should observe closure");
+    application.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn graceful_shutdown_interrupts_run_without_owner_cancellation() {
+    let root = TestRoot::new("supervised-shutdown");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x21; 16]),
+            0,
+            b"not-a-real-shutdown-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session(PersistenceMutationRequestId::from_bytes([0x22; 16]), None)
+        .await
+        .expect("session should be created");
+    let (base, dispatched, server) = spawn_stalled_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x23; 16]),
+            session_id: SessionId::from_bytes(*session.id.as_bytes()),
+            text: "interrupt on shutdown".to_owned(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("input should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run acceptance");
+    };
+    time::timeout(Duration::from_secs(5), dispatched)
+        .await
+        .expect("provider request should dispatch")
+        .expect("dispatch signal should arrive");
+
+    application.shutdown().await;
+    server.await.expect("provider should observe shutdown");
+    let outcome = application
+        .execute_for_local_owner(ApplicationRequest::GetRun {
+            session_id: run.session_id,
+            run_id: run.id,
+        })
+        .await
+        .expect("interrupted run should remain queryable");
+    assert!(matches!(
+        outcome,
+        ApplicationOutcome::Response(ApplicationResponse::RunFound { run })
+            if run.state == RunState::Interrupted
+    ));
+    let error = match application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x24; 16]),
+            session_id: run.session_id,
+            text: "must not start during shutdown".to_owned(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+    {
+        Ok(_) => panic!("shutdown should reject new run input"),
+        Err(error) => error,
+    };
+    assert_eq!(error, ApplicationError::ServiceUnavailable);
+}
+
+async fn wait_for_terminal(
+    application: &ServerApplication,
+    session_id: SessionId,
+    run_id: RunId,
+) -> RunState {
+    time::timeout(Duration::from_secs(5), async {
+        loop {
+            let outcome = application
+                .execute_for_local_owner(ApplicationRequest::GetRun { session_id, run_id })
+                .await
+                .expect("run query should succeed");
+            let ApplicationOutcome::Response(ApplicationResponse::RunFound { run }) = outcome
+            else {
+                panic!("run query should return a run");
+            };
+            if run.state.is_terminal() {
+                return run.state;
+            }
+            time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("run should terminate")
+}
+
+async fn spawn_successful_provider() -> (
+    String,
+    oneshot::Receiver<String>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("provider fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("provider fixture should have an address");
+    let (captured_sender, captured_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("request should connect");
+        let request = read_http_request(&mut stream).await;
+        let captured = String::from_utf8(request).expect("request should be UTF-8");
+        captured_sender
+            .send(captured)
+            .unwrap_or_else(|_| panic!("request should be observed"));
+        let body = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_run_1\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"muse-spark-1.2\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_run_1\",\"object\":\"response\",\"model\":\"muse-spark-1.2\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_run_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"durable answer\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":8,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":11}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("response should be written");
+        stream.shutdown().await.expect("response should close");
+    });
+    (format!("http://{address}"), captured_receiver, server)
+}
+
+async fn spawn_stalled_provider() -> (String, oneshot::Receiver<()>, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("provider fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("provider fixture should have an address");
+    let (dispatched_sender, dispatched_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("request should connect");
+        read_http_request(&mut stream).await;
+        let body = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_stalled\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"muse-spark-1.2\"}}\n\n"
+        );
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n";
+        stream
+            .write_all(headers.as_bytes())
+            .await
+            .expect("headers should write");
+        stream
+            .write_all(format!("{:x}\r\n{body}\r\n", body.len()).as_bytes())
+            .await
+            .expect("stream chunk should write");
+        dispatched_sender
+            .send(())
+            .unwrap_or_else(|_| panic!("dispatch should be observed"));
+        let mut byte = [0_u8; 1];
+        match time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await {
+            Ok(Ok(0)) => {}
+            Ok(Err(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ) => {}
+            Ok(Ok(_)) => panic!("cancelled request should not send more bytes"),
+            Ok(Err(error)) => panic!("cancelled request closed unexpectedly: {error}"),
+            Err(_) => panic!("cancelled request should close promptly"),
+        }
+    });
+    (format!("http://{address}"), dispatched_receiver, server)
+}
+
+async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    let mut received = Vec::new();
+    let header_end = loop {
+        let mut chunk = [0_u8; 4096];
+        let bytes = stream.read(&mut chunk).await.expect("request should read");
+        assert_ne!(bytes, 0, "request ended before headers");
+        received.extend_from_slice(&chunk[..bytes]);
+        assert!(received.len() <= 5 * 1024 * 1024);
+        if let Some(position) = received.windows(4).position(|value| value == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+    let headers = std::str::from_utf8(&received[..header_end]).expect("headers should be UTF-8");
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.split_once(':').and_then(|(name, value)| {
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+        })
+        .unwrap_or(0);
+    while received.len() - header_end < content_length {
+        let mut chunk = [0_u8; 4096];
+        let bytes = stream.read(&mut chunk).await.expect("body should read");
+        assert_ne!(bytes, 0, "request ended before body");
+        received.extend_from_slice(&chunk[..bytes]);
+    }
+    received
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
+struct TestRoot(PathBuf);
+
+impl TestRoot {
+    fn new(label: &str) -> Self {
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).expect("test randomness should be available");
+        let encoded = nonce
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path = std::env::temp_dir().join(format!(
+            "morons-supervisor-{label}-{}-{encoded}",
+            process::id()
+        ));
+        fs::create_dir(&path).expect("test root should be created");
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+            .expect("test root should be owner-only");
+        #[cfg(windows)]
+        fence_windows::harden_private_directory(&path)
+            .expect("Windows test root should be hardened");
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
