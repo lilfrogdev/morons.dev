@@ -9,6 +9,8 @@
 - Tool and execution capabilities
 - Repository, project, and isolated workspace data
 - Provider and kernel connections
+- Terminal presentation integrity and non-echoing credential input
+- Packaged client and server executable identity
 
 ## Untrusted inputs
 
@@ -21,6 +23,8 @@
 - Model output
 - Commands and subprocesses
 - External content
+- Terminal key, paste, resize, mouse, and rendering input
+- Companion executable paths, process state, inherited environments, and startup races
 - Provider model catalogs, HTTP headers, error bodies, SSE records, usage values, and identifiers
 
 ## Trust assumptions
@@ -31,6 +35,7 @@
 - Untrusted repository processes run without access to host control files, provider credential state, or IPC endpoints.
 - OpenCode and its upstream providers receive only context deliberately selected for an authorized run; their catalogs, responses, errors, and model output remain untrusted.
 - Public certificate authorities and the operating system's network and TLS implementations correctly authenticate the fixed OpenCode HTTPS origin.
+- Supported native runners and release hardware accurately execute the declared operating-system and processor target.
 
 ## Local IPC threats
 
@@ -48,6 +53,10 @@
 - A client uses a compatible protocol version without being authenticated or authorized.
 - Authentication material is exposed through logs, prompts, environments, subprocesses, or sandbox files.
 - An untrusted repository process discovers or reaches the host endpoint or authentication key.
+- A fake or replaced companion executable is selected through `PATH`, configuration, repository state, or a writable installation-relative path.
+- A client treats a spawned process identifier, status, or readiness output as proof that it reached the legitimate server.
+- Concurrent clients race to start servers and a losing process deletes or replaces the winner's registration.
+- Repository, provider, proxy, certificate, dynamic-loader, or credential environment state is inherited by an automatically started trusted server.
 
 ## Application boundary threats
 
@@ -69,6 +78,11 @@
 - A transport adapter bypasses server authorization, limits, idempotency, or audit enforcement.
 - A protocol response exposes persistence fields, provider payloads, credentials, logs, or raw sandbox output.
 - A prematurely exposed network listener admits unauthenticated, cross-origin, or unbounded requests.
+- User, provider, catalog, error, or tool text injects terminal control sequences, hyperlinks, title changes, clipboard operations, device commands, or misleading bidirectional layout.
+- Client reconnect creates a new mutation identity after an unknown result and duplicates input, cancellation, session creation, or shutdown intent.
+- A credential-bearing mutation is resent after an unknown result or remains in terminal history, rendered cells, configuration, panic output, or client memory longer than required.
+- Terminal exit implicitly cancels a run or stops the server, or a client kills an unrelated process based only on a registered process identifier.
+- Ephemeral assistant deltas are displayed under the wrong session or run, accepted out of sequence, or mistaken for canonical transcript state.
 
 ## Provider and credential threats
 
@@ -162,6 +176,7 @@
 - Confine workspace provisioning, recovery, and deletion to verified server-generated identities beneath the private workspace root.
 - Use SQLite's online backup API, protect backup files like authoritative data, and distinguish database recovery from workspace recovery.
 - Use scoped, server-validated durable cursors and gap-free snapshot-plus-subscription semantics.
+- Bind assistant deltas to an exact session and run with a bounded run-local sequence, emit them only after the active transition, and replace them with the committed complete assistant message.
 - Keep token deltas, heartbeats, and temporary progress non-authoritative so their loss cannot corrupt recovered state.
 - Bound every subscriber queue and disconnect slow consumers without blocking other clients.
 - Isolate every session's mutable workspace and execution context, and authorize all cross-resource access explicitly.
@@ -169,6 +184,11 @@
 - Make session lifetime independent of client attachments and require explicit authorized cancellation.
 - Return deliberate sanitized protocol DTOs rather than persistence records or privileged subsystem payloads.
 - Keep authenticated local IPC as the only current application transport and require a separate architecture decision before adding a network listener.
+- Start only the exact packaged server companion without a shell or untrusted path selection, pass a reviewed minimal non-secret environment, and establish readiness only through the complete authenticated IPC boundary.
+- Let the lifetime host lock resolve concurrent startup, keep client exit independent from server and run lifetime, and require an authenticated graceful-shutdown mutation instead of process-identifier signaling.
+- Render untrusted content only through bounded terminal-safe cells that exclude terminal controls and bidirectional formatting, and restore terminal ownership through a scoped guard.
+- Hold credential input only in a bounded non-echoing zeroizing client buffer, exclude it from history and presentation, and prohibit automatic credential retries after unknown outcomes.
+- Keep protocol and durable encodings independent of native layouts and processor word size, reject integer truncation, and require native release tests on `x86_64` and `aarch64`.
 - Keep control files, provider credential state, and host IPC inaccessible from untrusted execution sandboxes.
 - Exclude keys, nonces, proofs, and credentials from logs, audit payloads, prompts, environments, registrations, and endpoint names.
 
@@ -188,3 +208,5 @@
 - Provider availability, entitlement, pricing, retention, model behavior, and upstream routing can change independently of a Morons release.
 - Ordinary certificate validation does not protect against compromise of the provider, a trusted certificate authority, the operating system, or the local server process.
 - Owner-only credential files rely on operating-system access controls and storage encryption and do not provide forensic erasure or protection from the owning user, administrators, crash dumps, or a compromised server.
+- Terminal emulators, accessibility services, screen capture, clipboard managers, crash dumps, and same-user processes may observe displayed content or credential keystrokes outside the application's guarantees.
+- Native CI and release hardware reduce but cannot eliminate processor, firmware, emulator, compiler, or runner-image defects.
