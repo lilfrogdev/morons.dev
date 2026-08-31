@@ -5,7 +5,8 @@ use morons_protocol::{
     OpenCodeService as ProtocolOpenCodeService, ResourceLimit,
     RunFailureKind as ProtocolRunFailureKind, RunId as ProtocolRunId, RunState as ProtocolRunState,
     RunSummary, SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
-    SessionId as ProtocolSessionId, SessionListCursor as ProtocolSessionListCursor, SessionSummary,
+    SessionEventCursor as ProtocolSessionEventCursor, SessionId as ProtocolSessionId,
+    SessionListCursor as ProtocolSessionListCursor, SessionSummary,
     TranscriptCursor as ProtocolTranscriptCursor, TranscriptEntry as ProtocolTranscriptEntry,
 };
 
@@ -14,8 +15,8 @@ use crate::{
     persistence::{
         AcceptedRun, MutationRequestId, OpenCodeCredentialStatus, PersistenceError,
         PersistenceResourceLimit, Run, RunFailureKind, RunId, RunOpenCodeService, RunState,
-        Session, SessionCatalogEventCursor, SessionId, SessionListCursor, TranscriptCursor,
-        TranscriptEntry,
+        Session, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
+        TranscriptCursor, TranscriptEntry,
     },
     provider::OpenCodeService,
 };
@@ -86,20 +87,24 @@ pub(super) fn to_persistence_transcript_cursor(
     session_id.copy_from_slice(&bytes[..16]);
     let mut snapshot_entry_sequence = [0_u8; 8];
     snapshot_entry_sequence.copy_from_slice(&bytes[16..24]);
+    let mut snapshot_event_sequence = [0_u8; 8];
+    snapshot_event_sequence.copy_from_slice(&bytes[24..32]);
     let mut after_entry_sequence = [0_u8; 8];
-    after_entry_sequence.copy_from_slice(&bytes[24..]);
+    after_entry_sequence.copy_from_slice(&bytes[32..]);
     TranscriptCursor::new(
         SessionId::from_bytes(session_id),
         u64::from_be_bytes(snapshot_entry_sequence),
+        u64::from_be_bytes(snapshot_event_sequence),
         u64::from_be_bytes(after_entry_sequence),
     )
 }
 
 pub(super) fn to_protocol_transcript_cursor(cursor: TranscriptCursor) -> ProtocolTranscriptCursor {
-    let mut bytes = [0_u8; 32];
+    let mut bytes = [0_u8; 40];
     bytes[..16].copy_from_slice(cursor.session_id().as_bytes());
     bytes[16..24].copy_from_slice(&cursor.snapshot_entry_sequence().to_be_bytes());
-    bytes[24..].copy_from_slice(&cursor.after_entry_sequence().to_be_bytes());
+    bytes[24..32].copy_from_slice(&cursor.snapshot_event_sequence().to_be_bytes());
+    bytes[32..].copy_from_slice(&cursor.after_entry_sequence().to_be_bytes());
     ProtocolTranscriptCursor::from_bytes(bytes)
 }
 
@@ -120,6 +125,29 @@ pub(super) fn to_protocol_catalog_cursor(
     cursor: SessionCatalogEventCursor,
 ) -> ProtocolSessionCatalogEventCursor {
     ProtocolSessionCatalogEventCursor::from_bytes(cursor.sequence().to_be_bytes())
+}
+
+pub(super) fn to_persistence_session_event_cursor(
+    cursor: ProtocolSessionEventCursor,
+) -> SessionEventCursor {
+    let bytes = cursor.as_bytes();
+    let mut session_id = [0_u8; 16];
+    session_id.copy_from_slice(&bytes[..16]);
+    let mut sequence = [0_u8; 8];
+    sequence.copy_from_slice(&bytes[16..]);
+    SessionEventCursor::new(
+        SessionId::from_bytes(session_id),
+        u64::from_be_bytes(sequence),
+    )
+}
+
+pub(super) fn to_protocol_session_event_cursor(
+    cursor: SessionEventCursor,
+) -> ProtocolSessionEventCursor {
+    let mut bytes = [0_u8; 24];
+    bytes[..16].copy_from_slice(cursor.session_id().as_bytes());
+    bytes[16..].copy_from_slice(&cursor.sequence().to_be_bytes());
+    ProtocolSessionEventCursor::from_bytes(bytes)
 }
 
 pub(super) const fn to_protocol_credential_status(

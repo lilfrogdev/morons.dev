@@ -8,6 +8,7 @@ mod run_execution;
 mod run_queries;
 mod run_records;
 mod run_recovery;
+mod session_events;
 mod workspace_creation;
 
 use rusqlite::Connection;

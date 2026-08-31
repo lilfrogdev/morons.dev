@@ -9,7 +9,9 @@ use tokio::{
     time,
 };
 
-use crate::application::{ApplicationOutcome, ServerApplication, SessionCatalogSubscription};
+use crate::application::{
+    ApplicationOutcome, ServerApplication, SessionCatalogSubscription, SessionSubscription,
+};
 
 #[cfg(not(test))]
 const SUBSCRIPTION_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -38,7 +40,7 @@ impl fmt::Display for ConnectionError {
                 formatter.write_str("client message is invalid in the current protocol state")
             }
             Self::SubscriptionWriteTimedOut => {
-                formatter.write_str("session catalog subscriber stopped accepting events")
+                formatter.write_str("application subscriber stopped accepting events")
             }
         }
     }
@@ -124,6 +126,22 @@ where
                 .await?;
                 return stream_session_catalog_events(connection, application, subscription).await;
             }
+            Ok(ApplicationOutcome::SessionSubscription(subscription)) => {
+                write_server_message(
+                    connection,
+                    &ServerMessage::response(
+                        request_id,
+                        ApplicationResponse::SessionSubscriptionStarted {
+                            session_id: morons_protocol::SessionId::from_bytes(
+                                *subscription.session_id.as_bytes(),
+                            ),
+                            cursor: subscription.protocol_cursor(),
+                        },
+                    ),
+                )
+                .await?;
+                return stream_session_events(connection, application, subscription).await;
+            }
             Err(error) => {
                 write_server_message(
                     connection,
@@ -148,6 +166,7 @@ where
     tokio::pin!(client_message);
 
     loop {
+        let observed_notification = *subscription.notifications.borrow_and_update();
         let events = match application
             .read_session_catalog_events(subscription.cursor)
             .await
@@ -167,8 +186,7 @@ where
             continue;
         }
 
-        let latest_notification = *subscription.notifications.borrow_and_update();
-        if latest_notification > subscription.sequence() {
+        if *subscription.notifications.borrow() != observed_notification {
             continue;
         }
 
@@ -182,6 +200,73 @@ where
             changed = subscription.notifications.changed() => {
                 if changed.is_err() {
                     return Ok(());
+                }
+            }
+        }
+    }
+}
+
+async fn stream_session_events<S>(
+    connection: &mut S,
+    application: &ServerApplication,
+    mut subscription: SessionSubscription,
+) -> Result<(), ConnectionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut reader, mut writer) = tokio::io::split(connection);
+    let client_message = read_client_message(&mut reader);
+    tokio::pin!(client_message);
+
+    loop {
+        let observed_notification = *subscription.notifications.borrow_and_update();
+        let events = match application
+            .read_session_events(subscription.session_id, subscription.cursor)
+            .await
+        {
+            Ok(events) => events,
+            Err(error) => {
+                write_subscription_message(&mut writer, &ServerMessage::subscription_ended(error))
+                    .await?;
+                return Ok(());
+            }
+        };
+        if !events.is_empty() {
+            for event in events {
+                subscription.advance(&event);
+                write_subscription_message(&mut writer, &ServerMessage::event(event.event)).await?;
+            }
+            continue;
+        }
+        if *subscription.notifications.borrow() != observed_notification {
+            continue;
+        }
+
+        tokio::select! {
+            biased;
+            incoming = &mut client_message => {
+                match incoming? {
+                    None => return Ok(()),
+                    Some(_) => return Err(ConnectionError::UnexpectedClientMessage),
+                }
+            }
+            changed = subscription.notifications.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+            }
+            delta = subscription.assistant_deltas.recv() => {
+                match delta {
+                    Ok(delta) if subscription.accepts_delta(&delta) => {
+                        let event = ServerApplication::assistant_delta_event(delta);
+                        write_subscription_message(
+                            &mut writer,
+                            &ServerMessage::event(event),
+                        )
+                        .await?;
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
                 }
             }
         }

@@ -3,7 +3,8 @@ use serde_json::{Value, json};
 
 use super::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, MutationRequestId,
-    ResourceLimit, SessionCatalogEventCursor, SessionId, SessionListCursor, SessionSummary,
+    ResourceLimit, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
+    SessionSummary,
 };
 use crate::{
     ClientMessage, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeService,
@@ -133,6 +134,39 @@ fn application_response_has_stable_json_shape() {
 }
 
 #[test]
+fn transcript_snapshot_response_has_stable_json_shape() {
+    let session_id = SessionId::from_bytes([0x23; 16]);
+    let response = ApplicationResponse::SessionTranscriptListed {
+        session: SessionSummary {
+            id: session_id,
+            display_name: None,
+            created_at_milliseconds: 42,
+        },
+        entries: Vec::new(),
+        runs: Vec::new(),
+        active_run_id: None,
+        next_cursor: None,
+        event_cursor: session_event_cursor(session_id, 9),
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("transcript snapshot should encode"),
+        json!({
+            "result": "session_transcript_listed",
+            "session": {
+                "id": "ses_23232323232323232323232323232323",
+                "display_name": null,
+                "created_at_milliseconds": 42,
+            },
+            "entries": [],
+            "runs": [],
+            "active_run_id": null,
+            "next_cursor": null,
+            "event_cursor": "sec1_232323232323232323232323232323230000000000000009",
+        })
+    );
+}
+
+#[test]
 fn run_response_has_stable_json_shape() {
     let response = ApplicationResponse::RunFound {
         run: RunSummary {
@@ -201,6 +235,43 @@ fn application_event_has_stable_json_shape() {
 }
 
 #[test]
+fn session_subscription_contract_has_stable_json_shapes_and_redacted_delta_debug() {
+    let session_id = SessionId::from_bytes([0x51; 16]);
+    let cursor = session_event_cursor(session_id, 9);
+    let request = ApplicationRequest::SubscribeSession { session_id, cursor };
+    assert_eq!(
+        serde_json::to_value(request).expect("subscription request should encode"),
+        json!({
+            "operation": "subscribe_session",
+            "session_id": "ses_51515151515151515151515151515151",
+            "cursor": "sec1_515151515151515151515151515151510000000000000009",
+        })
+    );
+
+    let event = ApplicationEvent::SessionAssistantDelta {
+        session_id,
+        run_id: RunId::from_bytes([0x52; 16]),
+        sequence: 3,
+        delta: "sensitive partial output".to_owned(),
+        refusal: false,
+    };
+    let debug = format!("{event:?}");
+    assert!(!debug.contains("sensitive partial output"));
+    assert!(debug.contains("delta_bytes"));
+    assert_eq!(
+        serde_json::to_value(event).expect("delta event should encode"),
+        json!({
+            "event": "session_assistant_delta",
+            "session_id": "ses_51515151515151515151515151515151",
+            "run_id": "run_52525252525252525252525252525252",
+            "sequence": 3,
+            "delta": "sensitive partial output",
+            "refusal": false,
+        })
+    );
+}
+
+#[test]
 fn application_error_has_stable_json_shape() {
     let error = ApplicationError::ResourceLimit {
         resource: ResourceLimit::Sessions,
@@ -222,11 +293,13 @@ fn opaque_values_round_trip_through_json() {
     let mutation_id = MutationRequestId::from_bytes([0x44; 16]);
     let list_cursor = SessionListCursor::from_bytes([0x55; 16]);
     let catalog_cursor = SessionCatalogEventCursor::from_bytes([0x66; 8]);
+    let event_cursor = SessionEventCursor::from_bytes([0x77; 24]);
 
     assert_eq!(round_trip(&session_id), session_id);
     assert_eq!(round_trip(&mutation_id), mutation_id);
     assert_eq!(round_trip(&list_cursor), list_cursor);
     assert_eq!(round_trip(&catalog_cursor), catalog_cursor);
+    assert_eq!(round_trip(&event_cursor), event_cursor);
 }
 
 #[test]
@@ -251,6 +324,12 @@ fn malformed_opaque_values_are_rejected() {
         ))
         .is_err()
     );
+    assert!(
+        serde_json::from_value::<SessionEventCursor>(Value::String(
+            "sec1_0000000000000001".to_owned()
+        ))
+        .is_err()
+    );
 }
 
 #[test]
@@ -263,6 +342,13 @@ fn application_request_rejects_unknown_fields() {
     });
 
     assert!(serde_json::from_value::<ApplicationRequest>(encoded).is_err());
+}
+
+fn session_event_cursor(session_id: SessionId, sequence: u64) -> SessionEventCursor {
+    let mut bytes = [0_u8; 24];
+    bytes[..16].copy_from_slice(session_id.as_bytes());
+    bytes[16..].copy_from_slice(&sequence.to_be_bytes());
+    SessionEventCursor::from_bytes(bytes)
 }
 
 fn round_trip<T>(value: &T) -> T

@@ -3,8 +3,8 @@ use std::{fs, path::PathBuf, process, sync::Arc, time::Duration};
 use morons_cli::ApplicationClient;
 
 use morons_protocol::{
-    ApplicationError, ApplicationRequest, ApplicationResponse, MutationRequestId, OpenCodeService,
-    RunId, RunState, SessionId,
+    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, MutationRequestId,
+    OpenCodeService, RunId, RunState, SessionId,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -18,7 +18,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::{RunSupervisor, build_provider_request, completed_assistant};
 use crate::{
-    application::{ApplicationOutcome, ServerApplication},
+    application::{ApplicationOutcome, ServerApplication, events::SessionEventHub},
     handle_local_owner_requests,
     persistence::{
         ActivationOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
@@ -41,7 +41,7 @@ fn global_run_capacity_is_bounded_without_queueing() {
         Arc::clone(&sessions),
         "http://127.0.0.1:9",
     ));
-    let supervisor = RunSupervisor::new(sessions, provider);
+    let supervisor = RunSupervisor::new(sessions, provider, SessionEventHub::new());
     let permits = (0..4)
         .map(|_| supervisor.try_reserve().expect("capacity should remain"))
         .collect::<Vec<_>>();
@@ -174,8 +174,42 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
         .create_session(PersistenceMutationRequestId::from_bytes([0x02; 16]), None)
         .await
         .expect("session should be created");
-    let (base, captured_request, server) = spawn_successful_provider().await;
+    let (base, captured_request, complete_provider, server) = spawn_successful_provider().await;
     let application = Arc::new(ServerApplication::from_session_store_for_test(store, &base));
+    let protocol_session_id = SessionId::from_bytes(*session.id.as_bytes());
+    let snapshot = application
+        .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+            session_id: protocol_session_id,
+            cursor: None,
+            limit: 1,
+        })
+        .await
+        .expect("initial session snapshot should load");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+        event_cursor,
+        ..
+    }) = snapshot
+    else {
+        panic!("initial session snapshot should return a page");
+    };
+
+    let (subscription_connection, mut subscription_server_connection) =
+        tokio::io::duplex(1024 * 1024);
+    let subscription_application = Arc::clone(&application);
+    let subscription_requests = tokio::spawn(async move {
+        handle_local_owner_requests(
+            &mut subscription_server_connection,
+            &subscription_application,
+        )
+        .await
+    });
+    let subscription_client =
+        ApplicationClient::from_negotiated_connection(subscription_connection);
+    let mut subscription = subscription_client
+        .subscribe_to_session(protocol_session_id, event_cursor)
+        .await
+        .expect("session subscription should start");
+
     let (client_connection, mut server_connection) = tokio::io::duplex(1024 * 1024);
     let server_application = Arc::clone(&application);
     let requests = tokio::spawn(async move {
@@ -185,7 +219,7 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
     let accepted = client
         .submit_session_input(
             MutationRequestId::from_bytes([0x03; 16]),
-            SessionId::from_bytes(*session.id.as_bytes()),
+            protocol_session_id,
             "return a durable answer".to_owned(),
             OpenCodeService::Zen,
             "muse-spark-1.2".to_owned(),
@@ -205,9 +239,64 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
         .expect("provider request capture should complete");
     assert!(captured.contains("POST /zen/v1/responses HTTP/1.1"));
     assert!(captured.contains("authorization: Bearer not-a-real-supervisor-key"));
+    let mut saw_user = false;
+    let mut saw_accepted = false;
+    let mut saw_active = false;
+    loop {
+        let event = time::timeout(Duration::from_secs(5), subscription.next_event())
+            .await
+            .expect("live session event should arrive")
+            .expect("live session event should be valid");
+        match event {
+            ApplicationEvent::SessionTranscriptEntryCommitted {
+                entry: morons_protocol::TranscriptEntry::UserMessage { run_id, .. },
+                ..
+            } if run_id == run.id => saw_user = true,
+            ApplicationEvent::SessionRunChanged { run: changed, .. }
+                if changed.id == run.id && changed.state == RunState::Accepted =>
+            {
+                saw_accepted = true;
+            }
+            ApplicationEvent::SessionRunChanged { run: changed, .. }
+                if changed.id == run.id && changed.state == RunState::Active =>
+            {
+                saw_active = true;
+            }
+            ApplicationEvent::SessionAssistantDelta {
+                run_id,
+                sequence: 1,
+                delta,
+                ..
+            } if run_id == run.id && delta == "durable answer" => break,
+            other => panic!("unexpected live session event: {other:?}"),
+        }
+    }
+    assert!(saw_user && saw_accepted && saw_active);
+    complete_provider
+        .send(())
+        .unwrap_or_else(|_| panic!("provider completion should be released"));
     server.await.expect("provider fixture should finish");
 
-    let terminal = wait_for_terminal(&application, run.session_id, run.id).await;
+    let mut saw_assistant = false;
+    let terminal = loop {
+        let event = time::timeout(Duration::from_secs(5), subscription.next_event())
+            .await
+            .expect("terminal session event should arrive")
+            .expect("terminal session event should be valid");
+        match event {
+            ApplicationEvent::SessionTranscriptEntryCommitted {
+                entry: morons_protocol::TranscriptEntry::AssistantMessage { text, .. },
+                ..
+            } if text == "durable answer" => saw_assistant = true,
+            ApplicationEvent::SessionRunChanged { run: changed, .. }
+                if changed.id == run.id && changed.state.is_terminal() =>
+            {
+                break changed.state;
+            }
+            other => panic!("unexpected terminal session event: {other:?}"),
+        }
+    };
+    assert!(saw_assistant);
     assert_eq!(terminal, RunState::Succeeded);
     let first = application
         .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
@@ -220,6 +309,7 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
     let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
         entries,
         next_cursor,
+        ..
     }) = first
     else {
         panic!("transcript should return a page");
@@ -236,6 +326,7 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
     let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
         entries,
         next_cursor,
+        ..
     }) = second
     else {
         panic!("transcript should return a page");
@@ -246,6 +337,11 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
         [morons_protocol::TranscriptEntry::AssistantMessage { text, .. }]
             if text == "durable answer"
     ));
+    drop(subscription);
+    subscription_requests
+        .await
+        .expect("subscription task should join")
+        .expect("subscription disconnect should be clean");
     application.shutdown().await;
     drop(application);
     let database = fs::read(root.path().join("data").join("sessions.sqlite3"))
@@ -415,6 +511,7 @@ async fn wait_for_terminal(
 async fn spawn_successful_provider() -> (
     String,
     oneshot::Receiver<String>,
+    oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
 ) {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -424,6 +521,7 @@ async fn spawn_successful_provider() -> (
         .local_addr()
         .expect("provider fixture should have an address");
     let (captured_sender, captured_receiver) = oneshot::channel();
+    let (complete_sender, complete_receiver) = oneshot::channel();
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("request should connect");
         let request = read_http_request(&mut stream).await;
@@ -431,24 +529,44 @@ async fn spawn_successful_provider() -> (
         captured_sender
             .send(captured)
             .unwrap_or_else(|_| panic!("request should be observed"));
-        let body = concat!(
+        let first = concat!(
             "event: response.created\n",
             "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_run_1\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"muse-spark-1.2\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"output_index\":0,\"content_index\":0,\"item_id\":\"msg_run_1\",\"delta\":\"durable answer\",\"logprobs\":[]}\n\n"
+        );
+        let terminal = concat!(
             "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_run_1\",\"object\":\"response\",\"model\":\"muse-spark-1.2\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_run_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"durable answer\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":8,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":11}}}\n\n",
+            "data: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_run_1\",\"object\":\"response\",\"model\":\"muse-spark-1.2\",\"status\":\"completed\",\"output\":[{\"id\":\"msg_run_1\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"durable answer\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":8,\"input_tokens_details\":{\"cached_tokens\":0},\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":0},\"total_tokens\":11}}}\n\n",
             "data: [DONE]\n\n"
         );
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            first.len() + terminal.len()
         );
         stream
-            .write_all(response.as_bytes())
+            .write_all(headers.as_bytes())
             .await
-            .expect("response should be written");
+            .expect("response headers should be written");
+        stream
+            .write_all(first.as_bytes())
+            .await
+            .expect("streaming response should begin");
+        complete_receiver
+            .await
+            .unwrap_or_else(|_| panic!("provider completion should be released"));
+        stream
+            .write_all(terminal.as_bytes())
+            .await
+            .expect("terminal response should be written");
         stream.shutdown().await.expect("response should close");
     });
-    (format!("http://{address}"), captured_receiver, server)
+    (
+        format!("http://{address}"),
+        captured_receiver,
+        complete_sender,
+        server,
+    )
 }
 
 async fn spawn_stalled_provider() -> (String, oneshot::Receiver<()>, tokio::task::JoinHandle<()>) {

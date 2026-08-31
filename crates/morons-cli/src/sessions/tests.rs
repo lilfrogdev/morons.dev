@@ -1,7 +1,7 @@
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
     MessageId, MutationRequestId, OpenCodeService, RunId, RunState, RunSummary, ServerMessage,
-    SessionCatalogEventCursor, SessionId, SessionSummary, read_client_message,
+    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, read_client_message,
     write_server_message,
 };
 
@@ -296,6 +296,155 @@ async fn session_subscription_tracks_durable_catalog_cursor() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn session_subscription_tracks_durable_and_ephemeral_run_events() {
+    let (client_connection, mut server) = tokio::io::duplex(4096);
+    let client = ApplicationClient::from_negotiated_connection(client_connection);
+    let session_id = SessionId::from_bytes([0x41; 16]);
+    let run_id = RunId::from_bytes([0x42; 16]);
+    let initial_cursor = session_event_cursor(session_id, 9);
+    let active_cursor = session_event_cursor(session_id, 10);
+    let terminal_cursor = session_event_cursor(session_id, 11);
+    let mut run = RunSummary {
+        id: run_id,
+        session_id,
+        user_message_id: MessageId::from_bytes([0x43; 16]),
+        service: OpenCodeService::Zen,
+        model_id: "muse-spark-1.2".to_owned(),
+        protocol_revision: 1,
+        credential_generation: 2,
+        context_policy_version: 1,
+        state: RunState::Active,
+        cancellation_requested: false,
+        failure: None,
+        accepted_at_milliseconds: 41,
+        updated_at_milliseconds: 42,
+    };
+
+    let client_run = run.clone();
+    let client_exchange = async move {
+        let mut subscription = client
+            .subscribe_to_session(session_id, initial_cursor)
+            .await
+            .expect("client should start a session subscription");
+        assert_eq!(
+            subscription
+                .next_event()
+                .await
+                .expect("active run event should arrive"),
+            ApplicationEvent::SessionRunChanged {
+                cursor: active_cursor,
+                run: client_run,
+            }
+        );
+        assert!(matches!(
+            subscription
+                .next_event()
+                .await
+                .expect("first delta should arrive"),
+            ApplicationEvent::SessionAssistantDelta {
+                sequence: 1,
+                ref delta,
+                ..
+            } if delta == "partial"
+        ));
+        assert!(matches!(
+            subscription
+                .next_event()
+                .await
+                .expect("a delta sequence gap should be allowed"),
+            ApplicationEvent::SessionAssistantDelta { sequence: 3, .. }
+        ));
+        assert!(matches!(
+            subscription
+                .next_event()
+                .await
+                .expect("terminal run event should arrive"),
+            ApplicationEvent::SessionRunChanged {
+                cursor,
+                run: RunSummary { state: RunState::Succeeded, .. },
+            } if cursor == terminal_cursor
+        ));
+        assert_eq!(subscription.cursor(), terminal_cursor);
+        assert!(matches!(
+            subscription
+                .next_event()
+                .await
+                .expect_err("a post-terminal delta should fail closed"),
+            ApplicationClientError::EventScopeMismatch
+        ));
+    };
+    let server_exchange = async {
+        assert_eq!(
+            read_request(&mut server, 1).await,
+            ApplicationRequest::SubscribeSession {
+                session_id,
+                cursor: initial_cursor,
+            }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::SessionSubscriptionStarted {
+                    session_id,
+                    cursor: initial_cursor,
+                },
+            ),
+        )
+        .await
+        .expect("subscription response should be written");
+        write_server_message(
+            &mut server,
+            &ServerMessage::event(ApplicationEvent::SessionRunChanged {
+                cursor: active_cursor,
+                run: run.clone(),
+            }),
+        )
+        .await
+        .expect("active event should be written");
+        for (sequence, delta) in [(1, "partial"), (3, " answer")] {
+            write_server_message(
+                &mut server,
+                &ServerMessage::event(ApplicationEvent::SessionAssistantDelta {
+                    session_id,
+                    run_id,
+                    sequence,
+                    delta: delta.to_owned(),
+                    refusal: false,
+                }),
+            )
+            .await
+            .expect("delta should be written");
+        }
+        run.state = RunState::Succeeded;
+        run.updated_at_milliseconds = 43;
+        write_server_message(
+            &mut server,
+            &ServerMessage::event(ApplicationEvent::SessionRunChanged {
+                cursor: terminal_cursor,
+                run,
+            }),
+        )
+        .await
+        .expect("terminal event should be written");
+        write_server_message(
+            &mut server,
+            &ServerMessage::event(ApplicationEvent::SessionAssistantDelta {
+                session_id,
+                run_id,
+                sequence: 4,
+                delta: "stale".to_owned(),
+                refusal: false,
+            }),
+        )
+        .await
+        .expect("stale delta should be written");
+    };
+
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn missing_session_is_returned_as_none() {
     let (client_connection, mut server) = tokio::io::duplex(1024);
     let mut client = ApplicationClient::from_negotiated_connection(client_connection);
@@ -366,6 +515,13 @@ async fn mismatched_response_identifier_is_rejected() {
     };
 
     tokio::join!(client_exchange, server_exchange);
+}
+
+fn session_event_cursor(session_id: SessionId, sequence: u64) -> SessionEventCursor {
+    let mut bytes = [0_u8; 24];
+    bytes[..16].copy_from_slice(session_id.as_bytes());
+    bytes[16..].copy_from_slice(&sequence.to_be_bytes());
+    SessionEventCursor::from_bytes(bytes)
 }
 
 async fn read_request<S>(connection: &mut S, expected_request_id: u64) -> ApplicationRequest

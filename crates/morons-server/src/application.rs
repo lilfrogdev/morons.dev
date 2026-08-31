@@ -1,16 +1,23 @@
 mod conversions;
+pub(crate) mod events;
 
 use std::{error::Error, fmt, sync::Arc};
 
-use self::conversions::*;
+pub(crate) use self::events::{SessionCatalogSubscription, SessionSubscription};
+use self::{
+    conversions::*,
+    events::{AssistantDelta, SessionEventHub},
+};
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ResourceLimit,
-    ServerEndpoint, SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
+    ServerEndpoint,
 };
-use tokio::sync::watch;
 
 use crate::{
-    persistence::{PersistenceError, RunModelSelection, SessionCatalogEventCursor, SessionStore},
+    persistence::{
+        PersistenceError, RunModelSelection, SessionCatalogEventCursor, SessionEventCursor,
+        SessionEventPayload, SessionId, SessionStore,
+    },
     provider::{
         OpenCodeModelAvailability, OpenCodeProvider, OpenCodeService, ProviderError,
         find_open_code_model,
@@ -19,12 +26,13 @@ use crate::{
 };
 
 const SESSION_CATALOG_REPLAY_PAGE_SIZE: u16 = 100;
+const SESSION_REPLAY_PAGE_SIZE: u16 = 8;
 
 pub struct ServerApplication {
     sessions: Arc<SessionStore>,
     open_code: Arc<OpenCodeProvider>,
     run_supervisor: Arc<RunSupervisor>,
-    session_catalog_notifications: watch::Sender<u64>,
+    session_event_hub: Arc<SessionEventHub>,
 }
 
 #[derive(Debug)]
@@ -49,11 +57,7 @@ impl Error for ApplicationStartupError {
 pub(crate) enum ApplicationOutcome {
     Response(ApplicationResponse),
     SessionCatalogSubscription(SessionCatalogSubscription),
-}
-
-pub(crate) struct SessionCatalogSubscription {
-    pub(crate) cursor: SessionCatalogEventCursor,
-    pub(crate) notifications: watch::Receiver<u64>,
+    SessionSubscription(SessionSubscription),
 }
 
 pub(crate) struct DeliveredSessionCatalogEvent {
@@ -61,18 +65,9 @@ pub(crate) struct DeliveredSessionCatalogEvent {
     pub(crate) event: ApplicationEvent,
 }
 
-impl SessionCatalogSubscription {
-    pub(crate) fn protocol_cursor(&self) -> ProtocolSessionCatalogEventCursor {
-        to_protocol_catalog_cursor(self.cursor)
-    }
-
-    pub(crate) const fn sequence(&self) -> u64 {
-        self.cursor.sequence()
-    }
-
-    pub(crate) fn advance(&mut self, cursor: SessionCatalogEventCursor) {
-        self.cursor = cursor;
-    }
+pub(crate) struct DeliveredSessionEvent {
+    pub(crate) cursor: SessionEventCursor,
+    pub(crate) event: ApplicationEvent,
 }
 
 impl ServerApplication {
@@ -110,7 +105,6 @@ impl ServerApplication {
                     )
                     .await
                     .map_err(to_application_error)?;
-                self.publish_session_catalog_event(session.updated_sequence);
                 Ok(ApplicationOutcome::Response(
                     ApplicationResponse::SessionCreated {
                         session: to_session_summary(session),
@@ -148,7 +142,7 @@ impl ServerApplication {
             }
             ApplicationRequest::SubscribeSessionCatalog { cursor } => {
                 let cursor = to_persistence_catalog_cursor(cursor);
-                let notifications = self.session_catalog_notifications.subscribe();
+                let notifications = self.sessions.subscribe_event_notifications();
                 self.sessions
                     .read_session_catalog_events(cursor, 1)
                     .await
@@ -312,12 +306,36 @@ impl ServerApplication {
                     .map_err(to_application_error)?;
                 Ok(ApplicationOutcome::Response(
                     ApplicationResponse::SessionTranscriptListed {
+                        session: to_session_summary(page.session),
                         entries: page
                             .entries
                             .into_iter()
                             .map(to_protocol_transcript_entry)
                             .collect(),
+                        runs: page.runs.into_iter().map(to_run_summary).collect(),
+                        active_run_id: page.active_run_id.map(to_protocol_run_id),
                         next_cursor: page.next_cursor.map(to_protocol_transcript_cursor),
+                        event_cursor: to_protocol_session_event_cursor(page.event_cursor),
+                    },
+                ))
+            }
+            ApplicationRequest::SubscribeSession { session_id, cursor } => {
+                let session_id = to_persistence_session_id(session_id);
+                let cursor = to_persistence_session_event_cursor(cursor);
+                let notifications = self.sessions.subscribe_event_notifications();
+                let assistant_deltas = self.session_event_hub.subscribe_assistant_deltas();
+                self.sessions
+                    .read_session_events(session_id, cursor, 1)
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::SessionSubscription(
+                    SessionSubscription {
+                        session_id,
+                        cursor,
+                        notifications,
+                        assistant_deltas,
+                        active_run: None,
+                        terminal_run: None,
                     },
                 ))
             }
@@ -371,6 +389,49 @@ impl ServerApplication {
             .collect())
     }
 
+    pub(crate) async fn read_session_events(
+        &self,
+        session_id: SessionId,
+        cursor: SessionEventCursor,
+    ) -> Result<Vec<DeliveredSessionEvent>, ApplicationError> {
+        let page = self
+            .sessions
+            .read_session_events(session_id, cursor, SESSION_REPLAY_PAGE_SIZE)
+            .await
+            .map_err(to_application_error)?;
+        Ok(page
+            .events
+            .into_iter()
+            .map(|event| match event.payload {
+                SessionEventPayload::TranscriptEntry(entry) => DeliveredSessionEvent {
+                    cursor: event.cursor,
+                    event: ApplicationEvent::SessionTranscriptEntryCommitted {
+                        cursor: to_protocol_session_event_cursor(event.cursor),
+                        session_id: morons_protocol::SessionId::from_bytes(*session_id.as_bytes()),
+                        entry: to_protocol_transcript_entry(entry),
+                    },
+                },
+                SessionEventPayload::RunChanged(run) => DeliveredSessionEvent {
+                    cursor: event.cursor,
+                    event: ApplicationEvent::SessionRunChanged {
+                        cursor: to_protocol_session_event_cursor(event.cursor),
+                        run: to_run_summary(run),
+                    },
+                },
+            })
+            .collect())
+    }
+
+    pub(crate) fn assistant_delta_event(delta: AssistantDelta) -> ApplicationEvent {
+        ApplicationEvent::SessionAssistantDelta {
+            session_id: morons_protocol::SessionId::from_bytes(*delta.session_id.as_bytes()),
+            run_id: to_protocol_run_id(delta.run_id),
+            sequence: delta.sequence,
+            delta: delta.delta,
+            refusal: delta.refusal,
+        }
+    }
+
     pub(crate) fn from_session_store(sessions: SessionStore) -> Self {
         let sessions = Arc::new(sessions);
         let open_code = Arc::new(OpenCodeProvider::new(Arc::clone(&sessions)));
@@ -385,25 +446,17 @@ impl ServerApplication {
     }
 
     fn from_shared_parts(sessions: Arc<SessionStore>, open_code: Arc<OpenCodeProvider>) -> Self {
-        let run_supervisor = RunSupervisor::new(Arc::clone(&sessions), Arc::clone(&open_code));
-        let (session_catalog_notifications, _) = watch::channel(0);
+        let session_event_hub = SessionEventHub::new();
+        let run_supervisor = RunSupervisor::new(
+            Arc::clone(&sessions),
+            Arc::clone(&open_code),
+            Arc::clone(&session_event_hub),
+        );
         Self {
             sessions,
             open_code,
             run_supervisor,
-            session_catalog_notifications,
+            session_event_hub,
         }
-    }
-
-    fn publish_session_catalog_event(&self, event_sequence: u64) {
-        self.session_catalog_notifications
-            .send_if_modified(|current| {
-                if event_sequence > *current {
-                    *current = event_sequence;
-                    true
-                } else {
-                    false
-                }
-            });
     }
 }

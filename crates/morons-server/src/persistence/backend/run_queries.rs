@@ -1,12 +1,13 @@
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 
 use super::{
     Backend,
     records::{load_session, sequence_to_sql},
     run_records::{load_required_run, load_scoped_run, transcript_entry_from_row},
+    session_events::{active_run_id_at_sequence, load_run_at_sequence, session_event_high_water},
 };
 use crate::persistence::{
-    PersistenceError, Run, RunId, SessionId, TranscriptCursor, TranscriptPage,
+    PersistenceError, Run, RunId, SessionEventCursor, SessionId, TranscriptCursor, TranscriptPage,
     run_types::{CONTEXT_POLICY_VERSION, RunContext},
 };
 
@@ -28,37 +29,77 @@ impl Backend {
         cursor: Option<TranscriptCursor>,
         limit: u16,
     ) -> Result<TranscriptPage, PersistenceError> {
-        let current_high_water = self
+        let session =
+            load_session(&self.connection, session_id)?.ok_or(PersistenceError::SessionNotFound)?;
+        let current_entry_high_water = self
             .connection
             .query_row(
                 "SELECT entry_high_water FROM session_run_states WHERE session_id = ?1",
                 [&session_id.as_bytes()[..]],
                 |row| row.get::<_, i64>(0),
             )
-            .optional()?
-            .ok_or(PersistenceError::SessionNotFound)
             .and_then(|value| {
-                u64::try_from(value).map_err(|_| PersistenceError::InvalidState {
-                    reason: "a session entry high water is invalid",
-                })
+                u64::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
             })?;
+        let current_event_high_water = session_event_high_water(&self.connection, session_id)?;
         if cursor.is_some_and(|cursor| cursor.session_id() != session_id) {
             return Err(PersistenceError::InvalidInput {
                 reason: "a transcript cursor belongs to another session",
             });
         }
-        let (snapshot_entry_sequence, after_entry_sequence) =
-            cursor.map_or((current_high_water, 0), |cursor| {
-                (
-                    cursor.snapshot_entry_sequence(),
-                    cursor.after_entry_sequence(),
-                )
-            });
-        if snapshot_entry_sequence > current_high_water
+        let (snapshot_entry_sequence, snapshot_event_sequence, after_entry_sequence) = cursor
+            .map_or(
+                (current_entry_high_water, current_event_high_water, 0),
+                |cursor| {
+                    (
+                        cursor.snapshot_entry_sequence(),
+                        cursor.snapshot_event_sequence(),
+                        cursor.after_entry_sequence(),
+                    )
+                },
+            );
+        if snapshot_entry_sequence > current_entry_high_water
+            || snapshot_event_sequence > current_event_high_water
             || after_entry_sequence > snapshot_entry_sequence
         {
             return Err(PersistenceError::InvalidInput {
                 reason: "a transcript cursor is outside the available snapshot",
+            });
+        }
+        let snapshot_entry_high_water = self.connection.query_row(
+            "SELECT COALESCE(MAX(entry_sequence), 0)
+             FROM session_entries
+             WHERE session_id = ?1 AND fact_sequence <= ?2",
+            params![
+                &session_id.as_bytes()[..],
+                sequence_to_sql(snapshot_event_sequence)?
+            ],
+            |row| row.get::<_, i64>(0),
+        )?;
+        if u64::try_from(snapshot_entry_high_water).ok() != Some(snapshot_entry_sequence) {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a transcript cursor has inconsistent snapshot high waters",
+            });
+        }
+        let cuts_run_acceptance: bool = self.connection.query_row(
+            "SELECT EXISTS (
+                 SELECT 1
+                 FROM session_entries AS entry
+                 INNER JOIN run_accepted_facts AS run ON run.run_id = entry.run_id
+                 WHERE entry.session_id = ?1
+                   AND entry.entry_sequence <= ?2
+                   AND run.fact_sequence > ?3
+             )",
+            params![
+                &session_id.as_bytes()[..],
+                sequence_to_sql(snapshot_entry_sequence)?,
+                sequence_to_sql(snapshot_event_sequence)?
+            ],
+            |row| row.get(0),
+        )?;
+        if cuts_run_acceptance {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a transcript cursor cuts an atomic run acceptance",
             });
         }
 
@@ -77,8 +118,9 @@ impl Backend {
              WHERE session_id = ?1
                AND entry_sequence > ?2
                AND entry_sequence <= ?3
+               AND fact_sequence <= ?4
              ORDER BY entry_sequence
-             LIMIT ?4",
+             LIMIT ?5",
         )?;
         let mut entries = statement
             .query_map(
@@ -86,6 +128,7 @@ impl Backend {
                     &session_id.as_bytes()[..],
                     sequence_to_sql(after_entry_sequence)?,
                     sequence_to_sql(snapshot_entry_sequence)?,
+                    sequence_to_sql(snapshot_event_sequence)?,
                     i64::from(limit) + 1,
                 ],
                 transcript_entry_from_row,
@@ -105,14 +148,34 @@ impl Backend {
             Some(TranscriptCursor::new(
                 session_id,
                 snapshot_entry_sequence,
+                snapshot_event_sequence,
                 after_entry_sequence,
             ))
         } else {
             None
         };
+        let active_run_id =
+            active_run_id_at_sequence(&self.connection, session_id, snapshot_event_sequence)?;
+        let mut run_ids = entries
+            .iter()
+            .map(|entry| entry.run_id())
+            .collect::<Vec<_>>();
+        if let Some(active_run_id) = active_run_id
+            && !run_ids.contains(&active_run_id)
+        {
+            run_ids.push(active_run_id);
+        }
+        let runs = run_ids
+            .into_iter()
+            .map(|run_id| load_run_at_sequence(&self.connection, run_id, snapshot_event_sequence))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(TranscriptPage {
+            session,
             entries,
+            runs,
+            active_run_id,
             next_cursor,
+            event_cursor: SessionEventCursor::new(session_id, snapshot_event_sequence),
         })
     }
 

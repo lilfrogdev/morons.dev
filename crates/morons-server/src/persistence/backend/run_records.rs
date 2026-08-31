@@ -262,7 +262,10 @@ pub(super) fn transcript_entry_from_row(
     }
 }
 
-fn positive_u16_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u16> {
+pub(super) fn positive_u16_from_row(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<u16> {
     let value = nonnegative_integer_from_row(row, index)?;
     u16::try_from(value)
         .ok()
@@ -275,7 +278,10 @@ fn positive_u16_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Res
         })
 }
 
-fn positive_u32_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u32> {
+pub(super) fn positive_u32_from_row(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<u32> {
     let value = nonnegative_integer_from_row(row, index)?;
     u32::try_from(value)
         .ok()
