@@ -15,9 +15,15 @@ repository = "https://github.com/lilfrogdev/morons.dev"
 publish = false
 
 [workspace.dependencies]
+bytes = "=1.12.1"
 fence-windows = "=0.1.0-alpha.2"
 getrandom = { version = "=0.4.3", features = ["std"] }
 hmac = { version = "=0.13.0", default-features = false }
+http = "=1.5.0"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.10.0", default-features = false, features = ["client", "http1"] }
+hyper-rustls = { version = "=0.27.9", default-features = false, features = ["aws-lc-rs", "http1", "tls12", "webpki-tokio"] }
+hyper-util = { version = "=0.1.20", default-features = false, features = ["client-legacy", "http1", "tokio"] }
 interprocess = { version = "=2.4.3", default-features = false, features = ["tokio"] }
 rustix = { version = "=1.1.4", default-features = false }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["bundled", "limits", "load_extension"] }

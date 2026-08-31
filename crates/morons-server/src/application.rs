@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::Arc};
 
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse,
@@ -9,15 +9,19 @@ use morons_protocol::{
 };
 use tokio::sync::watch;
 
-use crate::persistence::{
-    MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
-    Session, SessionCatalogEventCursor, SessionId, SessionListCursor, SessionStore,
+use crate::{
+    persistence::{
+        MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
+        Session, SessionCatalogEventCursor, SessionId, SessionListCursor, SessionStore,
+    },
+    provider::{OpenCodeModelAvailability, OpenCodeProvider, OpenCodeService, ProviderError},
 };
 
 const SESSION_CATALOG_REPLAY_PAGE_SIZE: u16 = 100;
 
 pub struct ServerApplication {
-    sessions: SessionStore,
+    sessions: Arc<SessionStore>,
+    open_code: OpenCodeProvider,
     session_catalog_notifications: watch::Sender<u64>,
 }
 
@@ -74,6 +78,13 @@ impl ServerApplication {
         SessionStore::open(server)
             .map(Self::from_session_store)
             .map_err(ApplicationStartupError)
+    }
+
+    pub async fn open_code_model_availability(
+        &self,
+        service: OpenCodeService,
+    ) -> Result<Vec<OpenCodeModelAvailability>, ProviderError> {
+        self.open_code.fetch_catalog(service).await
     }
 
     pub(crate) async fn execute_for_local_owner(
@@ -219,9 +230,12 @@ impl ServerApplication {
     }
 
     pub(crate) fn from_session_store(sessions: SessionStore) -> Self {
+        let sessions = Arc::new(sessions);
+        let open_code = OpenCodeProvider::new(Arc::clone(&sessions));
         let (session_catalog_notifications, _) = watch::channel(0);
         Self {
             sessions,
+            open_code,
             session_catalog_notifications,
         }
     }
@@ -314,6 +328,7 @@ fn to_application_error(error: PersistenceError) -> ApplicationError {
         PersistenceError::CredentialGenerationConflict => {
             ApplicationError::CredentialGenerationConflict
         }
+        PersistenceError::CredentialNotConfigured => ApplicationError::ServiceUnavailable,
         PersistenceError::CredentialMutationNotApplied => {
             ApplicationError::CredentialMutationNotApplied
         }

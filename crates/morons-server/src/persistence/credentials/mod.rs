@@ -73,6 +73,19 @@ impl CredentialStore {
         &self.state
     }
 
+    pub(super) fn clone_key_for_dispatch(
+        &self,
+        expected_generation: u64,
+    ) -> Result<StoredOpenCodeApiKey, PersistenceError> {
+        self.ensure_consistent()?;
+        if expected_generation != self.state.generation() {
+            return Err(PersistenceError::CredentialGenerationConflict);
+        }
+        self.state
+            .clone_api_key_for_dispatch()
+            .ok_or(PersistenceError::CredentialNotConfigured)
+    }
+
     pub(super) fn apply(
         &mut self,
         expected_generation: u64,
