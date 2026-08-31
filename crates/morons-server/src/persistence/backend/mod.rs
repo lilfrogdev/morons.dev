@@ -2,6 +2,12 @@ mod creation;
 mod credential_mutation;
 mod queries;
 mod records;
+mod run_acceptance;
+mod run_cancellation;
+mod run_execution;
+mod run_queries;
+mod run_records;
+mod run_recovery;
 mod workspace_creation;
 
 use rusqlite::Connection;
@@ -27,6 +33,7 @@ impl Backend {
         backend.recover_credential_mutations()?;
         backend.recover_incomplete_session_creations()?;
         backend.validate_ready_workspaces()?;
+        backend.recover_nonterminal_runs()?;
         Ok(backend)
     }
 }

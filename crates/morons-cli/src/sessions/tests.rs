@@ -1,7 +1,8 @@
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
-    MutationRequestId, ServerMessage, SessionCatalogEventCursor, SessionId, SessionSummary,
-    read_client_message, write_server_message,
+    MessageId, MutationRequestId, OpenCodeService, RunId, RunState, RunSummary, ServerMessage,
+    SessionCatalogEventCursor, SessionId, SessionSummary, read_client_message,
+    write_server_message,
 };
 
 use super::{ApplicationClient, ApplicationClientError};
@@ -98,6 +99,118 @@ async fn session_client_correlates_create_get_and_list_requests() {
         )
         .await
         .expect("list response should be written");
+    };
+
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_submits_inspects_and_cancels_exact_run() {
+    let (client_connection, mut server) = tokio::io::duplex(4096);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let mutation_request_id = MutationRequestId::from_bytes([0x31; 16]);
+    let cancellation_request_id = MutationRequestId::from_bytes([0x32; 16]);
+    let session_id = SessionId::from_bytes([0x33; 16]);
+    let run_id = RunId::from_bytes([0x34; 16]);
+    let user_message_id = MessageId::from_bytes([0x35; 16]);
+    let run = RunSummary {
+        id: run_id,
+        session_id,
+        user_message_id,
+        service: OpenCodeService::Zen,
+        model_id: "muse-spark-1.2".to_owned(),
+        protocol_revision: 1,
+        credential_generation: 2,
+        context_policy_version: 1,
+        state: RunState::Active,
+        cancellation_requested: false,
+        failure: None,
+        accepted_at_milliseconds: 41,
+        updated_at_milliseconds: 42,
+    };
+
+    let client_exchange = async {
+        let accepted = client
+            .submit_session_input(
+                mutation_request_id,
+                session_id,
+                "hello".to_owned(),
+                OpenCodeService::Zen,
+                "muse-spark-1.2".to_owned(),
+            )
+            .await
+            .expect("input should be accepted");
+        assert_eq!(accepted.user_message_id, user_message_id);
+        assert_eq!(accepted.run, run);
+        assert_eq!(
+            client
+                .get_run(session_id, run_id)
+                .await
+                .expect("run query should succeed"),
+            Some(run.clone())
+        );
+        let cancelled = client
+            .cancel_run(cancellation_request_id, session_id, run_id)
+            .await
+            .expect("cancellation should resolve");
+        assert_eq!(cancelled.run_id, run_id);
+        assert_eq!(cancelled.state, RunState::Active);
+        assert!(cancelled.cancellation_requested);
+    };
+    let server_exchange = async {
+        assert_eq!(
+            read_request(&mut server, 1).await,
+            ApplicationRequest::SubmitSessionInput {
+                mutation_request_id,
+                session_id,
+                text: "hello".to_owned(),
+                service: OpenCodeService::Zen,
+                model_id: "muse-spark-1.2".to_owned(),
+            }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::SessionInputAccepted {
+                    user_message_id,
+                    run: run.clone(),
+                },
+            ),
+        )
+        .await
+        .expect("acceptance should write");
+        assert_eq!(
+            read_request(&mut server, 2).await,
+            ApplicationRequest::GetRun { session_id, run_id }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(2, ApplicationResponse::RunFound { run: run.clone() }),
+        )
+        .await
+        .expect("run response should write");
+        assert_eq!(
+            read_request(&mut server, 3).await,
+            ApplicationRequest::CancelRun {
+                mutation_request_id: cancellation_request_id,
+                session_id,
+                run_id,
+            }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                3,
+                ApplicationResponse::RunCancellationResolved {
+                    run_id,
+                    state: RunState::Active,
+                    cancellation_requested: true,
+                },
+            ),
+        )
+        .await
+        .expect("cancellation response should write");
     };
 
     tokio::join!(client_exchange, server_exchange);

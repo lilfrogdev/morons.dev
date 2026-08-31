@@ -613,7 +613,7 @@ async fn startup_reconciles_a_dispatched_workspace_before_finalizing_the_session
 }
 
 #[test]
-fn schema_version_one_migrates_to_version_two() {
+fn schema_version_one_migrates_to_version_three() {
     let root = TestRoot::new("schema-v1-migration");
     let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
     let (initialization_path, file) = paths
@@ -674,7 +674,7 @@ fn schema_version_one_migrates_to_version_two() {
         .expect("version one database should install");
 
     let connection = database::open(&paths).expect("version one database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 2);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 3);
     let mutation_operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -683,6 +683,94 @@ fn schema_version_one_migrates_to_version_two() {
         )
         .expect("migrated request should be registered");
     assert_eq!(mutation_operation, 1);
+}
+
+#[test]
+fn stale_private_migration_backup_temporary_file_is_removed() {
+    let root = TestRoot::new("stale-migration-backup");
+    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
+    let (temporary_path, file) = paths
+        .create_migration_backup_file(2, &[0xc1; 16])
+        .expect("temporary migration backup should be created");
+    drop(file);
+    drop(paths);
+
+    StoragePaths::prepare(root.path()).expect("stale backup cleanup should succeed");
+    assert!(!temporary_path.exists());
+}
+
+#[test]
+fn schema_version_two_migrates_to_version_three() {
+    let root = TestRoot::new("schema-v2-migration");
+    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
+    let (initialization_path, file) = paths
+        .create_database_initialization_file(&[0xd1; 16])
+        .expect("initialization file should be created");
+    drop(file);
+    let connection =
+        Connection::open(&initialization_path).expect("version two fixture should open");
+    connection
+        .execute_batch(include_str!("schema_v1.sql"))
+        .expect("version one schema should initialize");
+    connection
+        .execute_batch(include_str!("schema_v2.sql"))
+        .expect("version two schema should initialize");
+    let request_id = [0xd2_u8; 16];
+    connection
+        .execute(
+            "INSERT INTO mutation_requests (
+                request_id, operation_kind, accepted_sequence, accepted_at_milliseconds
+             ) VALUES (?1, 3, 1, 1000)",
+            [&request_id[..]],
+        )
+        .expect("version two mutation should be inserted");
+    connection
+        .execute(
+            "INSERT INTO credential_mutation_requests (
+                request_id, operation_kind, expected_generation,
+                accepted_sequence, accepted_at_milliseconds, state,
+                result_generation, result_configured
+             ) VALUES (?1, 3, 0, 1, 1000, 3, NULL, NULL)",
+            [&request_id[..]],
+        )
+        .expect("version two credential request should be inserted");
+    connection
+        .execute(
+            "UPDATE logical_sequences SET next_value = 2 WHERE singleton = 1",
+            [],
+        )
+        .expect("version two sequence should advance past fixture");
+    drop(connection);
+    paths
+        .install_database(&initialization_path)
+        .expect("version two database should install");
+
+    let connection = database::open(&paths).expect("version two database should migrate");
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 3);
+    let operation: i64 = connection
+        .query_row(
+            "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
+            [&request_id[..]],
+            |row| row.get(0),
+        )
+        .expect("version two mutation should survive migration");
+    assert_eq!(operation, 3);
+    let backup_path = root
+        .path()
+        .join("backups")
+        .join("sessions-before-schema-v2.sqlite3");
+    let backup = Connection::open(&backup_path).expect("migration backup should open");
+    assert_eq!(pragma_integer(&backup, "PRAGMA user_version"), 2);
+    let backup_operation: i64 = backup
+        .query_row(
+            "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
+            [&request_id[..]],
+            |row| row.get(0),
+        )
+        .expect("migration backup should preserve version two state");
+    assert_eq!(backup_operation, 3);
+    #[cfg(unix)]
+    assert_mode(&backup_path, 0o600);
 }
 
 #[test]
@@ -719,7 +807,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     let connection =
         Connection::open(&database_path).expect("database should open for test change");
     connection
-        .execute_batch("PRAGMA user_version = 3;")
+        .execute_batch("PRAGMA user_version = 4;")
         .expect("test schema version should change");
     drop(connection);
 
@@ -727,7 +815,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
 
     let connection = Connection::open(database_path).expect("database should remain readable");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 3);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 4);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -804,6 +892,7 @@ async fn database_and_workspace_state_are_owner_only() {
 
     assert_mode(&root.path().join("data"), 0o700);
     assert_mode(&root.path().join("workspaces"), 0o700);
+    assert_mode(&root.path().join("backups"), 0o700);
     assert_mode(&root.path().join("credentials"), 0o700);
     assert_mode(&root.path().join("data").join("sessions.sqlite3"), 0o600);
     assert_mode(

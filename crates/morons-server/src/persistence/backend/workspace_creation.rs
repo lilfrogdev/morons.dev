@@ -196,6 +196,18 @@ impl Backend {
             ],
         )?;
         transaction.execute(
+            "INSERT INTO session_run_states (
+                session_id,
+                active_run_id,
+                entry_high_water,
+                updated_sequence
+             ) VALUES (?1, NULL, 0, ?2)",
+            params![
+                &current.session_id.as_bytes()[..],
+                sequence_to_sql(session_fact_sequence)?,
+            ],
+        )?;
+        transaction.execute(
             "INSERT INTO delivery_events (
                 event_id,
                 event_sequence,

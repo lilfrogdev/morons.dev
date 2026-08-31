@@ -5,7 +5,10 @@ use super::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, MutationRequestId,
     ResourceLimit, SessionCatalogEventCursor, SessionId, SessionListCursor, SessionSummary,
 };
-use crate::{ClientMessage, OpenCodeApiKey, OpenCodeCredentialStatus};
+use crate::{
+    ClientMessage, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeService,
+    RunFailureKind, RunId, RunState, RunSummary,
+};
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
 
@@ -23,6 +26,32 @@ fn application_request_has_stable_json_shape() {
             "operation": "create_session",
             "mutation_request_id": "mut_11111111111111111111111111111111",
             "display_name": "A session",
+        })
+    );
+}
+
+#[test]
+fn run_request_has_stable_json_shape() {
+    let request = ApplicationRequest::SubmitSessionInput {
+        mutation_request_id: MutationRequestId::from_bytes([0x12; 16]),
+        session_id: SessionId::from_bytes([0x13; 16]),
+        text: "sensitive prompt text".to_owned(),
+        service: OpenCodeService::Zen,
+        model_id: "muse-spark-1.2".to_owned(),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("sensitive prompt text"));
+    assert!(debug.contains("text_bytes"));
+
+    assert_eq!(
+        serde_json::to_value(request).expect("run request should encode"),
+        json!({
+            "operation": "submit_session_input",
+            "mutation_request_id": "mut_12121212121212121212121212121212",
+            "session_id": "ses_13131313131313131313131313131313",
+            "text": "sensitive prompt text",
+            "service": "zen",
+            "model_id": "muse-spark-1.2",
         })
     );
 }
@@ -99,6 +128,49 @@ fn application_response_has_stable_json_shape() {
             }],
             "next_cursor": "sc2_00000000000000090000000000000007",
             "catalog_cursor": "scc1_0000000000000009",
+        })
+    );
+}
+
+#[test]
+fn run_response_has_stable_json_shape() {
+    let response = ApplicationResponse::RunFound {
+        run: RunSummary {
+            id: RunId::from_bytes([0x31; 16]),
+            session_id: SessionId::from_bytes([0x32; 16]),
+            user_message_id: MessageId::from_bytes([0x33; 16]),
+            service: OpenCodeService::Go,
+            model_id: "grok-4.6".to_owned(),
+            protocol_revision: 1,
+            credential_generation: 4,
+            context_policy_version: 1,
+            state: RunState::Failed,
+            cancellation_requested: false,
+            failure: Some(RunFailureKind::RateLimited),
+            accepted_at_milliseconds: 41,
+            updated_at_milliseconds: 42,
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value(response).expect("run response should encode"),
+        json!({
+            "result": "run_found",
+            "run": {
+                "id": "run_31313131313131313131313131313131",
+                "session_id": "ses_32323232323232323232323232323232",
+                "user_message_id": "msg_33333333333333333333333333333333",
+                "service": "go",
+                "model_id": "grok-4.6",
+                "protocol_revision": 1,
+                "credential_generation": 4,
+                "context_policy_version": 1,
+                "state": "failed",
+                "cancellation_requested": false,
+                "failure": "rate_limited",
+                "accepted_at_milliseconds": 41,
+                "updated_at_milliseconds": 42,
+            },
         })
     );
 }

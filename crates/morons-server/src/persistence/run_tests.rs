@@ -1,0 +1,559 @@
+use std::{fs, path::PathBuf, process};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+use rusqlite::Connection;
+
+use super::{
+    ActivationOutcome, CompletedAssistant, DispatchOutcome, MutationRequestId,
+    OpenCodeCredentialStatus, PersistenceError, PrepareOperationOutcome, ProviderUsage,
+    RunModelSelection, RunOpenCodeService, RunState, SessionStore, TranscriptEntry,
+};
+
+const TEST_MODEL: &str = "muse-spark-1.2";
+
+#[tokio::test(flavor = "current_thread")]
+async fn rejected_run_input_does_not_append_transcript_state() {
+    let root = TestRoot::new("rejected-run-input");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x09; 16]), None)
+        .await
+        .expect("session should be created");
+    let error = store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0x0a; 16]),
+            session.id,
+            "must not commit".to_owned(),
+            model_selection(),
+        )
+        .await
+        .expect_err("missing credential should reject input");
+    assert!(matches!(error, PersistenceError::CredentialNotConfigured));
+    let transcript = store
+        .list_session_transcript(session.id, None, 1)
+        .await
+        .expect("empty transcript should remain readable");
+    assert!(transcript.entries.is_empty());
+    assert!(transcript.next_cursor.is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_input_is_atomic_idempotent_and_session_serialized() {
+    let root = TestRoot::new("run-acceptance");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    configure_credential(&store).await;
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x11; 16]), None)
+        .await
+        .expect("session should be created");
+    let request_id = MutationRequestId::from_bytes([0x12; 16]);
+    let accepted = store
+        .accept_session_input(
+            request_id,
+            session.id,
+            "hello durable run".to_owned(),
+            model_selection(),
+        )
+        .await
+        .expect("input should be accepted");
+
+    assert!(accepted.newly_accepted);
+    assert_eq!(accepted.run.state, RunState::Accepted);
+    assert_eq!(accepted.run.credential_generation, 1);
+    let retry = store
+        .find_session_input_retry(
+            request_id,
+            session.id,
+            "hello durable run",
+            RunOpenCodeService::Zen,
+            TEST_MODEL,
+        )
+        .await
+        .expect("retry should resolve")
+        .expect("retry should exist");
+    assert!(!retry.newly_accepted);
+    assert_eq!(retry.run.id, accepted.run.id);
+    assert_eq!(retry.user_message_id, accepted.user_message_id);
+
+    let conflict = store
+        .find_session_input_retry(
+            request_id,
+            session.id,
+            "different input",
+            RunOpenCodeService::Zen,
+            TEST_MODEL,
+        )
+        .await
+        .expect_err("conflicting retry should fail");
+    assert!(matches!(conflict, PersistenceError::RequestConflict));
+
+    let busy = store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0x13; 16]),
+            session.id,
+            "must not queue".to_owned(),
+            model_selection(),
+        )
+        .await
+        .expect_err("a session with a run should be busy");
+    assert!(matches!(
+        busy,
+        PersistenceError::SessionBusy { active_run_id } if active_run_id == accepted.run.id
+    ));
+
+    let page = store
+        .list_session_transcript(session.id, None, 1)
+        .await
+        .expect("transcript should be readable");
+    assert_eq!(page.entries.len(), 1);
+    assert!(matches!(
+        &page.entries[0],
+        TranscriptEntry::UserMessage { id, run_id, text, .. }
+            if *id == accepted.user_message_id
+                && *run_id == accepted.run.id
+                && text == "hello durable run"
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_session_input_accepts_one_run_without_queueing() {
+    let root = TestRoot::new("concurrent-run-acceptance");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    configure_credential(&store).await;
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x61; 16]), None)
+        .await
+        .expect("session should be created");
+    let first = store.accept_session_input(
+        MutationRequestId::from_bytes([0x62; 16]),
+        session.id,
+        "first concurrent input".to_owned(),
+        model_selection(),
+    );
+    let second = store.accept_session_input(
+        MutationRequestId::from_bytes([0x63; 16]),
+        session.id,
+        "second concurrent input".to_owned(),
+        model_selection(),
+    );
+    let (first, second) = tokio::join!(first, second);
+    let outcomes = [first, second];
+    assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| matches!(result, Err(PersistenceError::SessionBusy { .. })))
+            .count(),
+        1
+    );
+    let page = store
+        .list_session_transcript(session.id, None, 1)
+        .await
+        .expect("transcript should remain readable");
+    assert_eq!(page.entries.len(), 1);
+    assert!(page.next_cursor.is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn complete_provider_outcome_commits_assistant_and_terminal_run() {
+    let root = TestRoot::new("run-completion");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    configure_credential(&store).await;
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x21; 16]), None)
+        .await
+        .expect("session should be created");
+    let accepted = store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0x22; 16]),
+            session.id,
+            "answer this".to_owned(),
+            model_selection(),
+        )
+        .await
+        .expect("input should be accepted");
+    assert_eq!(
+        store
+            .activate_run(accepted.run.id)
+            .await
+            .expect("run should activate"),
+        ActivationOutcome::Active
+    );
+    let context = store
+        .load_run_context(accepted.run.id)
+        .await
+        .expect("run context should load");
+    assert_eq!(context.entries.len(), 1);
+    let operation_id = match store
+        .prepare_provider_operation(accepted.run.id)
+        .await
+        .expect("provider operation should prepare")
+    {
+        PrepareOperationOutcome::Prepared(operation_id) => operation_id,
+        other => panic!("unexpected preparation outcome: {other:?}"),
+    };
+    assert_eq!(
+        store
+            .mark_provider_dispatched(accepted.run.id, operation_id)
+            .await
+            .expect("provider operation should dispatch"),
+        DispatchOutcome::Dispatched
+    );
+    let completed = store
+        .complete_run_success(
+            accepted.run.id,
+            operation_id,
+            CompletedAssistant {
+                text: "durable answer".to_owned(),
+                refusal: false,
+                provider_response_id: "resp_test".to_owned(),
+                usage: ProviderUsage {
+                    input_tokens: 10,
+                    cached_input_tokens: 0,
+                    cache_write_input_tokens: 0,
+                    output_tokens: 4,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 14,
+                },
+            },
+        )
+        .await
+        .expect("provider outcome should complete");
+    assert_eq!(completed.state, RunState::Succeeded);
+    let retry = store
+        .find_session_input_retry(
+            MutationRequestId::from_bytes([0x22; 16]),
+            session.id,
+            "answer this",
+            RunOpenCodeService::Zen,
+            TEST_MODEL,
+        )
+        .await
+        .expect("terminal input retry should resolve")
+        .expect("terminal input retry should exist");
+    assert_eq!(retry.run.id, accepted.run.id);
+    assert_eq!(retry.run.state, RunState::Accepted);
+
+    let first = store
+        .list_session_transcript(session.id, None, 1)
+        .await
+        .expect("first transcript page should load");
+    let other_session = store
+        .create_session(MutationRequestId::from_bytes([0x24; 16]), None)
+        .await
+        .expect("second session should be created");
+    let cross_session = store
+        .list_session_transcript(other_session.id, first.next_cursor, 1)
+        .await
+        .expect_err("cross-session transcript cursor should fail");
+    assert!(matches!(
+        cross_session,
+        PersistenceError::InvalidInput { .. }
+    ));
+    let second = store
+        .list_session_transcript(session.id, first.next_cursor, 1)
+        .await
+        .expect("second transcript page should load");
+    assert!(first.next_cursor.is_some());
+    assert!(second.next_cursor.is_none());
+    assert!(matches!(
+        &second.entries[0],
+        TranscriptEntry::AssistantMessage { run_id, text, .. }
+            if *run_id == accepted.run.id && text == "durable answer"
+    ));
+
+    let next = store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0x23; 16]),
+            session.id,
+            "continue deterministically".to_owned(),
+            model_selection(),
+        )
+        .await
+        .expect("a new run should be accepted after success");
+    store
+        .activate_run(next.run.id)
+        .await
+        .expect("next run should activate");
+    let fixed_snapshot = store
+        .list_session_transcript(session.id, first.next_cursor, 1)
+        .await
+        .expect("fixed transcript snapshot should remain readable");
+    assert!(fixed_snapshot.next_cursor.is_none());
+    assert!(matches!(
+        &fixed_snapshot.entries[..],
+        [TranscriptEntry::AssistantMessage { run_id, .. }] if *run_id == accepted.run.id
+    ));
+    let context = store
+        .load_run_context(next.run.id)
+        .await
+        .expect("next run context should load");
+    assert_eq!(context.entries.len(), 3);
+    assert!(matches!(
+        &context.entries[..],
+        [
+            TranscriptEntry::UserMessage { .. },
+            TranscriptEntry::AssistantMessage { .. },
+            TranscriptEntry::UserMessage { run_id, .. },
+        ] if *run_id == next.run.id
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancellation_is_exact_durable_and_stops_before_dispatch() {
+    let root = TestRoot::new("run-cancellation");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    configure_credential(&store).await;
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x31; 16]), None)
+        .await
+        .expect("session should be created");
+    let accepted = store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0x32; 16]),
+            session.id,
+            "cancel this".to_owned(),
+            model_selection(),
+        )
+        .await
+        .expect("input should be accepted");
+    store
+        .activate_run(accepted.run.id)
+        .await
+        .expect("run should activate");
+    let operation_id = match store
+        .prepare_provider_operation(accepted.run.id)
+        .await
+        .expect("provider operation should prepare")
+    {
+        PrepareOperationOutcome::Prepared(operation_id) => operation_id,
+        other => panic!("unexpected preparation outcome: {other:?}"),
+    };
+    let cancellation_id = MutationRequestId::from_bytes([0x33; 16]);
+    let cancellation = store
+        .cancel_run(cancellation_id, session.id, accepted.run.id)
+        .await
+        .expect("cancellation intent should commit");
+    assert!(cancellation.intent_applied);
+    assert_eq!(cancellation.state, RunState::Active);
+    assert!(cancellation.cancellation_requested);
+    let retry = store
+        .cancel_run(cancellation_id, session.id, accepted.run.id)
+        .await
+        .expect("cancellation retry should resolve");
+    assert_eq!(retry, cancellation);
+    assert_eq!(
+        store
+            .mark_provider_dispatched(accepted.run.id, operation_id)
+            .await
+            .expect("dispatch boundary should observe cancellation"),
+        DispatchOutcome::Cancelled
+    );
+    let run = store
+        .get_run(session.id, accepted.run.id)
+        .await
+        .expect("run query should succeed")
+        .expect("run should exist");
+    assert_eq!(run.state, RunState::Cancelled);
+    let terminal = store
+        .cancel_run(
+            MutationRequestId::from_bytes([0x34; 16]),
+            session.id,
+            accepted.run.id,
+        )
+        .await
+        .expect("terminal cancellation should return terminal state");
+    assert_eq!(terminal.state, RunState::Cancelled);
+    assert!(terminal.cancellation_requested);
+    assert!(!terminal.intent_applied);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_interrupts_nonterminal_runs_without_redispatch() {
+    let root = TestRoot::new("run-recovery");
+    let run_id;
+    let session_id;
+    {
+        let store = SessionStore::open_at(root.path()).expect("session store should open");
+        configure_credential(&store).await;
+        let session = store
+            .create_session(MutationRequestId::from_bytes([0x41; 16]), None)
+            .await
+            .expect("session should be created");
+        let accepted = store
+            .accept_session_input(
+                MutationRequestId::from_bytes([0x42; 16]),
+                session.id,
+                "recover me".to_owned(),
+                model_selection(),
+            )
+            .await
+            .expect("input should be accepted");
+        store
+            .activate_run(accepted.run.id)
+            .await
+            .expect("run should activate");
+        let operation_id = match store
+            .prepare_provider_operation(accepted.run.id)
+            .await
+            .expect("provider operation should prepare")
+        {
+            PrepareOperationOutcome::Prepared(operation_id) => operation_id,
+            other => panic!("unexpected preparation outcome: {other:?}"),
+        };
+        store
+            .mark_provider_dispatched(accepted.run.id, operation_id)
+            .await
+            .expect("provider operation should be marked dispatched");
+        run_id = accepted.run.id;
+        session_id = session.id;
+    }
+
+    let reopened = SessionStore::open_at(root.path()).expect("session store should recover");
+    let recovered = reopened
+        .get_run(session_id, run_id)
+        .await
+        .expect("recovered run query should succeed")
+        .expect("recovered run should exist");
+    assert_eq!(recovered.state, RunState::Interrupted);
+    reopened
+        .accept_session_input(
+            MutationRequestId::from_bytes([0x43; 16]),
+            session_id,
+            "new run after recovery".to_owned(),
+            model_selection(),
+        )
+        .await
+        .expect("interrupted provider usage should not block new input");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_projections_rebuild_and_canonical_corruption_fails_closed() {
+    let root = TestRoot::new("run-projection-repair");
+    let run_id;
+    let session_id;
+    {
+        let store = SessionStore::open_at(root.path()).expect("session store should open");
+        configure_credential(&store).await;
+        let session = store
+            .create_session(MutationRequestId::from_bytes([0x51; 16]), None)
+            .await
+            .expect("session should be created");
+        let accepted = store
+            .accept_session_input(
+                MutationRequestId::from_bytes([0x52; 16]),
+                session.id,
+                "repair projections".to_owned(),
+                model_selection(),
+            )
+            .await
+            .expect("input should be accepted");
+        store
+            .activate_run(accepted.run.id)
+            .await
+            .expect("run should activate");
+        run_id = accepted.run.id;
+        session_id = session.id;
+    }
+
+    let database_path = root.path().join("data").join("sessions.sqlite3");
+    let connection = Connection::open(&database_path).expect("database should open for damage");
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF")
+        .expect("test should disable foreign-key enforcement");
+    connection
+        .execute(
+            "UPDATE session_run_states SET active_run_id = zeroblob(16)",
+            [],
+        )
+        .expect("session state projection should accept test-only foreign-key damage");
+    connection
+        .execute("DELETE FROM runs", [])
+        .expect("run projection should be removable");
+    connection
+        .execute("DELETE FROM delivery_events WHERE event_kind != 1", [])
+        .expect("delivery projections should be removable");
+    drop(connection);
+
+    let repaired = SessionStore::open_at(root.path()).expect("projections should rebuild");
+    let recovered = repaired
+        .get_run(session_id, run_id)
+        .await
+        .expect("run query should succeed")
+        .expect("run should remain present");
+    assert_eq!(recovered.state, RunState::Interrupted);
+    drop(repaired);
+
+    let connection = Connection::open(&database_path).expect("database should open for corruption");
+    connection
+        .execute(
+            "UPDATE run_input_requests SET operation_fingerprint = zeroblob(32)",
+            [],
+        )
+        .expect("canonical fingerprint should be corruptible for test");
+    drop(connection);
+    let error = match SessionStore::open_at(root.path()) {
+        Ok(store) => {
+            drop(store);
+            panic!("canonical corruption should fail");
+        }
+        Err(error) => error,
+    };
+    assert!(matches!(error, PersistenceError::InvalidState { .. }));
+}
+
+async fn configure_credential(store: &SessionStore) -> OpenCodeCredentialStatus {
+    store
+        .set_open_code_credential(
+            MutationRequestId::from_bytes([0x01; 16]),
+            0,
+            b"not-a-real-run-test-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured")
+}
+
+fn model_selection() -> RunModelSelection {
+    RunModelSelection {
+        service: RunOpenCodeService::Zen,
+        model_id: TEST_MODEL.to_owned(),
+        protocol_revision: 1,
+        maximum_input_tokens: 96_000,
+        maximum_output_tokens: 32_000,
+    }
+}
+
+struct TestRoot(PathBuf);
+
+impl TestRoot {
+    fn new(label: &str) -> Self {
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).expect("test randomness should be available");
+        let encoded = nonce
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let path =
+            std::env::temp_dir().join(format!("morons-run-{label}-{}-{encoded}", process::id()));
+        fs::create_dir(&path).expect("test root should be created");
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+            .expect("test root should be owner-only");
+        #[cfg(windows)]
+        fence_windows::harden_private_directory(&path)
+            .expect("Windows test root should be hardened");
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}

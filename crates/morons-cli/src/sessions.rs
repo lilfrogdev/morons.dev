@@ -2,9 +2,10 @@ use std::{error::Error, fmt};
 
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
-    FrameError, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, ResourceLimit,
-    ServerMessage, SessionCatalogEventCursor, SessionId, SessionListCursor, SessionSummary,
-    read_server_message, write_client_message,
+    FrameError, MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
+    OpenCodeService, ResourceLimit, RunId, RunState, RunSummary, ServerMessage,
+    SessionCatalogEventCursor, SessionId, SessionListCursor, SessionSummary, TranscriptCursor,
+    TranscriptEntry, read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -13,6 +14,25 @@ pub struct SessionPage {
     pub sessions: Vec<SessionSummary>,
     pub next_cursor: Option<SessionListCursor>,
     pub catalog_cursor: SessionCatalogEventCursor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInputAcceptance {
+    pub user_message_id: MessageId,
+    pub run: RunSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptPage {
+    pub entries: Vec<TranscriptEntry>,
+    pub next_cursor: Option<TranscriptCursor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunCancellationResult {
+    pub run_id: RunId,
+    pub state: RunState,
+    pub cancellation_requested: bool,
 }
 
 #[derive(Debug)]
@@ -97,6 +117,16 @@ fn write_application_error(
             formatter.write_str("mutation request identifier conflicts with prior input")
         }
         ApplicationError::SessionNotFound => formatter.write_str("session was not found"),
+        ApplicationError::RunNotFound => formatter.write_str("run was not found"),
+        ApplicationError::SessionBusy { active_run_id } => {
+            write!(formatter, "session is busy with {active_run_id:?}")
+        }
+        ApplicationError::UnsupportedModel => {
+            formatter.write_str("selected OpenCode model is unsupported")
+        }
+        ApplicationError::OpenCodeCredentialNotConfigured => {
+            formatter.write_str("OpenCode credential is not configured")
+        }
         ApplicationError::CredentialGenerationConflict => {
             formatter.write_str("OpenCode credential state changed")
         }
@@ -106,6 +136,12 @@ fn write_application_error(
         ApplicationError::ResourceLimit {
             resource: ResourceLimit::Sessions,
         } => formatter.write_str("session limit was reached"),
+        ApplicationError::ResourceLimit {
+            resource: ResourceLimit::Runs,
+        } => formatter.write_str("agent run capacity was reached"),
+        ApplicationError::ResourceLimit {
+            resource: ResourceLimit::Context,
+        } => formatter.write_str("agent context limit was reached"),
         ApplicationError::ResourceLimit {
             resource: ResourceLimit::Storage,
         } => formatter.write_str("session storage limit was reached"),
@@ -156,6 +192,111 @@ where
             return Err(self.unexpected_application_response());
         };
         Ok(session)
+    }
+
+    pub async fn submit_session_input(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        text: String,
+        service: OpenCodeService,
+        model_id: String,
+    ) -> Result<SessionInputAcceptance, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::SubmitSessionInput {
+                mutation_request_id,
+                session_id,
+                text,
+                service,
+                model_id,
+            })
+            .await?;
+        let ApplicationResponse::SessionInputAccepted {
+            user_message_id,
+            run,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        Ok(SessionInputAcceptance {
+            user_message_id,
+            run,
+        })
+    }
+
+    pub async fn get_run(
+        &mut self,
+        session_id: SessionId,
+        run_id: RunId,
+    ) -> Result<Option<RunSummary>, ApplicationClientError> {
+        let response = match self
+            .request(ApplicationRequest::GetRun { session_id, run_id })
+            .await
+        {
+            Ok(response) => response,
+            Err(ApplicationClientError::Application(ApplicationError::RunNotFound)) => {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let ApplicationResponse::RunFound { run } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        Ok(Some(run))
+    }
+
+    pub async fn list_session_transcript(
+        &mut self,
+        session_id: SessionId,
+        cursor: Option<TranscriptCursor>,
+        limit: u16,
+    ) -> Result<TranscriptPage, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::ListSessionTranscript {
+                session_id,
+                cursor,
+                limit,
+            })
+            .await?;
+        let ApplicationResponse::SessionTranscriptListed {
+            entries,
+            next_cursor,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        Ok(TranscriptPage {
+            entries,
+            next_cursor,
+        })
+    }
+
+    pub async fn cancel_run(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        run_id: RunId,
+    ) -> Result<RunCancellationResult, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::CancelRun {
+                mutation_request_id,
+                session_id,
+                run_id,
+            })
+            .await?;
+        let ApplicationResponse::RunCancellationResolved {
+            run_id,
+            state,
+            cancellation_requested,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        Ok(RunCancellationResult {
+            run_id,
+            state,
+            cancellation_requested,
+        })
     }
 
     pub async fn open_code_credential_status(

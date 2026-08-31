@@ -183,7 +183,7 @@ impl<'de> Deserialize<'de> for SessionCatalogEventCursor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApplicationRequest {
     CreateSession {
@@ -210,6 +210,113 @@ pub enum ApplicationRequest {
         mutation_request_id: MutationRequestId,
         expected_generation: u64,
     },
+    SubmitSessionInput {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        text: String,
+        service: crate::OpenCodeService,
+        model_id: String,
+    },
+    GetRun {
+        session_id: SessionId,
+        run_id: crate::RunId,
+    },
+    ListSessionTranscript {
+        session_id: SessionId,
+        cursor: Option<crate::TranscriptCursor>,
+        limit: u16,
+    },
+    CancelRun {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        run_id: crate::RunId,
+    },
+}
+
+impl fmt::Debug for ApplicationRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CreateSession {
+                mutation_request_id,
+                display_name,
+            } => formatter
+                .debug_struct("CreateSession")
+                .field("mutation_request_id", mutation_request_id)
+                .field("display_name", display_name)
+                .finish(),
+            Self::GetSession { session_id } => formatter
+                .debug_struct("GetSession")
+                .field("session_id", session_id)
+                .finish(),
+            Self::ListSessions { cursor, limit } => formatter
+                .debug_struct("ListSessions")
+                .field("cursor", cursor)
+                .field("limit", limit)
+                .finish(),
+            Self::SubscribeSessionCatalog { cursor } => formatter
+                .debug_struct("SubscribeSessionCatalog")
+                .field("cursor", cursor)
+                .finish(),
+            Self::GetOpenCodeCredentialStatus => formatter.write_str("GetOpenCodeCredentialStatus"),
+            Self::SetOpenCodeCredential {
+                mutation_request_id,
+                expected_generation,
+                api_key,
+            } => formatter
+                .debug_struct("SetOpenCodeCredential")
+                .field("mutation_request_id", mutation_request_id)
+                .field("expected_generation", expected_generation)
+                .field("api_key", api_key)
+                .finish(),
+            Self::RemoveOpenCodeCredential {
+                mutation_request_id,
+                expected_generation,
+            } => formatter
+                .debug_struct("RemoveOpenCodeCredential")
+                .field("mutation_request_id", mutation_request_id)
+                .field("expected_generation", expected_generation)
+                .finish(),
+            Self::SubmitSessionInput {
+                mutation_request_id,
+                session_id,
+                text,
+                service,
+                model_id,
+            } => formatter
+                .debug_struct("SubmitSessionInput")
+                .field("mutation_request_id", mutation_request_id)
+                .field("session_id", session_id)
+                .field("text_bytes", &text.len())
+                .field("service", service)
+                .field("model_id", model_id)
+                .finish(),
+            Self::GetRun { session_id, run_id } => formatter
+                .debug_struct("GetRun")
+                .field("session_id", session_id)
+                .field("run_id", run_id)
+                .finish(),
+            Self::ListSessionTranscript {
+                session_id,
+                cursor,
+                limit,
+            } => formatter
+                .debug_struct("ListSessionTranscript")
+                .field("session_id", session_id)
+                .field("cursor", cursor)
+                .field("limit", limit)
+                .finish(),
+            Self::CancelRun {
+                mutation_request_id,
+                session_id,
+                run_id,
+            } => formatter
+                .debug_struct("CancelRun")
+                .field("mutation_request_id", mutation_request_id)
+                .field("session_id", session_id)
+                .field("run_id", run_id)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,6 +341,22 @@ pub enum ApplicationResponse {
     },
     OpenCodeCredentialUpdated {
         credential: crate::OpenCodeCredentialStatus,
+    },
+    SessionInputAccepted {
+        user_message_id: crate::MessageId,
+        run: crate::RunSummary,
+    },
+    RunFound {
+        run: crate::RunSummary,
+    },
+    SessionTranscriptListed {
+        entries: Vec<crate::TranscriptEntry>,
+        next_cursor: Option<crate::TranscriptCursor>,
+    },
+    RunCancellationResolved {
+        run_id: crate::RunId,
+        state: crate::RunState,
+        cancellation_requested: bool,
     },
 }
 
@@ -269,6 +392,10 @@ pub enum ApplicationError {
     InvalidRequest,
     RequestConflict,
     SessionNotFound,
+    RunNotFound,
+    SessionBusy { active_run_id: crate::RunId },
+    UnsupportedModel,
+    OpenCodeCredentialNotConfigured,
     CredentialGenerationConflict,
     CredentialMutationNotApplied,
     ResourceLimit { resource: ResourceLimit },
@@ -280,6 +407,8 @@ pub enum ApplicationError {
 #[serde(rename_all = "snake_case")]
 pub enum ResourceLimit {
     Sessions,
+    Runs,
+    Context,
     Storage,
 }
 

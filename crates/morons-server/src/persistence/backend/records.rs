@@ -10,6 +10,8 @@ use super::super::{
 pub(super) const MUTATION_OPERATION_SESSION_CREATE: i64 = 1;
 pub(super) const MUTATION_OPERATION_CREDENTIAL_SET: i64 = 2;
 pub(super) const MUTATION_OPERATION_CREDENTIAL_REMOVE: i64 = 3;
+pub(super) const MUTATION_OPERATION_RUN_INPUT: i64 = 4;
+pub(super) const MUTATION_OPERATION_RUN_CANCEL: i64 = 5;
 
 pub(super) const CREATION_STATE_PREPARED: i64 = 0;
 pub(super) const CREATION_STATE_WORKSPACE_DISPATCHED: i64 = 1;

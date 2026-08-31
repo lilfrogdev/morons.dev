@@ -1,27 +1,29 @@
+mod conversions;
+
 use std::{error::Error, fmt, sync::Arc};
 
+use self::conversions::*;
 use morons_protocol::{
-    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse,
-    MutationRequestId as ProtocolMutationRequestId,
-    OpenCodeCredentialStatus as ProtocolOpenCodeCredentialStatus, ResourceLimit, ServerEndpoint,
-    SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor, SessionId as ProtocolSessionId,
-    SessionListCursor as ProtocolSessionListCursor, SessionSummary,
+    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ResourceLimit,
+    ServerEndpoint, SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
 };
 use tokio::sync::watch;
 
 use crate::{
-    persistence::{
-        MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
-        Session, SessionCatalogEventCursor, SessionId, SessionListCursor, SessionStore,
+    persistence::{PersistenceError, RunModelSelection, SessionCatalogEventCursor, SessionStore},
+    provider::{
+        OpenCodeModelAvailability, OpenCodeProvider, OpenCodeService, ProviderError,
+        find_open_code_model,
     },
-    provider::{OpenCodeModelAvailability, OpenCodeProvider, OpenCodeService, ProviderError},
+    run_supervisor::RunSupervisor,
 };
 
 const SESSION_CATALOG_REPLAY_PAGE_SIZE: u16 = 100;
 
 pub struct ServerApplication {
     sessions: Arc<SessionStore>,
-    open_code: OpenCodeProvider,
+    open_code: Arc<OpenCodeProvider>,
+    run_supervisor: Arc<RunSupervisor>,
     session_catalog_notifications: watch::Sender<u64>,
 }
 
@@ -85,6 +87,10 @@ impl ServerApplication {
         service: OpenCodeService,
     ) -> Result<Vec<OpenCodeModelAvailability>, ProviderError> {
         self.open_code.fetch_catalog(service).await
+    }
+
+    pub async fn shutdown(&self) {
+        self.run_supervisor.shutdown().await;
     }
 
     pub(crate) async fn execute_for_local_owner(
@@ -204,6 +210,142 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::SubmitSessionInput {
+                mutation_request_id,
+                session_id,
+                text,
+                service,
+                model_id,
+            } => {
+                let mutation_request_id = to_persistence_mutation_id(mutation_request_id);
+                let session_id = to_persistence_session_id(session_id);
+                let persistence_service = to_persistence_service(service);
+                if let Some(accepted) = self
+                    .sessions
+                    .find_session_input_retry(
+                        mutation_request_id,
+                        session_id,
+                        &text,
+                        persistence_service,
+                        &model_id,
+                    )
+                    .await
+                    .map_err(to_application_error)?
+                {
+                    return Ok(input_accepted_response(accepted));
+                }
+
+                let provider_service = to_provider_service(service);
+                let model = find_open_code_model(provider_service, &model_id)
+                    .ok_or(ApplicationError::UnsupportedModel)?;
+                if self.run_supervisor.is_stopping() {
+                    return Err(ApplicationError::ServiceUnavailable);
+                }
+                let permit = match self.run_supervisor.try_reserve() {
+                    Some(permit) => permit,
+                    None if self.run_supervisor.is_stopping() => {
+                        return Err(ApplicationError::ServiceUnavailable);
+                    }
+                    None => {
+                        return Err(ApplicationError::ResourceLimit {
+                            resource: ResourceLimit::Runs,
+                        });
+                    }
+                };
+                let accepted = self
+                    .sessions
+                    .accept_session_input(
+                        mutation_request_id,
+                        session_id,
+                        text,
+                        RunModelSelection {
+                            service: persistence_service,
+                            model_id,
+                            protocol_revision: model.responses_protocol_revision,
+                            maximum_input_tokens: model.maximum_input_tokens,
+                            maximum_output_tokens: model.maximum_output_tokens,
+                        },
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                if accepted.newly_accepted {
+                    let run_id = accepted.run.id;
+                    if let Err(error) = self.run_supervisor.start(run_id, permit).await {
+                        eprintln!("accepted run could not start: {error}");
+                        self.sessions
+                            .finish_run_stopped(run_id, None)
+                            .await
+                            .map_err(to_application_error)?;
+                    }
+                }
+                Ok(input_accepted_response(accepted))
+            }
+            ApplicationRequest::GetRun { session_id, run_id } => {
+                let run = self
+                    .sessions
+                    .get_run(
+                        to_persistence_session_id(session_id),
+                        to_persistence_run_id(run_id),
+                    )
+                    .await
+                    .map_err(to_application_error)?
+                    .ok_or(ApplicationError::RunNotFound)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::RunFound {
+                        run: to_run_summary(run),
+                    },
+                ))
+            }
+            ApplicationRequest::ListSessionTranscript {
+                session_id,
+                cursor,
+                limit,
+            } => {
+                let page = self
+                    .sessions
+                    .list_session_transcript(
+                        to_persistence_session_id(session_id),
+                        cursor.map(to_persistence_transcript_cursor),
+                        limit,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::SessionTranscriptListed {
+                        entries: page
+                            .entries
+                            .into_iter()
+                            .map(to_protocol_transcript_entry)
+                            .collect(),
+                        next_cursor: page.next_cursor.map(to_protocol_transcript_cursor),
+                    },
+                ))
+            }
+            ApplicationRequest::CancelRun {
+                mutation_request_id,
+                session_id,
+                run_id,
+            } => {
+                let result = self
+                    .sessions
+                    .cancel_run(
+                        to_persistence_mutation_id(mutation_request_id),
+                        to_persistence_session_id(session_id),
+                        to_persistence_run_id(run_id),
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                if result.intent_applied {
+                    self.run_supervisor.signal_cancellation(result.run_id).await;
+                }
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::RunCancellationResolved {
+                        run_id: to_protocol_run_id(result.run_id),
+                        state: to_protocol_run_state(result.state),
+                        cancellation_requested: result.cancellation_requested,
+                    },
+                ))
+            }
         }
     }
 
@@ -231,11 +373,24 @@ impl ServerApplication {
 
     pub(crate) fn from_session_store(sessions: SessionStore) -> Self {
         let sessions = Arc::new(sessions);
-        let open_code = OpenCodeProvider::new(Arc::clone(&sessions));
+        let open_code = Arc::new(OpenCodeProvider::new(Arc::clone(&sessions)));
+        Self::from_shared_parts(sessions, open_code)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_session_store_for_test(sessions: SessionStore, base: &str) -> Self {
+        let sessions = Arc::new(sessions);
+        let open_code = Arc::new(OpenCodeProvider::for_test(Arc::clone(&sessions), base));
+        Self::from_shared_parts(sessions, open_code)
+    }
+
+    fn from_shared_parts(sessions: Arc<SessionStore>, open_code: Arc<OpenCodeProvider>) -> Self {
+        let run_supervisor = RunSupervisor::new(Arc::clone(&sessions), Arc::clone(&open_code));
         let (session_catalog_notifications, _) = watch::channel(0);
         Self {
             sessions,
             open_code,
+            run_supervisor,
             session_catalog_notifications,
         }
     }
@@ -250,106 +405,5 @@ impl ServerApplication {
                     false
                 }
             });
-    }
-}
-
-fn to_persistence_mutation_id(request_id: ProtocolMutationRequestId) -> MutationRequestId {
-    MutationRequestId::from_bytes(*request_id.as_bytes())
-}
-
-fn to_persistence_session_id(session_id: ProtocolSessionId) -> SessionId {
-    SessionId::from_bytes(*session_id.as_bytes())
-}
-
-fn to_persistence_list_cursor(cursor: ProtocolSessionListCursor) -> SessionListCursor {
-    let bytes = cursor.as_bytes();
-    let mut snapshot_event_sequence = [0_u8; 8];
-    snapshot_event_sequence.copy_from_slice(&bytes[..8]);
-    let mut after_created_sequence = [0_u8; 8];
-    after_created_sequence.copy_from_slice(&bytes[8..]);
-    SessionListCursor::new(
-        u64::from_be_bytes(snapshot_event_sequence),
-        u64::from_be_bytes(after_created_sequence),
-    )
-}
-
-fn to_protocol_list_cursor(cursor: SessionListCursor) -> ProtocolSessionListCursor {
-    let mut bytes = [0_u8; 16];
-    bytes[..8].copy_from_slice(&cursor.snapshot_event_sequence().to_be_bytes());
-    bytes[8..].copy_from_slice(&cursor.after_created_sequence().to_be_bytes());
-    ProtocolSessionListCursor::from_bytes(bytes)
-}
-
-fn to_persistence_catalog_cursor(
-    cursor: ProtocolSessionCatalogEventCursor,
-) -> SessionCatalogEventCursor {
-    SessionCatalogEventCursor::from_sequence(u64::from_be_bytes(*cursor.as_bytes()))
-}
-
-fn to_protocol_catalog_cursor(
-    cursor: SessionCatalogEventCursor,
-) -> ProtocolSessionCatalogEventCursor {
-    ProtocolSessionCatalogEventCursor::from_bytes(cursor.sequence().to_be_bytes())
-}
-
-const fn to_protocol_credential_status(
-    credential: OpenCodeCredentialStatus,
-) -> ProtocolOpenCodeCredentialStatus {
-    ProtocolOpenCodeCredentialStatus {
-        configured: credential.configured,
-        generation: credential.generation,
-    }
-}
-
-fn to_session_summary(session: Session) -> SessionSummary {
-    SessionSummary {
-        id: ProtocolSessionId::from_bytes(*session.id.as_bytes()),
-        display_name: session.display_name,
-        created_at_milliseconds: session.created_at_milliseconds,
-    }
-}
-
-fn to_application_error(error: PersistenceError) -> ApplicationError {
-    if matches!(
-        &error,
-        PersistenceError::Io(_)
-            | PersistenceError::Sqlite(_)
-            | PersistenceError::Control(_)
-            | PersistenceError::Randomness(_)
-            | PersistenceError::InvalidState { .. }
-            | PersistenceError::WorkerStopped
-    ) {
-        eprintln!("session application operation failed: {error}");
-    }
-
-    match error {
-        PersistenceError::InvalidInput { .. } => ApplicationError::InvalidRequest,
-        PersistenceError::RequestConflict => ApplicationError::RequestConflict,
-        PersistenceError::CredentialGenerationConflict => {
-            ApplicationError::CredentialGenerationConflict
-        }
-        PersistenceError::CredentialNotConfigured => ApplicationError::ServiceUnavailable,
-        PersistenceError::CredentialMutationNotApplied => {
-            ApplicationError::CredentialMutationNotApplied
-        }
-        PersistenceError::ResourceLimit {
-            resource: PersistenceResourceLimit::Sessions,
-        } => ApplicationError::ResourceLimit {
-            resource: ResourceLimit::Sessions,
-        },
-        PersistenceError::ResourceLimit {
-            resource:
-                PersistenceResourceLimit::LogicalSequence
-                | PersistenceResourceLimit::CredentialGeneration
-                | PersistenceResourceLimit::CredentialMutations,
-        } => ApplicationError::ResourceLimit {
-            resource: ResourceLimit::Storage,
-        },
-        PersistenceError::WorkerStopped => ApplicationError::ServiceUnavailable,
-        PersistenceError::Io(_)
-        | PersistenceError::Sqlite(_)
-        | PersistenceError::Control(_)
-        | PersistenceError::Randomness(_)
-        | PersistenceError::InvalidState { .. } => ApplicationError::Internal,
     }
 }
