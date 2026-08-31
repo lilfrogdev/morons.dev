@@ -7,7 +7,7 @@
 - Agent and session state
 - Authoritative database, migration backups, and durable event history
 - Tool and execution capabilities
-- Repository, project, and isolated workspace data
+- Original repository, immutable workspace baseline, and mutable isolated worktree data
 - Provider and kernel connections
 - Terminal presentation integrity and non-echoing credential input
 - Packaged client and server executable identity
@@ -19,7 +19,7 @@
 - Session, run, message, tool-call, mutation-request, model, pagination-cursor, and event-cursor inputs
 - Endpoint, registration, database, backup, and workspace filesystem state
 - Persisted payloads, schema versions, projections, and compaction checkpoints
-- Repository content
+- Repository source paths, names, metadata, links, reparse points, special files, content, and concurrent changes
 - Model output
 - Commands and subprocesses
 - External content
@@ -32,7 +32,8 @@
 - The operating system correctly enforces process identities, filesystem permissions, and Windows DACLs.
 - Root, LocalSystem, administrators, and equivalent privileged accounts are outside the local IPC guarantee.
 - Malicious processes already running as the owning operating-system user are outside the local IPC guarantee.
-- Untrusted repository processes run without access to host control files, provider credential state, or IPC endpoints.
+- Untrusted repository processes run without access to host control files, provider credential state, IPC endpoints, workspace baselines or metadata, original source trees, or other sessions' worktrees.
+- Same-user processes that independently modify a selected source repository during import remain outside the local isolation guarantee; Morons still rejects observed entry-type and file-identity changes.
 - OpenCode and its upstream providers receive only context deliberately selected for an authorized run; their catalogs, responses, errors, and model output remain untrusted.
 - Public certificate authorities and the operating system's network and TLS implementations correctly authenticate the fixed OpenCode HTTPS origin.
 - Supported native runners and release hardware accurately execute the declared operating-system and processor target.
@@ -83,6 +84,8 @@
 - A credential-bearing mutation is resent after an unknown result or remains in terminal history, rendered cells, configuration, panic output, or client memory longer than required.
 - Terminal exit implicitly cancels a run or stops the server, or a client kills an unrelated process based only on a registered process identifier.
 - Ephemeral assistant deltas are displayed under the wrong session or run, accepted out of sequence, or mistaken for canonical transcript state.
+- A client imports a repository into a non-pristine, active, blocked, or already imported session or races another import.
+- A repository source or destination path becomes authorization evidence, durable identity, model context, audit data, or exposed client state.
 
 ## Provider and credential threats
 
@@ -116,6 +119,13 @@
 - A migration partially applies, destroys the only usable state, silently downgrades, or recreates an unreadable database.
 - Unbounded histories, tool results, event backlogs, idempotency records, or workspaces exhaust disk or memory.
 - Workspace provisioning or deletion follows a forged path and modifies data outside the session workspace root.
+- Repository import follows a symbolic link, junction, reparse point, special entry, changed file identity, `..` component, case collision, or normalization collision and reads or writes outside the intended tree.
+- A selected source overlaps a Morons private root and copies provider credentials, authentication material, databases, backups, baselines, or another session's worktree into the imported repository.
+- Git control data enters the workspace and later influences trusted Git behavior through hooks, configuration, credential helpers, worktree indirection, remotes, or alternates.
+- Import writes to the original repository, exposes it to untrusted execution, or lets a mutable worktree alter its immutable baseline.
+- File count, depth, path length, individual size, total size, sparse expansion, staging state, or manifest construction exhausts memory, disk, or server capacity.
+- A crash leaves incomplete or ambiguously published import state that is mistaken for a complete repository or causes the source to be reread automatically.
+- Baseline and worktree bytes diverge during import, making later diff review depend on an invalid comparison point.
 - A live database file is copied inconsistently, a backup is disclosed, or a database-only backup is mistaken for complete workspace recovery.
 
 ## Mitigations
@@ -174,6 +184,15 @@
 - Run ordered transactional migrations, back up destructive migrations, and fail closed on newer, foreign, corrupt, or unsupported databases.
 - Enforce database, payload, event, idempotency, and workspace quotas before accepting additional work.
 - Confine workspace provisioning, recovery, and deletion to verified server-generated identities beneath the private workspace root.
+- Permit repository import only for the authenticated local owner and only once into a pristine session with no transcript, run, blocker, or repository state.
+- Treat the submitted source path as bounded transient input, never persist or return it, and bind exact retries through a normalized operation fingerprint that does not contain the path bytes.
+- Traverse only ordinary bounded UTF-8 directories and regular files beneath the validated source root; reject links, reparse points, special entries, identity changes, escapes, and destination collisions.
+- Reject source roots that equal, contain, or are contained by Morons application, control, runtime, data, backup, credential, or workspace roots.
+- Omit every `.git` component and subtree, copy no source ownership or control metadata, and never invoke Git, hooks, repository code, provider inference, or source writes during import.
+- Build an immutable baseline and separate mutable worktree from the same file bytes under one operation-specific staging directory, bind them with a canonical manifest digest, and publish their parent atomically.
+- Give future untrusted execution only the mutable worktree and keep the baseline, metadata, workspace root, source repository, control state, persistence, and credentials outside its capability boundary.
+- Use prepared, dispatched, completion, idempotency, audit, and recovery facts around import; never reread the source after uncertain dispatch and reconcile only exact confined operation-bound staging or published state.
+- Enforce path, depth, count, per-file, total-byte, manifest, staging-growth, and concurrency limits before and during import.
 - Use SQLite's online backup API, protect backup files like authoritative data, and distinguish database recovery from workspace recovery.
 - Use scoped, server-validated durable cursors and gap-free snapshot-plus-subscription semantics.
 - Bind assistant deltas to an exact session and run with a bounded run-local sequence, emit them only after the active transition, and replace them with the committed complete assistant message.
@@ -200,6 +219,7 @@
 - Compromise of the local authentication key permits impersonation until an explicit offline key replacement invalidates existing registrations and endpoints.
 - Operating-system, filesystem, storage-device, SQLite, or cryptographic-randomness failures can invalidate durability and authentication assumptions.
 - SQLite transactions cannot atomically commit external effects or mutable workspace files, so unresolved effects must remain interrupted or uncertain.
+- Repository import cannot provide a filesystem-atomic snapshot of a source tree changed concurrently by an authorized same-user process; the immutable baseline defines the exact bytes Morons accepted.
 - Database backups do not recover workspace changes unless a separately bound workspace snapshot exists.
 - Database confidentiality at rest depends on operating-system access controls and storage encryption rather than application-level encryption.
 - Logical deletion and page reuse do not guarantee forensic erasure from filesystems, devices, or backups.

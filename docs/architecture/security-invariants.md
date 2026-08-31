@@ -61,6 +61,14 @@
 - Cancellation must target an exact session and run, commit durable intent before signaling execution, and become terminal only after controlled execution stops.
 - An unresolved tool or workspace effect must block new input until the local owner durably acknowledges the exact uncertain run without changing the effect's uncertain outcome.
 - Each session must have an isolated mutable workspace and execution context that cannot access another session's state without an explicit authorized capability.
+- A local repository may be imported only by the authenticated local owner into a pristine session through one idempotent server-owned workspace operation.
+- Repository import must read but never modify the selected source tree, invoke Git, execute repository code, or send imported content to a provider.
+- Repository traversal must remain beneath the validated source root, admit only bounded ordinary UTF-8 directories and regular files, and reject links, reparse points, special files, type changes, path collisions, and resource-limit violations.
+- A repository source must not overlap in either direction with Morons application, control, runtime, data, backup, credential, or workspace roots; protected Morons state must never be imported or copied into a worktree.
+- Components named `.git` under ASCII case folding and their complete subtrees must not enter a session workspace.
+- An imported workspace must contain an immutable baseline and a separate mutable worktree produced from the same validated bytes and bound by a versioned architecture-neutral manifest digest.
+- Untrusted runtimes, tools, subprocesses, kernels, and sandboxes may receive only the mutable worktree, never the baseline, workspace metadata, workspace root, original source tree, or another session's workspace.
+- Repository source and destination paths must not become session identity, authorization evidence, durable public state, model context, audit data, logs, errors, events, or protocol results.
 - Temporary runtimes, subprocesses, Python kernels, provider response identifiers, and provider continuation state must not become authoritative session storage or receive control-plane credentials.
 - Session mutations and concurrent execution must obey server-enforced serialization, resource, concurrency, time, output, call-count, and budget limits.
 
@@ -77,6 +85,8 @@
 - Session transcript pagination must use an immutable entry high water and return a session-event cursor from the same transaction so snapshot and replay remain gap-free.
 - A durable result or event must never be published before its transaction commits, and an unknown commit outcome must never be reported as success.
 - External effects require durable prepared, dispatched, and outcome boundaries without holding a database transaction across the effect.
+- A repository import must stage beneath its identity-bound workspace, publish one complete repository directory atomically, and report success only when the durable completion fact agrees with the validated baseline, worktree, marker, and manifest.
+- Repository-import recovery must never reread the source automatically and may inspect, publish, or remove only exact operation-bound state confined beneath the expected private workspace.
 - A dispatched effect without a committed outcome is uncertain and must never be retried automatically.
 - A run must not become cancelled until its controlled execution is known to have stopped; an unprovable cancellation remains interrupted or uncertain.
 - Startup recovery must terminate nonterminal runs idempotently from committed facts before accepting application operations and must perform no external effect.
@@ -157,5 +167,5 @@
 - Authentication records and application frames must have independent size limits and strict decoding.
 - Connections admitted before endpoint security and registration publication are complete must be rejected.
 - Authentication nonces and proofs must not be accepted more than once or retained after the connection attempt ends.
-- Untrusted repository processes must not receive or be able to access the control directory, authentication key, provider credential root, endpoint registration, host IPC endpoint, data root, backup root, or another session's workspace.
+- Untrusted repository processes must not receive or be able to access the control directory, authentication key, provider credential root, endpoint registration, host IPC endpoint, data root, backup root, workspace baseline or metadata, original source tree, or another session's workspace.
 - Authentication and authorization audit events must not contain keys, nonces, proofs, or other authentication material.
