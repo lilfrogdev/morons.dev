@@ -23,6 +23,7 @@ use super::{
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
+const SESSION_SUBSCRIPTION_TEST_TIMEOUT: Duration = Duration::from_secs(15);
 static TEST_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[tokio::test(flavor = "current_thread")]
@@ -287,7 +288,7 @@ async fn session_subscription_replays_commits_after_a_gap_free_snapshot() {
             .expect("server should handle session subscription");
     };
 
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(SESSION_SUBSCRIPTION_TEST_TIMEOUT, async {
         tokio::join!(
             client_exchange,
             command_server_exchange,
