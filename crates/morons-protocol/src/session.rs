@@ -5,10 +5,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 pub const APPLICATION_IDENTIFIER_BYTES: usize = 16;
 const SESSION_LIST_CURSOR_BYTES: usize = 16;
 const SESSION_CATALOG_CURSOR_BYTES: usize = 8;
+const SESSION_EVENT_CURSOR_BYTES: usize = 24;
 const SESSION_ID_PREFIX: &str = "ses_";
 const MUTATION_REQUEST_ID_PREFIX: &str = "mut_";
 const SESSION_LIST_CURSOR_PREFIX: &str = "sc2_";
 const SESSION_CATALOG_CURSOR_PREFIX: &str = "scc1_";
+const SESSION_EVENT_CURSOR_PREFIX: &str = "sec1_";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId([u8; APPLICATION_IDENTIFIER_BYTES]);
@@ -183,6 +185,48 @@ impl<'de> Deserialize<'de> for SessionCatalogEventCursor {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionEventCursor([u8; SESSION_EVENT_CURSOR_BYTES]);
+
+impl SessionEventCursor {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; SESSION_EVENT_CURSOR_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; SESSION_EVENT_CURSOR_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SessionEventCursor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_prefixed_hex(formatter, SESSION_EVENT_CURSOR_PREFIX, &self.0)
+    }
+}
+
+impl Serialize for SessionEventCursor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&encode_prefixed_hex(SESSION_EVENT_CURSOR_PREFIX, &self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionEventCursor {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        decode_prefixed_hex(&encoded, SESSION_EVENT_CURSOR_PREFIX)
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApplicationRequest {
@@ -225,6 +269,10 @@ pub enum ApplicationRequest {
         session_id: SessionId,
         cursor: Option<crate::TranscriptCursor>,
         limit: u16,
+    },
+    SubscribeSession {
+        session_id: SessionId,
+        cursor: SessionEventCursor,
     },
     CancelRun {
         mutation_request_id: MutationRequestId,
@@ -305,6 +353,11 @@ impl fmt::Debug for ApplicationRequest {
                 .field("cursor", cursor)
                 .field("limit", limit)
                 .finish(),
+            Self::SubscribeSession { session_id, cursor } => formatter
+                .debug_struct("SubscribeSession")
+                .field("session_id", session_id)
+                .field("cursor", cursor)
+                .finish(),
             Self::CancelRun {
                 mutation_request_id,
                 session_id,
@@ -350,8 +403,16 @@ pub enum ApplicationResponse {
         run: crate::RunSummary,
     },
     SessionTranscriptListed {
+        session: SessionSummary,
         entries: Vec<crate::TranscriptEntry>,
+        runs: Vec<crate::RunSummary>,
+        active_run_id: Option<crate::RunId>,
         next_cursor: Option<crate::TranscriptCursor>,
+        event_cursor: SessionEventCursor,
+    },
+    SessionSubscriptionStarted {
+        session_id: SessionId,
+        cursor: SessionEventCursor,
     },
     RunCancellationResolved {
         run_id: crate::RunId,
@@ -360,20 +421,89 @@ pub enum ApplicationResponse {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApplicationEvent {
     SessionCreated {
         cursor: SessionCatalogEventCursor,
         session: SessionSummary,
     },
+    SessionTranscriptEntryCommitted {
+        cursor: SessionEventCursor,
+        session_id: SessionId,
+        entry: crate::TranscriptEntry,
+    },
+    SessionRunChanged {
+        cursor: SessionEventCursor,
+        run: crate::RunSummary,
+    },
+    SessionAssistantDelta {
+        session_id: SessionId,
+        run_id: crate::RunId,
+        sequence: u64,
+        delta: String,
+        refusal: bool,
+    },
 }
 
 impl ApplicationEvent {
     #[must_use]
-    pub const fn cursor(&self) -> SessionCatalogEventCursor {
+    pub const fn session_catalog_cursor(&self) -> Option<SessionCatalogEventCursor> {
         match self {
-            Self::SessionCreated { cursor, .. } => *cursor,
+            Self::SessionCreated { cursor, .. } => Some(*cursor),
+            Self::SessionTranscriptEntryCommitted { .. }
+            | Self::SessionRunChanged { .. }
+            | Self::SessionAssistantDelta { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn session_cursor(&self) -> Option<SessionEventCursor> {
+        match self {
+            Self::SessionTranscriptEntryCommitted { cursor, .. }
+            | Self::SessionRunChanged { cursor, .. } => Some(*cursor),
+            Self::SessionCreated { .. } | Self::SessionAssistantDelta { .. } => None,
+        }
+    }
+}
+
+impl fmt::Debug for ApplicationEvent {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SessionCreated { cursor, session } => formatter
+                .debug_struct("SessionCreated")
+                .field("cursor", cursor)
+                .field("session", session)
+                .finish(),
+            Self::SessionTranscriptEntryCommitted {
+                cursor,
+                session_id,
+                entry,
+            } => formatter
+                .debug_struct("SessionTranscriptEntryCommitted")
+                .field("cursor", cursor)
+                .field("session_id", session_id)
+                .field("entry", entry)
+                .finish(),
+            Self::SessionRunChanged { cursor, run } => formatter
+                .debug_struct("SessionRunChanged")
+                .field("cursor", cursor)
+                .field("run", run)
+                .finish(),
+            Self::SessionAssistantDelta {
+                session_id,
+                run_id,
+                sequence,
+                delta,
+                refusal,
+            } => formatter
+                .debug_struct("SessionAssistantDelta")
+                .field("session_id", session_id)
+                .field("run_id", run_id)
+                .field("sequence", sequence)
+                .field("delta_bytes", &delta.len())
+                .field("refusal", refusal)
+                .finish(),
         }
     }
 }

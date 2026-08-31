@@ -14,6 +14,7 @@ use tokio::{
 };
 
 use crate::{
+    application::events::{AssistantDelta, SessionEventHub},
     persistence::{
         CompletedAssistant, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES, PersistenceError,
         PrepareOperationOutcome, ProviderOperationFailureState, ProviderUsage, RunFailureKind,
@@ -22,7 +23,8 @@ use crate::{
     provider::{
         OpenCodeProvider, OpenCodeResponseRequest, OpenCodeService, ProviderCancellation,
         ProviderCancellationHandle, ProviderError, ProviderInputItem, ProviderMessagePhase,
-        ProviderMessageRole, ProviderOutcome, ProviderOutputItem, provider_cancellation,
+        ProviderMessageRole, ProviderOutcome, ProviderOutputItem, ProviderStreamEvent,
+        provider_cancellation,
     },
 };
 
@@ -34,6 +36,7 @@ pub(crate) struct RunSupervisor {
     provider: Arc<OpenCodeProvider>,
     permits: Arc<Semaphore>,
     stopping: AtomicBool,
+    session_events: Arc<SessionEventHub>,
     state: Mutex<SupervisorState>,
 }
 
@@ -43,12 +46,17 @@ struct SupervisorState {
 }
 
 impl RunSupervisor {
-    pub(crate) fn new(sessions: Arc<SessionStore>, provider: Arc<OpenCodeProvider>) -> Arc<Self> {
+    pub(crate) fn new(
+        sessions: Arc<SessionStore>,
+        provider: Arc<OpenCodeProvider>,
+        session_events: Arc<SessionEventHub>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             sessions,
             provider,
             permits: Arc::new(Semaphore::new(MAX_CONCURRENT_RUNS)),
             stopping: AtomicBool::new(false),
+            session_events,
             state: Mutex::new(SupervisorState {
                 controls: HashMap::new(),
                 tasks: JoinSet::new(),
@@ -199,7 +207,28 @@ impl RunSupervisor {
             DispatchOutcome::Cancelled | DispatchOutcome::Terminal => return Ok(()),
         }
 
-        match dispatch.execute(&mut cancellation, |_| {}).await {
+        let session_id = context.run.session_id;
+        let mut delta_sequence = 0_u64;
+        match dispatch
+            .execute(&mut cancellation, |event| {
+                let ProviderStreamEvent::TextDelta { delta, refusal, .. } = event;
+                if delta.is_empty() {
+                    return;
+                }
+                let Some(sequence) = delta_sequence.checked_add(1) else {
+                    return;
+                };
+                delta_sequence = sequence;
+                self.session_events.publish_assistant_delta(AssistantDelta {
+                    session_id,
+                    run_id,
+                    sequence,
+                    delta,
+                    refusal,
+                });
+            })
+            .await
+        {
             Ok(outcome) => match completed_assistant(outcome) {
                 Ok(assistant) => {
                     self.sessions

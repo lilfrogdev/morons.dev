@@ -6,8 +6,8 @@ use crate::{APPLICATION_IDENTIFIER_BYTES, SessionId};
 
 const RUN_ID_PREFIX: &str = "run_";
 const MESSAGE_ID_PREFIX: &str = "msg_";
-const TRANSCRIPT_CURSOR_PREFIX: &str = "tc1_";
-const TRANSCRIPT_CURSOR_BYTES: usize = 32;
+const TRANSCRIPT_CURSOR_PREFIX: &str = "tc2_";
+const TRANSCRIPT_CURSOR_BYTES: usize = 40;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RunId([u8; APPLICATION_IDENTIFIER_BYTES]);
@@ -337,6 +337,11 @@ mod tests {
         assert_eq!(
             serde_json::from_slice::<TranscriptCursor>(&encoded).expect("cursor should decode"),
             cursor
+        );
+        assert!(
+            std::str::from_utf8(&encoded)
+                .expect("cursor JSON should be UTF-8")
+                .starts_with("\"tc2_")
         );
         assert!(serde_json::from_str::<TranscriptCursor>("\"tc1_AA\"").is_err());
     }

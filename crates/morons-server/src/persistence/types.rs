@@ -14,6 +14,7 @@ pub(super) const IDENTIFIER_BYTES: usize = 16;
 pub(super) const REQUEST_FINGERPRINT_BYTES: usize = 32;
 pub(super) const MAX_SESSION_PAGE_SIZE: u16 = 100;
 pub(super) const MAX_SESSION_CATALOG_EVENT_PAGE_SIZE: u16 = 100;
+pub(super) const MAX_SESSION_EVENT_PAGE_SIZE: u16 = 100;
 const MAX_SESSION_NAME_BYTES: usize = 256;
 const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1\0";
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";

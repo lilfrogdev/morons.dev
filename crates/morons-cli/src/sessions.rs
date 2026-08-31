@@ -1,10 +1,14 @@
+mod subscriptions;
+
+pub use subscriptions::{SessionCatalogSubscription, SessionSubscription};
+
 use std::{error::Error, fmt};
 
 use morons_protocol::{
-    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
-    FrameError, MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeService, ResourceLimit, RunId, RunState, RunSummary, ServerMessage,
-    SessionCatalogEventCursor, SessionId, SessionListCursor, SessionSummary, TranscriptCursor,
+    ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
+    MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeService,
+    ResourceLimit, RunId, RunState, RunSummary, ServerMessage, SessionCatalogEventCursor,
+    SessionEventCursor, SessionId, SessionListCursor, SessionSummary, TranscriptCursor,
     TranscriptEntry, read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -24,8 +28,12 @@ pub struct SessionInputAcceptance {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptPage {
+    pub session: SessionSummary,
     pub entries: Vec<TranscriptEntry>,
+    pub runs: Vec<RunSummary>,
+    pub active_run_id: Option<RunId>,
     pub next_cursor: Option<TranscriptCursor>,
+    pub event_cursor: SessionEventCursor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +57,7 @@ pub enum ApplicationClientError {
     UnexpectedServerMessage,
     UnexpectedApplicationResponse,
     SubscriptionCursorMismatch,
+    EventScopeMismatch,
     EventCursorNotMonotonic,
     Application(ApplicationError),
 }
@@ -80,10 +89,13 @@ impl fmt::Display for ApplicationClientError {
                 formatter.write_str("server returned the wrong application response type")
             }
             Self::SubscriptionCursorMismatch => {
-                formatter.write_str("server accepted a different session catalog cursor")
+                formatter.write_str("server accepted a different subscription scope or cursor")
+            }
+            Self::EventScopeMismatch => {
+                formatter.write_str("server returned an event outside the subscription scope")
             }
             Self::EventCursorNotMonotonic => {
-                formatter.write_str("server returned a non-monotonic session catalog cursor")
+                formatter.write_str("server returned a non-monotonic subscription cursor")
             }
             Self::Application(error) => write_application_error(formatter, *error),
         }
@@ -101,6 +113,7 @@ impl Error for ApplicationClientError {
             | Self::UnexpectedServerMessage
             | Self::UnexpectedApplicationResponse
             | Self::SubscriptionCursorMismatch
+            | Self::EventScopeMismatch
             | Self::EventCursorNotMonotonic
             | Self::Application(_) => None,
         }
@@ -259,15 +272,57 @@ where
             })
             .await?;
         let ApplicationResponse::SessionTranscriptListed {
+            session,
             entries,
+            runs,
+            active_run_id,
             next_cursor,
+            event_cursor,
         } = response
         else {
             return Err(self.unexpected_application_response());
         };
+        let cursor_in_scope = event_cursor.as_bytes()[..16] == session_id.as_bytes()[..]
+            && next_cursor
+                .as_ref()
+                .is_none_or(|cursor| cursor.as_bytes()[..16] == session_id.as_bytes()[..]);
+        let snapshot_is_consistent = cursor.is_none_or(|cursor| {
+            cursor.as_bytes()[24..32] == event_cursor.as_bytes()[16..]
+                && next_cursor.as_ref().is_none_or(|next_cursor| {
+                    next_cursor.as_bytes()[16..32] == cursor.as_bytes()[16..32]
+                })
+        }) && next_cursor.as_ref().is_none_or(|next_cursor| {
+            next_cursor.as_bytes()[24..32] == event_cursor.as_bytes()[16..]
+        });
+        let runs_in_scope = runs.iter().all(|run| run.session_id == session_id);
+        let entries_have_runs = entries.iter().all(|entry| {
+            let run_id = match entry {
+                TranscriptEntry::UserMessage { run_id, .. }
+                | TranscriptEntry::AssistantMessage { run_id, .. } => *run_id,
+            };
+            runs.iter().any(|run| run.id == run_id)
+        });
+        let active_run_is_valid = active_run_id.is_none_or(|active_run_id| {
+            runs.iter()
+                .any(|run| run.id == active_run_id && !run.state.is_terminal())
+        });
+        if session.id != session_id
+            || !cursor_in_scope
+            || !snapshot_is_consistent
+            || !runs_in_scope
+            || !entries_have_runs
+            || !active_run_is_valid
+        {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
         Ok(TranscriptPage {
+            session,
             entries,
+            runs,
+            active_run_id,
             next_cursor,
+            event_cursor,
         })
     }
 
@@ -414,6 +469,36 @@ where
         })
     }
 
+    pub async fn subscribe_to_session(
+        mut self,
+        session_id: SessionId,
+        cursor: SessionEventCursor,
+    ) -> Result<SessionSubscription<S>, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::SubscribeSession { session_id, cursor })
+            .await?;
+        let ApplicationResponse::SessionSubscriptionStarted {
+            session_id: accepted_session_id,
+            cursor: accepted_cursor,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        if accepted_session_id != session_id || accepted_cursor != cursor {
+            self.usable = false;
+            return Err(ApplicationClientError::SubscriptionCursorMismatch);
+        }
+        Ok(SessionSubscription {
+            connection: self.connection,
+            session_id,
+            cursor,
+            active_delta_run: None,
+            terminal_delta_run: None,
+            delta_sequence: 0,
+            usable: self.usable,
+        })
+    }
+
     #[must_use]
     pub fn into_inner(self) -> S {
         self.connection
@@ -491,61 +576,6 @@ where
     fn unexpected_application_response(&mut self) -> ApplicationClientError {
         self.usable = false;
         ApplicationClientError::UnexpectedApplicationResponse
-    }
-}
-
-pub struct SessionCatalogSubscription<S> {
-    connection: S,
-    cursor: SessionCatalogEventCursor,
-    usable: bool,
-}
-
-impl<S> SessionCatalogSubscription<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    pub async fn next_event(&mut self) -> Result<ApplicationEvent, ApplicationClientError> {
-        if !self.usable {
-            return Err(ApplicationClientError::ConnectionUnusable);
-        }
-        let message = match read_server_message(&mut self.connection).await {
-            Ok(Some(message)) => message,
-            Ok(None) => {
-                self.usable = false;
-                return Err(ApplicationClientError::ServerDisconnected);
-            }
-            Err(error) => {
-                self.usable = false;
-                return Err(ApplicationClientError::Frame(error));
-            }
-        };
-        match message {
-            ServerMessage::Event { event } => {
-                let next_cursor = event.cursor();
-                if next_cursor.as_bytes() <= self.cursor.as_bytes() {
-                    self.usable = false;
-                    return Err(ApplicationClientError::EventCursorNotMonotonic);
-                }
-                self.cursor = next_cursor;
-                Ok(event)
-            }
-            ServerMessage::SubscriptionEnded { error } => {
-                self.usable = false;
-                Err(ApplicationClientError::Application(error))
-            }
-            ServerMessage::Hello { .. }
-            | ServerMessage::ProtocolVersionMismatch { .. }
-            | ServerMessage::Response { .. }
-            | ServerMessage::RequestFailed { .. } => {
-                self.usable = false;
-                Err(ApplicationClientError::UnexpectedServerMessage)
-            }
-        }
-    }
-
-    #[must_use]
-    pub const fn cursor(&self) -> SessionCatalogEventCursor {
-        self.cursor
     }
 }
 

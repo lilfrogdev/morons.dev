@@ -10,23 +10,23 @@ mod workspace;
 use std::{fmt, path::Path, thread};
 
 use morons_protocol::ServerEndpoint;
-use tokio::sync::{Mutex, MutexGuard, mpsc, oneshot};
+use tokio::sync::{Mutex, MutexGuard, mpsc, oneshot, watch};
 
 use self::{
     backend::Backend,
     credentials::StoredOpenCodeApiKey,
     runs::RunWorkerRequest,
     types::{
-        MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE, REQUEST_FINGERPRINT_BYTES,
-        create_session_fingerprint, validate_display_name,
+        MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE,
+        REQUEST_FINGERPRINT_BYTES, create_session_fingerprint, validate_display_name,
     },
 };
 
 pub use self::{
     run_types::{
         AcceptedRun, MessageId, Run, RunCancellationResult, RunFailureKind, RunId,
-        RunModelSelection, RunOpenCodeService, RunState, TranscriptCursor, TranscriptEntry,
-        TranscriptPage,
+        RunModelSelection, RunOpenCodeService, RunState, SessionEvent, SessionEventCursor,
+        SessionEventPage, SessionEventPayload, TranscriptCursor, TranscriptEntry, TranscriptPage,
     },
     types::{
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
@@ -46,6 +46,7 @@ pub struct SessionStore {
     sender: Option<mpsc::Sender<WorkerRequest>>,
     worker: Option<thread::JoinHandle<()>>,
     credential_dispatch_lock: Mutex<()>,
+    event_notifications: watch::Sender<u64>,
 }
 
 pub struct OpenCodeCredentialLease<'a> {
@@ -88,14 +89,18 @@ impl SessionStore {
 
     fn open_at(application_root: &Path) -> Result<Self, PersistenceError> {
         let backend = Backend::open(application_root)?;
+        let event_high_water = backend.delivery_event_high_water()?;
+        let (event_notifications, _) = watch::channel(event_high_water);
+        let notification_sender = event_notifications.clone();
         let (sender, receiver) = mpsc::channel(WORKER_QUEUE_CAPACITY);
         let worker = thread::Builder::new()
             .name("morons-persistence".to_owned())
-            .spawn(move || run_worker(backend, receiver))?;
+            .spawn(move || run_worker(backend, receiver, notification_sender))?;
         Ok(Self {
             sender: Some(sender),
             worker: Some(worker),
             credential_dispatch_lock: Mutex::new(()),
+            event_notifications,
         })
     }
 
@@ -282,6 +287,36 @@ impl SessionStore {
             .map_err(|_| PersistenceError::WorkerStopped)?
     }
 
+    pub async fn read_session_events(
+        &self,
+        session_id: SessionId,
+        cursor: SessionEventCursor,
+        limit: u16,
+    ) -> Result<SessionEventPage, PersistenceError> {
+        if limit == 0 || limit > MAX_SESSION_EVENT_PAGE_SIZE {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a session event page size must be between 1 and 100",
+            });
+        }
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::ReadSessionEvents {
+                session_id,
+                cursor,
+                limit,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub(crate) fn subscribe_event_notifications(&self) -> watch::Receiver<u64> {
+        self.event_notifications.subscribe()
+    }
+
     fn sender(&self) -> Result<&mpsc::Sender<WorkerRequest>, PersistenceError> {
         self.sender.as_ref().ok_or(PersistenceError::WorkerStopped)
     }
@@ -336,9 +371,19 @@ enum WorkerRequest {
         limit: u16,
         response: oneshot::Sender<Result<SessionCatalogEventPage, PersistenceError>>,
     },
+    ReadSessionEvents {
+        session_id: SessionId,
+        cursor: SessionEventCursor,
+        limit: u16,
+        response: oneshot::Sender<Result<SessionEventPage, PersistenceError>>,
+    },
 }
 
-fn run_worker(mut backend: Backend, mut receiver: mpsc::Receiver<WorkerRequest>) {
+fn run_worker(
+    mut backend: Backend,
+    mut receiver: mpsc::Receiver<WorkerRequest>,
+    event_notifications: watch::Sender<u64>,
+) {
     while let Some(request) = receiver.blocking_recv() {
         match request {
             WorkerRequest::CreateSession {
@@ -404,6 +449,27 @@ fn run_worker(mut backend: Backend, mut receiver: mpsc::Receiver<WorkerRequest>)
             } => {
                 let _ = response.send(backend.read_session_catalog_events(cursor, limit));
             }
+            WorkerRequest::ReadSessionEvents {
+                session_id,
+                cursor,
+                limit,
+                response,
+            } => {
+                let _ = response.send(backend.read_session_events(session_id, cursor, limit));
+            }
+        }
+        match backend.delivery_event_high_water() {
+            Ok(high_water) => {
+                event_notifications.send_if_modified(|current| {
+                    if high_water > *current {
+                        *current = high_water;
+                        true
+                    } else {
+                        false
+                    }
+                });
+            }
+            Err(error) => eprintln!("delivery event notification failed: {error}"),
         }
     }
 }

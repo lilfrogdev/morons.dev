@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::{SessionId, types::IDENTIFIER_BYTES};
+use super::{Session, SessionId, types::IDENTIFIER_BYTES};
 
 pub const CONTEXT_POLICY_VERSION: u16 = 1;
 pub(super) const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
@@ -229,6 +229,7 @@ pub struct RunCancellationResult {
 pub struct TranscriptCursor {
     session_id: SessionId,
     snapshot_entry_sequence: u64,
+    snapshot_event_sequence: u64,
     after_entry_sequence: u64,
 }
 
@@ -237,11 +238,13 @@ impl TranscriptCursor {
     pub const fn new(
         session_id: SessionId,
         snapshot_entry_sequence: u64,
+        snapshot_event_sequence: u64,
         after_entry_sequence: u64,
     ) -> Self {
         Self {
             session_id,
             snapshot_entry_sequence,
+            snapshot_event_sequence,
             after_entry_sequence,
         }
     }
@@ -254,6 +257,11 @@ impl TranscriptCursor {
     #[must_use]
     pub const fn snapshot_entry_sequence(self) -> u64 {
         self.snapshot_entry_sequence
+    }
+
+    #[must_use]
+    pub const fn snapshot_event_sequence(self) -> u64 {
+        self.snapshot_event_sequence
     }
 
     #[must_use]
@@ -289,6 +297,13 @@ impl TranscriptEntry {
         match self {
             Self::UserMessage { entry_sequence, .. }
             | Self::AssistantMessage { entry_sequence, .. } => *entry_sequence,
+        }
+    }
+
+    #[must_use]
+    pub const fn run_id(&self) -> RunId {
+        match self {
+            Self::UserMessage { run_id, .. } | Self::AssistantMessage { run_id, .. } => *run_id,
         }
     }
 }
@@ -334,10 +349,58 @@ impl fmt::Debug for TranscriptEntry {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionEventCursor {
+    session_id: SessionId,
+    sequence: u64,
+}
+
+impl SessionEventCursor {
+    #[must_use]
+    pub const fn new(session_id: SessionId, sequence: u64) -> Self {
+        Self {
+            session_id,
+            sequence,
+        }
+    }
+
+    #[must_use]
+    pub const fn session_id(self) -> SessionId {
+        self.session_id
+    }
+
+    #[must_use]
+    pub const fn sequence(self) -> u64 {
+        self.sequence
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionEventPayload {
+    TranscriptEntry(TranscriptEntry),
+    RunChanged(Run),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionEvent {
+    pub cursor: SessionEventCursor,
+    pub payload: SessionEventPayload,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionEventPage {
+    pub events: Vec<SessionEvent>,
+    pub high_water: SessionEventCursor,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TranscriptPage {
+    pub session: Session,
     pub entries: Vec<TranscriptEntry>,
+    pub runs: Vec<Run>,
+    pub active_run_id: Option<RunId>,
     pub next_cursor: Option<TranscriptCursor>,
+    pub event_cursor: SessionEventCursor,
 }
 
 #[derive(Clone, Debug)]

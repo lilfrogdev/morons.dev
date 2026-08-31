@@ -8,7 +8,8 @@ use std::{
 use morons_cli::{ApplicationClient, ApplicationClientError};
 use morons_protocol::{
     ApplicationError, ApplicationEvent, MutationRequestId as ProtocolMutationRequestId,
-    SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor, SessionId as ProtocolSessionId,
+    SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
+    SessionEventCursor as ProtocolSessionEventCursor, SessionId as ProtocolSessionId,
     SessionListCursor as ProtocolSessionListCursor,
 };
 use rusqlite::{Connection, config::DbConfig, params};
@@ -16,8 +17,9 @@ use rusqlite::{Connection, config::DbConfig, params};
 use crate::{ConnectionError, application::ServerApplication, handle_local_owner_requests};
 
 use super::{
-    MutationRequestId, PersistenceError, SessionCatalogEventCursor, SessionId, SessionListCursor,
-    SessionStore, database, paths::StoragePaths, types::create_session_fingerprint,
+    MutationRequestId, PersistenceError, RunModelSelection, RunOpenCodeService,
+    SessionCatalogEventCursor, SessionId, SessionListCursor, SessionStore, database,
+    paths::StoragePaths, types::create_session_fingerprint,
 };
 
 #[cfg(unix)]
@@ -325,6 +327,59 @@ async fn slow_session_catalog_subscriber_is_disconnected() {
         handle_local_owner_requests(&mut server_connection, &application)
             .await
             .expect_err("slow subscriber should be disconnected")
+    };
+    let ((), error) = tokio::join!(client_exchange, server_exchange);
+    assert!(matches!(error, ConnectionError::SubscriptionWriteTimedOut));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn slow_session_event_subscriber_is_disconnected() {
+    let root = TestRoot::new("slow-session-event-subscriber");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            MutationRequestId::from_bytes([0x42; 16]),
+            0,
+            b"not-a-real-slow-subscriber-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x43; 16]), None)
+        .await
+        .expect("session should be created");
+    store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0x44; 16]),
+            session.id,
+            "x".repeat(64 * 1024),
+            RunModelSelection {
+                service: RunOpenCodeService::Zen,
+                model_id: "muse-spark-1.2".to_owned(),
+                protocol_revision: 1,
+                maximum_input_tokens: 96_000,
+                maximum_output_tokens: 32_000,
+            },
+        )
+        .await
+        .expect("large session input should be accepted");
+    let application = ServerApplication::from_session_store(store);
+    let (client_connection, mut server_connection) = tokio::io::duplex(64);
+    let protocol_session_id = ProtocolSessionId::from_bytes(*session.id.as_bytes());
+    let cursor = protocol_session_event_cursor(protocol_session_id, session.created_sequence);
+
+    let client_exchange = async {
+        let subscription = ApplicationClient::from_negotiated_connection(client_connection)
+            .subscribe_to_session(protocol_session_id, cursor)
+            .await
+            .expect("subscription should start");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(subscription);
+    };
+    let server_exchange = async {
+        handle_local_owner_requests(&mut server_connection, &application)
+            .await
+            .expect_err("slow session subscriber should be disconnected")
     };
     let ((), error) = tokio::join!(client_exchange, server_exchange);
     assert!(matches!(error, ConnectionError::SubscriptionWriteTimedOut));
@@ -941,6 +996,16 @@ fn assert_mode(path: &Path, expected: u32) {
 #[cfg(unix)]
 fn encode_hex(bytes: &[u8; 16]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn protocol_session_event_cursor(
+    session_id: ProtocolSessionId,
+    sequence: u64,
+) -> ProtocolSessionEventCursor {
+    let mut bytes = [0_u8; 24];
+    bytes[..16].copy_from_slice(session_id.as_bytes());
+    bytes[16..].copy_from_slice(&sequence.to_be_bytes());
+    ProtocolSessionEventCursor::from_bytes(bytes)
 }
 
 struct TestRoot(PathBuf);

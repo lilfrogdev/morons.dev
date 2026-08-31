@@ -8,7 +8,8 @@ use rusqlite::Connection;
 use super::{
     ActivationOutcome, CompletedAssistant, DispatchOutcome, MutationRequestId,
     OpenCodeCredentialStatus, PersistenceError, PrepareOperationOutcome, ProviderUsage,
-    RunModelSelection, RunOpenCodeService, RunState, SessionStore, TranscriptEntry,
+    RunModelSelection, RunOpenCodeService, RunState, SessionEventCursor, SessionEventPayload,
+    SessionStore, TranscriptCursor, TranscriptEntry,
 };
 
 const TEST_MODEL: &str = "muse-spark-1.2";
@@ -108,6 +109,11 @@ async fn run_input_is_atomic_idempotent_and_session_serialized() {
         .await
         .expect("transcript should be readable");
     assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.active_run_id, Some(accepted.run.id));
+    assert!(matches!(
+        &page.runs[..],
+        [run] if run.id == accepted.run.id && run.state == RunState::Accepted
+    ));
     assert!(matches!(
         &page.entries[0],
         TranscriptEntry::UserMessage { id, run_id, text, .. }
@@ -240,6 +246,57 @@ async fn complete_provider_outcome_commits_assistant_and_terminal_run() {
         .list_session_transcript(session.id, None, 1)
         .await
         .expect("first transcript page should load");
+    assert_eq!(first.session.id, session.id);
+    assert_eq!(first.active_run_id, None);
+    assert!(matches!(
+        &first.runs[..],
+        [run] if run.id == accepted.run.id && run.state == RunState::Succeeded
+    ));
+    let events = store
+        .read_session_events(session.id, SessionEventCursor::new(session.id, 0), 100)
+        .await
+        .expect("session events should replay");
+    assert_eq!(events.events.len(), 5);
+    assert!(matches!(
+        &events.events[0].payload,
+        SessionEventPayload::TranscriptEntry(TranscriptEntry::UserMessage { run_id, .. })
+            if *run_id == accepted.run.id
+    ));
+    assert!(matches!(
+        &events.events[1].payload,
+        SessionEventPayload::RunChanged(run) if run.state == RunState::Accepted
+    ));
+    assert!(matches!(
+        &events.events[2].payload,
+        SessionEventPayload::RunChanged(run) if run.state == RunState::Active
+    ));
+    assert!(matches!(
+        &events.events[3].payload,
+        SessionEventPayload::TranscriptEntry(TranscriptEntry::AssistantMessage { run_id, .. })
+            if *run_id == accepted.run.id
+    ));
+    assert!(matches!(
+        &events.events[4].payload,
+        SessionEventPayload::RunChanged(run) if run.state == RunState::Succeeded
+    ));
+    assert_eq!(events.high_water, first.event_cursor);
+    let continuation = first
+        .next_cursor
+        .expect("completed transcript should have another page");
+    let forged_cursor = TranscriptCursor::new(
+        session.id,
+        continuation.snapshot_entry_sequence(),
+        0,
+        continuation.after_entry_sequence(),
+    );
+    let forged_snapshot = store
+        .list_session_transcript(session.id, Some(forged_cursor), 1)
+        .await
+        .expect_err("inconsistent transcript high waters should fail");
+    assert!(matches!(
+        forged_snapshot,
+        PersistenceError::InvalidInput { .. }
+    ));
     let other_session = store
         .create_session(MutationRequestId::from_bytes([0x24; 16]), None)
         .await
@@ -252,12 +309,22 @@ async fn complete_provider_outcome_commits_assistant_and_terminal_run() {
         cross_session,
         PersistenceError::InvalidInput { .. }
     ));
+    let cross_session_events = store
+        .read_session_events(other_session.id, first.event_cursor, 1)
+        .await
+        .expect_err("cross-session event cursor should fail");
+    assert!(matches!(
+        cross_session_events,
+        PersistenceError::InvalidInput { .. }
+    ));
     let second = store
         .list_session_transcript(session.id, first.next_cursor, 1)
         .await
         .expect("second transcript page should load");
     assert!(first.next_cursor.is_some());
     assert!(second.next_cursor.is_none());
+    assert_eq!(second.event_cursor, first.event_cursor);
+    assert_eq!(second.active_run_id, None);
     assert!(matches!(
         &second.entries[0],
         TranscriptEntry::AssistantMessage { run_id, text, .. }
@@ -282,6 +349,12 @@ async fn complete_provider_outcome_commits_assistant_and_terminal_run() {
         .await
         .expect("fixed transcript snapshot should remain readable");
     assert!(fixed_snapshot.next_cursor.is_none());
+    assert_eq!(fixed_snapshot.event_cursor, first.event_cursor);
+    assert_eq!(fixed_snapshot.active_run_id, None);
+    assert!(matches!(
+        &fixed_snapshot.runs[..],
+        [run] if run.id == accepted.run.id && run.state == RunState::Succeeded
+    ));
     assert!(matches!(
         &fixed_snapshot.entries[..],
         [TranscriptEntry::AssistantMessage { run_id, .. }] if *run_id == accepted.run.id
@@ -357,6 +430,22 @@ async fn cancellation_is_exact_durable_and_stops_before_dispatch() {
         .expect("run query should succeed")
         .expect("run should exist");
     assert_eq!(run.state, RunState::Cancelled);
+    let events = store
+        .read_session_events(session.id, SessionEventCursor::new(session.id, 0), 100)
+        .await
+        .expect("cancellation events should replay");
+    assert!(matches!(
+        &events.events[3].payload,
+        SessionEventPayload::RunChanged(run)
+            if run.id == accepted.run.id
+                && run.state == RunState::Active
+                && run.cancellation_requested
+    ));
+    assert!(matches!(
+        &events.events[4].payload,
+        SessionEventPayload::RunChanged(run)
+            if run.id == accepted.run.id && run.state == RunState::Cancelled
+    ));
     let terminal = store
         .cancel_run(
             MutationRequestId::from_bytes([0x34; 16]),
