@@ -24,7 +24,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            platform: Linux x86_64
+            platform: Linux
             runner_arch: X64
             target: x86_64-unknown-linux-gnu
             cross_target: ""
@@ -36,13 +36,13 @@ jobs:
             cross_target: ""
             timeout_minutes: 20
           - os: macos-latest
-            platform: macOS aarch64
+            platform: macOS
             runner_arch: ARM64
             target: aarch64-apple-darwin
             cross_target: x86_64-apple-darwin
             timeout_minutes: 20
           - os: windows-latest
-            platform: Windows x86_64
+            platform: Windows
             runner_arch: X64
             target: x86_64-pc-windows-msvc
             cross_target: ""
