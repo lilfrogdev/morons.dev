@@ -217,6 +217,46 @@ async fn client_submits_inspects_and_cancels_exact_run() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn client_stops_the_server_with_one_stable_mutation() {
+    let (client_connection, mut server) = tokio::io::duplex(2048);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let mutation_request_id = MutationRequestId::from_bytes([0x41; 16]);
+
+    let client_exchange = async {
+        let accepted = client
+            .stop_server(mutation_request_id)
+            .await
+            .expect("server stop should be accepted");
+        assert!(accepted.current_server_stopping);
+        assert!(matches!(
+            client.get_session(SessionId::from_bytes([0x42; 16])).await,
+            Err(ApplicationClientError::ConnectionUnusable)
+        ));
+    };
+    let server_exchange = async {
+        assert_eq!(
+            read_request(&mut server, 1).await,
+            ApplicationRequest::StopServer {
+                mutation_request_id,
+            }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::ServerStopAccepted {
+                    current_server_stopping: true,
+                },
+            ),
+        )
+        .await
+        .expect("server stop response should write");
+    };
+
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn session_subscription_tracks_durable_catalog_cursor() {
     let (client_connection, mut server) = tokio::io::duplex(2048);
     let client = ApplicationClient::from_negotiated_connection(client_connection);

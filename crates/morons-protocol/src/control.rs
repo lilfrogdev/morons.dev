@@ -88,8 +88,12 @@ pub struct ServerEndpoint {
 }
 
 impl ServerEndpoint {
-    pub fn bind() -> Result<Self, ControlError> {
-        Self::bind_with_paths(ControlPaths::discover()?)
+    pub fn prepare() -> Result<Self, ControlError> {
+        Self::prepare_with_paths(ControlPaths::discover()?)
+    }
+
+    pub fn publish(&mut self) -> Result<(), ControlError> {
+        self.control.publish()
     }
 
     pub async fn accept(&self) -> io::Result<Stream> {
@@ -116,17 +120,30 @@ impl ServerEndpoint {
         Ok(&self.control.paths.root_directory)
     }
 
+    #[cfg(test)]
     fn bind_with_paths(paths: ControlPaths) -> Result<Self, ControlError> {
-        let mut control = ServerControl::acquire(paths)?;
+        let mut endpoint = Self::prepare_with_paths(paths)?;
+        endpoint.publish()?;
+        Ok(endpoint)
+    }
+
+    fn prepare_with_paths(paths: ControlPaths) -> Result<Self, ControlError> {
+        let control = ServerControl::acquire(paths)?;
         let listener = control
             .endpoint
             .listener_options()?
             .create_tokio()
             .map_err(ControlError::from)?;
         control.endpoint.secure_bound_endpoint()?;
-        control.publish()?;
         Ok(Self { listener, control })
     }
+}
+
+pub enum ClientEndpointDiscovery {
+    Absent,
+    Incomplete,
+    Starting,
+    Registered(ClientEndpoint),
 }
 
 pub struct ClientEndpoint {
@@ -139,6 +156,10 @@ pub struct ClientEndpoint {
 impl ClientEndpoint {
     pub fn load() -> Result<Self, ControlError> {
         Self::load_with_paths(ControlPaths::discover()?)
+    }
+
+    pub fn discover() -> Result<ClientEndpointDiscovery, ControlError> {
+        Self::discover_with_paths(ControlPaths::discover()?)
     }
 
     pub async fn connect(&self) -> io::Result<Stream> {
@@ -160,17 +181,82 @@ impl ClientEndpoint {
     }
 
     fn load_with_paths(paths: ControlPaths) -> Result<Self, ControlError> {
-        paths.validate_for_client()?;
-        let authentication_key = load_authentication_key(&paths.authentication_key_path())?;
-        let registration = read_registration(&paths.registration_path())?;
-        let (host_epoch, endpoint) = registration.validate(&paths)?;
+        match Self::discover_with_paths(paths)? {
+            ClientEndpointDiscovery::Registered(endpoint) => Ok(endpoint),
+            ClientEndpointDiscovery::Absent
+            | ClientEndpointDiscovery::Incomplete
+            | ClientEndpointDiscovery::Starting => Err(ControlError::InvalidState {
+                reason: "no endpoint registration is available",
+            }),
+        }
+    }
 
-        Ok(Self {
+    fn discover_with_paths(paths: ControlPaths) -> Result<ClientEndpointDiscovery, ControlError> {
+        if !paths.root_directory.try_exists()? {
+            return Ok(ClientEndpointDiscovery::Absent);
+        }
+        validate_private_directory(&paths.root_directory)?;
+        if !paths.control_directory.try_exists()? {
+            return Ok(ClientEndpointDiscovery::Absent);
+        }
+        validate_private_directory(&paths.control_directory)?;
+
+        let host_lock_path = paths.host_lock_path();
+        if !host_lock_path.try_exists()? {
+            if !paths.authentication_key_path().try_exists()?
+                && !paths.registration_path().try_exists()?
+                && fs::read_dir(&paths.control_directory)?.next().is_none()
+            {
+                return Ok(ClientEndpointDiscovery::Incomplete);
+            }
+            return Err(ControlError::InvalidState {
+                reason: "an existing control root is missing its stable host lock",
+            });
+        }
+        validate_private_file(&host_lock_path, None)?;
+        let host_lock_is_held = host_lock_is_held(&host_lock_path)?;
+        if !paths.authentication_key_path().try_exists()? {
+            return if !paths.registration_path().try_exists()? {
+                Ok(if host_lock_is_held {
+                    ClientEndpointDiscovery::Starting
+                } else {
+                    ClientEndpointDiscovery::Incomplete
+                })
+            } else {
+                Err(ControlError::InvalidState {
+                    reason: "an existing control root is missing its authentication key",
+                })
+            };
+        }
+        let authentication_key = load_authentication_key(&paths.authentication_key_path())?;
+        if !paths.registration_path().try_exists()? {
+            return Ok(if host_lock_is_held {
+                ClientEndpointDiscovery::Starting
+            } else {
+                ClientEndpointDiscovery::Absent
+            });
+        }
+
+        #[cfg(unix)]
+        validate_private_directory(&paths.runtime_directory)?;
+        let registration = match read_registration(&paths.registration_path()) {
+            Ok(registration) => registration,
+            Err(ControlError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(if host_lock_is_held {
+                    ClientEndpointDiscovery::Starting
+                } else {
+                    ClientEndpointDiscovery::Absent
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let (host_epoch, endpoint) = registration.validate(&paths)?;
+        Ok(ClientEndpointDiscovery::Registered(Self {
             authentication_key,
             host_epoch,
             server_process_id: registration.server_process_id,
             endpoint,
-        })
+        }))
     }
 }
 
@@ -316,16 +402,6 @@ impl ControlPaths {
         Ok(control_directory_existed)
     }
 
-    fn validate_for_client(&self) -> Result<(), ControlError> {
-        validate_private_directory(&self.root_directory)?;
-        validate_private_directory(&self.control_directory)?;
-
-        #[cfg(unix)]
-        validate_private_directory(&self.runtime_directory)?;
-
-        Ok(())
-    }
-
     fn authentication_key_path(&self) -> PathBuf {
         self.control_directory.join(AUTHENTICATION_KEY_FILE_NAME)
     }
@@ -371,6 +447,18 @@ impl EndpointRegistration {
         let endpoint =
             LocalEndpoint::from_identifier(&paths.runtime_directory, &host_epoch, &self.endpoint)?;
         Ok((host_epoch, endpoint))
+    }
+}
+
+fn host_lock_is_held(path: &Path) -> Result<bool, ControlError> {
+    let lock = OpenOptions::new().read(true).write(true).open(path)?;
+    match lock.try_lock() {
+        Ok(()) => {
+            lock.unlock()?;
+            Ok(false)
+        }
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(error)) => Err(error.into()),
     }
 }
 

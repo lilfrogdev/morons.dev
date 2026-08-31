@@ -279,6 +279,9 @@ pub enum ApplicationRequest {
         session_id: SessionId,
         run_id: crate::RunId,
     },
+    StopServer {
+        mutation_request_id: MutationRequestId,
+    },
 }
 
 impl fmt::Debug for ApplicationRequest {
@@ -368,6 +371,12 @@ impl fmt::Debug for ApplicationRequest {
                 .field("session_id", session_id)
                 .field("run_id", run_id)
                 .finish(),
+            Self::StopServer {
+                mutation_request_id,
+            } => formatter
+                .debug_struct("StopServer")
+                .field("mutation_request_id", mutation_request_id)
+                .finish(),
         }
     }
 }
@@ -418,6 +427,9 @@ pub enum ApplicationResponse {
         run_id: crate::RunId,
         state: crate::RunState,
         cancellation_requested: bool,
+    },
+    ServerStopAccepted {
+        current_server_stopping: bool,
     },
 }
 

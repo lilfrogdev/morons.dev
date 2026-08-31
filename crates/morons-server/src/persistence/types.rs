@@ -19,6 +19,7 @@ const MAX_SESSION_NAME_BYTES: usize = 256;
 const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1\0";
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
 const CANCEL_RUN_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/cancel-run/v1\0";
+const STOP_SERVER_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/stop-server/v1\0";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId([u8; IDENTIFIER_BYTES]);
@@ -145,6 +146,12 @@ pub struct SessionCatalogEvent {
 pub struct SessionCatalogEventPage {
     pub events: Vec<SessionCatalogEvent>,
     pub high_water: SessionCatalogEventCursor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerStopResult {
+    pub signal_current_supervisor: bool,
+    pub accepted_host_epoch: [u8; IDENTIFIER_BYTES],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,6 +390,10 @@ pub(super) fn cancel_run_fingerprint(
     digest.update(session_id.as_bytes());
     digest.update(run_id.as_bytes());
     digest.finalize().into()
+}
+
+pub(super) fn stop_server_fingerprint() -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    Sha256::digest(STOP_SERVER_FINGERPRINT_CONTEXT).into()
 }
 
 pub(super) fn create_session_fingerprint(

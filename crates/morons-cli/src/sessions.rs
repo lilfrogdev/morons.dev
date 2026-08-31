@@ -37,6 +37,11 @@ pub struct TranscriptPage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerStopAcceptance {
+    pub current_server_stopping: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunCancellationResult {
     pub run_id: RunId,
     pub state: RunState,
@@ -323,6 +328,27 @@ where
             active_run_id,
             next_cursor,
             event_cursor,
+        })
+    }
+
+    pub async fn stop_server(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+    ) -> Result<ServerStopAcceptance, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::StopServer {
+                mutation_request_id,
+            })
+            .await?;
+        let ApplicationResponse::ServerStopAccepted {
+            current_server_stopping,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        self.usable = false;
+        Ok(ServerStopAcceptance {
+            current_server_stopping,
         })
     }
 

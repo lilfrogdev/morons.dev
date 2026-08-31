@@ -30,8 +30,8 @@ pub use self::{
     },
     types::{
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
-        Session, SessionCatalogEvent, SessionCatalogEventCursor, SessionCatalogEventPage,
-        SessionId, SessionListCursor, SessionPage,
+        ServerStopResult, Session, SessionCatalogEvent, SessionCatalogEventCursor,
+        SessionCatalogEventPage, SessionId, SessionListCursor, SessionPage,
     },
 };
 
@@ -122,6 +122,30 @@ impl SessionStore {
                 request_id,
                 fingerprint,
                 display_name,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub async fn request_server_stop(
+        &self,
+        request_id: MutationRequestId,
+        host_epoch: [u8; 16],
+    ) -> Result<ServerStopResult, PersistenceError> {
+        if request_id.is_zero() {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a mutation request identifier must not be all zeroes",
+            });
+        }
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::StopServer {
+                request_id,
+                host_epoch,
                 response: response_sender,
             })
             .await
@@ -339,6 +363,11 @@ enum WorkerRequest {
         response: oneshot::Sender<Result<Session, PersistenceError>>,
     },
     Run(RunWorkerRequest),
+    StopServer {
+        request_id: MutationRequestId,
+        host_epoch: [u8; 16],
+        response: oneshot::Sender<Result<ServerStopResult, PersistenceError>>,
+    },
     GetOpenCodeCredentialStatus {
         response: oneshot::Sender<Result<OpenCodeCredentialStatus, PersistenceError>>,
     },
@@ -396,6 +425,13 @@ fn run_worker(
                     response.send(backend.create_session(request_id, fingerprint, display_name));
             }
             WorkerRequest::Run(request) => request.execute(&mut backend),
+            WorkerRequest::StopServer {
+                request_id,
+                host_epoch,
+                response,
+            } => {
+                let _ = response.send(backend.request_server_stop(request_id, host_epoch));
+            }
             WorkerRequest::GetOpenCodeCredentialStatus { response } => {
                 let _ = response.send(backend.open_code_credential_status());
             }

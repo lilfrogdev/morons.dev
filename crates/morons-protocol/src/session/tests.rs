@@ -83,6 +83,30 @@ fn credential_request_has_stable_json_shape_and_redacted_debug() {
 }
 
 #[test]
+fn server_stop_contract_has_stable_json_shape() {
+    let request = ApplicationRequest::StopServer {
+        mutation_request_id: MutationRequestId::from_bytes([0x14; 16]),
+    };
+    assert_eq!(
+        serde_json::to_value(request).expect("server stop should encode"),
+        json!({
+            "operation": "stop_server",
+            "mutation_request_id": "mut_14141414141414141414141414141414",
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ApplicationResponse::ServerStopAccepted {
+            current_server_stopping: true,
+        })
+        .expect("server stop result should encode"),
+        json!({
+            "result": "server_stop_accepted",
+            "current_server_stopping": true,
+        })
+    );
+}
+
+#[test]
 fn credential_status_has_stable_json_shape() {
     let response = ApplicationResponse::OpenCodeCredentialStatus {
         credential: OpenCodeCredentialStatus {

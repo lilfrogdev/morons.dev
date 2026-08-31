@@ -64,7 +64,7 @@ impl HostEpoch {
     }
 
     #[must_use]
-    pub(crate) const fn as_bytes(&self) -> &[u8; HOST_EPOCH_BYTES] {
+    pub const fn as_bytes(&self) -> &[u8; HOST_EPOCH_BYTES] {
         &self.0
     }
 }

@@ -10,12 +10,16 @@ use tokio::{sync::Semaphore, task::JoinSet, time};
 const AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CLIENT_CONNECTIONS: usize = 32;
+const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let server = Arc::new(ServerEndpoint::bind()?);
+    let mut server = ServerEndpoint::prepare()?;
     let application = Arc::new(ServerApplication::open(&server)?);
+    server.publish()?;
+    let server = Arc::new(server);
     let connection_permits = Arc::new(Semaphore::new(MAX_CLIENT_CONNECTIONS));
+    let mut shutdown_requests = application.subscribe_shutdown_requests();
     let mut connections = JoinSet::new();
 
     println!("morons-server ready");
@@ -43,6 +47,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     serve_connection(connection, &server, &application).await;
                 });
             }
+            changed = shutdown_requests.changed() => {
+                if changed.is_err() || *shutdown_requests.borrow_and_update() {
+                    break;
+                }
+            }
             result = tokio::signal::ctrl_c() => {
                 result?;
                 break;
@@ -51,8 +60,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     application.shutdown().await;
-    connections.abort_all();
-    while connections.join_next().await.is_some() {}
+    let drain = async {
+        while let Some(result) = connections.join_next().await {
+            if let Err(error) = result {
+                eprintln!("client connection task failed during shutdown: {error}");
+            }
+        }
+    };
+    if time::timeout(CONNECTION_DRAIN_TIMEOUT, drain)
+        .await
+        .is_err()
+    {
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
+    }
     Ok(())
 }
 

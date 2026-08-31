@@ -142,6 +142,21 @@ where
                 .await?;
                 return stream_session_events(connection, application, subscription).await;
             }
+            Ok(ApplicationOutcome::StopServerAccepted {
+                current_server_stopping,
+            }) => {
+                write_server_message(
+                    connection,
+                    &ServerMessage::response(
+                        request_id,
+                        ApplicationResponse::ServerStopAccepted {
+                            current_server_stopping,
+                        },
+                    ),
+                )
+                .await?;
+                return Ok(());
+            }
             Err(error) => {
                 write_server_message(
                     connection,

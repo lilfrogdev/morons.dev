@@ -12,7 +12,7 @@ pub use authentication::{
     AuthenticationRecordError, HOST_EPOCH_BYTES, HostEpoch, RandomnessError, authenticate_client,
     authenticate_server,
 };
-pub use control::{ClientEndpoint, ControlError, ServerEndpoint};
+pub use control::{ClientEndpoint, ClientEndpointDiscovery, ControlError, ServerEndpoint};
 pub use credential::{
     MAX_OPENCODE_API_KEY_BYTES, OpenCodeApiKey, OpenCodeApiKeyError, OpenCodeCredentialStatus,
 };
@@ -32,4 +32,4 @@ pub use session::{
     SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;

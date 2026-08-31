@@ -5,7 +5,105 @@ use std::{
 
 #[cfg(unix)]
 use super::load_authentication_key;
-use super::{ClientEndpoint, ControlError, ControlPaths, ServerEndpoint};
+use super::{
+    ClientEndpoint, ClientEndpointDiscovery, ControlError, ControlPaths, ServerEndpoint,
+    ensure_private_directory,
+};
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_discovery_distinguishes_absent_starting_and_registered_state() {
+    let paths = temporary_control_paths("client-discovery");
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone())
+            .expect("absent state should be classified"),
+        ClientEndpointDiscovery::Absent
+    ));
+
+    let server =
+        ServerEndpoint::bind_with_paths(paths.clone()).expect("server endpoint should bind");
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone())
+            .expect("registered state should be classified"),
+        ClientEndpointDiscovery::Registered(_)
+    ));
+
+    std::fs::remove_file(paths.registration_path()).expect("test registration should be removable");
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone())
+            .expect("starting state should be classified"),
+        ClientEndpointDiscovery::Starting
+    ));
+
+    drop(server);
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone())
+            .expect("stopped state should permit startup"),
+        ClientEndpointDiscovery::Absent
+    ));
+    std::fs::remove_dir_all(paths.root_directory).expect("test control root should be removable");
+}
+
+#[test]
+fn empty_partial_control_initialization_waits_without_permitting_replacement() {
+    let paths = temporary_control_paths("partial-control");
+    ensure_private_directory(&paths.root_directory).expect("test root should be private");
+    ensure_private_directory(&paths.control_directory).expect("test control should be private");
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone())
+            .expect("partial initialization should be classified"),
+        ClientEndpointDiscovery::Incomplete
+    ));
+    assert!(matches!(
+        ServerEndpoint::bind_with_paths(paths.clone()),
+        Err(ControlError::InvalidState { .. })
+    ));
+    std::fs::remove_dir_all(paths.root_directory).expect("test control root should be removable");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_discovery_never_replaces_a_control_root_with_a_missing_key() {
+    let paths = temporary_control_paths("client-missing-key");
+    let server =
+        ServerEndpoint::bind_with_paths(paths.clone()).expect("server endpoint should bind");
+    drop(server);
+    std::fs::remove_file(paths.authentication_key_path())
+        .expect("test authentication key should be removable");
+
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone())
+            .expect("missing-key state should remain non-startable"),
+        ClientEndpointDiscovery::Incomplete
+    ));
+    assert!(matches!(
+        ClientEndpoint::load_with_paths(paths.clone()),
+        Err(ControlError::InvalidState { .. })
+    ));
+    assert!(matches!(
+        ServerEndpoint::bind_with_paths(paths.clone()),
+        Err(ControlError::InvalidState { .. })
+    ));
+    std::fs::remove_dir_all(paths.root_directory).expect("test control root should be removable");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prepared_server_is_not_discoverable_before_explicit_publication() {
+    let paths = temporary_control_paths("prepared-publication");
+    let mut server = ServerEndpoint::prepare_with_paths(paths.clone())
+        .expect("server endpoint should be prepared");
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone())
+            .expect("prepared state should be classified"),
+        ClientEndpointDiscovery::Starting
+    ));
+    server.publish().expect("server endpoint should publish");
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone())
+            .expect("published state should be classified"),
+        ClientEndpointDiscovery::Registered(_)
+    ));
+    drop(server);
+    std::fs::remove_dir_all(paths.root_directory).expect("test control root should be removable");
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn duplicate_server_is_rejected_by_lifetime_lock() {
