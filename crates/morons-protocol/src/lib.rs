@@ -23,8 +23,9 @@ pub use framing::{
 };
 pub use messages::{ClientMessage, ServerMessage};
 pub use run::{
-    MessageId, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary, TranscriptCursor,
-    TranscriptEntry,
+    MessageId, OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
+    OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary,
+    TranscriptCursor, TranscriptEntry,
 };
 pub use session::{
     APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
@@ -32,4 +33,4 @@ pub use session::{
     SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;

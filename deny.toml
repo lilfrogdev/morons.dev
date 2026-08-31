@@ -9,6 +9,7 @@ allow = [
     "ISC",
     "MIT",
     "Unicode-3.0",
+    "Zlib",
 ]
 confidence-threshold = 0.8
 
@@ -17,6 +18,10 @@ multiple-versions = "deny"
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
+skip = [
+    { name = "hashbrown", version = "=0.16.1", reason = "Ratatui 0.30 uses this line in its layout engine alongside its cache line" },
+    { name = "syn", version = "=2.0.119", reason = "Ratatui 0.30 macro dependencies still use syn 2 while the workspace macro stack uses syn 3" },
+]
 
 [sources]
 unknown-registry = "deny"

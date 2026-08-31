@@ -144,6 +144,44 @@ pub enum OpenCodeService {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum OpenCodeModelTrainingUse {
+    NotUsed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenCodeModelRetention {
+    None,
+    UpToThirtyDays,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenCodeModelCapabilities {
+    pub text_input: bool,
+    pub text_output: bool,
+    pub reasoning: bool,
+    pub reasoning_continuation: bool,
+    pub tool_calls: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenCodeModelSummary {
+    pub service: OpenCodeService,
+    pub id: String,
+    pub display_name: String,
+    pub available: bool,
+    pub responses_protocol_revision: u16,
+    pub capabilities: OpenCodeModelCapabilities,
+    pub maximum_input_tokens: u32,
+    pub maximum_output_tokens: u32,
+    pub training_use: OpenCodeModelTrainingUse,
+    pub retention: OpenCodeModelRetention,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RunState {
     Accepted,
     Active,

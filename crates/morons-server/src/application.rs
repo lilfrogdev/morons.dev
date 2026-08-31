@@ -173,6 +173,23 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::ListOpenCodeModels { service } => {
+                let availability = self
+                    .open_code_model_availability(to_provider_service(service))
+                    .await
+                    .map_err(|error| {
+                        eprintln!("OpenCode model catalog query failed: {error}");
+                        ApplicationError::ServiceUnavailable
+                    })?;
+                let models = availability
+                    .into_iter()
+                    .map(to_protocol_model_summary)
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or(ApplicationError::Internal)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::OpenCodeModelsListed { service, models },
+                ))
+            }
             ApplicationRequest::GetOpenCodeCredentialStatus => {
                 let credential = self
                     .sessions

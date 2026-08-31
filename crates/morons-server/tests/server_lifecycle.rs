@@ -208,6 +208,22 @@ async fn auto_start_helper() {
         .await
         .expect("exact sibling server should start and authenticate");
     assert!(connected.launched_companion());
+    let home = PathBuf::from(std::env::var_os("HOME").expect("test HOME should be set"));
+    let registration = fs::read(home.join(".morons/control/endpoint.json"))
+        .expect("server registration should be readable");
+    let registration: serde_json::Value =
+        serde_json::from_slice(&registration).expect("server registration should decode");
+    let process_id = registration["server_process_id"]
+        .as_u64()
+        .and_then(|process_id| i32::try_from(process_id).ok())
+        .and_then(rustix::process::Pid::from_raw)
+        .expect("registered server process should be valid");
+    assert_eq!(
+        rustix::process::getpgid(Some(process_id))
+            .expect("server process group should be readable"),
+        process_id
+    );
+    assert_ne!(process_id, rustix::process::getpgrp());
     let mut client = ApplicationClient::from_negotiated_connection(connected.into_connection());
     let accepted = client
         .stop_server(MutationRequestId::from_bytes([0x62; 16]))

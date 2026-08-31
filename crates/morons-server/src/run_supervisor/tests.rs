@@ -50,6 +50,48 @@ fn global_run_capacity_is_bounded_without_queueing() {
     assert!(supervisor.try_reserve().is_some());
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn model_catalog_query_returns_only_reviewed_server_metadata() {
+    let root = TestRoot::new("model-catalog-query");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    let (base, captured_request, server) = spawn_catalog_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+
+    let outcome = application
+        .execute_for_local_owner(ApplicationRequest::ListOpenCodeModels {
+            service: OpenCodeService::Go,
+        })
+        .await
+        .expect("model catalog query should succeed");
+    let ApplicationOutcome::Response(ApplicationResponse::OpenCodeModelsListed { service, models }) =
+        outcome
+    else {
+        panic!("model catalog query should return model summaries");
+    };
+    assert_eq!(service, OpenCodeService::Go);
+    assert!(models.iter().all(|model| model.service == service));
+    assert!(
+        models
+            .iter()
+            .find(|model| model.id == "gpt-5.6-luna")
+            .expect("reviewed model should be returned")
+            .available
+    );
+    assert!(
+        models
+            .iter()
+            .all(|model| model.id != "muse-spark-1.2-contributor")
+    );
+
+    let captured = captured_request
+        .await
+        .expect("catalog request should be captured");
+    assert!(captured.starts_with("GET /zen/go/v1/models HTTP/1.1"));
+    assert!(!captured.to_ascii_lowercase().contains("authorization:"));
+    server.await.expect("catalog fixture should finish");
+    application.shutdown().await;
+}
+
 #[test]
 fn oversized_complete_assistant_is_a_run_resource_failure() {
     let outcome = ProviderOutcome {
@@ -506,6 +548,46 @@ async fn wait_for_terminal(
     })
     .await
     .expect("run should terminate")
+}
+
+async fn spawn_catalog_provider() -> (
+    String,
+    oneshot::Receiver<String>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("catalog fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("catalog fixture should have an address");
+    let (captured_sender, captured_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("catalog should connect");
+        let request = read_http_request(&mut stream).await;
+        captured_sender
+            .send(String::from_utf8(request).expect("catalog request should be UTF-8"))
+            .unwrap_or_else(|_| panic!("catalog request should be observed"));
+        let body = concat!(
+            "{\"object\":\"list\",\"data\":[",
+            "{\"id\":\"gpt-5.6-luna\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"},",
+            "{\"id\":\"muse-spark-1.2-contributor\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"}",
+            "]}"
+        );
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("catalog response should be written");
+        stream
+            .shutdown()
+            .await
+            .expect("catalog response should close");
+    });
+    (format!("http://{address}"), captured_receiver, server)
 }
 
 async fn spawn_successful_provider() -> (
