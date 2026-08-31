@@ -5,10 +5,10 @@ mod paths;
 mod types;
 mod workspace;
 
-use std::{path::Path, thread};
+use std::{fmt, path::Path, thread};
 
 use morons_protocol::ServerEndpoint;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Mutex, MutexGuard, mpsc, oneshot};
 
 use self::{
     backend::Backend,
@@ -30,6 +30,34 @@ const WORKER_QUEUE_CAPACITY: usize = 64;
 pub struct SessionStore {
     sender: Option<mpsc::Sender<WorkerRequest>>,
     worker: Option<thread::JoinHandle<()>>,
+    credential_dispatch_lock: Mutex<()>,
+}
+
+pub struct OpenCodeCredentialLease<'a> {
+    api_key: StoredOpenCodeApiKey,
+    generation: u64,
+    _dispatch_guard: MutexGuard<'a, ()>,
+}
+
+impl OpenCodeCredentialLease<'_> {
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) fn api_key_bytes(&self) -> &[u8] {
+        self.api_key.as_bytes()
+    }
+}
+
+impl fmt::Debug for OpenCodeCredentialLease<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenCodeCredentialLease")
+            .field("api_key", &"[REDACTED]")
+            .field("generation", &self.generation)
+            .finish()
+    }
 }
 
 impl SessionStore {
@@ -46,6 +74,7 @@ impl SessionStore {
         Ok(Self {
             sender: Some(sender),
             worker: Some(worker),
+            credential_dispatch_lock: Mutex::new(()),
         })
     }
 
@@ -103,6 +132,7 @@ impl SessionStore {
             });
         }
         let api_key = StoredOpenCodeApiKey::new(api_key)?;
+        let _dispatch_guard = self.credential_dispatch_lock.lock().await;
         let (response_sender, response_receiver) = oneshot::channel();
         self.sender()?
             .send(WorkerRequest::SetOpenCodeCredential {
@@ -128,6 +158,7 @@ impl SessionStore {
                 reason: "a mutation request identifier must not be all zeroes",
             });
         }
+        let _dispatch_guard = self.credential_dispatch_lock.lock().await;
         let (response_sender, response_receiver) = oneshot::channel();
         self.sender()?
             .send(WorkerRequest::RemoveOpenCodeCredential {
@@ -140,6 +171,29 @@ impl SessionStore {
         response_receiver
             .await
             .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub async fn lease_open_code_credential(
+        &self,
+        expected_generation: u64,
+    ) -> Result<OpenCodeCredentialLease<'_>, PersistenceError> {
+        let dispatch_guard = self.credential_dispatch_lock.lock().await;
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::LeaseOpenCodeCredential {
+                expected_generation,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        let api_key = response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)??;
+        Ok(OpenCodeCredentialLease {
+            api_key,
+            generation: expected_generation,
+            _dispatch_guard: dispatch_guard,
+        })
     }
 
     pub async fn get_session(
@@ -242,6 +296,10 @@ enum WorkerRequest {
         expected_generation: u64,
         response: oneshot::Sender<Result<OpenCodeCredentialStatus, PersistenceError>>,
     },
+    LeaseOpenCodeCredential {
+        expected_generation: u64,
+        response: oneshot::Sender<Result<StoredOpenCodeApiKey, PersistenceError>>,
+    },
     GetSession {
         session_id: SessionId,
         response: oneshot::Sender<Result<Option<Session>, PersistenceError>>,
@@ -292,6 +350,16 @@ fn run_worker(mut backend: Backend, mut receiver: mpsc::Receiver<WorkerRequest>)
             } => {
                 let _ = response
                     .send(backend.remove_open_code_credential(request_id, expected_generation));
+            }
+            WorkerRequest::LeaseOpenCodeCredential {
+                expected_generation,
+                response,
+            } => {
+                let _ = response.send(
+                    backend
+                        .credentials
+                        .clone_key_for_dispatch(expected_generation),
+                );
             }
             WorkerRequest::GetSession {
                 session_id,

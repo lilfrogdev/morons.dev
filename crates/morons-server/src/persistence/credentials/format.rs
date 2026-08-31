@@ -42,6 +42,10 @@ impl StoredOpenCodeApiKey {
     pub(in crate::persistence) fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    pub(in crate::persistence) fn clone_for_dispatch(&self) -> Self {
+        Self(self.0.clone())
+    }
 }
 
 impl fmt::Debug for StoredOpenCodeApiKey {
@@ -97,6 +101,12 @@ impl CredentialState {
             configured: self.api_key.is_some(),
             generation: self.generation,
         }
+    }
+
+    pub(super) fn clone_api_key_for_dispatch(&self) -> Option<StoredOpenCodeApiKey> {
+        self.api_key
+            .as_ref()
+            .map(StoredOpenCodeApiKey::clone_for_dispatch)
     }
 }
 

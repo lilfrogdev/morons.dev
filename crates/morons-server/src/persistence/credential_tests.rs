@@ -1,8 +1,11 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use morons_cli::{ApplicationClient, ApplicationClientError};
@@ -24,6 +27,68 @@ use super::{
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 static TEST_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[tokio::test(flavor = "current_thread")]
+async fn credential_dispatch_leases_verify_generation_and_serialize_mutation() {
+    const API_KEY: &[u8] = b"not-a-real-dispatch-key";
+
+    let root = TestRoot::new("credential-dispatch-lease");
+    let store = Arc::new(SessionStore::open_at(root.path()).expect("session store should open"));
+    assert!(matches!(
+        store.lease_open_code_credential(0).await,
+        Err(PersistenceError::CredentialNotConfigured)
+    ));
+    store
+        .set_open_code_credential(
+            MutationRequestId::from_bytes([0xd1; 16]),
+            0,
+            API_KEY.to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    assert!(matches!(
+        store.lease_open_code_credential(0).await,
+        Err(PersistenceError::CredentialGenerationConflict)
+    ));
+
+    let lease = store
+        .lease_open_code_credential(1)
+        .await
+        .expect("current generation should be leased");
+    assert_eq!(lease.generation(), 1);
+    assert!(lease.api_key_bytes() == API_KEY);
+    let debug = format!("{lease:?}");
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains("not-a-real-dispatch-key"));
+
+    let mutation_store = Arc::clone(&store);
+    let mutation = tokio::spawn(async move {
+        mutation_store
+            .remove_open_code_credential(MutationRequestId::from_bytes([0xd2; 16]), 1)
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), async {
+            while !mutation.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_err(),
+        "credential mutation must wait while dispatch is being established"
+    );
+    drop(lease);
+    assert_eq!(
+        mutation
+            .await
+            .expect("credential mutation task should finish")
+            .expect("credential removal should succeed"),
+        OpenCodeCredentialStatus {
+            configured: false,
+            generation: 2,
+        }
+    );
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn open_code_credentials_are_idempotent_versioned_and_durable() {

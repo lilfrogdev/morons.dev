@@ -164,6 +164,7 @@ pub enum PersistenceError {
     InvalidState { reason: &'static str },
     RequestConflict,
     CredentialGenerationConflict,
+    CredentialNotConfigured,
     CredentialMutationNotApplied,
     ResourceLimit { resource: PersistenceResourceLimit },
     WorkerStopped,
@@ -189,6 +190,9 @@ impl fmt::Display for PersistenceError {
             }
             Self::CredentialGenerationConflict => {
                 formatter.write_str("the credential generation changed")
+            }
+            Self::CredentialNotConfigured => {
+                formatter.write_str("the OpenCode credential is not configured")
             }
             Self::CredentialMutationNotApplied => {
                 formatter.write_str("the credential mutation was not applied")
@@ -223,6 +227,7 @@ impl Error for PersistenceError {
             | Self::InvalidState { .. }
             | Self::RequestConflict
             | Self::CredentialGenerationConflict
+            | Self::CredentialNotConfigured
             | Self::CredentialMutationNotApplied
             | Self::ResourceLimit { .. }
             | Self::WorkerStopped => None,
