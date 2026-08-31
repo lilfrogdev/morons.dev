@@ -1,0 +1,584 @@
+mod requests;
+mod subscriptions;
+
+use std::{error::Error, fmt, io};
+
+use morons_protocol::{MutationRequestId, OpenCodeService, SessionId};
+use tokio::{sync::mpsc, task::JoinHandle};
+
+use self::{
+    requests::{RequestCommand, RequestEvent, SessionSnapshot, run_request_worker},
+    subscriptions::{SubscriptionEvent, spawn_catalog_subscription, spawn_session_subscription},
+};
+use crate::{
+    ApplicationClient, ConnectOrStartError, MutationRequestIdError,
+    app::{AppAction, AppState, PendingOperation, UiStateError},
+    connect_or_start, generate_mutation_request_id,
+    terminal::{
+        SafeText, TerminalEvents, TerminalInput, TerminalSession, require_interactive_terminal,
+    },
+};
+
+const REQUEST_COMMAND_CAPACITY: usize = 16;
+const REQUEST_EVENT_CAPACITY: usize = 64;
+const SUBSCRIPTION_EVENT_CAPACITY: usize = 128;
+
+#[non_exhaustive]
+pub enum TerminalApplicationError {
+    Terminal(io::Error),
+    Connect(ConnectOrStartError),
+    MutationIdentifier(MutationRequestIdError),
+    State,
+    RequestWorkerStopped,
+}
+
+impl fmt::Debug for TerminalApplicationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Terminal(_) => "TerminalApplicationError::Terminal",
+            Self::Connect(_) => "TerminalApplicationError::Connect",
+            Self::MutationIdentifier(_) => "TerminalApplicationError::MutationIdentifier",
+            Self::State => "TerminalApplicationError::State",
+            Self::RequestWorkerStopped => "TerminalApplicationError::RequestWorkerStopped",
+        })
+    }
+}
+
+impl fmt::Display for TerminalApplicationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Terminal(_) => "terminal application failed",
+            Self::Connect(_) => "local server connection failed",
+            Self::MutationIdentifier(_) => "mutation identifier generation failed",
+            Self::State => "terminal state validation failed",
+            Self::RequestWorkerStopped => "local application request worker stopped",
+        })
+    }
+}
+
+impl Error for TerminalApplicationError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Terminal(error) => Some(error),
+            Self::Connect(error) => Some(error),
+            Self::MutationIdentifier(error) => Some(error),
+            Self::State => None,
+            Self::RequestWorkerStopped => None,
+        }
+    }
+}
+
+impl From<io::Error> for TerminalApplicationError {
+    fn from(error: io::Error) -> Self {
+        Self::Terminal(error)
+    }
+}
+
+impl From<ConnectOrStartError> for TerminalApplicationError {
+    fn from(error: ConnectOrStartError) -> Self {
+        Self::Connect(error)
+    }
+}
+
+impl From<MutationRequestIdError> for TerminalApplicationError {
+    fn from(error: MutationRequestIdError) -> Self {
+        Self::MutationIdentifier(error)
+    }
+}
+
+impl From<UiStateError> for TerminalApplicationError {
+    fn from(_error: UiStateError) -> Self {
+        Self::State
+    }
+}
+
+pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> {
+    require_interactive_terminal()?;
+    let connected = connect_or_start().await?;
+    let server_version = connected.server_version().to_owned();
+    let client = ApplicationClient::from_negotiated_connection(connected.into_connection());
+
+    let mut terminal = TerminalSession::enter()?;
+    let mut terminal_events = TerminalEvents::start()?;
+    let (request_commands, request_command_receiver) = mpsc::channel(REQUEST_COMMAND_CAPACITY);
+    let (request_events, mut request_event_receiver) = mpsc::channel(REQUEST_EVENT_CAPACITY);
+    let request_worker = tokio::spawn(run_request_worker(
+        client,
+        request_command_receiver,
+        request_events,
+    ));
+    let (subscription_events, mut subscription_event_receiver) =
+        mpsc::channel(SUBSCRIPTION_EVENT_CAPACITY);
+
+    let mut runtime = RuntimeState::new(server_version, request_worker);
+    enqueue_initial_queries(&request_commands)?;
+
+    let result = loop {
+        terminal.draw(|frame| runtime.app.render(frame))?;
+        tokio::select! {
+            input = terminal_events.next() => {
+                let Some(input) = input else {
+                    break Err(TerminalApplicationError::Terminal(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "terminal event input ended",
+                    )));
+                };
+                match input? {
+                    TerminalInput::Key(key) => {
+                        let action = runtime.app.handle_key(key);
+                        if runtime
+                            .handle_action(action, &request_commands)
+                            .await?
+                        {
+                            break Ok(());
+                        }
+                    }
+                    TerminalInput::Paste(paste) => runtime.app.handle_paste(&paste),
+                    TerminalInput::Resize => {}
+                }
+            }
+            event = request_event_receiver.recv() => {
+                let Some(event) = event else {
+                    break Err(TerminalApplicationError::RequestWorkerStopped);
+                };
+                if runtime
+                    .handle_request_event(event, &request_commands, &subscription_events)
+                    .await?
+                {
+                    break Ok(());
+                }
+            }
+            event = subscription_event_receiver.recv() => {
+                if let Some(event) = event {
+                    runtime.handle_subscription_event(
+                        event,
+                        &request_commands,
+                        &subscription_events,
+                    )?;
+                }
+            }
+        }
+    };
+
+    drop(request_commands);
+    runtime.abort_background_tasks();
+    drop(terminal_events);
+    terminal.restore()?;
+    result
+}
+
+struct RuntimeState {
+    app: AppState,
+    pending_command: Option<RequestCommand>,
+    requested_session: Option<SessionId>,
+    session_generation: u64,
+    refresh_remaining: u8,
+    request_worker: JoinHandle<()>,
+    catalog_subscription: Option<JoinHandle<()>>,
+    session_subscription: Option<JoinHandle<()>>,
+}
+
+impl RuntimeState {
+    fn new(server_version: String, request_worker: JoinHandle<()>) -> Self {
+        Self {
+            app: AppState::new(&server_version),
+            pending_command: None,
+            requested_session: None,
+            session_generation: 0,
+            refresh_remaining: 4,
+            request_worker,
+            catalog_subscription: None,
+            session_subscription: None,
+        }
+    }
+
+    async fn handle_action(
+        &mut self,
+        action: AppAction,
+        commands: &mpsc::Sender<RequestCommand>,
+    ) -> Result<bool, TerminalApplicationError> {
+        match action {
+            AppAction::None => {}
+            AppAction::Quit => return Ok(true),
+            AppAction::Refresh => {
+                if self.refresh_remaining == 0 {
+                    enqueue_initial_queries(commands)?;
+                    self.refresh_remaining = 4;
+                    if let Some(session_id) = self.requested_session {
+                        send_command(commands, RequestCommand::LoadSession(session_id))?;
+                    }
+                    self.app.set_status("Refreshing local state");
+                } else {
+                    self.app
+                        .set_status("A local-state refresh is already in progress");
+                }
+            }
+            AppAction::CreateSession => {
+                let command = RequestCommand::CreateSession {
+                    mutation_request_id: generate_mutation_request_id()?,
+                };
+                self.start_mutation(command, PendingOperation::CreateSession, commands)?;
+                self.app.set_status("Creating session");
+            }
+            AppAction::OpenSession(session_id) => {
+                self.requested_session = Some(session_id);
+                send_command(commands, RequestCommand::LoadSession(session_id))?;
+                self.app.set_status("Loading session transcript");
+            }
+            AppAction::CloseSession => {
+                self.requested_session = None;
+                self.session_generation = self.session_generation.wrapping_add(1);
+                abort_task(&mut self.session_subscription);
+                self.app.close_session();
+                self.app
+                    .set_status("Session detached; server-owned runs continue");
+            }
+            AppAction::SubmitInput {
+                session_id,
+                text,
+                service,
+                model_id,
+            } => {
+                let command = RequestCommand::SubmitInput {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    session_id,
+                    text,
+                    service,
+                    model_id,
+                };
+                self.start_mutation(command, PendingOperation::SubmitInput, commands)?;
+                self.app.set_status("Submitting message");
+            }
+            AppAction::CancelRun { session_id, run_id } => {
+                let command = RequestCommand::CancelRun {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    session_id,
+                    run_id,
+                };
+                self.start_mutation(command, PendingOperation::CancelRun, commands)?;
+                self.app.set_status("Requesting exact-run cancellation");
+            }
+            AppAction::StopServer => {
+                let command = RequestCommand::StopServer {
+                    mutation_request_id: generate_mutation_request_id()?,
+                };
+                self.start_mutation(command, PendingOperation::StopServer, commands)?;
+                self.app.set_status("Requesting graceful server stop");
+            }
+            AppAction::RetryPending => {
+                let command = self
+                    .pending_command
+                    .as_ref()
+                    .cloned()
+                    .ok_or(TerminalApplicationError::RequestWorkerStopped)?;
+                send_command(commands, command)?;
+                if let Some(operation) = self.app.pending {
+                    self.app.mark_pending(operation);
+                }
+                self.app.set_status("Retrying the exact pending mutation");
+            }
+            AppAction::AbandonPending => {
+                self.pending_command = None;
+                self.app.clear_pending();
+                self.app.set_status(
+                    "Pending mutation abandoned; authoritative state was not changed locally",
+                );
+            }
+        }
+        Ok(false)
+    }
+
+    async fn handle_request_event(
+        &mut self,
+        event: RequestEvent,
+        commands: &mpsc::Sender<RequestCommand>,
+        subscription_events: &mpsc::Sender<SubscriptionEvent>,
+    ) -> Result<bool, TerminalApplicationError> {
+        match event {
+            RequestEvent::ConnectionRestored { server_version } => {
+                self.app.server_version = SafeText::from_untrusted(&server_version);
+                self.app.replace_models(OpenCodeService::Zen, Vec::new())?;
+                self.app.replace_models(OpenCodeService::Go, Vec::new())?;
+                self.app.set_status(
+                    "Authenticated connection restored; refresh model availability with Ctrl+L",
+                );
+            }
+            RequestEvent::SessionsLoaded { sessions, cursor } => {
+                self.complete_refresh_query();
+                self.app.replace_sessions(sessions)?;
+                abort_task(&mut self.catalog_subscription);
+                self.catalog_subscription = Some(spawn_catalog_subscription(
+                    cursor,
+                    subscription_events.clone(),
+                ));
+                self.app.set_status("Session list is current");
+            }
+            RequestEvent::ModelsLoaded { service, models } => {
+                self.complete_refresh_query();
+                self.app.replace_models(service, models)?;
+                self.app.set_status("Reviewed model availability updated");
+            }
+            RequestEvent::CredentialStatusLoaded(status) => {
+                self.complete_refresh_query();
+                self.app.set_credential_status(status);
+            }
+            RequestEvent::SessionLoaded(snapshot) => {
+                self.install_session_snapshot(snapshot, subscription_events)?;
+                self.app.set_status("Session transcript is current");
+            }
+            RequestEvent::SessionCreated {
+                mutation_request_id,
+                session,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                self.app.add_session(session.clone())?;
+                self.requested_session = Some(session.id);
+                send_command(commands, RequestCommand::LoadSession(session.id))?;
+                self.app.set_status("Session created");
+            }
+            RequestEvent::InputAccepted {
+                mutation_request_id,
+                accepted,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                self.app.session_input_accepted(accepted.run)?;
+                self.app
+                    .set_status("Message accepted durably; run is server-owned");
+            }
+            RequestEvent::CancellationResolved {
+                mutation_request_id,
+                result,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                self.app.cancellation_resolved(
+                    result.run_id,
+                    result.state,
+                    result.cancellation_requested,
+                )?;
+                self.app.set_status(if result.cancellation_requested {
+                    "Cancellation intent committed; waiting for controlled execution to stop"
+                } else {
+                    "Run was already terminal"
+                });
+            }
+            RequestEvent::ServerStopAccepted {
+                mutation_request_id,
+                result,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                if result.current_server_stopping {
+                    return Ok(true);
+                }
+                self.app
+                    .set_status("The stop request belonged to an earlier server generation");
+            }
+            RequestEvent::QueryFailed {
+                context,
+                model_service,
+                error,
+            } => {
+                if matches!(context, "session list" | "model list" | "credential status") {
+                    self.complete_refresh_query();
+                }
+                if let Some(service) = model_service {
+                    self.app.replace_models(service, Vec::new())?;
+                }
+                self.app.set_status(format!("{context} failed: {error}"));
+            }
+            RequestEvent::MutationFailed {
+                mutation_request_id,
+                context,
+                error,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                self.app.set_status(format!("{context} failed: {error}"));
+            }
+            RequestEvent::MutationOutcomeUnknown {
+                mutation_request_id,
+                context,
+                error,
+            } => {
+                self.require_pending_mutation(mutation_request_id)?;
+                self.app.mark_pending_unknown();
+                self.app.set_status(format!(
+                    "{context} outcome is unknown: {error}; r retries the exact request, a abandons it"
+                ));
+            }
+        }
+        Ok(false)
+    }
+
+    fn handle_subscription_event(
+        &mut self,
+        event: SubscriptionEvent,
+        commands: &mpsc::Sender<RequestCommand>,
+        _subscription_events: &mpsc::Sender<SubscriptionEvent>,
+    ) -> Result<(), TerminalApplicationError> {
+        match event {
+            SubscriptionEvent::Catalog(event) => self.app.apply_event(event)?,
+            SubscriptionEvent::Session { generation, event }
+                if generation == self.session_generation =>
+            {
+                self.app.apply_event(event)?;
+                self.app.transcript_scroll = 0;
+            }
+            SubscriptionEvent::Session { .. } => {}
+            SubscriptionEvent::CatalogConnectionLost => {
+                self.app
+                    .set_status("Session catalog connection lost; reconnecting");
+            }
+            SubscriptionEvent::SessionConnectionLost { generation }
+                if generation == self.session_generation =>
+            {
+                self.app.clear_transient_assistant();
+                self.app
+                    .set_status("Session connection lost; transient output was discarded");
+            }
+            SubscriptionEvent::SessionConnectionLost { .. } => {}
+            SubscriptionEvent::CatalogSnapshotRequired => {
+                send_command(commands, RequestCommand::LoadSessions)?;
+                self.app
+                    .set_status("Session catalog cursor expired; loading a new snapshot");
+            }
+            SubscriptionEvent::SessionSnapshotRequired {
+                generation,
+                session_id,
+            } if generation == self.session_generation
+                && self.requested_session == Some(session_id) =>
+            {
+                send_command(commands, RequestCommand::LoadSession(session_id))?;
+                self.app
+                    .set_status("Session cursor expired; loading a new transcript snapshot");
+            }
+            SubscriptionEvent::SessionSnapshotRequired { .. } => {}
+            SubscriptionEvent::Failed { scope, error } => {
+                if scope == "session subscription" {
+                    self.app.clear_transient_assistant();
+                }
+                self.app.set_status(format!("{scope} stopped: {error}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn complete_refresh_query(&mut self) {
+        self.refresh_remaining = self.refresh_remaining.saturating_sub(1);
+    }
+
+    fn start_mutation(
+        &mut self,
+        command: RequestCommand,
+        operation: PendingOperation,
+        commands: &mpsc::Sender<RequestCommand>,
+    ) -> Result<(), TerminalApplicationError> {
+        if self.pending_command.is_some() {
+            return Ok(());
+        }
+        send_command(commands, command.clone())?;
+        self.pending_command = Some(command);
+        self.app.mark_pending(operation);
+        Ok(())
+    }
+
+    fn finish_mutation(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+    ) -> Result<(), TerminalApplicationError> {
+        self.require_pending_mutation(mutation_request_id)?;
+        self.pending_command = None;
+        self.app.clear_pending();
+        Ok(())
+    }
+
+    fn require_pending_mutation(
+        &self,
+        mutation_request_id: MutationRequestId,
+    ) -> Result<(), TerminalApplicationError> {
+        if self
+            .pending_command
+            .as_ref()
+            .and_then(RequestCommand::mutation_request_id)
+            == Some(mutation_request_id)
+        {
+            Ok(())
+        } else {
+            Err(TerminalApplicationError::State)
+        }
+    }
+
+    fn install_session_snapshot(
+        &mut self,
+        snapshot: SessionSnapshot,
+        subscription_events: &mpsc::Sender<SubscriptionEvent>,
+    ) -> Result<(), TerminalApplicationError> {
+        if self.requested_session != Some(snapshot.session.id) {
+            return Ok(());
+        }
+        let session_id = snapshot.session.id;
+        let event_cursor = snapshot.event_cursor;
+        self.app.open_session(
+            snapshot.session,
+            snapshot.entries,
+            snapshot.runs,
+            snapshot.active_run_id,
+        )?;
+        self.session_generation = self.session_generation.wrapping_add(1);
+        abort_task(&mut self.session_subscription);
+        self.session_subscription = Some(spawn_session_subscription(
+            session_id,
+            event_cursor,
+            self.session_generation,
+            subscription_events.clone(),
+        ));
+        Ok(())
+    }
+
+    fn abort_background_tasks(&mut self) {
+        abort_task(&mut self.catalog_subscription);
+        abort_task(&mut self.session_subscription);
+        self.request_worker.abort();
+    }
+}
+
+fn enqueue_initial_queries(
+    commands: &mpsc::Sender<RequestCommand>,
+) -> Result<(), TerminalApplicationError> {
+    for command in [
+        RequestCommand::LoadSessions,
+        RequestCommand::LoadCredentialStatus,
+        RequestCommand::LoadModels(OpenCodeService::Zen),
+        RequestCommand::LoadModels(OpenCodeService::Go),
+    ] {
+        send_command(commands, command)?;
+    }
+    Ok(())
+}
+
+fn send_command(
+    commands: &mpsc::Sender<RequestCommand>,
+    command: RequestCommand,
+) -> Result<(), TerminalApplicationError> {
+    commands
+        .try_send(command)
+        .map_err(|_| TerminalApplicationError::RequestWorkerStopped)
+}
+
+fn abort_task(task: &mut Option<JoinHandle<()>>) {
+    if let Some(task) = task.take() {
+        task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_application_errors_do_not_render_nested_input() {
+        let error = TerminalApplicationError::Terminal(io::Error::other(
+            "sensitive path\u{1b}]52;c;clipboard",
+        ));
+        assert_eq!(error.to_string(), "terminal application failed");
+        assert_eq!(format!("{error:?}"), "TerminalApplicationError::Terminal");
+    }
+}

@@ -1,7 +1,8 @@
 use morons_protocol::{
     ApplicationError, ApplicationResponse, MessageId as ProtocolMessageId,
     MutationRequestId as ProtocolMutationRequestId,
-    OpenCodeCredentialStatus as ProtocolOpenCodeCredentialStatus,
+    OpenCodeCredentialStatus as ProtocolOpenCodeCredentialStatus, OpenCodeModelCapabilities,
+    OpenCodeModelRetention, OpenCodeModelSummary, OpenCodeModelTrainingUse,
     OpenCodeService as ProtocolOpenCodeService, ResourceLimit,
     RunFailureKind as ProtocolRunFailureKind, RunId as ProtocolRunId, RunState as ProtocolRunState,
     RunSummary, SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
@@ -18,7 +19,7 @@ use crate::{
         Session, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
         TranscriptCursor, TranscriptEntry,
     },
-    provider::OpenCodeService,
+    provider::{ModelRetention, ModelTrainingUse, OpenCodeModelAvailability, OpenCodeService},
 };
 
 pub(super) fn input_accepted_response(accepted: AcceptedRun) -> ApplicationOutcome {
@@ -148,6 +149,41 @@ pub(super) fn to_protocol_session_event_cursor(
     bytes[..16].copy_from_slice(cursor.session_id().as_bytes());
     bytes[16..].copy_from_slice(&cursor.sequence().to_be_bytes());
     ProtocolSessionEventCursor::from_bytes(bytes)
+}
+
+pub(super) fn to_protocol_model_summary(
+    availability: OpenCodeModelAvailability,
+) -> Option<OpenCodeModelSummary> {
+    let model = availability.model;
+    let training_use = match model.data_use.training {
+        ModelTrainingUse::NotUsed => OpenCodeModelTrainingUse::NotUsed,
+        ModelTrainingUse::MayUsePromptsAndCompletions => return None,
+    };
+    let retention = match model.data_use.retention {
+        ModelRetention::None => OpenCodeModelRetention::None,
+        ModelRetention::UpToThirtyDays => OpenCodeModelRetention::UpToThirtyDays,
+    };
+    Some(OpenCodeModelSummary {
+        service: match model.service {
+            OpenCodeService::Zen => ProtocolOpenCodeService::Zen,
+            OpenCodeService::Go => ProtocolOpenCodeService::Go,
+        },
+        id: model.id.to_owned(),
+        display_name: model.display_name.to_owned(),
+        available: availability.available,
+        responses_protocol_revision: model.responses_protocol_revision,
+        capabilities: OpenCodeModelCapabilities {
+            text_input: model.capabilities.text_input,
+            text_output: model.capabilities.text_output,
+            reasoning: model.capabilities.reasoning,
+            reasoning_continuation: model.capabilities.reasoning_continuation,
+            tool_calls: model.capabilities.tool_calls,
+        },
+        maximum_input_tokens: model.maximum_input_tokens,
+        maximum_output_tokens: model.maximum_output_tokens,
+        training_use,
+        retention,
+    })
 }
 
 pub(super) const fn to_protocol_credential_status(

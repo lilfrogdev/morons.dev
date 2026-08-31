@@ -25,6 +25,8 @@ hyper = { version = "=1.10.0", default-features = false, features = ["client", "
 hyper-rustls = { version = "=0.27.9", default-features = false, features = ["aws-lc-rs", "http1", "tls12", "webpki-tokio"] }
 hyper-util = { version = "=0.1.20", default-features = false, features = ["client-legacy", "http1", "tokio"] }
 interprocess = { version = "=2.4.3", default-features = false, features = ["tokio"] }
+ratatui = { version = "=0.30.2", default-features = false, features = ["std"] }
+ratatui-crossterm = "=0.1.2"
 rustix = { version = "=1.1.4", default-features = false }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["backup", "bundled", "limits", "load_extension"] }
 serde = { version = "=1.0.229", features = ["derive"] }

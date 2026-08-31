@@ -4,7 +4,7 @@ use morons_protocol::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::ApplicationClientError;
+use super::{ApplicationClientError, valid_session_summary};
 
 pub struct SessionCatalogSubscription<S> {
     pub(super) connection: S,
@@ -37,6 +37,14 @@ where
                     self.usable = false;
                     return Err(ApplicationClientError::EventScopeMismatch);
                 };
+                if matches!(
+                    &event,
+                    ApplicationEvent::SessionCreated { session, .. }
+                        if !valid_session_summary(session)
+                ) {
+                    self.usable = false;
+                    return Err(ApplicationClientError::EventScopeMismatch);
+                }
                 if next_cursor.as_bytes() <= self.cursor.as_bytes() {
                     self.usable = false;
                     return Err(ApplicationClientError::EventCursorNotMonotonic);

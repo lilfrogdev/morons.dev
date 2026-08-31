@@ -7,7 +7,8 @@ use super::{
     SessionSummary,
 };
 use crate::{
-    ClientMessage, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeService,
+    ClientMessage, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelCapabilities,
+    OpenCodeModelRetention, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
     RunFailureKind, RunId, RunState, RunSummary,
 };
 
@@ -102,6 +103,67 @@ fn server_stop_contract_has_stable_json_shape() {
         json!({
             "result": "server_stop_accepted",
             "current_server_stopping": true,
+        })
+    );
+}
+
+#[test]
+fn model_catalog_contract_has_stable_json_shape() {
+    let request = ApplicationRequest::ListOpenCodeModels {
+        service: OpenCodeService::Go,
+    };
+    assert_eq!(
+        serde_json::to_value(request).expect("model query should encode"),
+        json!({
+            "operation": "list_open_code_models",
+            "service": "go",
+        })
+    );
+
+    let response = ApplicationResponse::OpenCodeModelsListed {
+        service: OpenCodeService::Go,
+        models: vec![OpenCodeModelSummary {
+            service: OpenCodeService::Go,
+            id: "grok-4.6".to_owned(),
+            display_name: "Grok 4.6".to_owned(),
+            available: true,
+            responses_protocol_revision: 1,
+            capabilities: OpenCodeModelCapabilities {
+                text_input: true,
+                text_output: true,
+                reasoning: true,
+                reasoning_continuation: false,
+                tool_calls: true,
+            },
+            maximum_input_tokens: 96_000,
+            maximum_output_tokens: 32_000,
+            training_use: OpenCodeModelTrainingUse::NotUsed,
+            retention: OpenCodeModelRetention::UpToThirtyDays,
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("model response should encode"),
+        json!({
+            "result": "open_code_models_listed",
+            "service": "go",
+            "models": [{
+                "service": "go",
+                "id": "grok-4.6",
+                "display_name": "Grok 4.6",
+                "available": true,
+                "responses_protocol_revision": 1,
+                "capabilities": {
+                    "text_input": true,
+                    "text_output": true,
+                    "reasoning": true,
+                    "reasoning_continuation": false,
+                    "tool_calls": true,
+                },
+                "maximum_input_tokens": 96000,
+                "maximum_output_tokens": 32000,
+                "training_use": "not_used",
+                "retention": "up_to_thirty_days",
+            }],
         })
     );
 }

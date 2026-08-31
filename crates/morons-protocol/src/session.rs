@@ -244,6 +244,9 @@ pub enum ApplicationRequest {
     SubscribeSessionCatalog {
         cursor: SessionCatalogEventCursor,
     },
+    ListOpenCodeModels {
+        service: crate::OpenCodeService,
+    },
     GetOpenCodeCredentialStatus,
     SetOpenCodeCredential {
         mutation_request_id: MutationRequestId,
@@ -307,6 +310,10 @@ impl fmt::Debug for ApplicationRequest {
             Self::SubscribeSessionCatalog { cursor } => formatter
                 .debug_struct("SubscribeSessionCatalog")
                 .field("cursor", cursor)
+                .finish(),
+            Self::ListOpenCodeModels { service } => formatter
+                .debug_struct("ListOpenCodeModels")
+                .field("service", service)
                 .finish(),
             Self::GetOpenCodeCredentialStatus => formatter.write_str("GetOpenCodeCredentialStatus"),
             Self::SetOpenCodeCredential {
@@ -397,6 +404,10 @@ pub enum ApplicationResponse {
     },
     SessionCatalogSubscriptionStarted {
         cursor: SessionCatalogEventCursor,
+    },
+    OpenCodeModelsListed {
+        service: crate::OpenCodeService,
+        models: Vec<crate::OpenCodeModelSummary>,
     },
     OpenCodeCredentialStatus {
         credential: crate::OpenCodeCredentialStatus,

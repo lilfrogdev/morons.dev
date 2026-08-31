@@ -211,8 +211,21 @@ fn companion_command(path: &Path) -> Command {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     #[cfg(unix)]
-    if let Some(home) = std::env::var_os("HOME") {
-        command.env("HOME", home);
+    {
+        use std::os::unix::process::CommandExt as _;
+
+        command.process_group(0);
+        if let Some(home) = std::env::var_os("HOME") {
+            command.env("HOME", home);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
     command
 }

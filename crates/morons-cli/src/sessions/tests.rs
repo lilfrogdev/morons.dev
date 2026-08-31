@@ -1,8 +1,9 @@
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
-    MessageId, MutationRequestId, OpenCodeService, RunId, RunState, RunSummary, ServerMessage,
-    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, read_client_message,
-    write_server_message,
+    MessageId, MutationRequestId, OpenCodeModelCapabilities, OpenCodeModelRetention,
+    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary,
+    ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary,
+    read_client_message, write_server_message,
 };
 
 use super::{ApplicationClient, ApplicationClientError};
@@ -99,6 +100,82 @@ async fn session_client_correlates_create_get_and_list_requests() {
         )
         .await
         .expect("list response should be written");
+    };
+
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_lists_models_with_exact_service_scope() {
+    let (client_connection, mut server) = tokio::io::duplex(4096);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let model = fixture_model_summary(OpenCodeService::Go);
+
+    let expected_model = model.clone();
+    let client_exchange = async {
+        assert_eq!(
+            client
+                .list_open_code_models(OpenCodeService::Go)
+                .await
+                .expect("model query should succeed"),
+            vec![expected_model]
+        );
+    };
+    let server_exchange = async {
+        assert_eq!(
+            read_request(&mut server, 1).await,
+            ApplicationRequest::ListOpenCodeModels {
+                service: OpenCodeService::Go,
+            }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::OpenCodeModelsListed {
+                    service: OpenCodeService::Go,
+                    models: vec![model],
+                },
+            ),
+        )
+        .await
+        .expect("model response should be written");
+    };
+
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_rejects_cross_service_model_metadata() {
+    let (client_connection, mut server) = tokio::io::duplex(4096);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let mut model = fixture_model_summary(OpenCodeService::Go);
+    model.service = OpenCodeService::Zen;
+
+    let client_exchange = async {
+        assert!(matches!(
+            client.list_open_code_models(OpenCodeService::Go).await,
+            Err(ApplicationClientError::EventScopeMismatch)
+        ));
+        assert!(matches!(
+            client.list_sessions(None, 10).await,
+            Err(ApplicationClientError::ConnectionUnusable)
+        ));
+    };
+    let server_exchange = async {
+        read_request(&mut server, 1).await;
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::OpenCodeModelsListed {
+                    service: OpenCodeService::Go,
+                    models: vec![model],
+                },
+            ),
+        )
+        .await
+        .expect("model response should be written");
     };
 
     tokio::join!(client_exchange, server_exchange);
@@ -555,6 +632,27 @@ async fn mismatched_response_identifier_is_rejected() {
     };
 
     tokio::join!(client_exchange, server_exchange);
+}
+
+fn fixture_model_summary(service: OpenCodeService) -> OpenCodeModelSummary {
+    OpenCodeModelSummary {
+        service,
+        id: "grok-4.6".to_owned(),
+        display_name: "Grok 4.6".to_owned(),
+        available: true,
+        responses_protocol_revision: 1,
+        capabilities: OpenCodeModelCapabilities {
+            text_input: true,
+            text_output: true,
+            reasoning: true,
+            reasoning_continuation: false,
+            tool_calls: true,
+        },
+        maximum_input_tokens: 96_000,
+        maximum_output_tokens: 32_000,
+        training_use: OpenCodeModelTrainingUse::NotUsed,
+        retention: OpenCodeModelRetention::UpToThirtyDays,
+    }
 }
 
 fn session_event_cursor(session_id: SessionId, sequence: u64) -> SessionEventCursor {

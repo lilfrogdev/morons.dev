@@ -2,14 +2,19 @@ mod subscriptions;
 
 pub use subscriptions::{SessionCatalogSubscription, SessionSubscription};
 
-use std::{error::Error, fmt};
+use std::{collections::BTreeSet, error::Error, fmt};
+
+const MAX_MODEL_SUMMARIES: usize = 256;
+const MAX_MODEL_METADATA_BYTES: usize = 128;
+const MAX_MODEL_TOKEN_LIMIT: u32 = 1_000_000;
+const MAX_SESSION_DISPLAY_NAME_BYTES: usize = 256;
 
 use morons_protocol::{
     ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
-    MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeService,
-    ResourceLimit, RunId, RunState, RunSummary, ServerMessage, SessionCatalogEventCursor,
-    SessionEventCursor, SessionId, SessionListCursor, SessionSummary, TranscriptCursor,
-    TranscriptEntry, read_server_message, write_client_message,
+    MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
+    OpenCodeService, ResourceLimit, RunId, RunState, RunSummary, ServerMessage,
+    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
+    TranscriptCursor, TranscriptEntry, read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -170,6 +175,40 @@ fn write_application_error(
     }
 }
 
+fn valid_session_summary(session: &SessionSummary) -> bool {
+    session.id.as_bytes().iter().any(|byte| *byte != 0)
+        && session.display_name.as_ref().is_none_or(|display_name| {
+            !display_name.is_empty() && display_name.len() <= MAX_SESSION_DISPLAY_NAME_BYTES
+        })
+}
+
+fn valid_model_summaries(service: OpenCodeService, models: &[OpenCodeModelSummary]) -> bool {
+    if models.len() > MAX_MODEL_SUMMARIES {
+        return false;
+    }
+    let mut identifiers = BTreeSet::new();
+    models.iter().all(|model| {
+        model.service == service
+            && !model.id.is_empty()
+            && model.id.len() <= MAX_MODEL_METADATA_BYTES
+            && model.id.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'-' | b'_')
+            })
+            && identifiers.insert(model.id.as_str())
+            && !model.display_name.is_empty()
+            && model.display_name.len() <= MAX_MODEL_METADATA_BYTES
+            && model.responses_protocol_revision > 0
+            && model.maximum_input_tokens > 0
+            && model.maximum_input_tokens <= MAX_MODEL_TOKEN_LIMIT
+            && model.maximum_output_tokens > 0
+            && model.maximum_output_tokens <= MAX_MODEL_TOKEN_LIMIT
+            && model.capabilities.text_input
+            && model.capabilities.text_output
+    })
+}
+
 impl From<FrameError> for ApplicationClientError {
     fn from(error: FrameError) -> Self {
         Self::Frame(error)
@@ -203,12 +242,16 @@ where
         let response = self
             .request(ApplicationRequest::CreateSession {
                 mutation_request_id,
-                display_name,
+                display_name: display_name.clone(),
             })
             .await?;
         let ApplicationResponse::SessionCreated { session } = response else {
             return Err(self.unexpected_application_response());
         };
+        if !valid_session_summary(&session) || session.display_name != display_name {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
         Ok(session)
     }
 
@@ -226,7 +269,7 @@ where
                 session_id,
                 text,
                 service,
-                model_id,
+                model_id: model_id.clone(),
             })
             .await?;
         let ApplicationResponse::SessionInputAccepted {
@@ -236,6 +279,14 @@ where
         else {
             return Err(self.unexpected_application_response());
         };
+        if run.session_id != session_id
+            || run.user_message_id != user_message_id
+            || run.service != service
+            || run.model_id != model_id
+        {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
         Ok(SessionInputAcceptance {
             user_message_id,
             run,
@@ -260,6 +311,10 @@ where
         let ApplicationResponse::RunFound { run } = response else {
             return Err(self.unexpected_application_response());
         };
+        if run.id != run_id || run.session_id != session_id {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
         Ok(Some(run))
     }
 
@@ -300,21 +355,35 @@ where
             next_cursor.as_bytes()[24..32] == event_cursor.as_bytes()[16..]
         });
         let runs_in_scope = runs.iter().all(|run| run.session_id == session_id);
-        let entries_have_runs = entries.iter().all(|entry| {
-            let run_id = match entry {
-                TranscriptEntry::UserMessage { run_id, .. }
-                | TranscriptEntry::AssistantMessage { run_id, .. } => *run_id,
-            };
-            runs.iter().any(|run| run.id == run_id)
+        let runs_are_unique = runs
+            .iter()
+            .enumerate()
+            .all(|(index, run)| runs[..index].iter().all(|prior| prior.id != run.id));
+        let entries_have_runs = entries.iter().all(|entry| match entry {
+            TranscriptEntry::UserMessage { id, run_id, .. } => runs
+                .iter()
+                .any(|run| run.id == *run_id && run.user_message_id == *id),
+            TranscriptEntry::AssistantMessage {
+                run_id,
+                service,
+                model_id,
+                ..
+            } => runs.iter().any(|run| {
+                run.id == *run_id && run.service == *service && run.model_id == *model_id
+            }),
         });
         let active_run_is_valid = active_run_id.is_none_or(|active_run_id| {
             runs.iter()
                 .any(|run| run.id == active_run_id && !run.state.is_terminal())
         });
         if session.id != session_id
+            || !valid_session_summary(&session)
             || !cursor_in_scope
             || !snapshot_is_consistent
+            || entries.len() > usize::from(limit)
+            || runs.len() > usize::from(limit).saturating_add(1)
             || !runs_in_scope
+            || !runs_are_unique
             || !entries_have_runs
             || !active_run_is_valid
         {
@@ -366,18 +435,43 @@ where
             })
             .await?;
         let ApplicationResponse::RunCancellationResolved {
-            run_id,
+            run_id: resolved_run_id,
             state,
             cancellation_requested,
         } = response
         else {
             return Err(self.unexpected_application_response());
         };
+        if resolved_run_id != run_id {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
         Ok(RunCancellationResult {
-            run_id,
+            run_id: resolved_run_id,
             state,
             cancellation_requested,
         })
+    }
+
+    pub async fn list_open_code_models(
+        &mut self,
+        service: OpenCodeService,
+    ) -> Result<Vec<OpenCodeModelSummary>, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::ListOpenCodeModels { service })
+            .await?;
+        let ApplicationResponse::OpenCodeModelsListed {
+            service: response_service,
+            models,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        if response_service != service || !valid_model_summaries(service, &models) {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(models)
     }
 
     pub async fn open_code_credential_status(
@@ -445,6 +539,10 @@ where
         let ApplicationResponse::SessionFound { session } = response else {
             return Err(self.unexpected_application_response());
         };
+        if session.id != session_id || !valid_session_summary(&session) {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
         Ok(Some(session))
     }
 
@@ -464,6 +562,22 @@ where
         else {
             return Err(self.unexpected_application_response());
         };
+        let snapshot_is_consistent = cursor.is_none_or(|cursor| {
+            cursor.as_bytes()[..8] == catalog_cursor.as_bytes()[..]
+                && next_cursor
+                    .as_ref()
+                    .is_none_or(|next_cursor| next_cursor.as_bytes()[..8] == cursor.as_bytes()[..8])
+        }) && next_cursor
+            .as_ref()
+            .is_none_or(|next_cursor| next_cursor.as_bytes()[..8] == catalog_cursor.as_bytes()[..]);
+        let sessions_are_valid = sessions.iter().enumerate().all(|(index, session)| {
+            valid_session_summary(session)
+                && sessions[..index].iter().all(|prior| prior.id != session.id)
+        });
+        if sessions.len() > usize::from(limit) || !snapshot_is_consistent || !sessions_are_valid {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
         Ok(SessionPage {
             sessions,
             next_cursor,

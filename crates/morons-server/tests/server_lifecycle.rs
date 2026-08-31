@@ -5,7 +5,10 @@ use std::{
     os::unix::fs::{DirBuilderExt as _, PermissionsExt as _},
     path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -24,9 +27,11 @@ const STOP_EXISTING_HELPER_ENVIRONMENT: &str = "MORONS_STOP_EXISTING_HELPER";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn authenticated_server_stop_exits_and_removes_current_registration() {
+    let _process_test = process_test_guard();
     let home = test_home();
     let mut server = minimal_command(PathBuf::from(env!("CARGO_BIN_EXE_morons-server")), &home)
         .spawn()
@@ -57,6 +62,7 @@ fn authenticated_server_stop_exits_and_removes_current_registration() {
 
 #[test]
 fn exact_sibling_companion_is_started_and_authenticated() {
+    let _process_test = process_test_guard();
     let home = test_private_directory("auto-start-home");
     let (package, client) = package_test_client("auto-start-package", true);
 
@@ -77,6 +83,7 @@ fn exact_sibling_companion_is_started_and_authenticated() {
 
 #[test]
 fn incomplete_control_state_fails_without_launching_a_replacement() {
+    let _process_test = process_test_guard();
     let home = test_private_directory("incomplete-home");
     let application_root = home.join(".morons");
     let control_root = application_root.join("control");
@@ -108,6 +115,7 @@ fn incomplete_control_state_fails_without_launching_a_replacement() {
 
 #[test]
 fn concurrent_clients_resolve_one_authenticated_server() {
+    let _process_test = process_test_guard();
     let home = test_private_directory("concurrent-home");
     let (package, client) = package_test_client("concurrent-package", true);
     let mut first = minimal_command(client.clone(), &home);
@@ -208,6 +216,22 @@ async fn auto_start_helper() {
         .await
         .expect("exact sibling server should start and authenticate");
     assert!(connected.launched_companion());
+    let home = PathBuf::from(std::env::var_os("HOME").expect("test HOME should be set"));
+    let registration = fs::read(home.join(".morons/control/endpoint.json"))
+        .expect("server registration should be readable");
+    let registration: serde_json::Value =
+        serde_json::from_slice(&registration).expect("server registration should decode");
+    let process_id = registration["server_process_id"]
+        .as_u64()
+        .and_then(|process_id| i32::try_from(process_id).ok())
+        .and_then(rustix::process::Pid::from_raw)
+        .expect("registered server process should be valid");
+    assert_eq!(
+        rustix::process::getpgid(Some(process_id))
+            .expect("server process group should be readable"),
+        process_id
+    );
+    assert_ne!(process_id, rustix::process::getpgrp());
     let mut client = ApplicationClient::from_negotiated_connection(connected.into_connection());
     let accepted = client
         .stop_server(MutationRequestId::from_bytes([0x62; 16]))
@@ -358,6 +382,12 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<ExitStatus, &'s
         }
         thread::sleep(RETRY_DELAY);
     }
+}
+
+fn process_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    PROCESS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn test_home() -> PathBuf {
