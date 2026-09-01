@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const SANDBOX_PROTOCOL_VERSION: u16 = 1;
+pub const SANDBOX_PROTOCOL_VERSION: u16 = 2;
 const FRAME_MAGIC: &[u8; 4] = b"MSBX";
 const HEADER_BYTES: usize = 10;
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
@@ -61,9 +61,11 @@ pub struct SandboxExit {
 #[serde(rename_all = "snake_case")]
 pub enum SandboxStatus {
     Exited,
+    Signalled,
     Cancelled,
     TimedOut,
     OutputLimit,
+    ResourceLimit,
     RequestRejected,
     BackendUnavailable,
     LaunchFailed,
@@ -98,9 +100,12 @@ impl SandboxResult {
 
     fn is_valid(&self) -> bool {
         let exited = self.status == SandboxStatus::Exited;
-        let exit_valid = self
-            .exit
-            .is_some_and(|exit| exit.code.is_some() ^ exit.signal.is_some());
+        let signalled = self.status == SandboxStatus::Signalled;
+        let exit_valid = self.exit.is_some_and(|exit| {
+            (exited && exit.code.is_some() && exit.signal.is_none())
+                || (signalled && exit.code.is_none() && exit.signal.is_some())
+        });
+        let completed = exited || signalled;
         let identifier_valid = self.operation_id.iter().any(|byte| *byte != 0)
             || self.status == SandboxStatus::RequestRejected;
         self.protocol_version == SANDBOX_PROTOCOL_VERSION
@@ -108,8 +113,8 @@ impl SandboxResult {
             && self.stdout.len() <= MAX_STREAM_BYTES
             && self.stderr.len() <= MAX_STREAM_BYTES
             && self.candidate_eligible == exited
-            && exit_valid == exited
-            && (exited || self.stdout.is_empty() && self.stderr.is_empty())
+            && exit_valid == completed
+            && (completed || self.stdout.is_empty() && self.stderr.is_empty())
     }
 }
 
@@ -248,7 +253,7 @@ mod tests {
         bytes[0] = b'X';
         assert!(read_request(&mut bytes.as_slice()).is_err());
 
-        let payload = br#"{"protocol_version":1,"operation_id":[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],"candidate_root":"/c","scratch_root":"/s","image_root":"/i","executable":"bin/cargo","arguments":[],"working_directory":".","limits":{"wall_time_milliseconds":1,"output_bytes_per_stream":1},"extra":true}"#;
+        let payload = br#"{"protocol_version":2,"operation_id":[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],"candidate_root":"/c","scratch_root":"/s","image_root":"/i","executable":"bin/cargo","arguments":[],"working_directory":".","limits":{"wall_time_milliseconds":1,"output_bytes_per_stream":1},"extra":true}"#;
         let mut frame = Vec::new();
         frame.extend_from_slice(FRAME_MAGIC);
         frame.extend_from_slice(&SANDBOX_PROTOCOL_VERSION.to_be_bytes());
@@ -286,6 +291,24 @@ mod tests {
             stderr: Vec::new(),
             candidate_eligible: false,
         };
+        assert!(write_result(&mut Vec::new(), &invalid).is_err());
+
+        let signalled = SandboxResult {
+            protocol_version: SANDBOX_PROTOCOL_VERSION,
+            operation_id: [7; 16],
+            status: SandboxStatus::Signalled,
+            exit: Some(SandboxExit {
+                code: None,
+                signal: Some(15),
+            }),
+            stdout: b"before-signal".to_vec(),
+            stderr: Vec::new(),
+            candidate_eligible: false,
+        };
+        assert!(write_result(&mut Vec::new(), &signalled).is_ok());
+
+        let mut invalid = signalled;
+        invalid.candidate_eligible = true;
         assert!(write_result(&mut Vec::new(), &invalid).is_err());
     }
 
