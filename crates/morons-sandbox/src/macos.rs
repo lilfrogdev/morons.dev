@@ -20,8 +20,10 @@ use rustix::{
 use crate::{Cancellation, SandboxExit, SandboxResult, SandboxStatus, runner::PreparedRequest};
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+const PS_EXEC: &str = "/bin/ps";
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const TREE_TERMINATION_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_PROCESS_SNAPSHOT_BYTES: usize = 256 * 1024;
 
 pub(crate) fn execute(request: PreparedRequest, cancellation: &Cancellation) -> SandboxResult {
     let profile = match profile(&request) {
@@ -210,10 +212,93 @@ fn terminate_group(child: &mut Child, group: Pid) -> bool {
     loop {
         match test_kill_process_group(group) {
             Err(Errno::SRCH) => return true,
-            Ok(()) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
-            Ok(()) | Err(_) => return false,
+            Ok(()) | Err(Errno::PERM) => match process_group_has_live_members(group, deadline) {
+                Ok(false) => return true,
+                Ok(true) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
+                Ok(true) | Err(()) => return false,
+            },
+            Err(_) => return false,
         }
     }
+}
+
+fn process_group_has_live_members(group: Pid, deadline: Instant) -> Result<bool, ()> {
+    let group_id = group.as_raw_nonzero().get().to_string();
+    let mut command = Command::new(PS_EXEC);
+    command
+        .args(["-o", "pid=", "-o", "pgid=", "-o", "state=", "-g", &group_id])
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|_| ())?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(());
+    };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(());
+    };
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let stdout_reader = capture_stream(stdout, MAX_PROCESS_SNAPSHOT_BYTES, Arc::clone(&exceeded));
+    let stderr_reader = capture_stream(stderr, MAX_PROCESS_SNAPSHOT_BYTES, Arc::clone(&exceeded));
+    let status = loop {
+        if exceeded.load(Ordering::Acquire) || Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = join_stream(stdout_reader);
+            let _ = join_stream(stderr_reader);
+            return Err(());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => thread::sleep(POLL_INTERVAL),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_stream(stdout_reader);
+                let _ = join_stream(stderr_reader);
+                return Err(());
+            }
+        }
+    };
+    let stdout = join_stream(stdout_reader);
+    let stderr = join_stream(stderr_reader);
+    if exceeded.load(Ordering::Acquire) {
+        return Err(());
+    }
+    if !status.success() {
+        return if status.code() == Some(1) && stdout.is_empty() && stderr.is_empty() {
+            match test_kill_process_group(group) {
+                Err(Errno::SRCH) => Ok(false),
+                Ok(()) | Err(_) => Err(()),
+            }
+        } else {
+            Err(())
+        };
+    }
+    if !stderr.is_empty() {
+        return Err(());
+    }
+    let snapshot = std::str::from_utf8(&stdout).map_err(|_| ())?;
+    for line in snapshot.lines() {
+        let mut fields = line.split_ascii_whitespace();
+        let _process_id = fields.next().ok_or(())?.parse::<u32>().map_err(|_| ())?;
+        let process_group = fields.next().ok_or(())?;
+        let state = fields.next().ok_or(())?;
+        if fields.next().is_some() || process_group != group_id || state.is_empty() {
+            return Err(());
+        }
+        if !state.starts_with('Z') {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn create_private_directory(path: &Path) -> io::Result<()> {
