@@ -14,8 +14,14 @@ fn operation_profile_grants_only_typed_private_paths() {
     let image = root.join("image");
     let bootstrap = image.join("bootstrap.exe");
     let temporary = runtime.join("tmp");
+    let home = runtime.join("home");
+    let local = runtime.join("local-app-data");
+    let roaming = runtime.join("app-data");
+    let public = runtime.join("public");
     let control = runtime.join("control");
-    for directory in [&candidate, &temporary, &control, &image] {
+    for directory in [
+        &candidate, &temporary, &home, &local, &roaming, &public, &control, &image,
+    ] {
         fs::create_dir_all(directory).expect("private test directory should be created");
     }
     fs::copy(

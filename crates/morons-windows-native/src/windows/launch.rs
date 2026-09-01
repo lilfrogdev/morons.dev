@@ -497,22 +497,58 @@ impl Drop for AttributeList {
 
 fn environment_block(runtime: &Path) -> Result<Vec<u16>, NativeError> {
     let windows = windows_directory()?;
+    let windows = windows
+        .to_str()
+        .ok_or_else(|| NativeError::code("environment", 0))?;
+    let system_drive = windows
+        .get(..2)
+        .filter(|value| value.as_bytes().get(1) == Some(&b':'))
+        .ok_or_else(|| NativeError::code("system-drive", 0))?;
     let temporary = runtime.join("tmp");
-    if !temporary.is_dir() {
-        return Err(NativeError::code("runtime-temp", 0));
+    let home = runtime.join("home");
+    let local = runtime.join("local-app-data");
+    let roaming = runtime.join("app-data");
+    let public = runtime.join("public");
+    for directory in [&temporary, &home, &local, &roaming, &public] {
+        if !directory.is_dir() {
+            return Err(NativeError::code("runtime-directory", 0));
+        }
     }
-    let mut entries = [
-        ("SystemRoot", windows.as_os_str()),
-        ("TEMP", temporary.as_os_str()),
-        ("TMP", temporary.as_os_str()),
-        ("WINDIR", windows.as_os_str()),
+    let path = format!(r"{windows}\System32;{windows}");
+    let temporary = environment_path(&temporary)?;
+    let home = environment_path(&home)?;
+    let local = environment_path(&local)?;
+    let roaming = environment_path(&roaming)?;
+    let public = environment_path(&public)?;
+    let processor = if cfg!(target_arch = "aarch64") {
+        "ARM64"
+    } else {
+        "AMD64"
+    };
+    let mut entries = vec![
+        ("ALLUSERSPROFILE", public.clone()),
+        ("APPDATA", roaming),
+        ("COMPUTERNAME", "MORONS-SANDBOX".to_owned()),
+        ("ComSpec", format!(r"{windows}\System32\cmd.exe")),
+        ("HOME", home.clone()),
+        ("LOCALAPPDATA", local),
+        ("NUMBER_OF_PROCESSORS", "1".to_owned()),
+        ("OS", "Windows_NT".to_owned()),
+        ("PATH", path),
+        ("PATHEXT", ".COM;.EXE;.BAT;.CMD".to_owned()),
+        ("PROCESSOR_ARCHITECTURE", processor.to_owned()),
+        ("PUBLIC", public),
+        ("SYSTEMROOT", windows.to_owned()),
+        ("SystemDrive", system_drive.to_owned()),
+        ("TEMP", temporary.clone()),
+        ("TMP", temporary),
+        ("USERNAME", "morons-sandbox".to_owned()),
+        ("USERPROFILE", home),
+        ("WINDIR", windows.to_owned()),
     ];
     entries.sort_by_key(|(name, _)| name.to_ascii_lowercase());
     let mut block = Vec::new();
     for (name, value) in entries {
-        let value = value
-            .to_str()
-            .ok_or_else(|| NativeError::code("environment", 0))?;
         if value.contains(['\0', '\r', '\n']) {
             return Err(NativeError::code("environment", 0));
         }
@@ -521,6 +557,12 @@ fn environment_block(runtime: &Path) -> Result<Vec<u16>, NativeError> {
     }
     block.push(0);
     Ok(block)
+}
+
+fn environment_path(path: &Path) -> Result<String, NativeError> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| NativeError::code("environment", 0))
 }
 
 fn windows_directory() -> Result<PathBuf, NativeError> {
