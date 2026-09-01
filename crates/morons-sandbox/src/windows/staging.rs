@@ -25,6 +25,7 @@ pub(super) struct Layout {
     pub(super) root: PathBuf,
     pub(super) image: PathBuf,
     pub(super) runner: PathBuf,
+    pub(super) runtime: PathBuf,
     pub(super) home: PathBuf,
     pub(super) temporary: PathBuf,
     pub(super) cargo_home: PathBuf,
@@ -39,11 +40,12 @@ impl Layout {
         fs::create_dir(&root).map_err(|_| ())?;
         let image = root.join("image");
         let runner = root.join("runner.exe");
-        let home = root.join("home");
-        let temporary = root.join("tmp");
-        let cargo_home = root.join("cargo-home");
+        let runtime = root.join("runtime");
+        let home = runtime.join("home");
+        let temporary = runtime.join("tmp");
+        let cargo_home = runtime.join("cargo-home");
         let prepared = (|| {
-            for directory in [&image, &home, &temporary, &cargo_home] {
+            for directory in [&image, &runtime, &home, &temporary, &cargo_home] {
                 fs::create_dir(directory).map_err(|_| ())?;
             }
             copy_image(&request.image_root, &image)?;
@@ -52,6 +54,7 @@ impl Layout {
                 root: root.clone(),
                 image,
                 runner,
+                runtime,
                 home,
                 temporary,
                 cargo_home,
@@ -72,7 +75,7 @@ impl Layout {
             protocol_version: SANDBOX_PROTOCOL_VERSION,
             operation_id: original.operation_id,
             candidate_root: utf8(&prepared.candidate_root)?,
-            scratch_root: utf8(&self.root)?,
+            scratch_root: utf8(&self.runtime)?,
             image_root: utf8(&self.image)?,
             executable: original.executable.clone(),
             arguments: original.arguments.clone(),

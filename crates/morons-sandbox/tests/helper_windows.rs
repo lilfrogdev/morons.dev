@@ -190,6 +190,7 @@ fn helper() -> std::process::Child {
         .envs(required_windows_environment())
         .env("MORONS_SECRET_SENTINEL", "must-not-cross")
         .env("MORONS_SANDBOX_TEST_DIAGNOSTICS", "1")
+        .env("RAPPCT_DEBUG_LAUNCH", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
