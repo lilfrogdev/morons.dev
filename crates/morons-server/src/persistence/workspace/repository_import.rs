@@ -506,7 +506,10 @@ fn same_windows_directory_entries(left: &[DirectoryEntry], right: &[DirectoryEnt
                 && left.file_id == right.file_id
                 && left.reparse_tag == right.reparse_tag
                 && left_structural == right_structural
-                && (left_structural & WINDOWS_DIRECTORY_ATTRIBUTE != 0 || left.size == right.size)
+                && (left_structural & WINDOWS_DIRECTORY_ATTRIBUTE != 0
+                    || (left.size == right.size
+                        && left.last_write_time == right.last_write_time
+                        && left.change_time == right.change_time))
         })
 }
 
@@ -516,6 +519,8 @@ fn same_windows_file_snapshot(left: NodeMetadata, right: NodeMetadata) -> bool {
         && left.kind == NodeKind::RegularFile
         && right.kind == NodeKind::RegularFile
         && left.size == right.size
+        && left.last_write_time == right.last_write_time
+        && left.change_time == right.change_time
 }
 
 fn validate_repository_directory(
@@ -937,8 +942,6 @@ mod windows_tests {
         observed_metadata.link_count = 2;
         observed_metadata.attributes = 0x21;
         observed_metadata.creation_time = 21;
-        observed_metadata.last_write_time = 22;
-        observed_metadata.change_time = 23;
         assert!(same_windows_file_snapshot(
             expected_metadata,
             observed_metadata
@@ -949,8 +952,6 @@ mod windows_tests {
         observed_entry.allocation_size = 32;
         observed_entry.attributes = 0x21;
         observed_entry.creation_time = 21;
-        observed_entry.last_write_time = 22;
-        observed_entry.change_time = 23;
         assert!(same_windows_directory_entries(
             &[expected_entry],
             &[observed_entry]
@@ -972,10 +973,19 @@ mod windows_tests {
         let mut changed_kind = expected_metadata;
         changed_kind.kind = NodeKind::Directory;
         assert!(!same_windows_file_snapshot(expected_metadata, changed_kind));
+        let mut changed_time = expected_metadata;
+        changed_time.last_write_time += 1;
+        assert!(!same_windows_file_snapshot(expected_metadata, changed_time));
 
         let expected_entry = entry();
         let mut changed_entry = expected_entry.clone();
         changed_entry.attributes |= WINDOWS_REPARSE_ATTRIBUTE;
+        assert!(!same_windows_directory_entries(
+            &[expected_entry.clone()],
+            &[changed_entry]
+        ));
+        let mut changed_entry = expected_entry.clone();
+        changed_entry.change_time += 1;
         assert!(!same_windows_directory_entries(
             &[expected_entry],
             &[changed_entry]
