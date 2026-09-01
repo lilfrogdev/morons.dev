@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -27,6 +27,7 @@ const SCHEMA_V1: &str = include_str!("../schema_v1.sql");
 const SCHEMA_V2: &str = include_str!("../schema_v2.sql");
 const SCHEMA_V3: &str = include_str!("../schema_v3.sql");
 const SCHEMA_V4: &str = include_str!("../schema_v4.sql");
+const SCHEMA_V5: &str = include_str!("../schema_v5.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("audit_facts", "table"),
@@ -40,6 +41,12 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("mutation_requests", "table"),
     ("provider_operation_facts", "table"),
     ("provider_operation_facts_by_run", "index"),
+    ("repository_import_active_session", "index"),
+    ("repository_import_audit_facts", "table"),
+    ("repository_import_facts", "table"),
+    ("repository_import_facts_by_session", "index"),
+    ("repository_import_requests", "table"),
+    ("repository_import_requests_by_state", "index"),
     ("run_accepted_facts", "table"),
     ("run_accepted_facts_by_session", "index"),
     ("run_audit_facts", "table"),
@@ -106,6 +113,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V2)?;
     connection.execute_batch(SCHEMA_V3)?;
     connection.execute_batch(SCHEMA_V4)?;
+    connection.execute_batch(SCHEMA_V5)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -185,16 +193,23 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
             ensure_migration_backup(connection, paths, schema_version)?;
             connection.execute_batch(SCHEMA_V2)?;
             migrate_schema(connection, SCHEMA_V3)?;
-            migrate_schema(connection, SCHEMA_V4)
+            migrate_schema(connection, SCHEMA_V4)?;
+            migrate_schema(connection, SCHEMA_V5)
         }
         2 => {
             ensure_migration_backup(connection, paths, schema_version)?;
             migrate_schema(connection, SCHEMA_V3)?;
-            migrate_schema(connection, SCHEMA_V4)
+            migrate_schema(connection, SCHEMA_V4)?;
+            migrate_schema(connection, SCHEMA_V5)
         }
         3 => {
             ensure_migration_backup(connection, paths, schema_version)?;
-            migrate_schema(connection, SCHEMA_V4)
+            migrate_schema(connection, SCHEMA_V4)?;
+            migrate_schema(connection, SCHEMA_V5)
+        }
+        4 => {
+            ensure_migration_backup(connection, paths, schema_version)?;
+            migrate_schema(connection, SCHEMA_V5)
         }
         SCHEMA_VERSION => Ok(()),
         version if version > SCHEMA_VERSION => Err(PersistenceError::InvalidState {

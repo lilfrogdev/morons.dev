@@ -7,7 +7,8 @@ use crate::persistence::{
     PersistenceError, RunModelSelection, RunOpenCodeService, SessionId,
     run_types::{CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES, conservative_input_token_estimate},
     types::{
-        cancel_run_fingerprint, create_session_fingerprint, stop_server_fingerprint,
+        cancel_run_fingerprint, create_session_fingerprint,
+        import_repository_fingerprint_from_digest, stop_server_fingerprint,
         submit_session_input_fingerprint, validate_display_name, validate_model_selection,
         validate_user_text,
     },
@@ -18,6 +19,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_mutation_registry(connection)?;
     validate_run_request_payloads(connection)?;
     validate_server_stop_facts(connection)?;
+    validate_repository_import_facts(connection)?;
     validate_run_canonical_facts(connection)?;
     validate_logical_sequences(connection)?;
     rebuild::rebuild(connection)?;
@@ -209,6 +211,147 @@ fn validate_server_stop_facts(connection: &Connection) -> Result<(), Persistence
         return Err(PersistenceError::InvalidState {
             reason: "a persisted server stop request has invalid canonical input",
         });
+    }
+    Ok(())
+}
+
+fn validate_repository_import_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM repository_import_requests AS request
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
+            WHERE (mutation.operation_kind IS NOT 7
+               OR mutation.accepted_sequence IS NOT request.accepted_sequence
+               OR mutation.accepted_at_milliseconds IS NOT request.accepted_at_milliseconds)
+               OR (SELECT COUNT(*) FROM repository_import_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 1) != 1
+               OR (SELECT fact_sequence FROM repository_import_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 1)
+                  <= request.accepted_sequence
+               OR (request.state = 0 AND (SELECT COUNT(*) FROM repository_import_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 2) != 0)
+               OR (request.state IN (1, 2, 4) AND
+                   (SELECT COUNT(*) FROM repository_import_facts AS fact
+                    WHERE fact.request_id = request.request_id AND fact.fact_kind = 2) != 1)
+               OR (request.state = 3 AND (SELECT COUNT(*) FROM repository_import_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 2) > 1)
+               OR EXISTS (
+                    SELECT 1 FROM repository_import_facts AS dispatched
+                    JOIN repository_import_facts AS prepared
+                      ON prepared.request_id = dispatched.request_id AND prepared.fact_kind = 1
+                    WHERE dispatched.request_id = request.request_id
+                      AND dispatched.fact_kind = 2
+                      AND dispatched.fact_sequence <= prepared.fact_sequence
+               )
+               OR (SELECT COUNT(*) FROM repository_import_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 3)
+                  != CASE WHEN request.state = 2 THEN 1 ELSE 0 END
+               OR (SELECT COUNT(*) FROM repository_import_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 4)
+                  != CASE WHEN request.state = 3 THEN 1 ELSE 0 END
+               OR (SELECT COUNT(*) FROM repository_import_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 5)
+                  != CASE WHEN request.state = 4 THEN 1 ELSE 0 END
+               OR EXISTS (
+                    SELECT 1 FROM repository_import_facts AS terminal
+                    JOIN repository_import_facts AS prepared
+                      ON prepared.request_id = terminal.request_id AND prepared.fact_kind = 1
+                    LEFT JOIN repository_import_facts AS dispatched
+                      ON dispatched.request_id = terminal.request_id AND dispatched.fact_kind = 2
+                    WHERE terminal.request_id = request.request_id
+                      AND terminal.fact_kind IN (3, 4, 5)
+                      AND terminal.fact_sequence
+                          <= COALESCE(dispatched.fact_sequence, prepared.fact_sequence)
+               )
+               OR EXISTS (
+                    SELECT 1 FROM repository_import_facts AS fact
+                    WHERE fact.request_id = request.request_id AND (
+                        fact.session_id IS NOT request.session_id
+                        OR fact.workspace_id IS NOT request.workspace_id
+                        OR fact.operation_id IS NOT request.operation_id
+                        OR (fact.fact_kind = 3 AND (
+                            fact.file_count IS NOT request.file_count
+                            OR fact.directory_count IS NOT request.directory_count
+                            OR fact.logical_bytes IS NOT request.logical_bytes
+                            OR fact.manifest_digest IS NOT request.manifest_digest
+                        ))
+                    )
+               )
+               OR EXISTS (
+                    SELECT 1 FROM repository_import_audit_facts AS audit
+                    WHERE audit.request_id = request.request_id AND (
+                        audit.session_id IS NOT request.session_id
+                        OR audit.operation_id IS NOT request.operation_id
+                    )
+               )
+               OR (SELECT COUNT(*) FROM repository_import_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id AND audit.audit_kind = 1) != 1
+               OR (request.state = 0 AND
+                   (SELECT COUNT(*) FROM repository_import_audit_facts AS audit
+                    WHERE audit.request_id = request.request_id AND audit.audit_kind = 2) != 0)
+               OR (request.state IN (1, 2, 4) AND
+                   (SELECT COUNT(*) FROM repository_import_audit_facts AS audit
+                    WHERE audit.request_id = request.request_id AND audit.audit_kind = 2) != 1)
+               OR (request.state = 3 AND
+                   (SELECT COUNT(*) FROM repository_import_audit_facts AS audit
+                    WHERE audit.request_id = request.request_id AND audit.audit_kind = 2) > 1)
+               OR (SELECT COUNT(*) FROM repository_import_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id AND audit.audit_kind = 3)
+                  != CASE WHEN request.state = 2 THEN 1 ELSE 0 END
+               OR (SELECT COUNT(*) FROM repository_import_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id AND audit.audit_kind = 4)
+                  != CASE WHEN request.state = 3 THEN 1 ELSE 0 END
+               OR (SELECT COUNT(*) FROM repository_import_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id AND audit.audit_kind = 5)
+                  != CASE WHEN request.state = 4 THEN 1 ELSE 0 END
+               OR EXISTS (
+                    SELECT 1 FROM run_accepted_facts AS run
+                    WHERE run.session_id = request.session_id
+                      AND run.fact_sequence <= request.accepted_sequence
+               )
+               OR EXISTS (
+                    SELECT 1 FROM session_entries AS entry
+                    WHERE entry.session_id = request.session_id
+                      AND entry.fact_sequence <= request.accepted_sequence
+               )
+            UNION ALL
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN repository_import_requests AS request
+              ON request.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 7 AND request.request_id IS NULL
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "repository import facts conflict with durable operation state",
+        });
+    }
+    let mut statement = connection.prepare(
+        "SELECT operation_fingerprint, source_path_digest, session_id
+         FROM repository_import_requests",
+    )?;
+    let requests = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, [u8; 32]>(0)?,
+                row.get::<_, [u8; 32]>(1)?,
+                row.get::<_, [u8; 16]>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (fingerprint, source_path_digest, session_id) in requests {
+        if fingerprint
+            != import_repository_fingerprint_from_digest(
+                SessionId::from_bytes(session_id),
+                source_path_digest,
+            )
+        {
+            return Err(PersistenceError::InvalidState {
+                reason: "a repository import has an invalid canonical fingerprint",
+            });
+        }
     }
     Ok(())
 }
@@ -645,7 +788,66 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
             reason: "canonical logical sequences are invalid",
         });
     }
+    validate_repository_logical_sequences(connection)
+}
+
+fn validate_repository_logical_sequences(connection: &Connection) -> Result<(), PersistenceError> {
+    let mut statement = connection.prepare(
+        "SELECT accepted_sequence FROM repository_import_requests
+         UNION ALL SELECT fact_sequence FROM repository_import_facts
+         UNION ALL SELECT audit_sequence FROM repository_import_audit_facts",
+    )?;
+    let sequences = statement
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut unique = std::collections::BTreeSet::new();
+    for sequence in &sequences {
+        if *sequence <= 0 || !unique.insert(*sequence) {
+            return Err(invalid_repository_sequences());
+        }
+        let collides: bool = connection.query_row(
+            "SELECT
+                EXISTS (SELECT 1 FROM session_creation_requests WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM workspace_operation_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM session_created_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM credential_mutation_requests WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM credential_operation_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM credential_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM server_stop_requests WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM server_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM session_entries WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM run_accepted_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM run_state_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM run_cancellation_requests WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM provider_operation_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM run_audit_facts WHERE audit_sequence = ?1)",
+            [sequence],
+            |row| row.get(0),
+        )?;
+        if collides {
+            return Err(invalid_repository_sequences());
+        }
+    }
+    let next_value: i64 = connection.query_row(
+        "SELECT next_value FROM logical_sequences WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if sequences
+        .into_iter()
+        .max()
+        .is_some_and(|max| next_value <= max)
+    {
+        return Err(invalid_repository_sequences());
+    }
     Ok(())
+}
+
+const fn invalid_repository_sequences() -> PersistenceError {
+    PersistenceError::InvalidState {
+        reason: "repository import logical sequences are invalid",
+    }
 }
 
 fn run_service_from_record(value: i64) -> Result<RunOpenCodeService, PersistenceError> {

@@ -17,6 +17,8 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             UNION ALL SELECT session_id, fact_sequence FROM run_state_facts
             UNION ALL SELECT session_id, fact_sequence
                       FROM run_cancellation_requests WHERE intent_applied = 1
+            UNION ALL SELECT session_id, fact_sequence
+                      FROM repository_import_facts WHERE fact_kind IN (1, 3, 4, 5)
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
@@ -106,6 +108,8 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             UNION ALL SELECT session_id, fact_sequence FROM run_state_facts
             UNION ALL SELECT session_id, fact_sequence
                       FROM run_cancellation_requests WHERE intent_applied = 1
+            UNION ALL SELECT session_id, fact_sequence
+                      FROM repository_import_facts WHERE fact_kind IN (1, 3, 4, 5)
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
@@ -158,7 +162,12 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
          SELECT delivery_event_id, fact_sequence, session_id, 5, 1,
                 accepted_at_milliseconds
          FROM run_cancellation_requests
-         WHERE intent_applied = 1",
+         WHERE intent_applied = 1
+         UNION ALL
+         SELECT delivery_event_id, fact_sequence, session_id, 11, 1,
+                created_at_milliseconds
+         FROM repository_import_facts
+         WHERE fact_kind IN (1, 3, 4, 5)",
         [],
     )?;
     transaction.commit()?;

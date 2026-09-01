@@ -9,6 +9,8 @@ use morons_protocol::{
     SessionEventCursor as ProtocolSessionEventCursor, SessionId as ProtocolSessionId,
     SessionListCursor as ProtocolSessionListCursor, SessionSummary,
     TranscriptCursor as ProtocolTranscriptCursor, TranscriptEntry as ProtocolTranscriptEntry,
+    WorkspaceBlockReason as ProtocolWorkspaceBlockReason, WorkspaceState as ProtocolWorkspaceState,
+    WorkspaceSummary as ProtocolWorkspaceSummary,
 };
 
 use super::ApplicationOutcome;
@@ -17,7 +19,7 @@ use crate::{
         AcceptedRun, MutationRequestId, OpenCodeCredentialStatus, PersistenceError,
         PersistenceResourceLimit, Run, RunFailureKind, RunId, RunOpenCodeService, RunState,
         Session, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
-        TranscriptCursor, TranscriptEntry,
+        TranscriptCursor, TranscriptEntry, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
     },
     provider::{ModelRetention, ModelTrainingUse, OpenCodeModelAvailability, OpenCodeService},
 };
@@ -195,6 +197,27 @@ pub(super) const fn to_protocol_credential_status(
     }
 }
 
+pub(super) const fn to_protocol_workspace_summary(
+    workspace: WorkspaceSummary,
+) -> ProtocolWorkspaceSummary {
+    ProtocolWorkspaceSummary {
+        state: match workspace.state {
+            WorkspaceState::Empty => ProtocolWorkspaceState::Empty,
+            WorkspaceState::Importing => ProtocolWorkspaceState::Importing,
+            WorkspaceState::Ready => ProtocolWorkspaceState::Ready,
+            WorkspaceState::Blocked => ProtocolWorkspaceState::Blocked,
+        },
+        file_count: workspace.file_count,
+        logical_bytes: workspace.logical_bytes,
+        block_reason: match workspace.block_reason {
+            Some(WorkspaceBlockReason::InconsistentImportState) => {
+                Some(ProtocolWorkspaceBlockReason::InconsistentImportState)
+            }
+            None => None,
+        },
+    }
+}
+
 pub(super) fn to_run_summary(run: Run) -> RunSummary {
     RunSummary {
         id: to_protocol_run_id(run.id),
@@ -314,6 +337,13 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::CredentialMutationNotApplied => {
             ApplicationError::CredentialMutationNotApplied
         }
+        PersistenceError::WorkspaceNotPristine => ApplicationError::WorkspaceNotPristine,
+        PersistenceError::WorkspaceBusy => ApplicationError::WorkspaceBusy,
+        PersistenceError::RepositoryAlreadyImported => ApplicationError::RepositoryAlreadyImported,
+        PersistenceError::RepositoryImportNotApplied => {
+            ApplicationError::RepositoryImportNotApplied
+        }
+        PersistenceError::WorkspaceBlocked => ApplicationError::WorkspaceBlocked,
         PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Sessions,
         } => ApplicationError::ResourceLimit {
@@ -334,7 +364,8 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
                 PersistenceResourceLimit::Transcript
                 | PersistenceResourceLimit::LogicalSequence
                 | PersistenceResourceLimit::CredentialGeneration
-                | PersistenceResourceLimit::CredentialMutations,
+                | PersistenceResourceLimit::CredentialMutations
+                | PersistenceResourceLimit::Workspace,
         } => ApplicationError::ResourceLimit {
             resource: ResourceLimit::Storage,
         },

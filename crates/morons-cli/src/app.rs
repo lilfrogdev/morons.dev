@@ -6,10 +6,11 @@ use std::{error::Error, fmt};
 use morons_protocol::{
     ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
     OpenCodeService, RunId, RunState, RunSummary, SessionId, SessionSummary, TranscriptEntry,
+    WorkspaceSummary,
 };
 use ratatui::Frame;
 
-use crate::terminal::{CredentialBuffer, PromptBuffer, SafeText};
+use crate::terminal::{CredentialBuffer, PromptBuffer, RepositoryPathBuffer, SafeText};
 
 const MAX_CLIENT_SESSIONS: usize = 10_000;
 const MAX_CLIENT_TRANSCRIPT_ENTRIES: usize = 512;
@@ -27,8 +28,14 @@ pub(super) enum PendingOperation {
     CreateSession,
     SubmitInput,
     CancelRun,
+    ImportRepository,
     UpdateCredential,
     StopServer,
+}
+
+pub(super) enum RepositoryDialog {
+    Enter { input: RepositoryPathBuffer },
+    Confirm { source_path: String },
 }
 
 pub(super) enum CredentialDialog {
@@ -57,6 +64,10 @@ pub(super) enum AppAction {
     CancelRun {
         session_id: SessionId,
         run_id: RunId,
+    },
+    ImportRepository {
+        session_id: SessionId,
+        source_path: String,
     },
     SetCredential {
         expected_generation: u64,
@@ -99,6 +110,14 @@ impl fmt::Debug for AppAction {
                 .field("session_id", session_id)
                 .field("run_id", run_id)
                 .finish(),
+            Self::ImportRepository {
+                session_id,
+                source_path,
+            } => formatter
+                .debug_struct("ImportRepository")
+                .field("session_id", session_id)
+                .field("source_path_bytes", &source_path.len())
+                .finish(),
             Self::SetCredential {
                 expected_generation,
                 ..
@@ -125,6 +144,7 @@ pub(super) enum UiStateError {
     ResourceScopeMismatch,
     ResourceLimitExceeded,
     InvalidRunTransition,
+    InvalidWorkspaceTransition,
 }
 
 impl fmt::Display for UiStateError {
@@ -133,6 +153,7 @@ impl fmt::Display for UiStateError {
             Self::ResourceScopeMismatch => "received application state outside the selected scope",
             Self::ResourceLimitExceeded => "application state exceeded a client resource limit",
             Self::InvalidRunTransition => "received an invalid run transition",
+            Self::InvalidWorkspaceTransition => "received an invalid workspace transition",
         })
     }
 }
@@ -148,6 +169,7 @@ pub(super) struct AppState {
     pub(super) selected_model: Option<usize>,
     pub(super) credential: Option<OpenCodeCredentialStatus>,
     pub(super) credential_dialog: Option<CredentialDialog>,
+    pub(super) repository_dialog: Option<RepositoryDialog>,
     pub(super) view: View,
     pub(super) session: Option<SessionView>,
     pub(super) prompt: PromptBuffer,
@@ -168,6 +190,7 @@ impl AppState {
             selected_model: None,
             credential: None,
             credential_dialog: None,
+            repository_dialog: None,
             view: View::Sessions,
             session: None,
             prompt: PromptBuffer::default(),
@@ -192,6 +215,10 @@ impl AppState {
 
     pub(super) fn clear_credential_interaction(&mut self) {
         self.credential_dialog = None;
+    }
+
+    pub(super) fn clear_repository_interaction(&mut self) {
+        self.repository_dialog = None;
     }
 
     pub(super) fn mark_credential_status_unknown(&mut self) {
@@ -265,14 +292,16 @@ impl AppState {
     pub(super) fn open_session(
         &mut self,
         summary: SessionSummary,
+        workspace: WorkspaceSummary,
         entries: Vec<TranscriptEntry>,
         runs: Vec<RunSummary>,
         active_run_id: Option<RunId>,
     ) -> Result<(), UiStateError> {
-        let session = SessionView::new(summary, entries, runs, active_run_id)?;
+        let session = SessionView::new(summary, workspace, entries, runs, active_run_id)?;
         self.session = Some(session);
         self.view = View::Session;
         self.prompt.clear();
+        self.clear_repository_interaction();
         self.transcript_scroll = 0;
         Ok(())
     }
@@ -281,6 +310,7 @@ impl AppState {
         self.view = View::Sessions;
         self.session = None;
         self.prompt.clear();
+        self.clear_repository_interaction();
         self.pending = None;
         self.pending_unknown = false;
         self.transcript_scroll = 0;
@@ -295,6 +325,11 @@ impl AppState {
             ApplicationEvent::SessionRunChanged { run, .. } => {
                 self.session_mut(run.session_id)?.apply_run(run)
             }
+            ApplicationEvent::SessionWorkspaceChanged {
+                session_id,
+                workspace,
+                ..
+            } => self.session_mut(session_id)?.apply_workspace(workspace),
             ApplicationEvent::SessionAssistantDelta {
                 session_id,
                 run_id,
@@ -327,6 +362,15 @@ impl AppState {
         self.prompt.clear();
         self.clear_pending();
         self.session_mut(run.session_id)?.apply_run(run)
+    }
+
+    pub(super) fn repository_imported(
+        &mut self,
+        session_id: SessionId,
+        workspace: WorkspaceSummary,
+    ) -> Result<(), UiStateError> {
+        self.clear_pending();
+        self.session_mut(session_id)?.apply_workspace(workspace)
     }
 
     pub(super) fn cancellation_resolved(
@@ -416,6 +460,7 @@ impl PresentedModel {
 
 pub(super) struct SessionView {
     pub(super) summary: SessionSummary,
+    pub(super) workspace: WorkspaceSummary,
     pub(super) display_name: SafeText,
     pub(super) entries: Vec<PresentedTranscriptEntry>,
     pub(super) runs: Vec<RunSummary>,
@@ -426,6 +471,7 @@ pub(super) struct SessionView {
 impl SessionView {
     fn new(
         summary: SessionSummary,
+        workspace: WorkspaceSummary,
         entries: Vec<TranscriptEntry>,
         runs: Vec<RunSummary>,
         active_run_id: Option<RunId>,
@@ -454,6 +500,7 @@ impl SessionView {
         );
         Ok(Self {
             summary,
+            workspace,
             display_name,
             entries: entries
                 .into_iter()
@@ -463,6 +510,44 @@ impl SessionView {
             active_run_id,
             transient: None,
         })
+    }
+
+    fn apply_workspace(&mut self, workspace: WorkspaceSummary) -> Result<(), UiStateError> {
+        if self.workspace.state == morons_protocol::WorkspaceState::Ready
+            && workspace.state == morons_protocol::WorkspaceState::Importing
+        {
+            return Ok(());
+        }
+        let valid = matches!(
+            (self.workspace.state, workspace.state),
+            (
+                morons_protocol::WorkspaceState::Empty,
+                morons_protocol::WorkspaceState::Importing
+            ) | (
+                morons_protocol::WorkspaceState::Empty,
+                morons_protocol::WorkspaceState::Ready
+            ) | (
+                morons_protocol::WorkspaceState::Importing,
+                morons_protocol::WorkspaceState::Empty
+            ) | (
+                morons_protocol::WorkspaceState::Importing,
+                morons_protocol::WorkspaceState::Ready
+            ) | (
+                morons_protocol::WorkspaceState::Importing,
+                morons_protocol::WorkspaceState::Blocked
+            ) | (
+                morons_protocol::WorkspaceState::Ready,
+                morons_protocol::WorkspaceState::Ready
+            ) | (
+                morons_protocol::WorkspaceState::Blocked,
+                morons_protocol::WorkspaceState::Blocked
+            )
+        );
+        if !valid {
+            return Err(UiStateError::InvalidWorkspaceTransition);
+        }
+        self.workspace = workspace;
+        Ok(())
     }
 
     fn append_transcript_entry(&mut self, entry: TranscriptEntry) -> Result<(), UiStateError> {

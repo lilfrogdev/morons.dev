@@ -823,7 +823,7 @@ async fn startup_reconciles_a_dispatched_workspace_before_finalizing_the_session
 }
 
 #[test]
-fn schema_version_one_migrates_to_version_four() {
+fn schema_version_one_migrates_to_version_five() {
     let root = TestRoot::new("schema-v1-migration");
     let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
     let (initialization_path, file) = paths
@@ -884,7 +884,7 @@ fn schema_version_one_migrates_to_version_four() {
         .expect("version one database should install");
 
     let connection = database::open(&paths).expect("version one database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 4);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 5);
     let mutation_operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -910,7 +910,7 @@ fn stale_private_migration_backup_temporary_file_is_removed() {
 }
 
 #[test]
-fn schema_version_two_migrates_to_version_four() {
+fn schema_version_two_migrates_to_version_five() {
     let root = TestRoot::new("schema-v2-migration");
     let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
     let (initialization_path, file) = paths
@@ -956,7 +956,7 @@ fn schema_version_two_migrates_to_version_four() {
         .expect("version two database should install");
 
     let connection = database::open(&paths).expect("version two database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 4);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 5);
     let operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -984,7 +984,7 @@ fn schema_version_two_migrates_to_version_four() {
 }
 
 #[test]
-fn schema_version_three_migrates_to_version_four() {
+fn schema_version_three_migrates_to_version_five() {
     let root = TestRoot::new("schema-v3-migration");
     let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
     let (initialization_path, file) = paths
@@ -1008,7 +1008,7 @@ fn schema_version_three_migrates_to_version_four() {
         .expect("version three database should install");
 
     let connection = database::open(&paths).expect("version three database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 4);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 5);
     let stop_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'server_stop_requests'",
@@ -1023,6 +1023,52 @@ fn schema_version_three_migrates_to_version_four() {
         .join("sessions-before-schema-v3.sqlite3");
     let backup = Connection::open(backup_path).expect("version three backup should open");
     assert_eq!(pragma_integer(&backup, "PRAGMA user_version"), 3);
+}
+
+#[test]
+fn schema_version_four_migrates_to_version_five() {
+    let root = TestRoot::new("schema-v4-migration");
+    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
+    let (initialization_path, file) = paths
+        .create_database_initialization_file(&[0xc4; 16])
+        .expect("initialization file should be created");
+    drop(file);
+    let connection =
+        Connection::open(&initialization_path).expect("version four fixture should open");
+    connection
+        .execute_batch(include_str!("schema_v1.sql"))
+        .expect("version one schema should initialize");
+    connection
+        .execute_batch(include_str!("schema_v2.sql"))
+        .expect("version two schema should initialize");
+    connection
+        .execute_batch(include_str!("schema_v3.sql"))
+        .expect("version three schema should initialize");
+    connection
+        .execute_batch(include_str!("schema_v4.sql"))
+        .expect("version four schema should initialize");
+    drop(connection);
+    paths
+        .install_database(&initialization_path)
+        .expect("version four database should install");
+
+    let connection = database::open(&paths).expect("version four database should migrate");
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 5);
+    let import_table: String = connection
+        .query_row(
+            "SELECT name FROM sqlite_schema
+             WHERE type = 'table' AND name = 'repository_import_requests'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("repository import table should exist");
+    assert_eq!(import_table, "repository_import_requests");
+    let backup_path = root
+        .path()
+        .join("backups")
+        .join("sessions-before-schema-v4.sqlite3");
+    let backup = Connection::open(backup_path).expect("version four backup should open");
+    assert_eq!(pragma_integer(&backup, "PRAGMA user_version"), 4);
 }
 
 #[test]
@@ -1059,7 +1105,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     let connection =
         Connection::open(&database_path).expect("database should open for test change");
     connection
-        .execute_batch("PRAGMA user_version = 5;")
+        .execute_batch("PRAGMA user_version = 6;")
         .expect("test schema version should change");
     drop(connection);
 
@@ -1067,7 +1113,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
 
     let connection = Connection::open(database_path).expect("database should remain readable");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 5);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 6);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1204,10 +1250,10 @@ fn protocol_session_event_cursor(
     ProtocolSessionEventCursor::from_bytes(bytes)
 }
 
-struct TestRoot(PathBuf);
+pub(super) struct TestRoot(PathBuf);
 
 impl TestRoot {
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("test clock should be after Unix epoch")
@@ -1235,7 +1281,7 @@ impl TestRoot {
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.0
     }
 }

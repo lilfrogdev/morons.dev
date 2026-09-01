@@ -379,6 +379,7 @@ impl SessionEventCursor {
 pub enum SessionEventPayload {
     TranscriptEntry(TranscriptEntry),
     RunChanged(Run),
+    WorkspaceChanged(super::types::WorkspaceSummary),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -396,6 +397,7 @@ pub struct SessionEventPage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TranscriptPage {
     pub session: Session,
+    pub workspace: super::types::WorkspaceSummary,
     pub entries: Vec<TranscriptEntry>,
     pub runs: Vec<Run>,
     pub active_run_id: Option<RunId>,

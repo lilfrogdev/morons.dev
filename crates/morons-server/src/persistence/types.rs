@@ -1,4 +1,8 @@
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    path::{Component, Path},
+};
 
 use morons_protocol::ControlError;
 use sha2::{Digest, Sha256};
@@ -20,6 +24,8 @@ const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
 const CANCEL_RUN_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/cancel-run/v1\0";
 const STOP_SERVER_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/stop-server/v1\0";
+const IMPORT_REPOSITORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/import-repository/v1\0";
+const REPOSITORY_SOURCE_PATH_DIGEST_CONTEXT: &[u8] = b"morons.dev/repository-source-path/v1\0";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId([u8; IDENTIFIER_BYTES]);
@@ -161,6 +167,44 @@ pub struct OpenCodeCredentialStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceState {
+    Empty,
+    Importing,
+    Ready,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceBlockReason {
+    InconsistentImportState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceSummary {
+    pub state: WorkspaceState,
+    pub file_count: u64,
+    pub logical_bytes: u64,
+    pub block_reason: Option<WorkspaceBlockReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RepositoryImportPlan {
+    pub request_id: MutationRequestId,
+    pub session_id: SessionId,
+    pub workspace_id: [u8; IDENTIFIER_BYTES],
+    pub operation_id: [u8; IDENTIFIER_BYTES],
+    pub state: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RepositoryImportOutcome {
+    pub file_count: u64,
+    pub directory_count: u64,
+    pub logical_bytes: u64,
+    pub manifest_digest: [u8; REQUEST_FINGERPRINT_BYTES],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersistenceResourceLimit {
     Sessions,
     Runs,
@@ -169,6 +213,7 @@ pub enum PersistenceResourceLimit {
     LogicalSequence,
     CredentialGeneration,
     CredentialMutations,
+    Workspace,
 }
 
 #[derive(Debug)]
@@ -187,6 +232,11 @@ pub enum PersistenceError {
     CredentialGenerationConflict,
     CredentialNotConfigured,
     CredentialMutationNotApplied,
+    WorkspaceNotPristine,
+    WorkspaceBusy,
+    RepositoryAlreadyImported,
+    RepositoryImportNotApplied,
+    WorkspaceBlocked,
     ResourceLimit { resource: PersistenceResourceLimit },
     WorkerStopped,
 }
@@ -223,6 +273,17 @@ impl fmt::Display for PersistenceError {
             Self::CredentialMutationNotApplied => {
                 formatter.write_str("the credential mutation was not applied")
             }
+            Self::WorkspaceNotPristine => {
+                formatter.write_str("the session is not pristine for repository import")
+            }
+            Self::WorkspaceBusy => formatter.write_str("the session workspace is busy"),
+            Self::RepositoryAlreadyImported => {
+                formatter.write_str("the session already has an imported repository")
+            }
+            Self::RepositoryImportNotApplied => {
+                formatter.write_str("the repository import was not applied")
+            }
+            Self::WorkspaceBlocked => formatter.write_str("the session workspace is blocked"),
             Self::ResourceLimit { resource } => match resource {
                 PersistenceResourceLimit::Sessions => {
                     formatter.write_str("the persistence session count limit was reached")
@@ -244,6 +305,9 @@ impl fmt::Display for PersistenceError {
                 }
                 PersistenceResourceLimit::CredentialMutations => {
                     formatter.write_str("the credential mutation limit was reached")
+                }
+                PersistenceResourceLimit::Workspace => {
+                    formatter.write_str("the workspace resource limit was reached")
                 }
             },
             Self::WorkerStopped => formatter.write_str("the persistence worker stopped"),
@@ -267,6 +331,11 @@ impl Error for PersistenceError {
             | Self::CredentialGenerationConflict
             | Self::CredentialNotConfigured
             | Self::CredentialMutationNotApplied
+            | Self::WorkspaceNotPristine
+            | Self::WorkspaceBusy
+            | Self::RepositoryAlreadyImported
+            | Self::RepositoryImportNotApplied
+            | Self::WorkspaceBlocked
             | Self::ResourceLimit { .. }
             | Self::WorkerStopped => None,
         }
@@ -318,6 +387,28 @@ pub(super) fn validate_display_name(display_name: Option<&str>) -> Result<(), Pe
     if display_name.chars().any(char::is_control) {
         return Err(PersistenceError::InvalidInput {
             reason: "a session display name must not contain control characters",
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn validate_repository_source_path(path: &str) -> Result<(), PersistenceError> {
+    if path.is_empty()
+        || path.len() > morons_protocol::MAX_REPOSITORY_SOURCE_PATH_BYTES
+        || path.chars().any(char::is_control)
+    {
+        return Err(PersistenceError::InvalidInput {
+            reason: "a repository source path is invalid",
+        });
+    }
+    let path = Path::new(path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(PersistenceError::InvalidInput {
+            reason: "a repository source path must be lexically normalized and absolute",
         });
     }
     Ok(())
@@ -389,6 +480,35 @@ pub(super) fn cancel_run_fingerprint(
     digest.update(CANCEL_RUN_FINGERPRINT_CONTEXT);
     digest.update(session_id.as_bytes());
     digest.update(run_id.as_bytes());
+    digest.finalize().into()
+}
+
+pub(super) fn repository_source_path_digest(source_path: &str) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(REPOSITORY_SOURCE_PATH_DIGEST_CONTEXT);
+    digest.update((source_path.len() as u32).to_be_bytes());
+    digest.update(source_path.as_bytes());
+    digest.finalize().into()
+}
+
+pub(super) fn import_repository_fingerprint(
+    session_id: SessionId,
+    source_path: &str,
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    import_repository_fingerprint_from_digest(
+        session_id,
+        repository_source_path_digest(source_path),
+    )
+}
+
+pub(super) fn import_repository_fingerprint_from_digest(
+    session_id: SessionId,
+    source_path_digest: [u8; REQUEST_FINGERPRINT_BYTES],
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(IMPORT_REPOSITORY_FINGERPRINT_CONTEXT);
+    digest.update(session_id.as_bytes());
+    digest.update(source_path_digest);
     digest.finalize().into()
 }
 

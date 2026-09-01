@@ -3,6 +3,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::{
     Backend,
     records::{load_session, nonnegative_integer_from_row, sequence_to_sql},
+    repository_import::workspace_summary_for_event,
     run_records::{positive_u16_from_row, positive_u32_from_row, transcript_entry_from_row},
 };
 use crate::persistence::{
@@ -20,6 +21,7 @@ const EVENT_RUN_SUCCEEDED: i64 = 7;
 const EVENT_RUN_FAILED: i64 = 8;
 const EVENT_RUN_CANCELLED: i64 = 9;
 const EVENT_RUN_INTERRUPTED: i64 = 10;
+const EVENT_WORKSPACE_CHANGED: i64 = 11;
 
 impl Backend {
     pub(crate) fn delivery_event_high_water(&self) -> Result<u64, PersistenceError> {
@@ -60,7 +62,7 @@ impl Backend {
              WHERE session_id = ?1
                AND event_sequence > ?2
                AND event_sequence <= ?3
-               AND event_kind BETWEEN 2 AND 10
+               AND event_kind BETWEEN 2 AND 11
                AND payload_version = 1
              ORDER BY event_sequence
              LIMIT ?4",
@@ -108,6 +110,14 @@ impl Backend {
                         let run = load_run_at_sequence(&self.connection, run_id, sequence)?;
                         validate_event_run(event_kind, &run)?;
                         SessionEventPayload::RunChanged(run)
+                    }
+                    EVENT_WORKSPACE_CHANGED => {
+                        SessionEventPayload::WorkspaceChanged(workspace_summary_for_event(
+                            &self.connection,
+                            session_id,
+                            &event_id,
+                            sequence,
+                        )?)
                     }
                     _ => {
                         return Err(PersistenceError::InvalidState {
