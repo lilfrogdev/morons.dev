@@ -6,7 +6,9 @@ use std::{
 };
 
 #[cfg(windows)]
-use fence_windows::{DirectoryHandle, NodeHandle, NodeKind, RootHandle};
+use fence_windows::{
+    DirectoryEntry, DirectoryHandle, NodeHandle, NodeKind, NodeMetadata, RootHandle,
+};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(windows)]
@@ -38,7 +40,11 @@ const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_LOGICAL_BYTES: u64 = 256 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 #[cfg(windows)]
+const WINDOWS_DIRECTORY_ATTRIBUTE: u32 = 0x10;
+#[cfg(windows)]
 const WINDOWS_REPARSE_ATTRIBUTE: u32 = 0x400;
+#[cfg(windows)]
+const WINDOWS_STRUCTURAL_ATTRIBUTES: u32 = WINDOWS_DIRECTORY_ATTRIBUTE | WINDOWS_REPARSE_ATTRIBUTE;
 const METADATA_BYTES: usize = METADATA_CONTEXT.len() + 16 + 16 + 8 + 8 + 8 + 32;
 
 pub(crate) enum RepositoryRecovery {
@@ -426,7 +432,7 @@ fn copy_windows_directory(
             .as_encoded_bytes()
             .cmp(right.name.as_encoded_bytes())
     });
-    if entries != after {
+    if !same_windows_directory_entries(&entries, &after) {
         return Err(invalid_source());
     }
     Ok(())
@@ -473,7 +479,10 @@ fn copy_windows_file(
     }
     buffer.fill(0);
     if copied != size
-        || source.refresh_metadata().map_err(|_| invalid_source())? != expected
+        || !same_windows_file_snapshot(
+            expected,
+            source.refresh_metadata().map_err(|_| invalid_source())?,
+        )
         || source.verify_path_identity().is_err()
     {
         return Err(invalid_source());
@@ -485,6 +494,28 @@ fn copy_windows_file(
     state.file_count += 1;
     state.logical_bytes += size;
     Ok(())
+}
+
+#[cfg(windows)]
+fn same_windows_directory_entries(left: &[DirectoryEntry], right: &[DirectoryEntry]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            let left_structural = left.attributes & WINDOWS_STRUCTURAL_ATTRIBUTES;
+            let right_structural = right.attributes & WINDOWS_STRUCTURAL_ATTRIBUTES;
+            left.name == right.name
+                && left.file_id == right.file_id
+                && left.reparse_tag == right.reparse_tag
+                && left_structural == right_structural
+                && (left_structural & WINDOWS_DIRECTORY_ATTRIBUTE != 0 || left.size == right.size)
+        })
+}
+
+#[cfg(windows)]
+fn same_windows_file_snapshot(left: NodeMetadata, right: NodeMetadata) -> bool {
+    left.identity == right.identity
+        && left.kind == NodeKind::RegularFile
+        && right.kind == NodeKind::RegularFile
+        && left.size == right.size
 }
 
 fn validate_repository_directory(
@@ -856,4 +887,98 @@ struct ImportState {
     file_count: u64,
     directory_count: u64,
     logical_bytes: u64,
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::ffi::OsString;
+
+    use fence_windows::FileIdentity;
+
+    use super::*;
+
+    fn metadata() -> NodeMetadata {
+        NodeMetadata {
+            identity: FileIdentity {
+                volume_serial: 7,
+                file_id: [8; 16],
+            },
+            kind: NodeKind::RegularFile,
+            size: 11,
+            allocation_size: 16,
+            link_count: 1,
+            attributes: 0x20,
+            reparse_tag: None,
+            creation_time: 12,
+            last_write_time: 13,
+            change_time: 14,
+        }
+    }
+
+    fn entry() -> DirectoryEntry {
+        DirectoryEntry {
+            name: OsString::from("source.rs"),
+            file_id: [9; 16],
+            attributes: 0x20,
+            reparse_tag: None,
+            size: 17,
+            allocation_size: 24,
+            creation_time: 18,
+            last_write_time: 19,
+            change_time: 20,
+        }
+    }
+
+    #[test]
+    fn windows_snapshot_ignores_incidental_metadata_changes() {
+        let expected_metadata = metadata();
+        let mut observed_metadata = expected_metadata;
+        observed_metadata.allocation_size = 32;
+        observed_metadata.link_count = 2;
+        observed_metadata.attributes = 0x21;
+        observed_metadata.creation_time = 21;
+        observed_metadata.last_write_time = 22;
+        observed_metadata.change_time = 23;
+        assert!(same_windows_file_snapshot(
+            expected_metadata,
+            observed_metadata
+        ));
+
+        let expected_entry = entry();
+        let mut observed_entry = expected_entry.clone();
+        observed_entry.allocation_size = 32;
+        observed_entry.attributes = 0x21;
+        observed_entry.creation_time = 21;
+        observed_entry.last_write_time = 22;
+        observed_entry.change_time = 23;
+        assert!(same_windows_directory_entries(
+            &[expected_entry],
+            &[observed_entry]
+        ));
+    }
+
+    #[test]
+    fn windows_snapshot_rejects_security_relevant_changes() {
+        let expected_metadata = metadata();
+        let mut changed_identity = expected_metadata;
+        changed_identity.identity.file_id = [10; 16];
+        assert!(!same_windows_file_snapshot(
+            expected_metadata,
+            changed_identity
+        ));
+        let mut changed_size = expected_metadata;
+        changed_size.size += 1;
+        assert!(!same_windows_file_snapshot(expected_metadata, changed_size));
+        let mut changed_kind = expected_metadata;
+        changed_kind.kind = NodeKind::Directory;
+        assert!(!same_windows_file_snapshot(expected_metadata, changed_kind));
+
+        let expected_entry = entry();
+        let mut changed_entry = expected_entry.clone();
+        changed_entry.attributes |= WINDOWS_REPARSE_ATTRIBUTE;
+        assert!(!same_windows_directory_entries(
+            &[expected_entry],
+            &[changed_entry]
+        ));
+    }
 }
