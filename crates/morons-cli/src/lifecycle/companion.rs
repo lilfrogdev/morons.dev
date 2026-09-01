@@ -366,14 +366,15 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(names, vec!["HOME"]);
         #[cfg(windows)]
-        assert_eq!(
-            names,
-            WINDOWS_COMPANION_ENVIRONMENT
+        {
+            let mut expected = WINDOWS_COMPANION_ENVIRONMENT
                 .iter()
                 .filter(|name| std::env::var_os(name).is_some())
                 .map(|name| (*name).to_owned())
-                .collect::<Vec<_>>()
-        );
+                .collect::<Vec<_>>();
+            expected.sort_by_key(|name| name.to_ascii_lowercase());
+            assert_eq!(names, expected);
+        }
         assert_eq!(command.get_current_dir(), path.parent());
         assert_eq!(command.get_program(), path.as_os_str());
     }
