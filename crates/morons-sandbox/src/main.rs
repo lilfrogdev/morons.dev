@@ -52,23 +52,22 @@ fn main() -> ExitCode {
         }
         #[cfg(target_os = "windows")]
         Some(mode) if mode == "--windows-command-stage" => {
+            let Some(input) = arguments.next().map(std::path::PathBuf::from) else {
+                return ExitCode::FAILURE;
+            };
+            let Some(output) = arguments.next().map(std::path::PathBuf::from) else {
+                return ExitCode::FAILURE;
+            };
+            let Some(gate) = arguments.next().map(std::path::PathBuf::from) else {
+                return ExitCode::FAILURE;
+            };
+            let Some(done) = arguments.next().map(std::path::PathBuf::from) else {
+                return ExitCode::FAILURE;
+            };
             if arguments.next().is_some() {
                 return ExitCode::FAILURE;
             }
-            let Ok(request) = read_request(&mut io::stdin().lock()) else {
-                return ExitCode::FAILURE;
-            };
-            let cancellation = Cancellation::new();
-            let watchdog = cancellation.clone();
-            thread::spawn(move || {
-                let mut byte = [0_u8; 1];
-                let _ = io::stdin().read(&mut byte);
-                watchdog.cancel();
-            });
-            let result = morons_sandbox::run_windows_command_stage(request, &cancellation);
-            write_result(&mut io::stdout().lock(), &result)
-                .map(|()| ExitCode::SUCCESS)
-                .unwrap_or(ExitCode::FAILURE)
+            morons_sandbox::run_windows_file_stage(&input, &output, &gate, &done)
         }
         Some(_) => ExitCode::FAILURE,
     }

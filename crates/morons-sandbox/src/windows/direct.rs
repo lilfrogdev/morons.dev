@@ -1,7 +1,8 @@
 use std::{
-    io::Read,
+    fs::{self, File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
     os::windows::process::CommandExt,
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, Command, ExitCode, ExitStatus, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -12,11 +13,57 @@ use std::{
 
 use crate::{
     Cancellation, SANDBOX_PROTOCOL_VERSION, SandboxExit, SandboxRequest, SandboxResult,
-    SandboxStatus, runner::validate_request,
+    SandboxStatus, read_request, runner::validate_request, write_result,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+pub(super) fn run_file_stage(
+    input_path: &std::path::Path,
+    output_path: &std::path::Path,
+    gate_path: &std::path::Path,
+    done_path: &std::path::Path,
+) -> ExitCode {
+    let mut output = match OpenOptions::new().read(true).write(true).open(output_path) {
+        Ok(output) => output,
+        Err(_) => return ExitCode::FAILURE,
+    };
+    let request = match File::open(input_path).and_then(|mut input| read_request(&mut input)) {
+        Ok(request) => request,
+        Err(_) => return ExitCode::FAILURE,
+    };
+    if fs::remove_file(input_path).is_err() || fs::remove_file(output_path).is_err() {
+        return ExitCode::FAILURE;
+    }
+    let gate_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match fs::read(gate_path) {
+            Ok(bytes) if bytes == b"go\n" => break,
+            Ok(_) => return ExitCode::FAILURE,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if Instant::now() >= gate_deadline {
+                    return ExitCode::FAILURE;
+                }
+                thread::sleep(POLL_INTERVAL);
+            }
+            Err(_) => return ExitCode::FAILURE,
+        }
+    }
+    if fs::remove_file(gate_path).is_err() {
+        return ExitCode::FAILURE;
+    }
+    let result = execute(request, &Cancellation::new());
+    if output.seek(SeekFrom::Start(0)).is_err()
+        || output.set_len(0).is_err()
+        || write_result(&mut output, &result).is_err()
+        || output.sync_all().is_err()
+        || publish_done(done_path).is_err()
+    {
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
 
 pub(super) fn execute(request: SandboxRequest, cancellation: &Cancellation) -> SandboxResult {
     let operation_id = request.operation_id;
@@ -248,6 +295,16 @@ fn capture_stream<R: Read + Send + 'static>(
 
 fn join_stream(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
     handle.join().unwrap_or_default()
+}
+
+fn publish_done(path: &std::path::Path) -> Result<(), ()> {
+    let mut done = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|_| ())?;
+    done.write_all(b"done\n").map_err(|_| ())?;
+    done.sync_all().map_err(|_| ())
 }
 
 fn diagnostic(stage: &'static str) {

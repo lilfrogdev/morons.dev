@@ -13,7 +13,7 @@ mod windows;
 pub use linux::{run_command_stage, run_namespace_stage, run_pid_stage};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
-pub use windows::run_command_stage as run_windows_command_stage;
+pub use windows::run_file_stage as run_windows_file_stage;
 
 pub use protocol::{
     SANDBOX_PROTOCOL_VERSION, SandboxExit, SandboxLimits, SandboxRequest, SandboxResult,

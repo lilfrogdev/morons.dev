@@ -11,7 +11,7 @@ use rappct::{
     acl::{AccessMask, ResourcePath, grant_to_package},
 };
 
-use crate::{SANDBOX_PROTOCOL_VERSION, SandboxRequest, runner::PreparedRequest};
+use crate::{SANDBOX_PROTOCOL_VERSION, SandboxRequest, runner::PreparedRequest, write_request};
 
 const MAX_IMAGE_ENTRIES: u64 = 200_000;
 const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -26,6 +26,10 @@ pub(super) struct Layout {
     pub(super) image: PathBuf,
     pub(super) runner: PathBuf,
     pub(super) runtime: PathBuf,
+    pub(super) input: PathBuf,
+    pub(super) output: PathBuf,
+    pub(super) gate: PathBuf,
+    pub(super) done: PathBuf,
     pub(super) home: PathBuf,
     pub(super) temporary: PathBuf,
     pub(super) cargo_home: PathBuf,
@@ -41,11 +45,16 @@ impl Layout {
         let image = root.join("image");
         let runner = root.join("runner.exe");
         let runtime = root.join("runtime");
+        let control = root.join("control");
+        let input = control.join("input");
+        let output = control.join("output");
+        let gate = control.join("gate");
+        let done = control.join("done");
         let home = runtime.join("home");
         let temporary = runtime.join("tmp");
         let cargo_home = runtime.join("cargo-home");
         let prepared = (|| {
-            for directory in [&image, &runtime, &home, &temporary, &cargo_home] {
+            for directory in [&image, &runtime, &control, &home, &temporary, &cargo_home] {
                 fs::create_dir(directory).map_err(|_| ())?;
             }
             copy_image(&request.image_root, &image)?;
@@ -55,6 +64,10 @@ impl Layout {
                 image,
                 runner,
                 runtime,
+                input,
+                output,
+                gate,
+                done,
                 home,
                 temporary,
                 cargo_home,
@@ -82,6 +95,32 @@ impl Layout {
             working_directory: original.working_directory.clone(),
             limits: original.limits,
         })
+    }
+
+    pub(super) fn initialize_control(&self, request: &SandboxRequest) -> Result<File, ()> {
+        let mut input = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&self.input)
+            .map_err(|_| ())?;
+        write_request(&mut input, request).map_err(|_| ())?;
+        input.sync_all().map_err(|_| ())?;
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&self.output)
+            .map_err(|_| ())
+    }
+
+    pub(super) fn open_gate(&self) -> Result<(), ()> {
+        let mut gate = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&self.gate)
+            .map_err(|_| ())?;
+        gate.write_all(b"go\n").map_err(|_| ())?;
+        gate.sync_all().map_err(|_| ())
     }
 
     pub(super) fn cleanup(&self) -> Result<(), ()> {
@@ -127,7 +166,12 @@ impl Container {
             profile,
             FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
         )?;
+        grant_directory(self.layout_control(layout), profile, FILE_ALL_ACCESS)?;
         Ok(())
+    }
+
+    fn layout_control<'a>(&self, layout: &'a Layout) -> &'a Path {
+        layout.input.parent().expect("control files have a parent")
     }
 
     pub(super) fn capabilities(&self) -> Result<SecurityCapabilities, ()> {
@@ -186,12 +230,26 @@ pub(super) fn launch_path(path: &Path) -> Result<PathBuf, ()> {
         .unwrap_or_else(|| path.to_path_buf()))
 }
 
-pub(super) fn command_line(executable: &Path, mode: &str) -> Result<String, ()> {
-    let executable = executable.to_str().ok_or(())?;
-    if executable.contains(['\0', '"']) || mode.contains(['\0', '"', ' ', '\t']) {
+pub(super) fn command_line(executable: &Path, layout: &Layout) -> Result<String, ()> {
+    let values = [
+        executable.to_str().ok_or(())?,
+        "--windows-command-stage",
+        layout.input.to_str().ok_or(())?,
+        layout.output.to_str().ok_or(())?,
+        layout.gate.to_str().ok_or(())?,
+        layout.done.to_str().ok_or(())?,
+    ];
+    if values
+        .iter()
+        .any(|value| value.contains(['\0', '"', '\n', '\r']))
+    {
         return Err(());
     }
-    Ok(format!("\"{executable}\" {mode}"))
+    Ok(values
+        .into_iter()
+        .map(|value| format!("\"{value}\""))
+        .collect::<Vec<_>>()
+        .join(" "))
 }
 
 fn grant_directory(path: &Path, profile: &AppContainerProfile, access: u32) -> Result<(), ()> {
