@@ -22,7 +22,7 @@ use crate::{
     runner::PreparedRequest, write_request,
 };
 
-use staging::{Container, Layout, bootstrap_environment, command_line};
+use staging::{Container, Layout, bootstrap_environment, command_line, launch_path};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const TREE_TERMINATION_TIMEOUT: Duration = Duration::from_secs(2);
@@ -254,10 +254,11 @@ pub fn run_command_stage(request: SandboxRequest, cancellation: &Cancellation) -
 }
 
 fn launch_options(prepared: &PreparedRequest, layout: &Layout) -> Result<LaunchOptions, ()> {
+    let executable = launch_path(&layout.runner)?;
     Ok(LaunchOptions {
-        exe: layout.runner.clone(),
-        cmdline: Some(command_line(&layout.runner, "--windows-command-stage")?),
-        cwd: Some(prepared.candidate_root.clone()),
+        exe: executable.clone(),
+        cmdline: Some(command_line(&executable, "--windows-command-stage")?),
+        cwd: Some(launch_path(&prepared.candidate_root)?),
         env: Some(bootstrap_environment(layout)?),
         stdio: StdioConfig::Pipe,
         suspended: false,

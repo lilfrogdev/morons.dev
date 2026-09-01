@@ -171,8 +171,19 @@ pub(super) fn bootstrap_environment(layout: &Layout) -> Result<Vec<(OsString, Os
     }
     environment.push((OsString::from("TEMP"), layout.temporary.as_os_str().into()));
     environment.push((OsString::from("TMP"), layout.temporary.as_os_str().into()));
+    if let Some(value) = std::env::var_os("MORONS_SANDBOX_TEST_DIAGNOSTICS") {
+        environment.push((OsString::from("MORONS_SANDBOX_TEST_DIAGNOSTICS"), value));
+    }
     environment.sort_by_cached_key(|(name, _)| name.to_string_lossy().to_ascii_lowercase());
     Ok(environment)
+}
+
+pub(super) fn launch_path(path: &Path) -> Result<PathBuf, ()> {
+    let value = path.to_str().ok_or(())?;
+    Ok(value
+        .strip_prefix(r"\\?\")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| path.to_path_buf()))
 }
 
 pub(super) fn command_line(executable: &Path, mode: &str) -> Result<String, ()> {

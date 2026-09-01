@@ -22,7 +22,10 @@ pub(super) fn execute(request: SandboxRequest, cancellation: &Cancellation) -> S
     let operation_id = request.operation_id;
     let prepared = match validate_request(&request) {
         Ok(prepared) => prepared,
-        Err(()) => return SandboxResult::failure(operation_id, SandboxStatus::RequestRejected),
+        Err(()) => {
+            diagnostic("direct-request");
+            return SandboxResult::failure(operation_id, SandboxStatus::RequestRejected);
+        }
     };
     for directory in [
         prepared.scratch_root.join("home"),
@@ -30,6 +33,7 @@ pub(super) fn execute(request: SandboxRequest, cancellation: &Cancellation) -> S
         prepared.scratch_root.join("cargo-home"),
     ] {
         if !directory.is_dir() {
+            diagnostic("direct-directories");
             return SandboxResult::failure(operation_id, SandboxStatus::RequestRejected);
         }
     }
@@ -45,6 +49,7 @@ pub(super) fn execute(request: SandboxRequest, cancellation: &Cancellation) -> S
         .envs(match target_environment(&prepared) {
             Ok(environment) => environment,
             Err(()) => {
+                diagnostic("direct-environment");
                 return SandboxResult::failure(operation_id, SandboxStatus::BackendUnavailable);
             }
         })
@@ -54,7 +59,10 @@ pub(super) fn execute(request: SandboxRequest, cancellation: &Cancellation) -> S
         .creation_flags(CREATE_NO_WINDOW);
     let mut child = match command.spawn() {
         Ok(child) => child,
-        Err(_) => return SandboxResult::failure(operation_id, SandboxStatus::LaunchFailed),
+        Err(_) => {
+            diagnostic("direct-launch");
+            return SandboxResult::failure(operation_id, SandboxStatus::LaunchFailed);
+        }
     };
     let Some(stdout) = child.stdout.take() else {
         return stop_after_setup_failure(operation_id, &mut child);
@@ -240,6 +248,12 @@ fn capture_stream<R: Read + Send + 'static>(
 
 fn join_stream(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
     handle.join().unwrap_or_default()
+}
+
+fn diagnostic(stage: &'static str) {
+    if std::env::var_os("MORONS_SANDBOX_TEST_DIAGNOSTICS").is_some() {
+        eprintln!("windows sandbox stage: {stage}");
+    }
 }
 
 fn utf8(path: &std::path::Path) -> Result<String, ()> {
