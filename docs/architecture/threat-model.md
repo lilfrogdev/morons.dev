@@ -7,10 +7,11 @@
 - Agent and session state
 - Authoritative database, migration backups, and durable event history
 - Tool and execution capabilities
-- Original repository, immutable workspace baseline, and mutable isolated worktree data
+- Original repository, immutable workspace baseline, active worktree generation, and nonauthoritative command candidates
+- Sandbox execution images, private caches, process-tree ownership, and confinement policy
 - Provider and kernel connections
 - Terminal presentation integrity and non-echoing credential input
-- Packaged client and server executable identity
+- Packaged client, server, and sandbox-helper executable identity
 
 ## Untrusted inputs
 
@@ -21,7 +22,8 @@
 - Persisted payloads, schema versions, projections, and compaction checkpoints
 - Repository source paths, names, metadata, links, reparse points, special files, content, and concurrent changes
 - Model-selected tool names, call identifiers, worktree-relative paths, arguments, replacement text, and tool-result content
-- Mutable worktree entries, links, reparse points, identity changes, stale digests, operation staging state, and concurrent changes
+- Model-selected command programs, arguments, working directories, descendants, output, exit state, generated files, and resource use
+- Mutable worktree entries, links, reparse points, identity changes, stale digests, command candidates, generation state, operation staging state, and concurrent changes
 - Model output
 - Commands and subprocesses
 - External content
@@ -31,7 +33,7 @@
 
 ## Trust assumptions
 
-- The operating system correctly enforces process identities, filesystem permissions, and Windows DACLs.
+- The operating system correctly enforces process identities, filesystem permissions, Windows DACLs, namespaces, Landlock, seccomp, Seatbelt, AppContainer capabilities, and process-tree termination primitives that the selected native backend verifies.
 - Root, LocalSystem, administrators, and equivalent privileged accounts are outside the local IPC guarantee.
 - Malicious processes already running as the owning operating-system user are outside the local IPC guarantee.
 - Untrusted repository processes run without access to host control files, provider credential state, IPC endpoints, workspace baselines or metadata, original source trees, or other sessions' worktrees.
@@ -75,6 +77,7 @@
 - An input retry appends a second user message or creates a second run instead of returning the committed result.
 - A client forges `LocalOwner` attribution, an assistant message, tool call, tool result, run transition, or terminal outcome.
 - A model requests an undeclared tool, malformed or duplicate calls, contradictory final output, an absolute or escaping path, cross-session state, or excessive calls and receives an effect before the complete provider response is durably validated.
+- A client submits an arbitrary command, environment, host path, standard input, mount, network option, or sandbox policy, or a model-selected command bypasses the bound execution image and active run.
 - Tool output from one session, run, call, or workspace is attached to another scope or supplied to a provider before its result commits.
 - A stale cancellation request targets a successor run or records cancellation before controlled execution stops.
 - New input proceeds while a tool or workspace effect remains uncertain, or an acknowledgement erases or resolves the uncertain fact.
@@ -134,9 +137,24 @@
 - A stale digest or ambiguous replacement silently overwrites worktree content different from what the model observed.
 - A create operation replaces an existing entry, implicitly creates attacker-selected parents, or publishes a temporary file with insecure controls.
 - A crash after tool dispatch but before result commit causes an edit to be repeated, an unapplied staged edit to be published, a successful mutation to be forgotten, or an unmatched call to enter later provider context.
+- A command runs against the authoritative worktree, an interrupted candidate becomes active, a generation pointer commits without its command result, or stale generation cleanup removes the current worktree.
+- A command candidate creates links, reparse points, alternate streams, special files, invalid names, collisions, oversized artifacts, hostile controls, or auxiliary metadata that trusted promotion accepts.
 - A read or search result is unbounded, recreated from changed bytes after restart, contains binary or terminal-control content treated as trusted, or exhausts memory, context, storage, or provider limits.
 - A mutating tool outcome remains ambiguous but the run is marked failed or cancelled without an uncertainty blocker and a successor run modifies the same workspace.
 - A live database file is copied inconsistently, a backup is disclosed, or a database-only backup is mistaken for complete workspace recovery.
+
+## Sandboxed command threats
+
+- A fake or replaced sandbox helper is selected through `PATH`, repository content, configuration, a writable installation path, or a forged one-shot launch specification.
+- A command reads the baseline, workspace metadata, original source, another session, owner home, provider credentials, IPC authentication material, databases, backups, shell history, package credentials, or host runtime state outside its explicit image.
+- A command writes outside its candidate, alters a shared toolchain or cache, reaches the authoritative worktree before publication, or poisons another session's execution environment.
+- A process connects to the Internet, loopback, a Unix socket, a Windows named pipe, the Morons endpoint, a package registry, a metadata service, or another host-local service.
+- A descendant escapes its sandbox, process group, PID namespace, AppContainer, or Job Object; signals or inspects the server; creates a new namespace; retains an inherited handle; daemonizes; or survives cancellation and server loss.
+- Repository configuration redirects Cargo, a compiler, linker, runner, shell, credential provider, or package manager to a host path or executable outside the execution image.
+- Host environment variables, dynamic-loader settings, proxy state, credential helpers, agents, terminal handles, current directories, or absolute paths enter the sandbox.
+- Output blocks one pipe, exhausts memory or disk, emits invalid bytes or terminal controls, discloses a host path, or reaches the model or terminal before becoming a committed bounded result.
+- A partially enforced or unavailable platform sandbox silently falls back to ordinary host execution.
+- A malicious toolchain, dependency, build script, procedural macro, compiler, test, or generated executable exploits the operating system or sandbox backend.
 
 ## Mitigations
 
@@ -202,12 +220,19 @@
 - Reject source roots that equal, contain, or are contained by Morons application, control, runtime, data, backup, credential, or workspace roots.
 - Omit every `.git` component and subtree, copy no source ownership or control metadata, and never invoke Git, hooks, repository code, provider inference, or source writes during import.
 - Build an immutable baseline and separate mutable worktree from the same file bytes under one operation-specific staging directory, bind them with a canonical manifest digest, and publish their parent atomically.
-- Give future untrusted execution only the mutable worktree and keep the baseline, metadata, workspace root, source repository, control state, persistence, and credentials outside its capability boundary.
+- Give untrusted execution only an operation-specific candidate copied from the active worktree and keep the authoritative generation, baseline, metadata, workspace root, source repository, control state, persistence, and credentials outside its capability boundary.
 - Resolve structured tool paths from a pinned worktree root through handle-relative no-follow traversal, reject alternate streams and special entries, and perform mutations relative to a pinned destination parent.
 - Bound and verify UTF-8 file reads and literal searches, return complete-file SHA-256 digests, and expose only repository-relative names and typed truncation state.
 - Require digest-matched unambiguous edits, exclusive creates, private operation staging, synchronization, and atomic replace-or-no-replace publication without source or baseline writes.
 - Use prepared, dispatched, completion, idempotency, audit, and recovery facts around import; never reread the source after uncertain dispatch and reconcile only exact confined operation-bound staging or published state.
 - Record prepared, dispatched, and terminal facts for every tool call; never rerun or resume one on startup, and reconcile a mutation only from exact target identity, operation staging state, and committed before-or-after digests.
+- Resolve commands only through one bound immutable execution-image generation, a fixed empty environment, structured arguments, a relative candidate working directory, closed standard input, bounded pipes, and an exact packaged one-shot sandbox helper selected without `PATH`, shell, repository, configuration, or model input.
+- Use verified Linux namespaces with Landlock and seccomp, a default-deny macOS Seatbelt profile, or an operation-specific Windows AppContainer and non-breakaway Job Object; fail closed when complete enforcement is unavailable.
+- Deny all command network and host-local service access, inherited terminals and handles, host process inspection and signaling, namespace weakening, privilege changes, and background descendants.
+- Execute commands only against nonauthoritative candidates, copy admissible normal-exit output into a clean synchronized generation, and atomically commit its active pointer with the terminal command result.
+- Discard candidates after cancellation, timeout, resource termination, sandbox failure, helper loss, shutdown, or restart, and never promote command staging during recovery.
+- Provision the Rust execution image through an authenticated non-executing copy operation that excludes credentials and package-manager configuration, and give each command private writable Cargo state seeded from immutable public cache data.
+- Normalize command streams into bounded plain UTF-8, strip terminal and bidirectional controls, map known host roots to synthetic names, and publish no raw or live sandbox output.
 - Give every committed call a durable result, terminate known interrupted tool loops without continuation, and preserve an unprovable mutation as an acknowledged-only uncertainty blocker.
 - Enforce path, depth, count, per-file, total-byte, manifest, staging-growth, and concurrency limits before and during import.
 - Use SQLite's online backup API, protect backup files like authoritative data, and distinguish database recovery from workspace recovery.
@@ -232,7 +257,7 @@
 
 - Root, LocalSystem, administrators, and equivalent privileged accounts can bypass local controls.
 - Processes running as the same operating-system user are not distinguished from the legitimate CLI.
-- Process separation alone does not sandbox untrusted commands.
+- Process separation alone does not sandbox untrusted commands; the selected operating-system policy and candidate-publication boundary must both hold.
 - Compromise of the local authentication key permits impersonation until an explicit offline key replacement invalidates existing registrations and endpoints.
 - Operating-system, filesystem, storage-device, SQLite, or cryptographic-randomness failures can invalidate durability and authentication assumptions.
 - SQLite transactions cannot atomically commit external effects or mutable workspace files, so unresolved effects must remain interrupted or uncertain.
@@ -247,4 +272,7 @@
 - Ordinary certificate validation does not protect against compromise of the provider, a trusted certificate authority, the operating system, or the local server process.
 - Owner-only credential files rely on operating-system access controls and storage encryption and do not provide forensic erasure or protection from the owning user, administrators, crash dumps, or a compromised server.
 - Terminal emulators, accessibility services, screen capture, clipboard managers, crash dumps, and same-user processes may observe displayed content or credential keystrokes outside the application's guarantees.
-- Native CI and release hardware reduce but cannot eliminate processor, firmware, emulator, compiler, or runner-image defects.
+- Native CI and release hardware reduce but cannot eliminate processor, firmware, emulator, compiler, runner-image, sandbox-policy, or operating-system isolation defects.
+- The macOS command boundary depends on a deprecated Seatbelt interface that Apple may remove or change; command execution must then remain unavailable until another reviewed backend exists.
+- Network-denied offline execution cannot build dependencies absent from the provisioned image, and candidate copying and validation consume bounded but potentially substantial time and disk.
+- A sandboxed command can still exhaust its allowed resources, corrupt its discardable candidate, or exploit a kernel or sandbox defect; successful confinement does not make repository code or build output trustworthy.
