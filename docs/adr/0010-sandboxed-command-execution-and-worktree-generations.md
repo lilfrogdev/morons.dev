@@ -63,7 +63,7 @@ The server launches an exact packaged `morons-sandbox` helper through an inherit
 
 The one-shot launch specification binds the operation, candidate, scratch root, execution-image generation, executable, arguments, working directory, policy version, limits version, and inherited standard-stream handles. Model and repository values cannot supply an authoritative host path or serialized sandbox policy. The helper starts from a reviewed empty environment and constructs only fixed non-secret variables such as synthetic home and temporary directories, fixed image `PATH`, locale, plain-output controls, and offline Cargo settings.
 
-The helper creates the sandbox before the requested executable begins. A watchdog inherited from the server and platform process-tree containment ensure that server loss, cancellation, timeout, or helper failure terminates and reaps every descendant. The server does not accept an exit status until the helper proves the sandbox tree is empty.
+The helper creates the sandbox before the requested executable begins. A watchdog inherited from the server and platform process-tree containment ensure that server loss, cancellation, timeout, or helper failure applies uncatchable whole-tree termination, reaps the controlled child, and prevents every descendant from executing again. The server does not accept an exit status until the helper proves the complete sandbox tree is stopped.
 
 A platform whose complete policy cannot be installed, verified, and exercised fails closed with command execution unavailable. There is no unsandboxed fallback, approval bypass, environment-only network suppression, or host-permission mode.
 
