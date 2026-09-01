@@ -15,6 +15,7 @@ use morons_sandbox::{
 };
 
 struct Fixture {
+    operation_id: [u8; 16],
     parent: PathBuf,
     candidate: PathBuf,
     scratch: PathBuf,
@@ -47,6 +48,7 @@ impl Fixture {
         let command = std::env::var_os("ComSpec").expect("ComSpec");
         fs::copy(command, image.join("bin/fixture.exe")).expect("copies command fixture");
         Self {
+            operation_id: identifier,
             parent,
             candidate,
             scratch,
@@ -57,7 +59,7 @@ impl Fixture {
     fn request(&self, command: String, wall_time_milliseconds: u64) -> SandboxRequest {
         SandboxRequest {
             protocol_version: SANDBOX_PROTOCOL_VERSION,
-            operation_id: [23; 16],
+            operation_id: self.operation_id,
             candidate_root: utf8(&self.candidate),
             scratch_root: utf8(&self.scratch),
             image_root: utf8(&self.image),

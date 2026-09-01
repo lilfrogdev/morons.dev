@@ -93,8 +93,8 @@ pub(crate) fn execute(
     };
     let mut launched = match launch_in_container_with_io(&capabilities, &options) {
         Ok(launched) => launched,
-        Err(_) => {
-            diagnostic("launch");
+        Err(error) => {
+            diagnostic_launch(&error);
             return cleanup_failure(
                 operation_id,
                 SandboxStatus::BackendUnavailable,
@@ -309,6 +309,19 @@ fn cleanup_failure(
             SandboxStatus::BackendUnavailable
         },
     )
+}
+
+fn diagnostic_launch(error: &rappct::AcError) {
+    let stage = match error {
+        rappct::AcError::LaunchFailed { stage, .. } => stage,
+        rappct::AcError::AccessDenied { .. } => "launch-access-denied",
+        rappct::AcError::Win32(_) => "launch-win32",
+        rappct::AcError::UnsupportedPlatform => "launch-unsupported-platform",
+        rappct::AcError::UnsupportedLpac => "launch-unsupported-lpac",
+        rappct::AcError::UnknownCapability { .. } => "launch-capability",
+        rappct::AcError::Unimplemented(_) => "launch-unimplemented",
+    };
+    diagnostic(stage);
 }
 
 fn diagnostic(stage: &'static str) {
