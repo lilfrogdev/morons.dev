@@ -6,9 +6,7 @@ use std::{
 };
 
 #[cfg(windows)]
-use fence_windows::{
-    DirectoryEntry, DirectoryHandle, NodeHandle, NodeKind, NodeMetadata, RootHandle,
-};
+use fence_windows::{DirectoryEntry, DirectoryHandle, NodeHandle, NodeKind, RootHandle};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(windows)]
@@ -479,10 +477,7 @@ fn copy_windows_file(
     }
     buffer.fill(0);
     if copied != size
-        || !same_windows_file_snapshot(
-            expected,
-            source.refresh_metadata().map_err(|_| invalid_source())?,
-        )
+        || source.refresh_metadata().map_err(|_| invalid_source())? != expected
         || source.verify_path_identity().is_err()
     {
         return Err(invalid_source());
@@ -511,16 +506,6 @@ fn same_windows_directory_entries(left: &[DirectoryEntry], right: &[DirectoryEnt
                         && left.last_write_time == right.last_write_time
                         && left.change_time == right.change_time))
         })
-}
-
-#[cfg(windows)]
-fn same_windows_file_snapshot(left: NodeMetadata, right: NodeMetadata) -> bool {
-    left.identity == right.identity
-        && left.kind == NodeKind::RegularFile
-        && right.kind == NodeKind::RegularFile
-        && left.size == right.size
-        && left.last_write_time == right.last_write_time
-        && left.change_time == right.change_time
 }
 
 fn validate_repository_directory(
@@ -898,27 +883,7 @@ struct ImportState {
 mod windows_tests {
     use std::ffi::OsString;
 
-    use fence_windows::FileIdentity;
-
     use super::*;
-
-    fn metadata() -> NodeMetadata {
-        NodeMetadata {
-            identity: FileIdentity {
-                volume_serial: 7,
-                file_id: [8; 16],
-            },
-            kind: NodeKind::RegularFile,
-            size: 11,
-            allocation_size: 16,
-            link_count: 1,
-            attributes: 0x20,
-            reparse_tag: None,
-            creation_time: 12,
-            last_write_time: 13,
-            change_time: 14,
-        }
-    }
 
     fn entry() -> DirectoryEntry {
         DirectoryEntry {
@@ -935,18 +900,7 @@ mod windows_tests {
     }
 
     #[test]
-    fn windows_snapshot_ignores_incidental_metadata_changes() {
-        let expected_metadata = metadata();
-        let mut observed_metadata = expected_metadata;
-        observed_metadata.allocation_size = 32;
-        observed_metadata.link_count = 2;
-        observed_metadata.attributes = 0x21;
-        observed_metadata.creation_time = 21;
-        assert!(same_windows_file_snapshot(
-            expected_metadata,
-            observed_metadata
-        ));
-
+    fn windows_directory_snapshot_ignores_incidental_metadata_changes() {
         let expected_entry = entry();
         let mut observed_entry = expected_entry.clone();
         observed_entry.allocation_size = 32;
@@ -959,29 +913,12 @@ mod windows_tests {
     }
 
     #[test]
-    fn windows_snapshot_rejects_security_relevant_changes() {
-        let expected_metadata = metadata();
-        let mut changed_identity = expected_metadata;
-        changed_identity.identity.file_id = [10; 16];
-        assert!(!same_windows_file_snapshot(
-            expected_metadata,
-            changed_identity
-        ));
-        let mut changed_size = expected_metadata;
-        changed_size.size += 1;
-        assert!(!same_windows_file_snapshot(expected_metadata, changed_size));
-        let mut changed_kind = expected_metadata;
-        changed_kind.kind = NodeKind::Directory;
-        assert!(!same_windows_file_snapshot(expected_metadata, changed_kind));
-        let mut changed_time = expected_metadata;
-        changed_time.last_write_time += 1;
-        assert!(!same_windows_file_snapshot(expected_metadata, changed_time));
-
+    fn windows_directory_snapshot_rejects_security_relevant_changes() {
         let expected_entry = entry();
         let mut changed_entry = expected_entry.clone();
         changed_entry.attributes |= WINDOWS_REPARSE_ATTRIBUTE;
         assert!(!same_windows_directory_entries(
-            &[expected_entry.clone()],
+            std::slice::from_ref(&expected_entry),
             &[changed_entry]
         ));
         let mut changed_entry = expected_entry.clone();
