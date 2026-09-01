@@ -187,9 +187,10 @@ fn helper() -> std::process::Child {
         .env_clear()
         .envs(required_windows_environment())
         .env("MORONS_SECRET_SENTINEL", "must-not-cross")
+        .env("MORONS_SANDBOX_TEST_DIAGNOSTICS", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("launches helper")
 }

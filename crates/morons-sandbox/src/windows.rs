@@ -37,11 +37,15 @@ pub(crate) fn execute(
     let operation_id = prepared.operation_id;
     let layout = match Layout::prepare(&prepared) {
         Ok(layout) => layout,
-        Err(()) => return SandboxResult::failure(operation_id, SandboxStatus::LaunchFailed),
+        Err(()) => {
+            diagnostic("staging");
+            return SandboxResult::failure(operation_id, SandboxStatus::LaunchFailed);
+        }
     };
     let stage_request = match layout.stage_request(&prepared, &request) {
         Ok(request) => request,
         Err(()) => {
+            diagnostic("stage-request");
             let _ = layout.cleanup();
             return SandboxResult::failure(operation_id, SandboxStatus::RequestRejected);
         }
@@ -49,11 +53,13 @@ pub(crate) fn execute(
     let container = match Container::create(operation_id) {
         Ok(container) => container,
         Err(()) => {
+            diagnostic("profile");
             let _ = layout.cleanup();
             return SandboxResult::failure(operation_id, SandboxStatus::BackendUnavailable);
         }
     };
     if container.grant_paths(&prepared, &layout).is_err() {
+        diagnostic("grants");
         return cleanup_failure(
             operation_id,
             SandboxStatus::BackendUnavailable,
@@ -64,6 +70,7 @@ pub(crate) fn execute(
     let capabilities = match container.capabilities() {
         Ok(capabilities) => capabilities,
         Err(()) => {
+            diagnostic("capabilities");
             return cleanup_failure(
                 operation_id,
                 SandboxStatus::BackendUnavailable,
@@ -75,6 +82,7 @@ pub(crate) fn execute(
     let options = match launch_options(&prepared, &layout) {
         Ok(options) => options,
         Err(()) => {
+            diagnostic("launch-options");
             return cleanup_failure(
                 operation_id,
                 SandboxStatus::BackendUnavailable,
@@ -86,6 +94,7 @@ pub(crate) fn execute(
     let mut launched = match launch_in_container_with_io(&capabilities, &options) {
         Ok(launched) => launched,
         Err(_) => {
+            diagnostic("launch");
             return cleanup_failure(
                 operation_id,
                 SandboxStatus::BackendUnavailable,
@@ -95,6 +104,7 @@ pub(crate) fn execute(
         }
     };
     if launched.job_guard.is_none() {
+        diagnostic("job");
         drop(launched.stdin.take());
         let stopped = launched.wait(Some(TREE_TERMINATION_TIMEOUT)).is_ok();
         if stopped {
@@ -108,6 +118,7 @@ pub(crate) fn execute(
         return SandboxResult::failure(operation_id, SandboxStatus::ProcessTreeUncertain);
     }
     let Some(mut input) = launched.stdin.take() else {
+        diagnostic("stdin");
         return stop_and_cleanup(
             operation_id,
             SandboxStatus::BackendUnavailable,
@@ -117,6 +128,7 @@ pub(crate) fn execute(
         );
     };
     let Some(mut stdout) = launched.stdout.take() else {
+        diagnostic("stdout");
         drop(input);
         return stop_and_cleanup(
             operation_id,
@@ -127,6 +139,7 @@ pub(crate) fn execute(
         );
     };
     let Some(stderr) = launched.stderr.take() else {
+        diagnostic("stderr");
         drop(input);
         return stop_and_cleanup(
             operation_id,
@@ -145,6 +158,7 @@ pub(crate) fn execute(
     let stderr_reader =
         capture_stream(stderr, BOOTSTRAP_STDERR_BYTES, Arc::clone(&stderr_exceeded));
     if write_request(&mut input, &stage_request).is_err() {
+        diagnostic("write-request");
         drop(input);
         let result = stop_and_cleanup(
             operation_id,
@@ -217,6 +231,7 @@ pub(crate) fn execute(
                 return result;
             }
             Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+                diagnostic("nested-result");
                 drop(input);
                 let result = stop_and_cleanup(
                     operation_id,
@@ -294,6 +309,12 @@ fn cleanup_failure(
             SandboxStatus::BackendUnavailable
         },
     )
+}
+
+fn diagnostic(stage: &'static str) {
+    if std::env::var_os("MORONS_SANDBOX_TEST_DIAGNOSTICS").is_some() {
+        eprintln!("windows sandbox stage: {stage}");
+    }
 }
 
 fn capture_stream<R: Read + Send + 'static>(
