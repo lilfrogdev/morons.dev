@@ -1,5 +1,5 @@
 use morons_protocol::{
-    OpenCodeModelRetention, OpenCodeModelTrainingUse, OpenCodeService, RunState,
+    OpenCodeModelRetention, OpenCodeModelTrainingUse, OpenCodeService, RunState, WorkspaceState,
 };
 use ratatui::{
     Frame,
@@ -9,7 +9,10 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use super::{AppState, CredentialDialog, PendingOperation, PresentedModel, SessionView, View};
+use super::{
+    AppState, CredentialDialog, PendingOperation, PresentedModel, RepositoryDialog, SessionView,
+    View,
+};
 use crate::terminal::SafeText;
 
 pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
@@ -33,6 +36,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
     }
     if let Some(dialog) = app.credential_dialog.as_ref() {
         render_credential_dialog(frame, area, dialog);
+    }
+    if let Some(dialog) = app.repository_dialog.as_ref() {
+        render_repository_dialog(frame, area, dialog);
     }
 }
 
@@ -197,7 +203,11 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
         u16::try_from(lines.len().saturating_sub(visible_height)).unwrap_or(u16::MAX);
     let scroll = maximum_scroll.saturating_sub(scroll.min(maximum_scroll));
     let run_status = active_run_label(session);
-    let title = format!(" {} · {run_status} ", session.display_name.first_line());
+    let workspace = workspace_label(session.workspace.state);
+    let title = format!(
+        " {} · {run_status} · {workspace} ",
+        session.display_name.first_line()
+    );
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(title))
@@ -233,7 +243,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             "↑↓ select · Enter open · n new · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
-            "Esc sessions · Tab model · Ctrl+K credential · Ctrl+X cancel run · Ctrl+S stop"
+            "Esc sessions · Tab model · Ctrl+O import repo · Ctrl+K credential · Ctrl+X cancel · Ctrl+S stop"
         }
     };
     let status = Line::from(vec![
@@ -244,6 +254,52 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Paragraph::new(vec![Line::from(help), status]).style(Style::default().fg(Color::DarkGray)),
         area,
     );
+}
+
+fn render_repository_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &RepositoryDialog) {
+    let width = area.width.min(76);
+    let height = area.height.min(9);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let paragraph = match dialog {
+        RepositoryDialog::Enter { input } => {
+            let path = SafeText::from_untrusted(input.as_str());
+            Paragraph::new(vec![
+                Line::from("Enter an absolute local repository path:"),
+                Line::default(),
+                Line::from(path.first_line().to_owned()),
+                Line::default(),
+                Line::from("Enter continue · Backspace edit · Esc cancel"),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Import repository "),
+            )
+        }
+        RepositoryDialog::Confirm { source_path } => {
+            let path = SafeText::from_untrusted(source_path);
+            Paragraph::new(vec![
+                Line::from("Copy every ordinary file except .git control data from:"),
+                Line::from(path.first_line().to_owned()),
+                Line::default(),
+                Line::from("Morons will never write changes back automatically."),
+                Line::default(),
+                Line::from("y import · n cancel"),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Confirm repository import "),
+            )
+        }
+    };
+    frame.render_widget(paragraph.wrap(Wrap { trim: false }), popup);
 }
 
 fn render_credential_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &CredentialDialog) {
@@ -343,6 +399,15 @@ fn active_run_label(session: &SessionView) -> &'static str {
             | RunState::Cancelled
             | RunState::Interrupted => "idle",
         })
+}
+
+const fn workspace_label(state: WorkspaceState) -> &'static str {
+    match state {
+        WorkspaceState::Empty => "workspace empty",
+        WorkspaceState::Importing => "repository importing",
+        WorkspaceState::Ready => "repository ready",
+        WorkspaceState::Blocked => "workspace blocked",
+    }
 }
 
 const fn service_label(service: OpenCodeService) -> &'static str {

@@ -2,6 +2,7 @@ mod creation;
 mod credential_mutation;
 mod queries;
 mod records;
+mod repository_import;
 mod run_acceptance;
 mod run_cancellation;
 mod run_execution;
@@ -34,6 +35,7 @@ impl Backend {
         };
         backend.recover_credential_mutations()?;
         backend.recover_incomplete_session_creations()?;
+        backend.recover_repository_imports()?;
         backend.validate_ready_workspaces()?;
         backend.recover_nonterminal_runs()?;
         Ok(backend)

@@ -3,6 +3,7 @@ use rusqlite::params;
 use super::{
     Backend,
     records::{load_session, sequence_to_sql},
+    repository_import::workspace_summary_at_sequence,
     run_records::{load_required_run, load_scoped_run, transcript_entry_from_row},
     session_events::{active_run_id_at_sequence, load_run_at_sequence, session_event_high_water},
 };
@@ -169,8 +170,11 @@ impl Backend {
             .into_iter()
             .map(|run_id| load_run_at_sequence(&self.connection, run_id, snapshot_event_sequence))
             .collect::<Result<Vec<_>, _>>()?;
+        let workspace =
+            workspace_summary_at_sequence(&self.connection, session_id, snapshot_event_sequence)?;
         Ok(TranscriptPage {
             session,
+            workspace,
             entries,
             runs,
             active_run_id,

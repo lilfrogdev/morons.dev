@@ -79,6 +79,25 @@ impl Backend {
         if let Some(active_run_id) = active_run_id {
             return Err(PersistenceError::SessionBusy { active_run_id });
         }
+        let workspace_state = transaction
+            .query_row(
+                "SELECT state FROM repository_import_requests
+                 WHERE session_id = ?1 AND state IN (0, 1, 4)
+                 ORDER BY accepted_sequence DESC LIMIT 1",
+                [&session_id.as_bytes()[..]],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        match workspace_state {
+            Some(0 | 1) => return Err(PersistenceError::WorkspaceBusy),
+            Some(4) => return Err(PersistenceError::WorkspaceBlocked),
+            Some(_) => {
+                return Err(PersistenceError::InvalidState {
+                    reason: "a session workspace has an invalid blocking state",
+                });
+            }
+            None => {}
+        }
         if entry_high_water
             .checked_add(2)
             .is_none_or(|reserved_high_water| reserved_high_water > MAX_TRANSCRIPT_ENTRIES)

@@ -1,8 +1,8 @@
-use morons_protocol::MAX_OPENCODE_API_KEY_BYTES;
+use morons_protocol::{MAX_OPENCODE_API_KEY_BYTES, WorkspaceState};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::{AppAction, AppState, CredentialDialog, View};
-use crate::terminal::CredentialBuffer;
+use super::{AppAction, AppState, CredentialDialog, RepositoryDialog, View};
+use crate::terminal::{CredentialBuffer, RepositoryPathBuffer};
 
 impl AppState {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> AppAction {
@@ -32,6 +32,9 @@ impl AppState {
         if self.credential_dialog.is_some() {
             return self.handle_credential_key(key.code, key.modifiers);
         }
+        if self.repository_dialog.is_some() {
+            return self.handle_repository_key(key.code, key.modifiers);
+        }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.handle_control_key(key.code);
         }
@@ -42,6 +45,12 @@ impl AppState {
     }
 
     pub(crate) fn handle_paste(&mut self, paste: &str) {
+        if let Some(RepositoryDialog::Enter { input }) = self.repository_dialog.as_mut() {
+            if !input.push_paste(paste) {
+                self.set_status("Repository paths must be bounded single-line text");
+            }
+            return;
+        }
         if let Some(CredentialDialog::Enter { input, .. }) = self.credential_dialog.as_mut() {
             if !input.push_paste(paste) {
                 self.set_status(credential_input_constraint());
@@ -49,6 +58,7 @@ impl AppState {
             return;
         }
         if self.credential_dialog.is_none()
+            && self.repository_dialog.is_none()
             && self.view == View::Session
             && self.pending.is_none()
             && !self.confirm_stop
@@ -64,6 +74,10 @@ impl AppState {
                 AppAction::None
             }
             KeyCode::Char('l') => AppAction::Refresh,
+            KeyCode::Char('o') if self.pending.is_none() && self.view == View::Session => {
+                self.open_repository_dialog();
+                AppAction::None
+            }
             KeyCode::Char('s') if self.pending.is_none() => {
                 self.confirm_stop = true;
                 AppAction::None
@@ -201,6 +215,97 @@ impl AppState {
         };
         AppAction::RemoveCredential {
             expected_generation: status.generation,
+        }
+    }
+
+    fn open_repository_dialog(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        if session.workspace.state != WorkspaceState::Empty {
+            self.set_status("The selected session workspace cannot accept a repository import");
+            return;
+        }
+        if !session.entries.is_empty()
+            || !session.runs.is_empty()
+            || session.active_run_id.is_some()
+        {
+            self.set_status("Repository import requires a pristine session");
+            return;
+        }
+        self.repository_dialog = Some(RepositoryDialog::Enter {
+            input: RepositoryPathBuffer::default(),
+        });
+        self.set_status("Enter an absolute local repository path");
+    }
+
+    fn handle_repository_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> AppAction {
+        if matches!(
+            self.repository_dialog,
+            Some(RepositoryDialog::Confirm { .. })
+        ) {
+            return match code {
+                KeyCode::Char('y') => {
+                    let Some(RepositoryDialog::Confirm { source_path }) =
+                        self.repository_dialog.take()
+                    else {
+                        return AppAction::None;
+                    };
+                    let Some(session_id) = self.session.as_ref().map(|session| session.summary.id)
+                    else {
+                        return AppAction::None;
+                    };
+                    AppAction::ImportRepository {
+                        session_id,
+                        source_path,
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.clear_repository_interaction();
+                    self.set_status("Repository import cancelled");
+                    AppAction::None
+                }
+                _ => AppAction::None,
+            };
+        }
+        match code {
+            KeyCode::Esc => {
+                self.clear_repository_interaction();
+                self.set_status("Repository import cancelled");
+                AppAction::None
+            }
+            KeyCode::Backspace => {
+                if let Some(RepositoryDialog::Enter { input }) = self.repository_dialog.as_mut() {
+                    input.backspace();
+                }
+                AppAction::None
+            }
+            KeyCode::Enter => {
+                let Some(RepositoryDialog::Enter { input }) = self.repository_dialog.as_mut()
+                else {
+                    return AppAction::None;
+                };
+                if input.is_empty() {
+                    self.set_status("Enter an absolute repository path before continuing");
+                    return AppAction::None;
+                }
+                let source_path = input.take();
+                self.repository_dialog = Some(RepositoryDialog::Confirm { source_path });
+                AppAction::None
+            }
+            KeyCode::Char(character)
+                if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let accepted = match self.repository_dialog.as_mut() {
+                    Some(RepositoryDialog::Enter { input }) => input.push_character(character),
+                    _ => false,
+                };
+                if !accepted {
+                    self.set_status("Repository paths must be bounded single-line text");
+                }
+                AppAction::None
+            }
+            _ => AppAction::None,
         }
     }
 

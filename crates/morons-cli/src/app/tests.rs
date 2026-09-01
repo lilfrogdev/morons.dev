@@ -2,7 +2,7 @@ use morons_protocol::{
     ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
     OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, SessionEventCursor,
-    SessionId, SessionSummary, TranscriptEntry,
+    SessionId, SessionSummary, TranscriptEntry, WorkspaceState, WorkspaceSummary,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -18,6 +18,7 @@ fn rendering_strips_terminal_and_bidirectional_controls() {
         .expect("models should be valid");
     app.open_session(
         session,
+        empty_workspace(),
         vec![TranscriptEntry::UserMessage {
             id: run.user_message_id,
             run_id: run.id,
@@ -52,8 +53,14 @@ fn rendering_strips_terminal_and_bidirectional_controls() {
 fn durable_assistant_message_replaces_transient_output() {
     let (session, run) = fixture_session_and_run();
     let mut app = AppState::new("test-server");
-    app.open_session(session, Vec::new(), vec![run.clone()], Some(run.id))
-        .expect("session should open");
+    app.open_session(
+        session,
+        empty_workspace(),
+        Vec::new(),
+        vec![run.clone()],
+        Some(run.id),
+    )
+    .expect("session should open");
     app.apply_event(ApplicationEvent::SessionAssistantDelta {
         session_id: run.session_id,
         run_id: run.id,
@@ -94,7 +101,7 @@ fn durable_assistant_message_replaces_transient_output() {
 fn prompt_paste_and_rendering_remain_bounded() {
     let (session, run) = fixture_session_and_run();
     let mut app = AppState::new("test-server");
-    app.open_session(session, Vec::new(), vec![run], None)
+    app.open_session(session, empty_workspace(), Vec::new(), vec![run], None)
         .expect("session should open");
     app.handle_paste(&format!(
         "{}\u{1b}\u{202e}",
@@ -216,6 +223,29 @@ fn credential_replacement_and_removal_use_observed_generation() {
 }
 
 #[test]
+fn repository_import_requires_confirmation_and_redacts_action_debug() {
+    let (session, _) = fixture_session_and_run();
+    let mut app = AppState::new("test-server");
+    app.open_session(session, empty_workspace(), Vec::new(), Vec::new(), None)
+        .expect("pristine session should open");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+        AppAction::None
+    );
+    app.handle_paste("/private/sensitive/repository");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    let action = app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    let debug = format!("{action:?}");
+    assert!(!debug.contains("/private/sensitive/repository"));
+    assert!(debug.contains("source_path_bytes"));
+    assert!(matches!(action, AppAction::ImportRepository { .. }));
+    assert!(app.repository_dialog.is_none());
+}
+
+#[test]
 fn input_action_debug_omits_prompt_text() {
     let action = AppAction::SubmitInput {
         session_id: SessionId::from_bytes([0x55; 16]),
@@ -253,6 +283,15 @@ fn selected_model_is_always_an_available_reviewed_pair() {
     app.replace_models(OpenCodeService::Go, Vec::new())
         .expect("a failed catalog can remove stale availability");
     assert!(app.selected_model().is_none());
+}
+
+fn empty_workspace() -> WorkspaceSummary {
+    WorkspaceSummary {
+        state: WorkspaceState::Empty,
+        file_count: 0,
+        logical_bytes: 0,
+        block_reason: None,
+    }
 }
 
 fn fixture_session_and_run() -> (SessionSummary, RunSummary) {

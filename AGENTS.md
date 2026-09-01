@@ -27,6 +27,7 @@ The application consists of a long-running local server and a separate terminal 
 - Canonical transcripts contain complete attributed entries; assistant text deltas are ephemeral presentation events.
 - Session snapshots and durable event subscriptions compose through one gap-free cursor boundary.
 - Each session owns an isolated mutable workspace and execution context.
+- A pristine session may import one local repository into a server-owned immutable baseline and separate mutable worktree.
 - The terminal client owns input and presentation.
 - Client-server communication uses an authenticated, typed, versioned protocol over local IPC.
 - Local transport authentication completes before application protocol messages are exchanged.
@@ -68,7 +69,7 @@ Treat repositories, model output, commands, skills, protocol messages, and exter
 - Agent-triggered commands, Python cells, and network requests must support cancellation and must not run indefinitely or produce unbounded output.
 - Fail closed for security-sensitive behavior.
 - Treat resource identifiers as locators rather than authorization evidence.
-- Keep the database, backups, and other sessions' workspaces inaccessible to untrusted execution.
+- Keep the database, backups, workspace baselines and metadata, original source repositories, and other sessions' worktrees inaccessible to untrusted execution.
 - Publish durable results only after their database transaction commits.
 - Bound event subscriber queues and disconnect slow consumers.
 - Keep security enforcement in trusted server code.

@@ -14,7 +14,8 @@ use morons_protocol::{
     MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
     OpenCodeService, ResourceLimit, RunId, RunState, RunSummary, ServerMessage,
     SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
-    TranscriptCursor, TranscriptEntry, read_server_message, write_client_message,
+    TranscriptCursor, TranscriptEntry, WorkspaceState, WorkspaceSummary, read_server_message,
+    write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -34,6 +35,7 @@ pub struct SessionInputAcceptance {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptPage {
     pub session: SessionSummary,
+    pub workspace: WorkspaceSummary,
     pub entries: Vec<TranscriptEntry>,
     pub runs: Vec<RunSummary>,
     pub active_run_id: Option<RunId>,
@@ -156,6 +158,17 @@ fn write_application_error(
         ApplicationError::CredentialMutationNotApplied => {
             formatter.write_str("OpenCode credential update was not applied")
         }
+        ApplicationError::WorkspaceNotPristine => {
+            formatter.write_str("repository import requires a pristine session")
+        }
+        ApplicationError::WorkspaceBusy => formatter.write_str("session workspace is busy"),
+        ApplicationError::RepositoryAlreadyImported => {
+            formatter.write_str("session already has an imported repository")
+        }
+        ApplicationError::RepositoryImportNotApplied => {
+            formatter.write_str("repository import was not applied")
+        }
+        ApplicationError::WorkspaceBlocked => formatter.write_str("session workspace is blocked"),
         ApplicationError::ResourceLimit {
             resource: ResourceLimit::Sessions,
         } => formatter.write_str("session limit was reached"),
@@ -180,6 +193,22 @@ fn valid_session_summary(session: &SessionSummary) -> bool {
         && session.display_name.as_ref().is_none_or(|display_name| {
             !display_name.is_empty() && display_name.len() <= MAX_SESSION_DISPLAY_NAME_BYTES
         })
+}
+
+fn valid_workspace_summary(workspace: WorkspaceSummary) -> bool {
+    match workspace.state {
+        WorkspaceState::Empty | WorkspaceState::Importing => {
+            workspace.file_count == 0
+                && workspace.logical_bytes == 0
+                && workspace.block_reason.is_none()
+        }
+        WorkspaceState::Ready => workspace.block_reason.is_none(),
+        WorkspaceState::Blocked => {
+            workspace.file_count == 0
+                && workspace.logical_bytes == 0
+                && workspace.block_reason.is_some()
+        }
+    }
 }
 
 fn valid_model_summaries(service: OpenCodeService, models: &[OpenCodeModelSummary]) -> bool {
@@ -333,6 +362,7 @@ where
             .await?;
         let ApplicationResponse::SessionTranscriptListed {
             session,
+            workspace,
             entries,
             runs,
             active_run_id,
@@ -378,6 +408,7 @@ where
         });
         if session.id != session_id
             || !valid_session_summary(&session)
+            || !valid_workspace_summary(workspace)
             || !cursor_in_scope
             || !snapshot_is_consistent
             || entries.len() > usize::from(limit)
@@ -392,6 +423,7 @@ where
         }
         Ok(TranscriptPage {
             session,
+            workspace,
             entries,
             runs,
             active_run_id,
@@ -503,6 +535,33 @@ where
             return Err(self.unexpected_application_response());
         };
         Ok(credential)
+    }
+
+    pub async fn import_repository(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        source_path: String,
+    ) -> Result<WorkspaceSummary, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::ImportRepository {
+                mutation_request_id,
+                session_id,
+                source_path,
+            })
+            .await?;
+        let ApplicationResponse::RepositoryImported {
+            session_id: response_session_id,
+            workspace,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        if response_session_id != session_id || !valid_workspace_summary(workspace) {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(workspace)
     }
 
     pub async fn remove_open_code_credential(

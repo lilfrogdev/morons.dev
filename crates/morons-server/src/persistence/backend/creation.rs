@@ -174,17 +174,29 @@ impl Backend {
     }
 
     pub(super) fn validate_ready_workspaces(&self) -> Result<(), PersistenceError> {
-        let workspace_ids = {
-            let mut statement = self
-                .connection
-                .prepare("SELECT workspace_id FROM sessions ORDER BY created_sequence")?;
+        let workspaces = {
+            let mut statement = self.connection.prepare(
+                "SELECT session.workspace_id,
+                        EXISTS (SELECT 1 FROM repository_import_requests AS import
+                                WHERE import.session_id = session.session_id
+                                  AND import.state IN (2, 4)),
+                        EXISTS (SELECT 1 FROM repository_import_requests AS import
+                                WHERE import.session_id = session.session_id AND import.state = 4)
+                 FROM sessions AS session ORDER BY session.created_sequence",
+            )?;
             statement
-                .query_map([], |row| row.get::<_, [u8; IDENTIFIER_BYTES]>(0))?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, [u8; IDENTIFIER_BYTES]>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                })?
                 .collect::<Result<Vec<_>, _>>()?
         };
-        for workspace_id in workspace_ids {
+        for (workspace_id, repository_expected, repository_blocked) in workspaces {
             self.paths
-                .validate_workspace(&workspace_id)
+                .validate_workspace(&workspace_id, repository_expected, repository_blocked)
                 .map_err(PersistenceError::from)?;
         }
         Ok(())

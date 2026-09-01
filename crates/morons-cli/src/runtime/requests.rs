@@ -4,7 +4,7 @@ use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
     ApplicationError, FrameError, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelSummary, OpenCodeService, RunId, RunSummary, SessionCatalogEventCursor,
-    SessionEventCursor, SessionId, SessionSummary, TranscriptEntry,
+    SessionEventCursor, SessionId, SessionSummary, TranscriptEntry, WorkspaceSummary,
 };
 use tokio::{sync::mpsc, time};
 
@@ -43,6 +43,11 @@ pub(super) enum RequestCommand {
         session_id: SessionId,
         run_id: RunId,
     },
+    ImportRepository {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        source_path: String,
+    },
     SetCredential {
         mutation_request_id: MutationRequestId,
         expected_generation: u64,
@@ -75,6 +80,10 @@ impl RequestCommand {
                 mutation_request_id,
                 ..
             }
+            | Self::ImportRepository {
+                mutation_request_id,
+                ..
+            }
             | Self::SetCredential {
                 mutation_request_id,
                 ..
@@ -98,6 +107,7 @@ impl RequestCommand {
             Self::CreateSession { .. } => "session creation",
             Self::SubmitInput { .. } => "message submission",
             Self::CancelRun { .. } => "run cancellation",
+            Self::ImportRepository { .. } => "repository import",
             Self::SetCredential { .. } => "credential configuration",
             Self::RemoveCredential { .. } => "credential removal",
             Self::StopServer { .. } => "server stop",
@@ -144,6 +154,15 @@ impl RequestCommand {
                 session_id: *session_id,
                 run_id: *run_id,
             }),
+            Self::ImportRepository {
+                mutation_request_id,
+                session_id,
+                source_path,
+            } => Some(Self::ImportRepository {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
+                source_path: source_path.clone(),
+            }),
             Self::StopServer {
                 mutation_request_id,
             } => Some(Self::StopServer {
@@ -180,6 +199,11 @@ pub(super) enum RequestEvent {
         mutation_request_id: MutationRequestId,
         result: RunCancellationResult,
     },
+    RepositoryImported {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        workspace: WorkspaceSummary,
+    },
     CredentialUpdated {
         mutation_request_id: MutationRequestId,
         credential: OpenCodeCredentialStatus,
@@ -213,6 +237,7 @@ pub(super) enum RequestEvent {
 
 pub(super) struct SessionSnapshot {
     pub(super) session: SessionSummary,
+    pub(super) workspace: WorkspaceSummary,
     pub(super) entries: Vec<TranscriptEntry>,
     pub(super) runs: Vec<RunSummary>,
     pub(super) active_run_id: Option<RunId>,
@@ -374,6 +399,7 @@ async fn execute_credential(
         | RequestCommand::CreateSession { .. }
         | RequestCommand::SubmitInput { .. }
         | RequestCommand::CancelRun { .. }
+        | RequestCommand::ImportRepository { .. }
         | RequestCommand::StopServer { .. } => {
             unreachable!("only credential mutations use credential execution")
         }
@@ -441,6 +467,18 @@ async fn execute(
                 mutation_request_id: *mutation_request_id,
                 result,
             }),
+        RequestCommand::ImportRepository {
+            mutation_request_id,
+            session_id,
+            source_path,
+        } => client
+            .import_repository(*mutation_request_id, *session_id, source_path.clone())
+            .await
+            .map(|workspace| RequestResult::RepositoryImported {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
+                workspace,
+            }),
         RequestCommand::SetCredential { .. } | RequestCommand::RemoveCredential { .. } => {
             unreachable!("credential mutations use single-attempt execution")
         }
@@ -492,6 +530,7 @@ async fn load_session(
     let mut runs = Vec::new();
     let mut cursor = None;
     let mut session = None;
+    let mut workspace = None;
     let mut event_cursor = None;
     let mut active_run_id = None;
     let mut snapshot_metadata_loaded = false;
@@ -502,12 +541,14 @@ async fn load_session(
         if session
             .as_ref()
             .is_some_and(|session: &SessionSummary| session != &page.session)
+            || workspace.is_some_and(|workspace| workspace != page.workspace)
             || event_cursor.is_some_and(|event_cursor| event_cursor != page.event_cursor)
             || snapshot_metadata_loaded && active_run_id != page.active_run_id
         {
             return Err(ApplicationClientError::EventScopeMismatch);
         }
         session = Some(page.session);
+        workspace = Some(page.workspace);
         event_cursor = Some(page.event_cursor);
         if !snapshot_metadata_loaded {
             active_run_id = page.active_run_id;
@@ -530,6 +571,7 @@ async fn load_session(
         if cursor.is_none() {
             return Ok(SessionSnapshot {
                 session: session.ok_or(ApplicationClientError::EventScopeMismatch)?,
+                workspace: workspace.ok_or(ApplicationClientError::EventScopeMismatch)?,
                 entries,
                 runs,
                 active_run_id,
@@ -563,6 +605,11 @@ enum RequestResult {
     CancellationResolved {
         mutation_request_id: MutationRequestId,
         result: RunCancellationResult,
+    },
+    RepositoryImported {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        workspace: WorkspaceSummary,
     },
     CredentialUpdated {
         mutation_request_id: MutationRequestId,
@@ -601,6 +648,15 @@ impl RequestResult {
             } => RequestEvent::CancellationResolved {
                 mutation_request_id,
                 result,
+            },
+            Self::RepositoryImported {
+                mutation_request_id,
+                session_id,
+                workspace,
+            } => RequestEvent::RepositoryImported {
+                mutation_request_id,
+                session_id,
+                workspace,
             },
             Self::CredentialUpdated {
                 mutation_request_id,
@@ -642,6 +698,7 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 RequestCommand::CreateSession { .. }
                 | RequestCommand::SubmitInput { .. }
                 | RequestCommand::CancelRun { .. }
+                | RequestCommand::ImportRepository { .. }
                 | RequestCommand::SetCredential { .. }
                 | RequestCommand::RemoveCredential { .. }
                 | RequestCommand::StopServer { .. } => None,

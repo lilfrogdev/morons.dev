@@ -61,8 +61,9 @@ impl From<io::Error> for PathError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct StoragePaths {
+    application_directory: PathBuf,
     data_directory: PathBuf,
     backup_directory: PathBuf,
     pub(super) workspace_directory: PathBuf,
@@ -81,6 +82,7 @@ impl StoragePaths {
         ensure_private_directory(&workspace_directory)?;
 
         let paths = Self {
+            application_directory: application_root.to_path_buf(),
             database_path: data_directory.join(DATABASE_FILE_NAME),
             data_directory,
             backup_directory,
@@ -93,6 +95,14 @@ impl StoragePaths {
 
     pub(crate) fn database_path(&self) -> &Path {
         &self.database_path
+    }
+
+    pub(super) fn application_directory(&self) -> &Path {
+        &self.application_directory
+    }
+
+    pub(super) fn workspace_path(&self, workspace_id: &[u8; IDENTIFIER_BYTES]) -> PathBuf {
+        self.workspace_directory.join(encode_hex(workspace_id))
     }
 
     pub(crate) fn database_exists(&self) -> Result<bool, PathError> {
