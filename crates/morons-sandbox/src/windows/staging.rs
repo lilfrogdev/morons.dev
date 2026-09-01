@@ -30,9 +30,7 @@ pub(super) struct Layout {
     pub(super) output: PathBuf,
     pub(super) gate: PathBuf,
     pub(super) done: PathBuf,
-    pub(super) home: PathBuf,
     pub(super) temporary: PathBuf,
-    pub(super) cargo_home: PathBuf,
 }
 
 impl Layout {
@@ -68,9 +66,7 @@ impl Layout {
                 output,
                 gate,
                 done,
-                home,
                 temporary,
-                cargo_home,
             })
         })();
         if prepared.is_err() {
@@ -153,9 +149,7 @@ impl Container {
     ) -> Result<(), ()> {
         let profile = self.profile()?;
         grant_directory(&prepared.candidate_root, profile, FILE_ALL_ACCESS)?;
-        for directory in [&layout.home, &layout.temporary, &layout.cargo_home] {
-            grant_directory(directory, profile, FILE_ALL_ACCESS)?;
-        }
+        grant_directory(&layout.runtime, profile, FILE_ALL_ACCESS)?;
         grant_directory(
             &layout.image,
             profile,

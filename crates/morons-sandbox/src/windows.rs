@@ -210,7 +210,7 @@ fn launch_options(prepared: &PreparedRequest, layout: &Layout) -> Result<LaunchO
         cmdline: Some(command_line(&executable, layout)?),
         cwd: Some(launch_path(&prepared.candidate_root)?),
         env: Some(bootstrap_environment(layout)?),
-        stdio: StdioConfig::Null,
+        stdio: StdioConfig::Inherit,
         suspended: false,
         join_job: Some(JobLimits {
             memory_bytes: Some(PROCESS_MEMORY_BYTES),
