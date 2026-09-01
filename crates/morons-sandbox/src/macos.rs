@@ -116,19 +116,36 @@ pub(crate) fn execute(request: PreparedRequest, cancellation: &Cancellation) -> 
                         SandboxStatus::ProcessTreeUncertain,
                     );
                 }
+                let exit = SandboxExit {
+                    code: status.code(),
+                    signal: status
+                        .signal()
+                        .and_then(|signal| u16::try_from(signal).ok()),
+                };
+                let (sandbox_status, candidate_eligible) = match exit {
+                    SandboxExit {
+                        code: Some(_),
+                        signal: None,
+                    } => (SandboxStatus::Exited, true),
+                    SandboxExit {
+                        code: None,
+                        signal: Some(_),
+                    } => (SandboxStatus::Signalled, false),
+                    _ => {
+                        return SandboxResult::failure(
+                            request.operation_id,
+                            SandboxStatus::ProcessTreeUncertain,
+                        );
+                    }
+                };
                 return SandboxResult {
                     protocol_version: crate::SANDBOX_PROTOCOL_VERSION,
                     operation_id: request.operation_id,
-                    status: SandboxStatus::Exited,
-                    exit: Some(SandboxExit {
-                        code: status.code(),
-                        signal: status
-                            .signal()
-                            .and_then(|signal| u16::try_from(signal).ok()),
-                    }),
+                    status: sandbox_status,
+                    exit: Some(exit),
                     stdout,
                     stderr,
-                    candidate_eligible: true,
+                    candidate_eligible,
                 };
             }
             Ok(None) => thread::sleep(POLL_INTERVAL),
@@ -522,6 +539,16 @@ mod tests {
         let output = crate::execute(output_request, &Cancellation::new());
         assert_eq!(output.status, SandboxStatus::OutputLimit, "{output:?}");
         assert!(!output.candidate_eligible);
+    }
+
+    #[test]
+    fn seatbelt_discards_candidates_after_signal_termination() {
+        let fixture = Fixture::new(b"#!/bin/sh\nprintf 'before-signal'\n/bin/kill -TERM $$\n");
+        let result = crate::execute(fixture.request(Vec::new()), &Cancellation::new());
+        assert_eq!(result.status, SandboxStatus::Signalled, "{result:?}");
+        assert_eq!(result.exit.and_then(|exit| exit.signal), Some(15));
+        assert_eq!(result.stdout, b"before-signal");
+        assert!(!result.candidate_eligible);
     }
 
     #[test]

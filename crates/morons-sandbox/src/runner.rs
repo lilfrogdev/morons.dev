@@ -55,7 +55,7 @@ pub(crate) struct PreparedRequest {
 
 pub fn execute(request: SandboxRequest, cancellation: &Cancellation) -> SandboxResult {
     let operation_id = request.operation_id;
-    let prepared = match validate_request(request) {
+    let prepared = match validate_request(&request) {
         Ok(prepared) => prepared,
         Err(()) => {
             return SandboxResult::failure(operation_id, SandboxStatus::RequestRejected);
@@ -69,7 +69,11 @@ pub fn execute(request: SandboxRequest, cancellation: &Cancellation) -> SandboxR
     {
         crate::macos::execute(prepared, cancellation)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux::execute(prepared, request, cancellation)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let PreparedRequest {
             operation_id: prepared_operation_id,
@@ -96,7 +100,7 @@ pub fn execute(request: SandboxRequest, cancellation: &Cancellation) -> SandboxR
     }
 }
 
-fn validate_request(request: SandboxRequest) -> Result<PreparedRequest, ()> {
+pub(crate) fn validate_request(request: &SandboxRequest) -> Result<PreparedRequest, ()> {
     if request.protocol_version != SANDBOX_PROTOCOL_VERSION
         || request.operation_id.iter().all(|byte| *byte == 0)
         || request.arguments.len() > MAX_ARGUMENTS
@@ -145,7 +149,7 @@ fn validate_request(request: SandboxRequest) -> Result<PreparedRequest, ()> {
         scratch_root,
         image_root,
         executable,
-        arguments: request.arguments,
+        arguments: request.arguments.clone(),
         working_directory,
         wall_time_milliseconds: request.limits.wall_time_milliseconds,
         output_bytes_per_stream: request.limits.output_bytes_per_stream as usize,
@@ -299,22 +303,22 @@ mod tests {
     #[test]
     fn request_validation_confines_roots_program_and_working_directory() {
         let roots = Roots::new();
-        assert!(validate_request(roots.request()).is_ok());
+        assert!(validate_request(&roots.request()).is_ok());
 
         let mut escaping = roots.request();
         escaping.executable = "../tool".to_owned();
-        assert!(validate_request(escaping).is_err());
+        assert!(validate_request(&escaping).is_err());
 
         let mut overlapping = roots.request();
         overlapping.scratch_root = roots.candidate.to_string_lossy().into_owned();
-        assert!(validate_request(overlapping).is_err());
+        assert!(validate_request(&overlapping).is_err());
 
         let mut zero = roots.request();
         zero.operation_id = [0; 16];
-        assert!(validate_request(zero).is_err());
+        assert!(validate_request(&zero).is_err());
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     #[test]
     fn unsupported_native_backends_fail_closed_after_validation() {
         let roots = Roots::new();
