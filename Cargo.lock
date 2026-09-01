@@ -815,6 +815,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "morons-windows-native"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
