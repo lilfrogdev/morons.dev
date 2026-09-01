@@ -292,7 +292,7 @@ pub(super) fn publish(
     let (_, name) = plan.path().parent_and_name()?;
     match plan.kind() {
         MutationKind::EditFile => {
-            let retained = prepared.target.as_ref().ok_or(ToolErrorKind::Filesystem)?;
+            let retained = prepared.target.take().ok_or(ToolErrorKind::Filesystem)?;
             if Some(&snapshot_metadata(retained.metadata())) != plan.before()
                 || retained.refresh_metadata().map_err(map_windows)? != retained.metadata()
                 || retained.verify_path_identity().is_err()
@@ -315,6 +315,9 @@ pub(super) fn publish(
             if snapshot_metadata(staged.metadata()) != *plan.staged() {
                 return Err(ToolErrorKind::ChangedDuringOperation);
             }
+            drop(staged);
+            drop(current);
+            drop(retained);
             prepared
                 .parent
                 .replace_child(OsStr::new(plan.temporary_name()), OsStr::new(name))
