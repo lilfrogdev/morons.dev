@@ -1,9 +1,14 @@
 use rusqlite::{Connection, OptionalExtension};
 
 use super::records::nonnegative_integer_from_row;
-use crate::persistence::{
-    AcceptedRun, MessageId, PersistenceError, Run, RunFailureKind, RunId, RunOpenCodeService,
-    RunState, SessionId, TranscriptEntry, types::REQUEST_FINGERPRINT_BYTES,
+use crate::{
+    persistence::{
+        AcceptedRun, MessageId, PersistenceError, Run, RunFailureKind, RunId, RunOpenCodeService,
+        RunState, SessionId, ToolCallId, TranscriptEntry,
+        run_types::{AssistantMessagePhase, ProviderOperationId, ToolOperationId},
+        types::REQUEST_FINGERPRINT_BYTES,
+    },
+    tools::{ToolInput, ToolResult},
 };
 
 pub(super) const RUN_STATE_ACTIVE: i64 = 2;
@@ -11,6 +16,7 @@ pub(super) const RUN_STATE_SUCCEEDED: i64 = 3;
 pub(super) const RUN_STATE_FAILED: i64 = 4;
 pub(super) const RUN_STATE_CANCELLED: i64 = 5;
 pub(super) const RUN_STATE_INTERRUPTED: i64 = 6;
+pub(super) const RUN_STATE_UNCERTAIN: i64 = 7;
 
 pub(super) const PROVIDER_FACT_PREPARED: i64 = 1;
 pub(super) const PROVIDER_FACT_DISPATCHED: i64 = 2;
@@ -27,6 +33,10 @@ pub(super) const EVENT_RUN_SUCCEEDED: i64 = 7;
 pub(super) const EVENT_RUN_FAILED: i64 = 8;
 pub(super) const EVENT_RUN_CANCELLED: i64 = 9;
 pub(super) const EVENT_RUN_INTERRUPTED: i64 = 10;
+pub(super) const EVENT_TOOL_CALL: i64 = 12;
+pub(super) const EVENT_TOOL_RESULT: i64 = 13;
+pub(super) const EVENT_RUN_UNCERTAIN: i64 = 14;
+pub(super) const EVENT_TOOL_UNCERTAINTY_CHANGED: i64 = 15;
 
 pub(super) const AUDIT_INPUT_ACCEPTED: i64 = 1;
 pub(super) const AUDIT_RUN_ACTIVE: i64 = 2;
@@ -88,7 +98,9 @@ pub(super) fn accepted_run_from_request(
                 estimated_input_tokens,
                 maximum_input_tokens,
                 maximum_output_tokens,
-                accepted_at_milliseconds
+                accepted_at_milliseconds,
+                tool_catalog_version,
+                tool_limits_version
              FROM run_accepted_facts
              WHERE run_id = ?1",
             [&request.run_id.as_bytes()[..]],
@@ -103,10 +115,16 @@ pub(super) fn accepted_run_from_request(
                     protocol_revision: positive_u16_from_row(row, 4)?,
                     credential_generation: nonnegative_integer_from_row(row, 5)?,
                     context_policy_version: positive_u16_from_row(row, 6)?,
+                    tool_catalog_version: nonnegative_u16_from_row(row, 12)?,
+                    tool_limits_version: nonnegative_u16_from_row(row, 13)?,
                     source_entry_high_water: nonnegative_integer_from_row(row, 7)?,
                     estimated_input_tokens: positive_u32_from_row(row, 8)?,
                     maximum_input_tokens: positive_u32_from_row(row, 9)?,
                     maximum_output_tokens: positive_u32_from_row(row, 10)?,
+                    provider_turns: 0,
+                    tool_calls: 0,
+                    tool_mutations: 0,
+                    tool_result_bytes: 0,
                     state: RunState::Accepted,
                     cancellation_requested: false,
                     failure: None,
@@ -146,10 +164,16 @@ pub(super) fn load_run(
                 protocol_revision,
                 credential_generation,
                 context_policy_version,
+                tool_catalog_version,
+                tool_limits_version,
                 source_entry_high_water,
                 estimated_input_tokens,
                 maximum_input_tokens,
                 maximum_output_tokens,
+                provider_turns,
+                tool_calls,
+                tool_mutations,
+                tool_result_bytes,
                 state,
                 cancellation_requested,
                 failure_kind,
@@ -185,17 +209,19 @@ pub(super) fn load_required_run(
 pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
     let protocol_revision = positive_u16_from_row(row, 5)?;
     let context_policy_version = positive_u16_from_row(row, 7)?;
-    let estimated_input_tokens = positive_u32_from_row(row, 9)?;
-    let maximum_input_tokens = positive_u32_from_row(row, 10)?;
-    let maximum_output_tokens = positive_u32_from_row(row, 11)?;
-    let state = RunState::from_record(row.get(12)?)?;
+    let tool_catalog_version = nonnegative_u16_from_row(row, 8)?;
+    let tool_limits_version = nonnegative_u16_from_row(row, 9)?;
+    let estimated_input_tokens = positive_u32_from_row(row, 11)?;
+    let maximum_input_tokens = positive_u32_from_row(row, 12)?;
+    let maximum_output_tokens = positive_u32_from_row(row, 13)?;
+    let state = RunState::from_record(row.get(18)?)?;
     let failure = row
-        .get::<_, Option<i64>>(14)?
+        .get::<_, Option<i64>>(20)?
         .map(RunFailureKind::from_record)
         .transpose()?;
     if (state == RunState::Failed) != failure.is_some() {
         return Err(rusqlite::Error::InvalidColumnType(
-            14,
+            20,
             "failure_kind".to_owned(),
             rusqlite::types::Type::Integer,
         ));
@@ -209,15 +235,21 @@ pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         protocol_revision,
         credential_generation: nonnegative_integer_from_row(row, 6)?,
         context_policy_version,
-        source_entry_high_water: nonnegative_integer_from_row(row, 8)?,
+        tool_catalog_version,
+        tool_limits_version,
+        source_entry_high_water: nonnegative_integer_from_row(row, 10)?,
         estimated_input_tokens,
         maximum_input_tokens,
         maximum_output_tokens,
+        provider_turns: nonnegative_u16_from_row(row, 14)?,
+        tool_calls: nonnegative_u32_from_row(row, 15)?,
+        tool_mutations: nonnegative_u32_from_row(row, 16)?,
+        tool_result_bytes: nonnegative_integer_from_row(row, 17)?,
         state,
-        cancellation_requested: row.get(13)?,
+        cancellation_requested: row.get(19)?,
         failure,
-        accepted_at_milliseconds: nonnegative_integer_from_row(row, 15)?,
-        updated_at_milliseconds: nonnegative_integer_from_row(row, 16)?,
+        accepted_at_milliseconds: nonnegative_integer_from_row(row, 21)?,
+        updated_at_milliseconds: nonnegative_integer_from_row(row, 22)?,
     })
 }
 
@@ -233,33 +265,120 @@ pub(super) fn transcript_entry_from_row(
         .map(RunOpenCodeService::from_record)
         .transpose()?;
     let model_id = row.get::<_, Option<String>>(5)?;
-    let text = row.get(6)?;
+    let text = row.get::<_, Option<String>>(6)?;
     let refusal = row.get(7)?;
     let created_at_milliseconds = nonnegative_integer_from_row(row, 8)?;
-    match (entry_kind, service, model_id, refusal) {
-        (1, None, None, false) => Ok(TranscriptEntry::UserMessage {
+    let assistant_phase = row.get::<_, Option<i64>>(9)?;
+    let call_id = row
+        .get::<_, Option<[u8; 16]>>(10)?
+        .map(ToolCallId::from_bytes);
+    match (
+        entry_kind,
+        service,
+        model_id,
+        text,
+        refusal,
+        assistant_phase,
+        call_id,
+    ) {
+        (1, None, None, Some(text), false, None, None) => Ok(TranscriptEntry::UserMessage {
             entry_sequence,
             id,
             run_id,
             text,
             created_at_milliseconds,
         }),
-        (2, Some(service), Some(model_id), refusal) => Ok(TranscriptEntry::AssistantMessage {
-            entry_sequence,
-            id,
-            run_id,
-            service,
-            model_id,
-            text,
-            refusal,
-            created_at_milliseconds,
-        }),
-        _ => Err(rusqlite::Error::InvalidColumnType(
-            3,
-            "entry_kind".to_owned(),
-            rusqlite::types::Type::Integer,
-        )),
+        (2, Some(service), Some(model_id), Some(text), refusal, Some(phase), None) => {
+            let phase = match phase {
+                1 => AssistantMessagePhase::Commentary,
+                2 => AssistantMessagePhase::Final,
+                _ => return Err(invalid_entry_column(9, "assistant_phase")),
+            };
+            Ok(TranscriptEntry::AssistantMessage {
+                entry_sequence,
+                id,
+                run_id,
+                service,
+                model_id,
+                text,
+                refusal,
+                phase,
+                created_at_milliseconds,
+            })
+        }
+        (3, Some(_), Some(_), None, false, None, Some(call_id)) => {
+            let operation_id = ToolOperationId::from_bytes(required_identifier(row, 11)?);
+            let provider_operation_id =
+                ProviderOperationId::from_bytes(required_identifier(row, 12)?);
+            let input = decode_payload::<ToolInput>(row, 13, "tool_input_payload")?;
+            Ok(TranscriptEntry::ToolCall {
+                entry_sequence,
+                id,
+                run_id,
+                call_id,
+                operation_id,
+                provider_operation_id,
+                input,
+                created_at_milliseconds,
+            })
+        }
+        (4, None, None, None, false, None, Some(call_id)) => {
+            let operation_id = ToolOperationId::from_bytes(required_identifier(row, 11)?);
+            let input = decode_payload::<ToolInput>(row, 13, "tool_input_payload")?;
+            let result = decode_payload::<ToolResult>(row, 14, "tool_result_payload")?;
+            Ok(TranscriptEntry::ToolResult {
+                entry_sequence,
+                id,
+                run_id,
+                call_id,
+                operation_id,
+                tool: input.kind(),
+                result,
+                created_at_milliseconds,
+            })
+        }
+        _ => Err(invalid_entry_column(3, "entry_kind")),
     }
+}
+
+fn required_identifier(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<[u8; 16]> {
+    row.get::<_, Option<[u8; 16]>>(index)?
+        .ok_or_else(|| invalid_entry_column(index, "tool_identifier"))
+}
+
+fn decode_payload<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+    name: &str,
+) -> rusqlite::Result<T> {
+    let bytes = row
+        .get::<_, Option<Vec<u8>>>(index)?
+        .ok_or_else(|| invalid_entry_column(index, name))?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid_entry_column(index, name))
+}
+
+fn invalid_entry_column(index: usize, name: &str) -> rusqlite::Error {
+    rusqlite::Error::InvalidColumnType(index, name.to_owned(), rusqlite::types::Type::Blob)
+}
+
+pub(super) fn nonnegative_u16_from_row(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<u16> {
+    let value = nonnegative_integer_from_row(row, index)?;
+    u16::try_from(value).map_err(|_| {
+        rusqlite::Error::IntegralValueOutOfRange(index, i64::try_from(value).unwrap_or(i64::MAX))
+    })
+}
+
+pub(super) fn nonnegative_u32_from_row(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<u32> {
+    let value = nonnegative_integer_from_row(row, index)?;
+    u32::try_from(value).map_err(|_| {
+        rusqlite::Error::IntegralValueOutOfRange(index, i64::try_from(value).unwrap_or(i64::MAX))
+    })
 }
 
 pub(super) fn positive_u16_from_row(

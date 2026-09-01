@@ -2,7 +2,8 @@ use morons_protocol::{
     ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
     OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, SessionEventCursor,
-    SessionId, SessionSummary, TranscriptEntry, WorkspaceState, WorkspaceSummary,
+    SessionId, SessionSummary, ToolKind, TranscriptEntry, WorkspaceBlockReason, WorkspaceState,
+    WorkspaceSummary,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -223,6 +224,40 @@ fn credential_replacement_and_removal_use_observed_generation() {
 }
 
 #[test]
+fn uncertain_tool_effect_requires_explicit_acknowledgement_confirmation() {
+    let (session, run) = fixture_session_and_run();
+    let mut app = AppState::new("test-server");
+    app.open_session(
+        session,
+        WorkspaceSummary {
+            state: WorkspaceState::Blocked,
+            file_count: 1,
+            logical_bytes: 8,
+            block_reason: Some(WorkspaceBlockReason::UncertainToolEffect),
+            blocked_run_id: Some(run.id),
+            blocked_tool: Some(ToolKind::EditFile),
+        },
+        Vec::new(),
+        vec![run.clone()],
+        None,
+    )
+    .expect("blocked session should open");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        AppAction::None
+    );
+    assert!(app.confirm_uncertainty);
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+        AppAction::AcknowledgeToolUncertainty {
+            session_id: run.session_id,
+            run_id: run.id,
+        }
+    );
+    assert!(!app.confirm_uncertainty);
+}
+
+#[test]
 fn repository_import_requires_confirmation_and_redacts_action_debug() {
     let (session, _) = fixture_session_and_run();
     let mut app = AppState::new("test-server");
@@ -291,6 +326,8 @@ fn empty_workspace() -> WorkspaceSummary {
         file_count: 0,
         logical_bytes: 0,
         block_reason: None,
+        blocked_run_id: None,
+        blocked_tool: None,
     }
 }
 
@@ -306,6 +343,8 @@ fn fixture_session_and_run() -> (SessionSummary, RunSummary) {
         protocol_revision: 1,
         credential_generation: 1,
         context_policy_version: 1,
+        tool_catalog_version: 0,
+        tool_limits_version: 0,
         state: RunState::Active,
         cancellation_requested: false,
         failure: None,

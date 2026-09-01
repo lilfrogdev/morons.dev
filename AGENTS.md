@@ -28,6 +28,8 @@ The application consists of a long-running local server and a separate terminal 
 - Session snapshots and durable event subscriptions compose through one gap-free cursor boundary.
 - Each session owns an isolated mutable workspace and execution context.
 - A pristine session may import one local repository into a server-owned immutable baseline and separate mutable worktree.
+- Ready imported worktrees expose only the fixed `list_directory`, `read_file`, `search_text`, `edit_file`, `create_file`, and `create_directory` tools.
+- Provider turns, typed tool calls, typed results, and workspace uncertainty are durably ordered and recovered without replaying effects.
 - The terminal client owns input and presentation.
 - Client-server communication uses an authenticated, typed, versioned protocol over local IPC.
 - Local transport authentication completes before application protocol messages are exchanged.

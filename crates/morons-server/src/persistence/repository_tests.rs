@@ -285,6 +285,7 @@ async fn repository_import_rejects_a_nonpristine_session() {
                 protocol_revision: 1,
                 maximum_input_tokens: 96_000,
                 maximum_output_tokens: 32_000,
+                supports_tool_calls: true,
             },
         )
         .await

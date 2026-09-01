@@ -19,6 +19,9 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
                       FROM run_cancellation_requests WHERE intent_applied = 1
             UNION ALL SELECT session_id, fact_sequence
                       FROM repository_import_facts WHERE fact_kind IN (1, 3, 4, 5)
+            UNION ALL SELECT session_id, fact_sequence FROM tool_calls
+            UNION ALL SELECT session_id, fact_sequence FROM tool_operation_facts
+            UNION ALL SELECT session_id, fact_sequence FROM tool_uncertainty_acknowledgements
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
@@ -44,8 +47,10 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
         "INSERT INTO runs (
             run_id, session_id, user_message_id, open_code_service, model_id,
             protocol_revision, credential_generation, context_policy_version,
-            source_entry_high_water, estimated_input_tokens, maximum_input_tokens,
-            maximum_output_tokens, state, cancellation_requested, failure_kind,
+            tool_catalog_version, tool_limits_version, source_entry_high_water,
+            estimated_input_tokens,
+            maximum_input_tokens, maximum_output_tokens, provider_turns, tool_calls,
+            tool_mutations, tool_result_bytes, state, cancellation_requested, failure_kind,
             accepted_sequence, updated_sequence, accepted_at_milliseconds,
             updated_at_milliseconds
          )
@@ -58,10 +63,22 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             accepted.protocol_revision,
             accepted.credential_generation,
             accepted.context_policy_version,
+            accepted.tool_catalog_version,
+            accepted.tool_limits_version,
             accepted.source_entry_high_water,
             accepted.estimated_input_tokens,
             accepted.maximum_input_tokens,
             accepted.maximum_output_tokens,
+            (SELECT COUNT(*) FROM provider_operation_facts AS provider
+             WHERE provider.run_id = accepted.run_id AND provider.fact_kind = 1),
+            (SELECT COUNT(*) FROM tool_calls AS call
+             WHERE call.run_id = accepted.run_id),
+            (SELECT COUNT(*) FROM tool_calls AS call
+             WHERE call.run_id = accepted.run_id AND call.tool_kind BETWEEN 4 AND 6),
+            COALESCE((SELECT SUM(length(result.result_payload))
+                      FROM tool_operation_facts AS result
+                      WHERE result.run_id = accepted.run_id
+                        AND result.fact_kind BETWEEN 3 AND 6), 0),
             COALESCE((SELECT state.state FROM run_state_facts AS state
                       WHERE state.run_id = accepted.run_id
                       ORDER BY state.fact_sequence DESC LIMIT 1), 1),
@@ -79,7 +96,11 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
                 COALESCE((SELECT MAX(cancellation.fact_sequence)
                           FROM run_cancellation_requests AS cancellation
                           WHERE cancellation.run_id = accepted.run_id
-                            AND cancellation.intent_applied = 1), 0)
+                            AND cancellation.intent_applied = 1), 0),
+                COALESCE((SELECT MAX(call.fact_sequence) FROM tool_calls AS call
+                          WHERE call.run_id = accepted.run_id), 0),
+                COALESCE((SELECT MAX(tool.fact_sequence) FROM tool_operation_facts AS tool
+                          WHERE tool.run_id = accepted.run_id), 0)
             ),
             accepted.accepted_at_milliseconds,
             COALESCE((
@@ -94,6 +115,12 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
                     FROM run_cancellation_requests AS cancellation
                     WHERE cancellation.run_id = accepted.run_id
                       AND cancellation.intent_applied = 1
+                    UNION ALL
+                    SELECT call.fact_sequence, call.created_at_milliseconds
+                    FROM tool_calls AS call WHERE call.run_id = accepted.run_id
+                    UNION ALL
+                    SELECT tool.fact_sequence, tool.created_at_milliseconds
+                    FROM tool_operation_facts AS tool WHERE tool.run_id = accepted.run_id
                 ) ORDER BY sequence DESC LIMIT 1
             ), accepted.accepted_at_milliseconds)
          FROM run_accepted_facts AS accepted",
@@ -110,6 +137,9 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
                       FROM run_cancellation_requests WHERE intent_applied = 1
             UNION ALL SELECT session_id, fact_sequence
                       FROM repository_import_facts WHERE fact_kind IN (1, 3, 4, 5)
+            UNION ALL SELECT session_id, fact_sequence FROM tool_calls
+            UNION ALL SELECT session_id, fact_sequence FROM tool_operation_facts
+            UNION ALL SELECT session_id, fact_sequence FROM tool_uncertainty_acknowledgements
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
@@ -140,7 +170,7 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
          FROM session_created_facts
          UNION ALL
          SELECT delivery_event_id, fact_sequence, session_id,
-                CASE entry_kind WHEN 1 THEN 2 ELSE 6 END,
+                CASE entry_kind WHEN 1 THEN 2 WHEN 2 THEN 6 WHEN 3 THEN 12 ELSE 13 END,
                 1, created_at_milliseconds
          FROM session_entries
          UNION ALL
@@ -155,6 +185,7 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
                     WHEN 4 THEN 8
                     WHEN 5 THEN 9
                     WHEN 6 THEN 10
+                    WHEN 7 THEN 14
                 END,
                 1, created_at_milliseconds
          FROM run_state_facts
@@ -167,7 +198,16 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
          SELECT delivery_event_id, fact_sequence, session_id, 11, 1,
                 created_at_milliseconds
          FROM repository_import_facts
-         WHERE fact_kind IN (1, 3, 4, 5)",
+         WHERE fact_kind IN (1, 3, 4, 5)
+         UNION ALL
+         SELECT workspace_delivery_event_id, fact_sequence, session_id, 15, 1,
+                created_at_milliseconds
+         FROM tool_operation_facts
+         WHERE fact_kind = 6
+         UNION ALL
+         SELECT delivery_event_id, fact_sequence, session_id, 15, 1,
+                accepted_at_milliseconds
+         FROM tool_uncertainty_acknowledgements",
         [],
     )?;
     transaction.commit()?;

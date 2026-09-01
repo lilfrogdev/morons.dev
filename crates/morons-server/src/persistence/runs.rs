@@ -1,19 +1,22 @@
 use tokio::sync::oneshot;
 
 use super::{
-    AcceptedRun, MutationRequestId, PersistenceError, Run, RunCancellationResult, RunFailureKind,
-    RunId, RunModelSelection, RunOpenCodeService, SessionId, SessionStore, TranscriptCursor,
+    AcceptedRun, CommittedToolTurn, CompletedToolTurn, MutationRequestId, PersistenceError, Run,
+    RunCancellationResult, RunFailureKind, RunId, RunModelSelection, RunOpenCodeService, SessionId,
+    SessionStore, ToolCallId, ToolUncertaintyAcknowledgement, TranscriptCursor, TranscriptEntry,
     TranscriptPage, WorkerRequest,
     backend::Backend,
     run_types::{
         self, ActivationOutcome, CompletedAssistant, DispatchOutcome, PrepareOperationOutcome,
-        ProviderOperationFailureState, ProviderOperationId, RunContext,
+        ProviderOperationFailureState, ProviderOperationId, RunContext, ToolOperationId,
     },
     types::{
-        REQUEST_FINGERPRINT_BYTES, cancel_run_fingerprint, submit_session_input_fingerprint,
-        validate_model_identifier, validate_model_selection, validate_user_text,
+        REQUEST_FINGERPRINT_BYTES, acknowledge_tool_uncertainty_fingerprint,
+        cancel_run_fingerprint, submit_session_input_fingerprint, validate_model_identifier,
+        validate_model_selection, validate_user_text,
     },
 };
+use crate::tools::ToolResult;
 
 impl SessionStore {
     pub async fn find_session_input_retry(
@@ -74,9 +77,16 @@ impl SessionStore {
     pub(crate) async fn prepare_provider_operation(
         &self,
         run_id: RunId,
+        source_entry_high_water: u64,
+        estimated_input_tokens: u32,
     ) -> Result<PrepareOperationOutcome, PersistenceError> {
-        self.run_request(|response| RunWorkerRequest::PrepareProvider { run_id, response })
-            .await
+        self.run_request(|response| RunWorkerRequest::PrepareProvider {
+            run_id,
+            source_entry_high_water,
+            estimated_input_tokens,
+            response,
+        })
+        .await
     }
 
     pub(crate) async fn mark_provider_dispatched(
@@ -87,6 +97,70 @@ impl SessionStore {
         self.run_request(|response| RunWorkerRequest::MarkProviderDispatched {
             run_id,
             operation_id,
+            response,
+        })
+        .await
+    }
+
+    pub(crate) async fn complete_provider_tool_turn(
+        &self,
+        run_id: RunId,
+        operation_id: ProviderOperationId,
+        turn: CompletedToolTurn,
+    ) -> Result<CommittedToolTurn, PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::CompleteToolTurn {
+            run_id,
+            operation_id,
+            turn,
+            response,
+        })
+        .await
+    }
+
+    pub(crate) async fn prepare_tool_operation(
+        &self,
+        run_id: RunId,
+        call_id: ToolCallId,
+        operation_id: ToolOperationId,
+        recovery_plan: Option<Vec<u8>>,
+    ) -> Result<(), PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::PrepareTool {
+            run_id,
+            call_id,
+            operation_id,
+            recovery_plan,
+            response,
+        })
+        .await
+    }
+
+    pub(crate) async fn mark_tool_dispatched(
+        &self,
+        run_id: RunId,
+        call_id: ToolCallId,
+        operation_id: ToolOperationId,
+    ) -> Result<(), PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::MarkToolDispatched {
+            run_id,
+            call_id,
+            operation_id,
+            response,
+        })
+        .await
+    }
+
+    pub(crate) async fn complete_tool_result(
+        &self,
+        run_id: RunId,
+        call_id: ToolCallId,
+        operation_id: ToolOperationId,
+        result: ToolResult,
+    ) -> Result<TranscriptEntry, PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::CompleteToolResult {
+            run_id,
+            call_id,
+            operation_id,
+            result,
             response,
         })
         .await
@@ -146,6 +220,24 @@ impl SessionStore {
         validate_request_id(request_id)?;
         let fingerprint = cancel_run_fingerprint(session_id, run_id);
         self.run_request(|response| RunWorkerRequest::Cancel {
+            request_id,
+            fingerprint,
+            session_id,
+            run_id,
+            response,
+        })
+        .await
+    }
+
+    pub async fn acknowledge_tool_uncertainty(
+        &self,
+        request_id: MutationRequestId,
+        session_id: SessionId,
+        run_id: RunId,
+    ) -> Result<ToolUncertaintyAcknowledgement, PersistenceError> {
+        validate_request_id(request_id)?;
+        let fingerprint = acknowledge_tool_uncertainty_fingerprint(session_id, run_id);
+        self.run_request(|response| RunWorkerRequest::AcknowledgeToolUncertainty {
             request_id,
             fingerprint,
             session_id,
@@ -240,12 +332,40 @@ pub(super) enum RunWorkerRequest {
     },
     PrepareProvider {
         run_id: RunId,
+        source_entry_high_water: u64,
+        estimated_input_tokens: u32,
         response: oneshot::Sender<Result<PrepareOperationOutcome, PersistenceError>>,
     },
     MarkProviderDispatched {
         run_id: RunId,
         operation_id: ProviderOperationId,
         response: oneshot::Sender<Result<DispatchOutcome, PersistenceError>>,
+    },
+    CompleteToolTurn {
+        run_id: RunId,
+        operation_id: ProviderOperationId,
+        turn: CompletedToolTurn,
+        response: oneshot::Sender<Result<CommittedToolTurn, PersistenceError>>,
+    },
+    PrepareTool {
+        run_id: RunId,
+        call_id: ToolCallId,
+        operation_id: ToolOperationId,
+        recovery_plan: Option<Vec<u8>>,
+        response: oneshot::Sender<Result<(), PersistenceError>>,
+    },
+    MarkToolDispatched {
+        run_id: RunId,
+        call_id: ToolCallId,
+        operation_id: ToolOperationId,
+        response: oneshot::Sender<Result<(), PersistenceError>>,
+    },
+    CompleteToolResult {
+        run_id: RunId,
+        call_id: ToolCallId,
+        operation_id: ToolOperationId,
+        result: ToolResult,
+        response: oneshot::Sender<Result<TranscriptEntry, PersistenceError>>,
     },
     CompleteSuccess {
         run_id: RunId,
@@ -271,6 +391,13 @@ pub(super) enum RunWorkerRequest {
         session_id: SessionId,
         run_id: RunId,
         response: oneshot::Sender<Result<RunCancellationResult, PersistenceError>>,
+    },
+    AcknowledgeToolUncertainty {
+        request_id: MutationRequestId,
+        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
+        session_id: SessionId,
+        run_id: RunId,
+        response: oneshot::Sender<Result<ToolUncertaintyAcknowledgement, PersistenceError>>,
     },
     Get {
         session_id: SessionId,
@@ -318,8 +445,17 @@ impl RunWorkerRequest {
             Self::Activate { run_id, response } => {
                 let _ = response.send(backend.activate_run(run_id));
             }
-            Self::PrepareProvider { run_id, response } => {
-                let _ = response.send(backend.prepare_provider_operation(run_id));
+            Self::PrepareProvider {
+                run_id,
+                source_entry_high_water,
+                estimated_input_tokens,
+                response,
+            } => {
+                let _ = response.send(backend.prepare_provider_operation(
+                    run_id,
+                    source_entry_high_water,
+                    estimated_input_tokens,
+                ));
             }
             Self::MarkProviderDispatched {
                 run_id,
@@ -327,6 +463,51 @@ impl RunWorkerRequest {
                 response,
             } => {
                 let _ = response.send(backend.mark_provider_dispatched(run_id, operation_id));
+            }
+            Self::CompleteToolTurn {
+                run_id,
+                operation_id,
+                turn,
+                response,
+            } => {
+                let _ =
+                    response.send(backend.complete_provider_tool_turn(run_id, operation_id, turn));
+            }
+            Self::PrepareTool {
+                run_id,
+                call_id,
+                operation_id,
+                recovery_plan,
+                response,
+            } => {
+                let _ = response.send(backend.prepare_tool_operation(
+                    run_id,
+                    call_id,
+                    operation_id,
+                    recovery_plan,
+                ));
+            }
+            Self::MarkToolDispatched {
+                run_id,
+                call_id,
+                operation_id,
+                response,
+            } => {
+                let _ = response.send(backend.mark_tool_dispatched(run_id, call_id, operation_id));
+            }
+            Self::CompleteToolResult {
+                run_id,
+                call_id,
+                operation_id,
+                result,
+                response,
+            } => {
+                let _ = response.send(backend.complete_tool_result(
+                    run_id,
+                    call_id,
+                    operation_id,
+                    result,
+                ));
             }
             Self::CompleteSuccess {
                 run_id,
@@ -367,6 +548,20 @@ impl RunWorkerRequest {
             } => {
                 let _ =
                     response.send(backend.cancel_run(request_id, fingerprint, session_id, run_id));
+            }
+            Self::AcknowledgeToolUncertainty {
+                request_id,
+                fingerprint,
+                session_id,
+                run_id,
+                response,
+            } => {
+                let _ = response.send(backend.acknowledge_tool_uncertainty(
+                    request_id,
+                    fingerprint,
+                    session_id,
+                    run_id,
+                ));
             }
             Self::Get {
                 session_id,

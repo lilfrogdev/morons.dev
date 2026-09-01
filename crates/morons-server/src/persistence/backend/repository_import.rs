@@ -451,30 +451,73 @@ pub(super) fn workspace_summary_at_sequence(
             },
         )
         .optional()?;
-    match record {
-        None | Some((FACT_NOT_APPLIED, None, None)) => Ok(empty_workspace()),
-        Some((FACT_PREPARED, None, None)) => Ok(WorkspaceSummary {
+    let summary = match record {
+        None | Some((FACT_NOT_APPLIED, None, None)) => empty_workspace(),
+        Some((FACT_PREPARED, None, None)) => WorkspaceSummary {
             state: WorkspaceState::Importing,
             file_count: 0,
             logical_bytes: 0,
             block_reason: None,
-        }),
-        Some((FACT_COMPLETED, Some(file_count), Some(logical_bytes))) => Ok(WorkspaceSummary {
+            blocked_run_id: None,
+            blocked_tool: None,
+        },
+        Some((FACT_COMPLETED, Some(file_count), Some(logical_bytes))) => WorkspaceSummary {
             state: WorkspaceState::Ready,
             file_count: nonnegative_u64(file_count)?,
             logical_bytes: nonnegative_u64(logical_bytes)?,
             block_reason: None,
-        }),
-        Some((FACT_BLOCKED, None, None)) => Ok(WorkspaceSummary {
+            blocked_run_id: None,
+            blocked_tool: None,
+        },
+        Some((FACT_BLOCKED, None, None)) => WorkspaceSummary {
             state: WorkspaceState::Blocked,
             file_count: 0,
             logical_bytes: 0,
             block_reason: Some(WorkspaceBlockReason::InconsistentImportState),
-        }),
-        _ => Err(PersistenceError::InvalidState {
-            reason: "repository import facts have an invalid workspace summary",
-        }),
+            blocked_run_id: None,
+            blocked_tool: None,
+        },
+        _ => {
+            return Err(PersistenceError::InvalidState {
+                reason: "repository import facts have an invalid workspace summary",
+            });
+        }
+    };
+    if summary.state != WorkspaceState::Ready {
+        return Ok(summary);
     }
+    let uncertainty = connection
+        .query_row(
+            "SELECT uncertain.run_id, call.tool_kind
+             FROM tool_operation_facts AS uncertain
+             JOIN tool_calls AS call ON call.call_id = uncertain.call_id
+             WHERE uncertain.session_id = ?1
+               AND uncertain.fact_kind = 6
+               AND uncertain.fact_sequence <= ?2
+               AND NOT EXISTS (
+                   SELECT 1 FROM tool_uncertainty_acknowledgements AS acknowledgement
+                   WHERE acknowledgement.run_id = uncertain.run_id
+                     AND acknowledgement.fact_sequence <= ?2
+               )
+             ORDER BY uncertain.fact_sequence DESC LIMIT 1",
+            params![&session_id.as_bytes()[..], event_sequence],
+            |row| Ok((row.get::<_, [u8; 16]>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    let Some((run_id, tool_kind)) = uncertainty else {
+        return Ok(summary);
+    };
+    let tool =
+        crate::tools::ToolKind::from_record(tool_kind).ok_or(PersistenceError::InvalidState {
+            reason: "an uncertain tool effect has an invalid tool kind",
+        })?;
+    Ok(WorkspaceSummary {
+        state: WorkspaceState::Blocked,
+        block_reason: Some(WorkspaceBlockReason::UncertainToolEffect),
+        blocked_run_id: Some(crate::persistence::RunId::from_bytes(run_id)),
+        blocked_tool: Some(tool),
+        ..summary
+    })
 }
 
 pub(super) fn workspace_summary_for_event(
@@ -488,6 +531,13 @@ pub(super) fn workspace_summary_for_event(
             SELECT 1 FROM repository_import_facts
             WHERE session_id = ?1 AND delivery_event_id = ?2
               AND fact_sequence = ?3 AND fact_kind IN (1, 3, 4, 5)
+            UNION ALL
+            SELECT 1 FROM tool_operation_facts
+            WHERE session_id = ?1 AND workspace_delivery_event_id = ?2
+              AND fact_sequence = ?3 AND fact_kind = 6
+            UNION ALL
+            SELECT 1 FROM tool_uncertainty_acknowledgements
+            WHERE session_id = ?1 AND delivery_event_id = ?2 AND fact_sequence = ?3
         )",
         params![
             &session_id.as_bytes()[..],
@@ -733,6 +783,8 @@ fn empty_workspace() -> WorkspaceSummary {
         file_count: 0,
         logical_bytes: 0,
         block_reason: None,
+        blocked_run_id: None,
+        blocked_tool: None,
     }
 }
 

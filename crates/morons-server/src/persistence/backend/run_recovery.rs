@@ -21,8 +21,13 @@ impl Backend {
                 .connection
                 .query_row(
                     "SELECT operation_id
-                     FROM provider_operation_facts
-                     WHERE run_id = ?1 AND fact_kind = ?2",
+                     FROM provider_operation_facts AS prepared
+                     WHERE run_id = ?1 AND fact_kind = ?2
+                       AND NOT EXISTS (
+                           SELECT 1 FROM provider_operation_facts AS terminal
+                           WHERE terminal.operation_id = prepared.operation_id
+                             AND terminal.fact_kind IN (3, 4, 5, 6)
+                       )",
                     rusqlite::params![&run_id.as_bytes()[..], PROVIDER_FACT_PREPARED],
                     |row| {
                         row.get::<_, [u8; 16]>(0)

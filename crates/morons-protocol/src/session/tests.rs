@@ -9,7 +9,7 @@ use super::{
 use crate::{
     ClientMessage, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelCapabilities,
     OpenCodeModelRetention, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
-    RunFailureKind, RunId, RunState, RunSummary,
+    RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
 };
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
@@ -79,6 +79,50 @@ fn credential_request_has_stable_json_shape_and_redacted_debug() {
             "mutation_request_id": "mut_12121212121212121212121212121212",
             "expected_generation": 7,
             "api_key": TEST_API_KEY,
+        })
+    );
+}
+
+#[test]
+fn structured_tool_and_uncertainty_contracts_have_stable_json_shapes() {
+    let session_id = SessionId::from_bytes([0x71; 16]);
+    let run_id = RunId::from_bytes([0x72; 16]);
+    let call_id = ToolCallId::from_bytes([0x73; 16]);
+    let entry = crate::TranscriptEntry::ToolResult {
+        id: MessageId::from_bytes([0x74; 16]),
+        run_id,
+        call_id,
+        tool: ToolKind::EditFile,
+        status: ToolResultStatus::Uncertain,
+        summary: "tool failed: workspace effect is uncertain".to_owned(),
+        created_at_milliseconds: 42,
+    };
+    assert_eq!(
+        serde_json::to_value(entry).expect("tool result should encode"),
+        json!({
+            "entry": "tool_result",
+            "id": "msg_74747474747474747474747474747474",
+            "run_id": "run_72727272727272727272727272727272",
+            "call_id": "tool_73737373737373737373737373737373",
+            "tool": "edit_file",
+            "status": "uncertain",
+            "summary": "tool failed: workspace effect is uncertain",
+            "created_at_milliseconds": 42,
+        })
+    );
+
+    let request = ApplicationRequest::AcknowledgeToolUncertainty {
+        mutation_request_id: MutationRequestId::from_bytes([0x75; 16]),
+        session_id,
+        run_id,
+    };
+    assert_eq!(
+        serde_json::to_value(request).expect("acknowledgement should encode"),
+        json!({
+            "operation": "acknowledge_tool_uncertainty",
+            "mutation_request_id": "mut_75757575757575757575757575757575",
+            "session_id": "ses_71717171717171717171717171717171",
+            "run_id": "run_72727272727272727272727272727272",
         })
     );
 }
@@ -195,6 +239,8 @@ fn repository_import_contract_is_stable_and_path_debug_is_redacted() {
             file_count: 3,
             logical_bytes: 99,
             block_reason: None,
+            blocked_run_id: None,
+            blocked_tool: None,
         },
     };
     assert_eq!(
@@ -207,6 +253,8 @@ fn repository_import_contract_is_stable_and_path_debug_is_redacted() {
                 "file_count": 3,
                 "logical_bytes": 99,
                 "block_reason": null,
+                "blocked_run_id": null,
+                "blocked_tool": null,
             },
         })
     );
@@ -277,6 +325,8 @@ fn transcript_snapshot_response_has_stable_json_shape() {
             file_count: 7,
             logical_bytes: 42,
             block_reason: None,
+            blocked_run_id: None,
+            blocked_tool: None,
         },
         entries: Vec::new(),
         runs: Vec::new(),
@@ -298,6 +348,8 @@ fn transcript_snapshot_response_has_stable_json_shape() {
                 "file_count": 7,
                 "logical_bytes": 42,
                 "block_reason": null,
+                "blocked_run_id": null,
+                "blocked_tool": null,
             },
             "entries": [],
             "runs": [],
@@ -319,6 +371,8 @@ fn workspace_event_has_stable_json_shape() {
             file_count: 0,
             logical_bytes: 0,
             block_reason: None,
+            blocked_run_id: None,
+            blocked_tool: None,
         },
     };
     assert_eq!(
@@ -332,6 +386,8 @@ fn workspace_event_has_stable_json_shape() {
                 "file_count": 0,
                 "logical_bytes": 0,
                 "block_reason": null,
+                "blocked_run_id": null,
+                "blocked_tool": null,
             },
         })
     );
@@ -349,6 +405,8 @@ fn run_response_has_stable_json_shape() {
             protocol_revision: 1,
             credential_generation: 4,
             context_policy_version: 1,
+            tool_catalog_version: 1,
+            tool_limits_version: 1,
             state: RunState::Failed,
             cancellation_requested: false,
             failure: Some(RunFailureKind::RateLimited),
@@ -370,6 +428,8 @@ fn run_response_has_stable_json_shape() {
                 "protocol_revision": 1,
                 "credential_generation": 4,
                 "context_policy_version": 1,
+                "tool_catalog_version": 1,
+                "tool_limits_version": 1,
                 "state": "failed",
                 "cancellation_requested": false,
                 "failure": "rate_limited",

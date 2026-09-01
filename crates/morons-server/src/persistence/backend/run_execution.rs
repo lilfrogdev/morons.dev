@@ -1,4 +1,4 @@
-mod facts;
+pub(super) mod facts;
 
 use self::facts::*;
 use rusqlite::{TransactionBehavior, params};
@@ -82,13 +82,16 @@ impl Backend {
             RunState::Succeeded
             | RunState::Failed
             | RunState::Cancelled
-            | RunState::Interrupted => Ok(ActivationOutcome::Terminal),
+            | RunState::Interrupted
+            | RunState::Uncertain => Ok(ActivationOutcome::Terminal),
         }
     }
 
     pub(crate) fn prepare_provider_operation(
         &mut self,
         run_id: RunId,
+        source_entry_high_water: u64,
+        estimated_input_tokens: u32,
     ) -> Result<PrepareOperationOutcome, PersistenceError> {
         let operation_id = ProviderOperationId::from_bytes(random_identifier()?);
         let operation_fact_id = random_identifier()?;
@@ -120,25 +123,53 @@ impl Backend {
                 reason: "a provider operation requires an active run",
             });
         }
-        let operation_exists: bool = transaction.query_row(
-            "SELECT EXISTS (SELECT 1 FROM provider_operation_facts WHERE run_id = ?1)",
+        let current_entry_high_water = load_entry_high_water(&transaction, run.session_id)?;
+        if current_entry_high_water != source_entry_high_water
+            || estimated_input_tokens == 0
+            || estimated_input_tokens > run.maximum_input_tokens
+        {
+            return Err(PersistenceError::InvalidState {
+                reason: "a provider operation context changed before preparation",
+            });
+        }
+        let operation_pending: bool = transaction.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM provider_operation_facts AS prepared
+                WHERE prepared.run_id = ?1 AND prepared.fact_kind = 1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM provider_operation_facts AS terminal
+                      WHERE terminal.operation_id = prepared.operation_id
+                        AND terminal.fact_kind IN (3, 4, 5, 6)
+                  )
+             )",
             [&run_id.as_bytes()[..]],
             |row| row.get(0),
         )?;
-        if operation_exists {
+        let turn_index =
+            run.provider_turns
+                .checked_add(1)
+                .ok_or(PersistenceError::ResourceLimit {
+                    resource: PersistenceResourceLimit::Context,
+                })?;
+        if operation_pending || turn_index > crate::tools::MAX_PROVIDER_TURNS_PER_RUN {
             return Err(PersistenceError::InvalidState {
-                reason: "a provider-only run already has a provider operation",
+                reason: "a run cannot prepare another provider operation",
             });
         }
         let fact_sequence = next_sequence(&transaction)?;
         let audit_sequence = next_sequence(&transaction)?;
         insert_provider_prepared(
             &transaction,
-            &operation_fact_id,
-            fact_sequence,
-            operation_id,
-            &run,
-            now,
+            ProviderPreparedFact {
+                fact_id: &operation_fact_id,
+                fact_sequence,
+                operation_id,
+                run: &run,
+                turn_index,
+                source_entry_high_water,
+                estimated_input_tokens,
+                created_at_milliseconds: now,
+            },
         )?;
         insert_run_audit(
             &transaction,
@@ -265,12 +296,15 @@ impl Backend {
         let operation_audit_sequence = next_sequence(&transaction)?;
         insert_provider_completed(
             &transaction,
-            &operation_fact_id,
-            operation_sequence,
-            operation_id,
-            run_id,
-            &assistant,
-            now,
+            ProviderCompletedFact {
+                fact_id: &operation_fact_id,
+                fact_sequence: operation_sequence,
+                operation_id,
+                run_id,
+                provider_response_id: &assistant.provider_response_id,
+                usage: assistant.usage,
+                created_at_milliseconds: now,
+            },
         )?;
         insert_run_audit(
             &transaction,
@@ -296,8 +330,19 @@ impl Backend {
             return load_required_run(&self.connection, run_id);
         }
 
+        let expected_entry_high_water: i64 = transaction.query_row(
+            "SELECT source_entry_high_water FROM provider_operation_facts
+             WHERE operation_id = ?1 AND fact_kind = 1",
+            [&operation_id.as_bytes()[..]],
+            |row| row.get(0),
+        )?;
+        let expected_entry_high_water = u64::try_from(expected_entry_high_water).map_err(|_| {
+            PersistenceError::InvalidState {
+                reason: "a provider operation source high water is invalid",
+            }
+        })?;
         let entry_high_water = load_entry_high_water(&transaction, run.session_id)?;
-        if entry_high_water != run.source_entry_high_water {
+        if entry_high_water != expected_entry_high_water {
             return Err(PersistenceError::InvalidState {
                 reason: "a run transcript changed before its assistant outcome committed",
             });
@@ -323,9 +368,10 @@ impl Backend {
                 model_id,
                 text,
                 refusal,
+                assistant_phase,
                 created_at_milliseconds,
                 delivery_event_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 2, 2, ?7, ?8, ?9, ?10, ?11, ?12)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 2, 2, ?7, ?8, ?9, ?10, 2, ?11, ?12)",
             params![
                 &assistant_fact_id[..],
                 sequence_to_sql(assistant_fact_sequence)?,
@@ -348,6 +394,10 @@ impl Backend {
             run.session_id,
             EVENT_ASSISTANT_MESSAGE,
             now,
+        )?;
+        transaction.execute(
+            "UPDATE runs SET provider_turns = provider_turns + 1 WHERE run_id = ?1",
+            [&run.id.as_bytes()[..]],
         )?;
         transaction.execute(
             "UPDATE session_run_states SET entry_high_water = ?1 WHERE session_id = ?2",

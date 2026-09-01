@@ -26,6 +26,7 @@ const CANCEL_RUN_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/cancel-run/v1\0";
 const STOP_SERVER_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/stop-server/v1\0";
 const IMPORT_REPOSITORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/import-repository/v1\0";
 const REPOSITORY_SOURCE_PATH_DIGEST_CONTEXT: &[u8] = b"morons.dev/repository-source-path/v1\0";
+const ACKNOWLEDGE_TOOL_UNCERTAINTY_CONTEXT: &[u8] = b"morons.dev/acknowledge-tool-uncertainty/v1\0";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId([u8; IDENTIFIER_BYTES]);
@@ -177,6 +178,7 @@ pub enum WorkspaceState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceBlockReason {
     InconsistentImportState,
+    UncertainToolEffect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +187,15 @@ pub struct WorkspaceSummary {
     pub file_count: u64,
     pub logical_bytes: u64,
     pub block_reason: Option<WorkspaceBlockReason>,
+    pub blocked_run_id: Option<super::RunId>,
+    pub blocked_tool: Option<crate::tools::ToolKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolUncertaintyAcknowledgement {
+    pub session_id: SessionId,
+    pub run_id: super::RunId,
+    pub workspace: WorkspaceSummary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,6 +248,7 @@ pub enum PersistenceError {
     RepositoryAlreadyImported,
     RepositoryImportNotApplied,
     WorkspaceBlocked,
+    ToolUncertaintyNotFound,
     ResourceLimit { resource: PersistenceResourceLimit },
     WorkerStopped,
 }
@@ -284,6 +296,9 @@ impl fmt::Display for PersistenceError {
                 formatter.write_str("the repository import was not applied")
             }
             Self::WorkspaceBlocked => formatter.write_str("the session workspace is blocked"),
+            Self::ToolUncertaintyNotFound => {
+                formatter.write_str("the uncertain tool effect was not found")
+            }
             Self::ResourceLimit { resource } => match resource {
                 PersistenceResourceLimit::Sessions => {
                     formatter.write_str("the persistence session count limit was reached")
@@ -336,6 +351,7 @@ impl Error for PersistenceError {
             | Self::RepositoryAlreadyImported
             | Self::RepositoryImportNotApplied
             | Self::WorkspaceBlocked
+            | Self::ToolUncertaintyNotFound
             | Self::ResourceLimit { .. }
             | Self::WorkerStopped => None,
         }
@@ -469,6 +485,17 @@ pub(super) fn submit_session_input_fingerprint(
     }]);
     digest.update((model_id.len() as u16).to_be_bytes());
     digest.update(model_id.as_bytes());
+    digest.finalize().into()
+}
+
+pub(super) fn acknowledge_tool_uncertainty_fingerprint(
+    session_id: SessionId,
+    run_id: RunId,
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(ACKNOWLEDGE_TOOL_UNCERTAINTY_CONTEXT);
+    digest.update(session_id.as_bytes());
+    digest.update(run_id.as_bytes());
     digest.finalize().into()
 }
 

@@ -11,7 +11,7 @@ use ratatui::{
 
 use super::{
     AppState, CredentialDialog, PendingOperation, PresentedModel, RepositoryDialog, SessionView,
-    View,
+    View, tool_label,
 };
 use crate::terminal::SafeText;
 
@@ -33,6 +33,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
     render_footer(frame, layout[2], app);
     if app.confirm_stop {
         render_stop_confirmation(frame, area);
+    }
+    if app.confirm_uncertainty {
+        render_uncertainty_confirmation(frame, area);
     }
     if let Some(dialog) = app.credential_dialog.as_ref() {
         render_credential_dialog(frame, area, dialog);
@@ -178,6 +181,27 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
         extend_safe_lines(&mut lines, &entry.text);
         lines.push(Line::default());
     }
+    if session.workspace.block_reason
+        == Some(morons_protocol::WorkspaceBlockReason::UncertainToolEffect)
+        && let (Some(run_id), Some(tool)) = (
+            session.workspace.blocked_run_id,
+            session.workspace.blocked_tool,
+        )
+    {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Workspace blocked · uncertain {} effect · {run_id:?}",
+                tool_label(tool)
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(
+            "Ctrl+A acknowledges and parks the uncertainty without resolving it",
+        ));
+        lines.push(Line::default());
+    }
     if let Some(transient) = session.transient.as_ref() {
         let label = if transient.refusal {
             "Assistant refusal · streaming"
@@ -243,7 +267,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             "↑↓ select · Enter open · n new · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
-            "Esc sessions · Tab model · Ctrl+O import repo · Ctrl+K credential · Ctrl+X cancel · Ctrl+S stop"
+            "Esc sessions · Tab model · Ctrl+O import · Ctrl+A acknowledge · Ctrl+X cancel · Ctrl+S stop"
         }
     };
     let status = Line::from(vec![
@@ -253,6 +277,30 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     frame.render_widget(
         Paragraph::new(vec![Line::from(help), status]).style(Style::default().fg(Color::DarkGray)),
         area,
+    );
+}
+
+fn render_uncertainty_confirmation(frame: &mut Frame<'_>, area: Rect) {
+    let width = area.width.min(72);
+    let height = area.height.min(7);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(
+            "Acknowledge and park this uncertain tool effect?\nThis does not prove, reverse, or retry the workspace change.\nPress y to acknowledge or n/Esc to cancel.",
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Uncertain workspace effect "),
+        )
+        .wrap(Wrap { trim: false }),
+        popup,
     );
 }
 
@@ -398,6 +446,7 @@ fn active_run_label(session: &SessionView) -> &'static str {
             | RunState::Failed
             | RunState::Cancelled
             | RunState::Interrupted => "idle",
+            RunState::Uncertain => "workspace effect uncertain",
         })
 }
 

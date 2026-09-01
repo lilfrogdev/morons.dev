@@ -22,6 +22,10 @@ const EVENT_RUN_FAILED: i64 = 8;
 const EVENT_RUN_CANCELLED: i64 = 9;
 const EVENT_RUN_INTERRUPTED: i64 = 10;
 const EVENT_WORKSPACE_CHANGED: i64 = 11;
+const EVENT_TOOL_CALL: i64 = 12;
+const EVENT_TOOL_RESULT: i64 = 13;
+const EVENT_RUN_UNCERTAIN: i64 = 14;
+const EVENT_TOOL_UNCERTAINTY_CHANGED: i64 = 15;
 
 impl Backend {
     pub(crate) fn delivery_event_high_water(&self) -> Result<u64, PersistenceError> {
@@ -62,7 +66,7 @@ impl Backend {
              WHERE session_id = ?1
                AND event_sequence > ?2
                AND event_sequence <= ?3
-               AND event_kind BETWEEN 2 AND 11
+               AND event_kind BETWEEN 2 AND 15
                AND payload_version = 1
              ORDER BY event_sequence
              LIMIT ?4",
@@ -90,28 +94,27 @@ impl Backend {
             .into_iter()
             .map(|(sequence, event_id, event_kind)| {
                 let payload = match event_kind {
-                    EVENT_USER_MESSAGE | EVENT_ASSISTANT_MESSAGE => {
-                        SessionEventPayload::TranscriptEntry(load_entry_for_event(
-                            &self.connection,
-                            session_id,
-                            &event_id,
-                            event_kind,
-                        )?)
-                    }
+                    EVENT_USER_MESSAGE
+                    | EVENT_ASSISTANT_MESSAGE
+                    | EVENT_TOOL_CALL
+                    | EVENT_TOOL_RESULT => SessionEventPayload::TranscriptEntry(
+                        load_entry_for_event(&self.connection, session_id, &event_id, event_kind)?,
+                    ),
                     EVENT_RUN_ACCEPTED
                     | EVENT_RUN_ACTIVE
                     | EVENT_CANCELLATION_REQUESTED
                     | EVENT_RUN_SUCCEEDED
                     | EVENT_RUN_FAILED
                     | EVENT_RUN_CANCELLED
-                    | EVENT_RUN_INTERRUPTED => {
+                    | EVENT_RUN_INTERRUPTED
+                    | EVENT_RUN_UNCERTAIN => {
                         let run_id =
                             load_event_run_id(&self.connection, session_id, &event_id, event_kind)?;
                         let run = load_run_at_sequence(&self.connection, run_id, sequence)?;
                         validate_event_run(event_kind, &run)?;
                         SessionEventPayload::RunChanged(run)
                     }
-                    EVENT_WORKSPACE_CHANGED => {
+                    EVENT_WORKSPACE_CHANGED | EVENT_TOOL_UNCERTAINTY_CHANGED => {
                         SessionEventPayload::WorkspaceChanged(workspace_summary_for_event(
                             &self.connection,
                             session_id,
@@ -173,7 +176,9 @@ pub(super) fn load_run_at_sequence(
                 estimated_input_tokens,
                 maximum_input_tokens,
                 maximum_output_tokens,
-                accepted_at_milliseconds
+                accepted_at_milliseconds,
+                tool_catalog_version,
+                tool_limits_version
              FROM run_accepted_facts
              WHERE run_id = ?1 AND fact_sequence <= ?2",
             params![&run_id.as_bytes()[..], sequence_to_sql(event_sequence)?],
@@ -188,10 +193,16 @@ pub(super) fn load_run_at_sequence(
                     protocol_revision: positive_u16_from_row(row, 4)?,
                     credential_generation: nonnegative_integer_from_row(row, 5)?,
                     context_policy_version: positive_u16_from_row(row, 6)?,
+                    tool_catalog_version: super::run_records::nonnegative_u16_from_row(row, 12)?,
+                    tool_limits_version: super::run_records::nonnegative_u16_from_row(row, 13)?,
                     source_entry_high_water: nonnegative_integer_from_row(row, 7)?,
                     estimated_input_tokens: positive_u32_from_row(row, 8)?,
                     maximum_input_tokens: positive_u32_from_row(row, 9)?,
                     maximum_output_tokens: positive_u32_from_row(row, 10)?,
+                    provider_turns: 0,
+                    tool_calls: 0,
+                    tool_mutations: 0,
+                    tool_result_bytes: 0,
                     state: RunState::Accepted,
                     cancellation_requested: false,
                     failure: None,
@@ -281,7 +292,7 @@ pub(super) fn active_run_id_at_sequence(
                FROM run_state_facts AS state
                WHERE state.run_id = accepted.run_id
                  AND state.fact_sequence <= ?2
-                 AND state.state BETWEEN 3 AND 6
+                 AND state.state BETWEEN 3 AND 7
            )
          ORDER BY accepted.fact_sequence DESC
          LIMIT 2",
@@ -310,17 +321,26 @@ fn load_entry_for_event(
     let entry = connection
         .query_row(
             "SELECT
-                entry_sequence,
-                message_id,
-                run_id,
-                entry_kind,
-                open_code_service,
-                model_id,
-                text,
-                refusal,
-                created_at_milliseconds
-             FROM session_entries
-             WHERE session_id = ?1 AND delivery_event_id = ?2",
+                entry.entry_sequence,
+                entry.message_id,
+                entry.run_id,
+                entry.entry_kind,
+                entry.open_code_service,
+                entry.model_id,
+                entry.text,
+                entry.refusal,
+                entry.created_at_milliseconds,
+                entry.assistant_phase,
+                entry.tool_call_id,
+                call.operation_id,
+                call.provider_operation_id,
+                call.input_payload,
+                result.result_payload
+             FROM session_entries AS entry
+             LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
+             LEFT JOIN tool_operation_facts AS result
+               ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
+             WHERE entry.session_id = ?1 AND entry.delivery_event_id = ?2",
             params![&session_id.as_bytes()[..], &event_id[..]],
             transcript_entry_from_row,
         )
@@ -335,6 +355,8 @@ fn load_entry_for_event(
                 TranscriptEntry::AssistantMessage { .. },
                 EVENT_ASSISTANT_MESSAGE
             )
+            | (TranscriptEntry::ToolCall { .. }, EVENT_TOOL_CALL)
+            | (TranscriptEntry::ToolResult { .. }, EVENT_TOOL_RESULT)
     );
     if !valid {
         return Err(PersistenceError::InvalidState {
@@ -361,7 +383,8 @@ fn load_event_run_id(
         | EVENT_RUN_SUCCEEDED
         | EVENT_RUN_FAILED
         | EVENT_RUN_CANCELLED
-        | EVENT_RUN_INTERRUPTED => {
+        | EVENT_RUN_INTERRUPTED
+        | EVENT_RUN_UNCERTAIN => {
             "SELECT run_id FROM run_state_facts WHERE session_id = ?1 AND delivery_event_id = ?2"
         }
         _ => {
@@ -391,6 +414,7 @@ fn validate_event_run(event_kind: i64, run: &Run) -> Result<(), PersistenceError
         EVENT_RUN_FAILED => run.state == RunState::Failed,
         EVENT_RUN_CANCELLED => run.state == RunState::Cancelled,
         EVENT_RUN_INTERRUPTED => run.state == RunState::Interrupted,
+        EVENT_RUN_UNCERTAIN => run.state == RunState::Uncertain,
         _ => false,
     };
     if !valid {

@@ -6,6 +6,7 @@ use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, MutationRequestId,
     OpenCodeService, RunId, RunState, SessionId,
 };
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpListener,
@@ -27,8 +28,8 @@ use crate::{
         RunState as PersistenceRunState, SessionStore,
     },
     provider::{
-        OpenCodeProvider, ProviderAssistantMessage, ProviderError, ProviderOutcome,
-        ProviderOutputItem, ProviderUsage,
+        OpenCodeProvider, ProviderAssistantMessage, ProviderError, ProviderMessagePhase,
+        ProviderOutcome, ProviderOutputItem, ProviderToolCall, ProviderUsage,
     },
 };
 
@@ -93,6 +94,55 @@ async fn model_catalog_query_returns_only_reviewed_server_metadata() {
 }
 
 #[test]
+fn tool_turn_validation_rejects_the_entire_unknown_or_contradictory_response() {
+    let usage = ProviderUsage {
+        input_tokens: 1,
+        cached_input_tokens: 0,
+        cache_write_input_tokens: 0,
+        output_tokens: 1,
+        reasoning_output_tokens: 0,
+        total_tokens: 2,
+    };
+    let unknown = ProviderOutcome {
+        provider_response_id: "resp_unknown_tool".to_owned(),
+        output: vec![ProviderOutputItem::ToolCall(ProviderToolCall {
+            provider_item_id: Some("fc_unknown".to_owned()),
+            provider_call_id: "call_unknown".to_owned(),
+            name: "unknown_tool".to_owned(),
+            arguments: "{}".to_owned(),
+        })],
+        usage,
+    };
+    assert!(matches!(
+        super::normalize_provider_turn(unknown, crate::tools::TOOL_CATALOG_VERSION),
+        Err(RunFailureKind::InvalidProviderOutput)
+    ));
+
+    let contradictory = ProviderOutcome {
+        provider_response_id: "resp_contradictory".to_owned(),
+        output: vec![
+            ProviderOutputItem::AssistantMessage(ProviderAssistantMessage {
+                provider_item_id: "msg_final".to_owned(),
+                phase: Some(ProviderMessagePhase::FinalAnswer),
+                text: "done".to_owned(),
+                refusal: false,
+            }),
+            ProviderOutputItem::ToolCall(ProviderToolCall {
+                provider_item_id: Some("fc_read".to_owned()),
+                provider_call_id: "call_read".to_owned(),
+                name: "read_file".to_owned(),
+                arguments: r#"{"path":"note.txt","start_line":1,"line_count":1}"#.to_owned(),
+            }),
+        ],
+        usage,
+    };
+    assert!(matches!(
+        super::normalize_provider_turn(contradictory, crate::tools::TOOL_CATALOG_VERSION),
+        Err(RunFailureKind::InvalidProviderOutput)
+    ));
+}
+
+#[test]
 fn oversized_complete_assistant_is_a_run_resource_failure() {
     let outcome = ProviderOutcome {
         provider_response_id: "resp_oversized".to_owned(),
@@ -146,6 +196,7 @@ async fn changed_credential_generation_fails_before_network_dispatch() {
                 protocol_revision: 1,
                 maximum_input_tokens: 96_000,
                 maximum_output_tokens: 32_000,
+                supports_tool_calls: true,
             },
         )
         .await
@@ -169,9 +220,13 @@ async fn changed_credential_generation_fails_before_network_dispatch() {
         .load_run_context(accepted.run.id)
         .await
         .expect("run context should load");
-    let request = build_provider_request(&context).expect("request should build");
+    let request = build_provider_request(&context, None).expect("request should build");
     let operation_id = match store
-        .prepare_provider_operation(accepted.run.id)
+        .prepare_provider_operation(
+            accepted.run.id,
+            context.current_entry_high_water,
+            context.estimated_input_tokens,
+        )
         .await
         .expect("provider operation should prepare")
     {
@@ -391,6 +446,144 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
     assert!(!contains_bytes(&database, b"not-a-real-supervisor-key"));
     assert!(!contains_bytes(&database, b"response.completed"));
     assert!(!contains_bytes(&database, b"Bearer "));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn structured_tool_loop_reads_edits_and_finishes_from_durable_results() {
+    let root = TestRoot::new("structured-tool-loop");
+    let source = TestRoot::new("structured-tool-source");
+    fs::write(source.path().join("note.txt"), "before\n").expect("source file should be written");
+    let store =
+        Arc::new(SessionStore::open_for_test(root.path()).expect("session store should open"));
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x81; 16]),
+            0,
+            b"not-a-real-tool-loop-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session(PersistenceMutationRequestId::from_bytes([0x82; 16]), None)
+        .await
+        .expect("session should be created");
+    store
+        .import_repository(
+            PersistenceMutationRequestId::from_bytes([0x83; 16]),
+            session.id,
+            source.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("repository should import");
+    let expected_digest = {
+        let digest: [u8; 32] = Sha256::digest(b"before\n").into();
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let (base, requests, provider_task) = spawn_tool_loop_provider(expected_digest).await;
+    let store = Arc::try_unwrap(store).unwrap_or_else(|_| panic!("test store should be unique"));
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let session_id = SessionId::from_bytes(*session.id.as_bytes());
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x84; 16]),
+            session_id,
+            text: "inspect and update note.txt".to_owned(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("tool run should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run");
+    };
+    assert_eq!(
+        wait_for_terminal(&application, session_id, run.id).await,
+        RunState::Succeeded
+    );
+    provider_task.await.expect("tool provider should finish");
+    let requests = requests.await.expect("tool requests should be captured");
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].contains("\"name\":\"read_file\""));
+    assert!(requests[1].contains("function_call_output"));
+    assert!(requests[1].contains("note.txt"));
+    assert!(requests[2].contains("\"name\":\"edit_file\""));
+    assert!(requests[2].contains("file_edited"));
+
+    let workspace = root
+        .path()
+        .join("workspaces")
+        .join(hex_identifier(&session.workspace_id))
+        .join("repository")
+        .join("worktree");
+    assert_eq!(
+        fs::read_to_string(workspace.join("note.txt")).expect("worktree file should exist"),
+        "after\n"
+    );
+    assert_eq!(
+        fs::read_to_string(source.path().join("note.txt")).expect("source should remain readable"),
+        "before\n"
+    );
+
+    let mut cursor = None;
+    let mut entries = Vec::new();
+    loop {
+        let outcome = application
+            .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+                session_id,
+                cursor,
+                limit: 1,
+            })
+            .await
+            .expect("tool transcript should page");
+        let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+            entries: page,
+            next_cursor,
+            ..
+        }) = outcome
+        else {
+            panic!("transcript should return a page");
+        };
+        entries.extend(page);
+        let Some(next) = next_cursor else { break };
+        cursor = Some(next);
+    }
+    assert_eq!(entries.len(), 6);
+    assert!(matches!(
+        entries[1],
+        morons_protocol::TranscriptEntry::ToolCall {
+            tool: morons_protocol::ToolKind::ReadFile,
+            ..
+        }
+    ));
+    assert!(matches!(
+        entries[2],
+        morons_protocol::TranscriptEntry::ToolResult {
+            status: morons_protocol::ToolResultStatus::Succeeded,
+            ..
+        }
+    ));
+    assert!(matches!(
+        entries[3],
+        morons_protocol::TranscriptEntry::ToolCall {
+            tool: morons_protocol::ToolKind::EditFile,
+            ..
+        }
+    ));
+    assert!(matches!(
+        entries[4],
+        morons_protocol::TranscriptEntry::ToolResult {
+            status: morons_protocol::ToolResultStatus::Succeeded,
+            ..
+        }
+    ));
+    application.shutdown().await;
+    drop(application);
+    SessionStore::open_for_test(root.path()).expect("durable tool history should reopen");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -649,6 +842,75 @@ async fn spawn_successful_provider() -> (
         complete_sender,
         server,
     )
+}
+
+async fn spawn_tool_loop_provider(
+    expected_digest: String,
+) -> (
+    String,
+    oneshot::Receiver<Vec<String>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("tool provider fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("tool provider should have an address");
+    let (requests_sender, requests_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let read_arguments = r#"{"path":"note.txt","start_line":1,"line_count":20}"#;
+        let edit_arguments = format!(
+            "{{\"path\":\"note.txt\",\"expected_sha256\":\"{expected_digest}\",\"replacements\":[{{\"old_text\":\"before\",\"new_text\":\"after\"}}]}}"
+        );
+        let outputs = [
+            format!(
+                "{{\"id\":\"fc_read\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_read\",\"name\":\"read_file\",\"arguments\":{}}}",
+                serde_json::to_string(read_arguments).expect("arguments should encode")
+            ),
+            format!(
+                "{{\"id\":\"fc_edit\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_edit\",\"name\":\"edit_file\",\"arguments\":{}}}",
+                serde_json::to_string(&edit_arguments).expect("arguments should encode")
+            ),
+            "{\"id\":\"msg_final\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"Updated note.txt.\",\"annotations\":[]}]}".to_owned(),
+        ];
+        let mut captured = Vec::new();
+        for (index, output) in outputs.into_iter().enumerate() {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("tool request should connect");
+            captured.push(
+                String::from_utf8(read_http_request(&mut stream).await)
+                    .expect("tool request should be UTF-8"),
+            );
+            let response_id = format!("resp_tool_{}", index + 1);
+            let body = format!(
+                "event: response.created\ndata: {{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"muse-spark-1.2\"}}}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"model\":\"muse-spark-1.2\",\"status\":\"completed\",\"output\":[{output}],\"usage\":{{\"input_tokens\":8,\"input_tokens_details\":{{\"cached_tokens\":0}},\"output_tokens\":3,\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":11}}}}}}\n\ndata: [DONE]\n\n"
+            );
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .await
+                .expect("tool response headers should write");
+            stream
+                .write_all(body.as_bytes())
+                .await
+                .expect("tool response should write");
+            stream.shutdown().await.expect("tool response should close");
+        }
+        requests_sender
+            .send(captured)
+            .unwrap_or_else(|_| panic!("tool requests should be observed"));
+    });
+    (format!("http://{address}"), requests_receiver, server)
+}
+
+fn hex_identifier(bytes: &[u8; 16]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 async fn spawn_stalled_provider() -> (String, oneshot::Receiver<()>, tokio::task::JoinHandle<()>) {

@@ -11,6 +11,7 @@ mod run_records;
 mod run_recovery;
 mod server_stop;
 mod session_events;
+mod tool_execution;
 mod workspace_creation;
 
 use rusqlite::Connection;
@@ -37,6 +38,7 @@ impl Backend {
         backend.recover_incomplete_session_creations()?;
         backend.recover_repository_imports()?;
         backend.validate_ready_workspaces()?;
+        backend.recover_tool_operations()?;
         backend.recover_nonterminal_runs()?;
         Ok(backend)
     }

@@ -10,7 +10,7 @@ use super::super::{
     },
 };
 use crate::persistence::{
-    CompletedAssistant, PersistenceError, Run, RunFailureKind, RunId, RunState,
+    CompletedAssistant, PersistenceError, ProviderUsage, Run, RunFailureKind, RunId, RunState,
     run_types::{MAX_TRANSCRIPT_TEXT_BYTES, ProviderOperationId},
 };
 
@@ -21,14 +21,14 @@ pub(super) enum FinishKind {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct TransitionIdentifiers {
+pub(crate) struct TransitionIdentifiers {
     fact_id: [u8; 16],
     delivery_event_id: [u8; 16],
     audit_id: [u8; 16],
 }
 
 impl TransitionIdentifiers {
-    pub(super) fn generate() -> Result<Self, PersistenceError> {
+    pub(crate) fn generate() -> Result<Self, PersistenceError> {
         Ok(Self {
             fact_id: random_identifier()?,
             delivery_event_id: random_identifier()?,
@@ -37,7 +37,7 @@ impl TransitionIdentifiers {
     }
 }
 
-pub(super) fn append_run_transition(
+pub(crate) fn append_run_transition(
     transaction: &Transaction<'_>,
     run: &Run,
     state: RunState,
@@ -53,6 +53,7 @@ pub(super) fn append_run_transition(
             | RunState::Failed
             | RunState::Cancelled
             | RunState::Interrupted
+            | RunState::Uncertain
     ) || (state == RunState::Failed) != failure.is_some()
     {
         return Err(PersistenceError::InvalidState {
@@ -136,13 +137,20 @@ pub(super) fn append_run_transition(
     Ok(())
 }
 
+pub(super) struct ProviderPreparedFact<'a> {
+    pub fact_id: &'a [u8; 16],
+    pub fact_sequence: u64,
+    pub operation_id: ProviderOperationId,
+    pub run: &'a Run,
+    pub turn_index: u16,
+    pub source_entry_high_water: u64,
+    pub estimated_input_tokens: u32,
+    pub created_at_milliseconds: u64,
+}
+
 pub(super) fn insert_provider_prepared(
     transaction: &Transaction<'_>,
-    fact_id: &[u8; 16],
-    fact_sequence: u64,
-    operation_id: ProviderOperationId,
-    run: &Run,
-    now: u64,
+    fact: ProviderPreparedFact<'_>,
 ) -> Result<(), PersistenceError> {
     transaction.execute(
         "INSERT INTO provider_operation_facts (
@@ -151,38 +159,47 @@ pub(super) fn insert_provider_prepared(
             credential_generation, context_policy_version, source_entry_high_water,
             provider_response_id, failure_kind, input_tokens, cached_input_tokens,
             cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens,
-            created_at_milliseconds
+            created_at_milliseconds, turn_index, tool_catalog_version,
+            tool_limits_version, estimated_input_tokens
          ) VALUES (
             ?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?9, ?10,
-            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?11
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?11, ?12, ?13, ?14, ?15
          )",
         params![
-            &fact_id[..],
-            sequence_to_sql(fact_sequence)?,
-            &operation_id.as_bytes()[..],
-            &run.id.as_bytes()[..],
-            run.service.to_record(),
-            &run.model_id,
-            i64::from(run.protocol_revision),
-            sequence_to_sql(run.credential_generation)?,
-            i64::from(run.context_policy_version),
-            sequence_to_sql(run.source_entry_high_water)?,
-            time_to_sql(now)?,
+            &fact.fact_id[..],
+            sequence_to_sql(fact.fact_sequence)?,
+            &fact.operation_id.as_bytes()[..],
+            &fact.run.id.as_bytes()[..],
+            fact.run.service.to_record(),
+            &fact.run.model_id,
+            i64::from(fact.run.protocol_revision),
+            sequence_to_sql(fact.run.credential_generation)?,
+            i64::from(fact.run.context_policy_version),
+            sequence_to_sql(fact.source_entry_high_water)?,
+            time_to_sql(fact.created_at_milliseconds)?,
+            i64::from(fact.turn_index),
+            i64::from(fact.run.tool_catalog_version),
+            i64::from(fact.run.tool_limits_version),
+            i64::from(fact.estimated_input_tokens),
         ],
     )?;
     Ok(())
 }
 
-pub(super) fn insert_provider_completed(
+pub(crate) struct ProviderCompletedFact<'a> {
+    pub fact_id: &'a [u8; 16],
+    pub fact_sequence: u64,
+    pub operation_id: ProviderOperationId,
+    pub run_id: RunId,
+    pub provider_response_id: &'a str,
+    pub usage: ProviderUsage,
+    pub created_at_milliseconds: u64,
+}
+
+pub(crate) fn insert_provider_completed(
     transaction: &Transaction<'_>,
-    fact_id: &[u8; 16],
-    fact_sequence: u64,
-    operation_id: ProviderOperationId,
-    run_id: RunId,
-    assistant: &CompletedAssistant,
-    now: u64,
+    fact: ProviderCompletedFact<'_>,
 ) -> Result<(), PersistenceError> {
-    let usage = assistant.usage;
     transaction.execute(
         "INSERT INTO provider_operation_facts (
             fact_id, fact_sequence, operation_id, run_id, fact_kind,
@@ -190,25 +207,26 @@ pub(super) fn insert_provider_completed(
             credential_generation, context_policy_version, source_entry_high_water,
             provider_response_id, failure_kind, input_tokens, cached_input_tokens,
             cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens,
-            created_at_milliseconds
+            created_at_milliseconds, turn_index, tool_catalog_version,
+            tool_limits_version, estimated_input_tokens
          ) VALUES (
             ?1, ?2, ?3, ?4, 3,
             NULL, NULL, NULL, NULL, NULL, NULL,
-            ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+            ?5, NULL, ?6, ?7, ?8, ?9, ?10, ?11, ?12, NULL, NULL, NULL, NULL
          )",
         params![
-            &fact_id[..],
-            sequence_to_sql(fact_sequence)?,
-            &operation_id.as_bytes()[..],
-            &run_id.as_bytes()[..],
-            &assistant.provider_response_id,
-            usage_to_sql(usage.input_tokens)?,
-            usage_to_sql(usage.cached_input_tokens)?,
-            usage_to_sql(usage.cache_write_input_tokens)?,
-            usage_to_sql(usage.output_tokens)?,
-            usage_to_sql(usage.reasoning_output_tokens)?,
-            usage_to_sql(usage.total_tokens)?,
-            time_to_sql(now)?,
+            &fact.fact_id[..],
+            sequence_to_sql(fact.fact_sequence)?,
+            &fact.operation_id.as_bytes()[..],
+            &fact.run_id.as_bytes()[..],
+            fact.provider_response_id,
+            usage_to_sql(fact.usage.input_tokens)?,
+            usage_to_sql(fact.usage.cached_input_tokens)?,
+            usage_to_sql(fact.usage.cache_write_input_tokens)?,
+            usage_to_sql(fact.usage.output_tokens)?,
+            usage_to_sql(fact.usage.reasoning_output_tokens)?,
+            usage_to_sql(fact.usage.total_tokens)?,
+            time_to_sql(fact.created_at_milliseconds)?,
         ],
     )?;
     Ok(())
@@ -254,7 +272,7 @@ pub(super) fn insert_provider_simple_fact(
     Ok(())
 }
 
-pub(super) fn insert_run_audit(
+pub(crate) fn insert_run_audit(
     transaction: &Transaction<'_>,
     audit_id: &[u8; 16],
     audit_sequence: u64,
@@ -281,7 +299,7 @@ pub(super) fn insert_run_audit(
     Ok(())
 }
 
-pub(super) fn require_dispatched_active_operation(
+pub(crate) fn require_dispatched_active_operation(
     transaction: &Transaction<'_>,
     run: &Run,
     operation_id: ProviderOperationId,
@@ -357,7 +375,7 @@ pub(super) fn provider_has_fact(
     )?)
 }
 
-pub(super) fn load_entry_high_water(
+pub(crate) fn load_entry_high_water(
     transaction: &Transaction<'_>,
     session_id: crate::persistence::SessionId,
 ) -> Result<u64, PersistenceError> {
@@ -402,6 +420,9 @@ fn event_kind_for_state(state: RunState) -> Result<i64, PersistenceError> {
         RUN_STATE_FAILED => Ok(EVENT_RUN_FAILED),
         RUN_STATE_CANCELLED => Ok(EVENT_RUN_CANCELLED),
         RUN_STATE_INTERRUPTED => Ok(EVENT_RUN_INTERRUPTED),
+        super::super::run_records::RUN_STATE_UNCERTAIN => {
+            Ok(super::super::run_records::EVENT_RUN_UNCERTAIN)
+        }
         _ => Err(PersistenceError::InvalidState {
             reason: "the run state has no supported delivery event",
         }),

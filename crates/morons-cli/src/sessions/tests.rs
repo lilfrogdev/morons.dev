@@ -199,6 +199,8 @@ async fn client_submits_inspects_and_cancels_exact_run() {
         protocol_revision: 1,
         credential_generation: 2,
         context_policy_version: 1,
+        tool_catalog_version: 0,
+        tool_limits_version: 0,
         state: RunState::Active,
         cancellation_requested: false,
         failure: None,
@@ -294,6 +296,56 @@ async fn client_submits_inspects_and_cancels_exact_run() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn client_acknowledges_only_the_exact_uncertain_run() {
+    let (client_connection, mut server) = tokio::io::duplex(4096);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let mutation_request_id = MutationRequestId::from_bytes([0x69; 16]);
+    let session_id = SessionId::from_bytes([0x6a; 16]);
+    let run_id = RunId::from_bytes([0x6b; 16]);
+    let workspace = WorkspaceSummary {
+        state: WorkspaceState::Ready,
+        file_count: 2,
+        logical_bytes: 20,
+        block_reason: None,
+        blocked_run_id: None,
+        blocked_tool: None,
+    };
+    let client_exchange = async {
+        assert_eq!(
+            client
+                .acknowledge_tool_uncertainty(mutation_request_id, session_id, run_id)
+                .await
+                .expect("acknowledgement should succeed"),
+            workspace
+        );
+    };
+    let server_exchange = async {
+        assert_eq!(
+            read_request(&mut server, 1).await,
+            ApplicationRequest::AcknowledgeToolUncertainty {
+                mutation_request_id,
+                session_id,
+                run_id,
+            }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::ToolUncertaintyAcknowledged {
+                    session_id,
+                    run_id,
+                    workspace,
+                },
+            ),
+        )
+        .await
+        .expect("acknowledgement response should write");
+    };
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn client_imports_repository_with_exact_session_scope() {
     let (client_connection, mut server) = tokio::io::duplex(4096);
     let mut client = ApplicationClient::from_negotiated_connection(client_connection);
@@ -304,6 +356,8 @@ async fn client_imports_repository_with_exact_session_scope() {
         file_count: 2,
         logical_bytes: 20,
         block_reason: None,
+        blocked_run_id: None,
+        blocked_tool: None,
     };
     let client_exchange = async {
         assert_eq!(
@@ -481,6 +535,8 @@ async fn session_subscription_tracks_durable_and_ephemeral_run_events() {
         protocol_revision: 1,
         credential_generation: 2,
         context_policy_version: 1,
+        tool_catalog_version: 0,
+        tool_limits_version: 0,
         state: RunState::Active,
         cancellation_requested: false,
         failure: None,
@@ -507,6 +563,8 @@ async fn session_subscription_tracks_durable_and_ephemeral_run_events() {
                     file_count: 0,
                     logical_bytes: 0,
                     block_reason: None,
+                    blocked_run_id: None,
+                    blocked_tool: None,
                 },
             }
         );
@@ -587,6 +645,8 @@ async fn session_subscription_tracks_durable_and_ephemeral_run_events() {
                     file_count: 0,
                     logical_bytes: 0,
                     block_reason: None,
+                    blocked_run_id: None,
+                    blocked_tool: None,
                 },
             }),
         )
