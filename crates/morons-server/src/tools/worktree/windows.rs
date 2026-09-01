@@ -334,6 +334,7 @@ pub(super) fn publish(
             if snapshot_metadata(staged.metadata()) != *plan.staged() {
                 return Err(ToolErrorKind::ChangedDuringOperation);
             }
+            drop(staged);
             prepared
                 .parent
                 .rename_child_noreplace(OsStr::new(plan.temporary_name()), OsStr::new(name))
@@ -414,6 +415,8 @@ pub(super) fn recover(
         return Ok(ToolRecoveryOutcome::Completed);
     }
     if target_is_before && (temporary.is_none() || temporary_is_staged) {
+        drop(target);
+        drop(temporary);
         if temporary_is_staged {
             parent
                 .remove_child(OsStr::new(plan.temporary_name()))
