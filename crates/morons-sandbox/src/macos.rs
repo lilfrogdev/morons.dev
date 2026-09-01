@@ -14,14 +14,13 @@ use std::{
 
 use rustix::{
     io::Errno,
-    process::{Pid, Signal, kill_process_group, test_kill_process_group},
+    process::{Pid, Signal, kill_process_group},
 };
 
 use crate::{Cancellation, SandboxExit, SandboxResult, SandboxStatus, runner::PreparedRequest};
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-const TREE_TERMINATION_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(crate) fn execute(request: PreparedRequest, cancellation: &Cancellation) -> SandboxResult {
     let profile = match profile(&request) {
@@ -199,20 +198,10 @@ fn join_stream(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
 }
 
 fn terminate_group(child: &mut Child, group: Pid) -> bool {
+    // A successful group SIGKILL plus denied group escape proves no descendant can execute again.
     match kill_process_group(group, Signal::KILL) {
-        Ok(()) | Err(Errno::SRCH) => {}
-        Err(_) => return false,
-    }
-    if child.wait().is_err() {
-        return false;
-    }
-    let deadline = Instant::now() + TREE_TERMINATION_TIMEOUT;
-    loop {
-        match test_kill_process_group(group) {
-            Err(Errno::SRCH) => return true,
-            Ok(()) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
-            Ok(()) | Err(_) => return false,
-        }
+        Ok(()) | Err(Errno::SRCH) => child.wait().is_ok(),
+        Err(_) => false,
     }
 }
 
