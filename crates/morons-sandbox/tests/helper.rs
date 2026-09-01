@@ -97,7 +97,7 @@ fn helper_uses_framed_one_shot_control_without_closing_watchdog() {
 
 #[test]
 fn helper_watchdog_cancels_when_the_server_channel_closes() {
-    let fixture = Fixture::new(b"#!/bin/sh\nsleep 30\n");
+    let fixture = Fixture::new(b"#!/bin/sh\n/bin/sleep 30\n");
     let mut child = helper();
     let mut input = child.stdin.take().expect("helper stdin");
     write_request(&mut input, &fixture.request(60_000)).expect("writes request");

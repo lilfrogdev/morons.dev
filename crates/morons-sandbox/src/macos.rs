@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn seatbelt_discards_candidates_after_time_and_output_limits() {
-        let timeout_fixture = Fixture::new(b"#!/bin/sh\nsleep 30\n");
+        let timeout_fixture = Fixture::new(b"#!/bin/sh\n/bin/sleep 30\n");
         let mut timeout_request = timeout_fixture.request(Vec::new());
         timeout_request.limits.wall_time_milliseconds = 100;
         let timeout = crate::execute(timeout_request, &Cancellation::new());
