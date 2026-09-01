@@ -75,7 +75,16 @@
 - Worktree reads must be bounded, verify the opened node before and after use, return only typed bounded results, and never expose host-absolute paths.
 - Worktree edits require a complete-file digest precondition and unambiguous bounded replacements; file and directory creation is exclusive and never replaces an existing name.
 - Mutating file tools must stage private operation-bound state, synchronize it, and publish with an atomic handle-relative replace or no-replace operation before committing success.
-- Morons-controlled tools, future commands, and kernels must share one session workspace lease and must not retain uncontrolled background access that can race a successor operation.
+- Model-selected commands may execute only through the fixed server-owned `run_command` tool for an exact active run with a ready imported workspace and bound execution-image generation; clients cannot submit arbitrary commands or sandbox policy.
+- A sandboxed command must receive only an operation-specific candidate worktree, private scratch and cache state, one immutable server-owned execution image, and the minimum reviewed operating-system runtime surface.
+- Command candidates and caches are nonauthoritative, isolated per operation and session, and never shared as writable state across sessions.
+- A command may publish filesystem effects only after its complete process tree stops and trusted code copies a bounded admissible candidate into a synchronized clean worktree generation whose pointer commits atomically with the durable command result.
+- Cancellation, timeout, output exhaustion, sandbox failure, server loss, and restart must discard or quarantine nonauthoritative command staging and must never promote it automatically.
+- Sandboxed command execution must start from a reviewed empty environment, close standard input, use bounded pipes without a PTY, deny network and host-local service access, and expose no provider, package-manager, Git, IPC, shell, cloud, or user credentials.
+- The server may launch only the exact packaged `morons-sandbox` helper without `PATH`, shell, repository, configuration, or model selection; its one-shot inherited channel must carry no credential or generic privileged operation.
+- Every sandbox descendant must inherit operating-system confinement and must be unable to escape process-tree ownership, inspect or signal host processes, create a weaker namespace, retain background execution, or survive controlled termination.
+- Missing, partial, unverifiable, or unsupported namespace, Seatbelt, AppContainer, ACL, process-tree, or resource enforcement must fail closed with command execution unavailable and no unsandboxed fallback.
+- Morons-controlled tools, commands, and kernels must share one session workspace lease and must not retain uncontrolled background access that can race a successor operation.
 - Untrusted runtimes, tools, subprocesses, kernels, and sandboxes may receive only the mutable worktree, never the baseline, workspace metadata, workspace root, original source tree, or another session's workspace.
 - Repository source and destination paths must not become session identity, authorization evidence, durable public state, model context, audit data, logs, errors, events, or protocol results.
 - Temporary runtimes, subprocesses, Python kernels, provider response identifiers, and provider continuation state must not become authoritative session storage or receive control-plane credentials.
@@ -85,7 +94,7 @@
 
 - SQLite is the sole authoritative database for durable session, run, idempotency, event, compaction, and audit state.
 - Only the server holding the lifetime host lock may open the authoritative database, and database access must pass through one bounded server-owned storage worker.
-- The data, backup, credential, and workspace roots must be owner-controlled, local, link-safe, separate from local IPC control state, and inaccessible to untrusted execution.
+- The data, backup, credential, workspace, sandbox-image, and sandbox-operation roots must be owner-controlled, local, link-safe, and separate from local IPC control state; untrusted execution may access only its explicit image and operation staging grants.
 - The authoritative connection must verify rollback journaling, `synchronous=EXTRA`, platform-supported full synchronization, foreign keys, untrusted schema handling, defensive mode, disabled extensions, and resource limits before serving operations.
 - Durable payloads must be bounded, strictly decoded, and explicitly versioned independently of Rust layouts, SQLite rows, and protocol DTOs.
 - Canonical facts and affected projections, idempotency outcomes, delivery events, and audit facts must commit atomically.
@@ -99,6 +108,8 @@
 - A repository import must stage beneath its identity-bound workspace, publish one complete repository directory atomically, and report success only when the durable completion fact agrees with the validated baseline, worktree, marker, and manifest.
 - Repository-import recovery must never reread the source automatically and may inspect, publish, or remove only exact operation-bound state confined beneath the expected private workspace.
 - Tool recovery must never rerun a call or provider turn, reread an interrupted observation, or publish an intended edit; it may reconcile or remove only exact operation-bound state when target identity and before-or-after digests prove the outcome.
+- Active worktree generations are server-generated identities; a command result and generation-pointer change must commit in one transaction after the complete clean generation is synchronized and validated.
+- Startup must never launch, resume, or repeat a command or promote its unreferenced candidate; it may remove only exact inactive operation-bound staging after process-tree termination is proven.
 - Every committed tool call must receive a durable terminal result during normal execution or recovery; an unprovable mutating outcome must terminate the run as uncertain and block new input.
 - A dispatched effect without a committed outcome is uncertain and must never be retried automatically.
 - A run must not become cancelled until its controlled execution is known to have stopped; an unprovable cancellation remains interrupted or uncertain.
@@ -160,7 +171,8 @@
 - Closing a terminal client detaches it and must not cancel a run, stop the server, or change session lifetime.
 - Server shutdown requires an explicit authenticated idempotent local-owner mutation, may signal only on first acceptance, and must use graceful run shutdown; clients must not kill a process based only on registration state.
 - Concurrent client startup may launch contenders, but only the lifetime host-lock owner may publish or clean control state.
-- Untrusted user, provider, catalog, error, repository path, tool argument, and tool result text must be converted to bounded terminal cells without forwarding control sequences, operating-system commands, hyperlinks, title changes, device controls, or bidirectional formatting controls.
+- Untrusted user, provider, catalog, error, repository path, tool argument, tool result, command argument, and command output text must be converted to bounded terminal cells without forwarding control sequences, operating-system commands, hyperlinks, title changes, device controls, or bidirectional formatting controls.
+- The terminal may present only committed bounded sanitized command summaries and excerpts, never raw or live sandbox streams, interactive process input, inherited terminal access, or a sandbox PTY.
 - Untrusted text must never be written through raw ANSI or terminal-control output paths.
 - Terminal mode and screen ownership must be restored on every ordinary exit and handled error path, and restoration diagnostics must not contain credential or transcript buffers.
 - The terminal client is not a terminal emulator, PTY, shell, editor, or raw sandbox view and must not expose arbitrary user command submission.
@@ -171,7 +183,7 @@
 - Protocol, authentication, persistence, fingerprints, and cursors must use explicit widths and byte order and must never serialize pointers, `usize`, host-endian values, native layouts, or processor architecture.
 - Conversions among protocol lengths, SQLite integers, filesystem sizes, and `usize` must reject overflow and truncation.
 - Processor architecture is never authentication evidence, authorization evidence, a capability, or a reason to weaken limits or security behavior.
-- Native tests are required for release support because cross-compilation and emulation cannot prove IPC peer identity, filesystem controls, synchronization, process lifecycle, or terminal behavior.
+- Native tests are required for release support because cross-compilation and emulation cannot prove IPC peer identity, filesystem controls, synchronization, sandbox confinement, process-tree termination, network denial, process lifecycle, or terminal behavior.
 - Distribution artifacts must pair client and server executables built from the same revision for one target and must not download or select executables from untrusted state.
 
 ## Failure handling and isolation
