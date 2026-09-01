@@ -202,6 +202,25 @@ pub(super) fn spawn_companion(path: &Path) -> Result<Child, ConnectOrStartError>
         .map_err(ConnectOrStartError::CompanionIo)
 }
 
+#[cfg(windows)]
+const WINDOWS_COMPANION_ENVIRONMENT: &[&str] = &[
+    "SystemRoot",
+    "windir",
+    "SystemDrive",
+    "ComSpec",
+    "PATHEXT",
+    "OS",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PROCESSOR_LEVEL",
+    "PROCESSOR_REVISION",
+    "NUMBER_OF_PROCESSORS",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "ALLUSERSPROFILE",
+];
+
 fn companion_command(path: &Path) -> Command {
     let mut command = Command::new(path);
     command
@@ -225,6 +244,11 @@ fn companion_command(path: &Path) -> Command {
 
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        for name in WINDOWS_COMPANION_ENVIRONMENT {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
         command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
     command
@@ -342,7 +366,14 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(names, vec!["HOME"]);
         #[cfg(windows)]
-        assert!(names.is_empty());
+        assert_eq!(
+            names,
+            WINDOWS_COMPANION_ENVIRONMENT
+                .iter()
+                .filter(|name| std::env::var_os(name).is_some())
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>()
+        );
         assert_eq!(command.get_current_dir(), path.parent());
         assert_eq!(command.get_program(), path.as_os_str());
     }
