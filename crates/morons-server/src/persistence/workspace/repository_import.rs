@@ -828,6 +828,7 @@ fn same_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     left.dev() == right.dev() && left.ino() == right.ino() && left.file_type() == right.file_type()
 }
 
+#[cfg(unix)]
 fn modified_value(metadata: &fs::Metadata) -> Option<std::time::SystemTime> {
     metadata.modified().ok()
 }
