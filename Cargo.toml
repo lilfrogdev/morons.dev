@@ -4,6 +4,7 @@ members = [
     "crates/morons-protocol",
     "crates/morons-sandbox",
     "crates/morons-server",
+    "crates/morons-windows-native",
 ]
 resolver = "3"
 
@@ -38,6 +39,7 @@ seccompiler = "=0.5.0"
 sha2 = { version = "=0.11.0", default-features = false }
 tokio = { version = "=1.53.1", default-features = false }
 widestring = "=1.2.1"
+windows-sys = "=0.61.2"
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
 
 [workspace.lints.rust]
