@@ -20,6 +20,8 @@
 - Endpoint, registration, database, backup, and workspace filesystem state
 - Persisted payloads, schema versions, projections, and compaction checkpoints
 - Repository source paths, names, metadata, links, reparse points, special files, content, and concurrent changes
+- Model-selected tool names, call identifiers, worktree-relative paths, arguments, replacement text, and tool-result content
+- Mutable worktree entries, links, reparse points, identity changes, stale digests, operation staging state, and concurrent changes
 - Model output
 - Commands and subprocesses
 - External content
@@ -72,6 +74,8 @@
 - Concurrent input creates multiple nonterminal runs, bypasses global capacity, or enters an implicit queue.
 - An input retry appends a second user message or creates a second run instead of returning the committed result.
 - A client forges `LocalOwner` attribution, an assistant message, tool call, tool result, run transition, or terminal outcome.
+- A model requests an undeclared tool, malformed or duplicate calls, contradictory final output, an absolute or escaping path, cross-session state, or excessive calls and receives an effect before the complete provider response is durably validated.
+- Tool output from one session, run, call, or workspace is attached to another scope or supplied to a provider before its result commits.
 - A stale cancellation request targets a successor run or records cancellation before controlled execution stops.
 - New input proceeds while a tool or workspace effect remains uncertain, or an acknowledgement erases or resolves the uncertain fact.
 - A client-local model choice, connection, or attachment becomes authoritative session state.
@@ -94,7 +98,7 @@
 - A missing, malformed, insecure, linked, stale, or partially replaced credential file is accepted as current configuration.
 - A credential replacement races with another update, is retried after an unknown outcome, or loses its audit and recovery boundary across a crash.
 - A run dispatches with a credential generation different from the generation accepted for that run.
-- Repository input, configuration, model output, or a remote catalog selects an attacker-controlled origin, redirect, protocol, authorization scope, model capability, or provider route.
+- Repository input, configuration, model output, or a remote catalog selects an attacker-controlled origin, redirect, protocol, authorization scope, model capability, provider route, tool definition, or tool capability.
 - A redirect, proxy, certificate override, or error-handling path forwards the authorization header away from the reviewed OpenCode inference origin.
 - A malicious or compromised provider sends malformed, oversized, stalled, contradictory, or endless headers, errors, SSE records, JSON fields, tool arguments, identifiers, usage, or output.
 - A remote catalog advertises an unreviewed model, protocol, capability, limit, training policy, or inference endpoint and is treated as trusted configuration.
@@ -126,6 +130,12 @@
 - File count, depth, path length, individual size, total size, sparse expansion, staging state, or manifest construction exhausts memory, disk, or server capacity.
 - A crash leaves incomplete or ambiguously published import state that is mistaken for a complete repository or causes the source to be reread automatically.
 - Baseline and worktree bytes diverge during import, making later diff review depend on an invalid comparison point.
+- A file tool follows a link, reparse point, alternate stream, special file, changed parent, case alias, normalization alias, or traversal component and reaches the baseline, workspace metadata, host filesystem, or another session.
+- A stale digest or ambiguous replacement silently overwrites worktree content different from what the model observed.
+- A create operation replaces an existing entry, implicitly creates attacker-selected parents, or publishes a temporary file with insecure controls.
+- A crash after tool dispatch but before result commit causes an edit to be repeated, an unapplied staged edit to be published, a successful mutation to be forgotten, or an unmatched call to enter later provider context.
+- A read or search result is unbounded, recreated from changed bytes after restart, contains binary or terminal-control content treated as trusted, or exhausts memory, context, storage, or provider limits.
+- A mutating tool outcome remains ambiguous but the run is marked failed or cancelled without an uncertainty blocker and a successor run modifies the same workspace.
 - A live database file is copied inconsistently, a backup is disclosed, or a database-only backup is mistaken for complete workspace recovery.
 
 ## Mitigations
@@ -167,7 +177,9 @@
 - Treat resource identifiers as opaque locators and authorize every operation against server-owned state.
 - Attribute direct input to `LocalOwner`, atomically commit each accepted user message with one run, and prohibit clients from supplying assistant, tool, or run-outcome facts.
 - Resolve exact input retries before concurrency checks, reject conflicting mutation reuse, and permit at most one nonterminal top-level run per session without a queue.
-- Bind every run to an explicit reviewed service, model, protocol revision, credential generation, context-policy version, and server-owned limits.
+- Bind every run to an explicit reviewed service, model, protocol revision, credential generation, context-policy version, tool-catalog version, and server-owned limits.
+- Offer only fixed concrete server-owned tools supported by the reviewed model, strictly decode a complete provider response into typed calls, and commit every call before dispatching the first one.
+- Execute calls sequentially under one session workspace lease, commit each typed bounded result before another provider turn, and never accept authoritative calls or results from an IPC client.
 - Reserve global execution capacity before input acceptance and retain it in a bounded server-owned run supervisor independent of client connections.
 - Require cancellation to identify an exact session and run, commit intent before signaling the supervisor, and publish terminal cancellation only after controlled execution stops.
 - Block new input after an uncertain tool or workspace effect and require an idempotent attributed acknowledgement of the exact blocker that preserves the uncertain facts.
@@ -191,7 +203,12 @@
 - Omit every `.git` component and subtree, copy no source ownership or control metadata, and never invoke Git, hooks, repository code, provider inference, or source writes during import.
 - Build an immutable baseline and separate mutable worktree from the same file bytes under one operation-specific staging directory, bind them with a canonical manifest digest, and publish their parent atomically.
 - Give future untrusted execution only the mutable worktree and keep the baseline, metadata, workspace root, source repository, control state, persistence, and credentials outside its capability boundary.
+- Resolve structured tool paths from a pinned worktree root through handle-relative no-follow traversal, reject alternate streams and special entries, and perform mutations relative to a pinned destination parent.
+- Bound and verify UTF-8 file reads and literal searches, return complete-file SHA-256 digests, and expose only repository-relative names and typed truncation state.
+- Require digest-matched unambiguous edits, exclusive creates, private operation staging, synchronization, and atomic replace-or-no-replace publication without source or baseline writes.
 - Use prepared, dispatched, completion, idempotency, audit, and recovery facts around import; never reread the source after uncertain dispatch and reconcile only exact confined operation-bound staging or published state.
+- Record prepared, dispatched, and terminal facts for every tool call; never rerun or resume one on startup, and reconcile a mutation only from exact target identity, operation staging state, and committed before-or-after digests.
+- Give every committed call a durable result, terminate known interrupted tool loops without continuation, and preserve an unprovable mutation as an acknowledged-only uncertainty blocker.
 - Enforce path, depth, count, per-file, total-byte, manifest, staging-growth, and concurrency limits before and during import.
 - Use SQLite's online backup API, protect backup files like authoritative data, and distinguish database recovery from workspace recovery.
 - Use scoped, server-validated durable cursors and gap-free snapshot-plus-subscription semantics.
@@ -219,6 +236,7 @@
 - Compromise of the local authentication key permits impersonation until an explicit offline key replacement invalidates existing registrations and endpoints.
 - Operating-system, filesystem, storage-device, SQLite, or cryptographic-randomness failures can invalidate durability and authentication assumptions.
 - SQLite transactions cannot atomically commit external effects or mutable workspace files, so unresolved effects must remain interrupted or uncertain.
+- Atomic file replacement does not create an atomic transaction with SQLite, and same-user interference can still race a validated worktree operation outside Morons' local isolation guarantee.
 - Repository import cannot provide a filesystem-atomic snapshot of a source tree changed concurrently by an authorized same-user process; the immutable baseline defines the exact bytes Morons accepted.
 - Database backups do not recover workspace changes unless a separately bound workspace snapshot exists.
 - Database confidentiality at rest depends on operating-system access controls and storage encryption rather than application-level encryption.

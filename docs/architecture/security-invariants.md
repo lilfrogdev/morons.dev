@@ -45,6 +45,9 @@
 - The reviewed model manifest must exclude models documented for training, contributor programs, trials, or improvement.
 - Provider requests, headers, response bodies, SSE records, decoded fields, accumulated output, tool arguments, identifiers, and errors must be bounded, strictly decoded, and sanitized before crossing the application boundary.
 - Provider response identifiers and continuation data are ephemeral run state and must not become authoritative session or recovery state.
+- Provider tool definitions come only from a fixed versioned server-owned catalog; clients, repositories, model output, configuration, and remote catalogs cannot add a tool or enlarge its capability.
+- Model-selected tool names, call identifiers, arguments, paths, and output remain untrusted and must strictly decode into one offered concrete tool before any call from that provider response is dispatched.
+- Repository content may enter a provider request only through bounded canonical context or a bounded committed tool result for the selected authorized run; tools must never attach provider credentials.
 - A dispatched inference request must never be retried automatically because an uncertain outcome may already have incurred usage or billing.
 - Provider failures and cancellations must preserve prepared, dispatched, outcome, and uncertainty facts without storing credentials or raw provider payloads.
 
@@ -67,6 +70,12 @@
 - A repository source must not overlap in either direction with Morons application, control, runtime, data, backup, credential, or workspace roots; protected Morons state must never be imported or copied into a worktree.
 - Components named `.git` under ASCII case folding and their complete subtrees must not enter a session workspace.
 - An imported workspace must contain an immutable baseline and a separate mutable worktree produced from the same validated bytes and bound by a versioned architecture-neutral manifest digest.
+- Structured file tools may operate only for the exact active run of a ready imported workspace and only through bounded server-validated worktree-relative UTF-8 paths.
+- Tool path resolution and mutation must remain relative to pinned directory handles, reject links, reparse points, alternate streams, special files, identity changes, escapes, and collisions, and never reopen a client- or model-selected host path.
+- Worktree reads must be bounded, verify the opened node before and after use, return only typed bounded results, and never expose host-absolute paths.
+- Worktree edits require a complete-file digest precondition and unambiguous bounded replacements; file and directory creation is exclusive and never replaces an existing name.
+- Mutating file tools must stage private operation-bound state, synchronize it, and publish with an atomic handle-relative replace or no-replace operation before committing success.
+- Morons-controlled tools, future commands, and kernels must share one session workspace lease and must not retain uncontrolled background access that can race a successor operation.
 - Untrusted runtimes, tools, subprocesses, kernels, and sandboxes may receive only the mutable worktree, never the baseline, workspace metadata, workspace root, original source tree, or another session's workspace.
 - Repository source and destination paths must not become session identity, authorization evidence, durable public state, model context, audit data, logs, errors, events, or protocol results.
 - Temporary runtimes, subprocesses, Python kernels, provider response identifiers, and provider continuation state must not become authoritative session storage or receive control-plane credentials.
@@ -80,13 +89,17 @@
 - The authoritative connection must verify rollback journaling, `synchronous=EXTRA`, platform-supported full synchronization, foreign keys, untrusted schema handling, defensive mode, disabled extensions, and resource limits before serving operations.
 - Durable payloads must be bounded, strictly decoded, and explicitly versioned independently of Rust layouts, SQLite rows, and protocol DTOs.
 - Canonical facts and affected projections, idempotency outcomes, delivery events, and audit facts must commit atomically.
-- Canonical transcript entries must contain only complete bounded attributed user messages, assistant messages, tool calls, and tool results in monotonic session-entry order.
+- Canonical transcript entries must contain only complete bounded attributed user messages, assistant messages, typed tool calls, and typed tool results in monotonic session-entry order.
+- A provider response requesting tools must commit its provider outcome and every validated call before execution; each result must commit before it is supplied to another provider turn.
+- Canonical tool entries may contain only concrete versioned built-in inputs and results with repository-relative paths, never raw provider JSON, host paths, temporary names, Rust layouts, debug strings, or raw filesystem errors.
 - Partial assistant text must remain ephemeral, must never be replayed, and must be replaced in clients by the complete committed assistant message.
 - Session transcript pagination must use an immutable entry high water and return a session-event cursor from the same transaction so snapshot and replay remain gap-free.
 - A durable result or event must never be published before its transaction commits, and an unknown commit outcome must never be reported as success.
 - External effects require durable prepared, dispatched, and outcome boundaries without holding a database transaction across the effect.
 - A repository import must stage beneath its identity-bound workspace, publish one complete repository directory atomically, and report success only when the durable completion fact agrees with the validated baseline, worktree, marker, and manifest.
 - Repository-import recovery must never reread the source automatically and may inspect, publish, or remove only exact operation-bound state confined beneath the expected private workspace.
+- Tool recovery must never rerun a call or provider turn, reread an interrupted observation, or publish an intended edit; it may reconcile or remove only exact operation-bound state when target identity and before-or-after digests prove the outcome.
+- Every committed tool call must receive a durable terminal result during normal execution or recovery; an unprovable mutating outcome must terminate the run as uncertain and block new input.
 - A dispatched effect without a committed outcome is uncertain and must never be retried automatically.
 - A run must not become cancelled until its controlled execution is known to have stopped; an unprovable cancellation remains interrupted or uncertain.
 - Startup recovery must terminate nonterminal runs idempotently from committed facts before accepting application operations and must perform no external effect.
@@ -147,7 +160,7 @@
 - Closing a terminal client detaches it and must not cancel a run, stop the server, or change session lifetime.
 - Server shutdown requires an explicit authenticated idempotent local-owner mutation, may signal only on first acceptance, and must use graceful run shutdown; clients must not kill a process based only on registration state.
 - Concurrent client startup may launch contenders, but only the lifetime host-lock owner may publish or clean control state.
-- Untrusted user, provider, catalog, error, and future tool text must be converted to bounded terminal cells without forwarding control sequences, operating-system commands, hyperlinks, title changes, device controls, or bidirectional formatting controls.
+- Untrusted user, provider, catalog, error, repository path, tool argument, and tool result text must be converted to bounded terminal cells without forwarding control sequences, operating-system commands, hyperlinks, title changes, device controls, or bidirectional formatting controls.
 - Untrusted text must never be written through raw ANSI or terminal-control output paths.
 - Terminal mode and screen ownership must be restored on every ordinary exit and handled error path, and restoration diagnostics must not contain credential or transcript buffers.
 - The terminal client is not a terminal emulator, PTY, shell, editor, or raw sandbox view and must not expose arbitrary user command submission.
@@ -168,4 +181,5 @@
 - Connections admitted before endpoint security and registration publication are complete must be rejected.
 - Authentication nonces and proofs must not be accepted more than once or retained after the connection attempt ends.
 - Untrusted repository processes must not receive or be able to access the control directory, authentication key, provider credential root, endpoint registration, host IPC endpoint, data root, backup root, workspace baseline or metadata, original source tree, or another session's workspace.
+- Tool definitions, model instructions, digest preconditions, path validation, and operation identifiers are not sandbox boundaries; filesystem confinement must be enforced by trusted handle-relative server code and operating-system isolation.
 - Authentication and authorization audit events must not contain keys, nonces, proofs, or other authentication material.
