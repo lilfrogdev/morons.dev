@@ -2,6 +2,7 @@
 members = [
     "crates/morons-cli",
     "crates/morons-protocol",
+    "crates/morons-sandbox",
     "crates/morons-server",
 ]
 resolver = "3"
