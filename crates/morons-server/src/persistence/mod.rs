@@ -27,21 +27,24 @@ pub use self::{
     run_types::{
         AcceptedRun, MessageId, Run, RunCancellationResult, RunFailureKind, RunId,
         RunModelSelection, RunOpenCodeService, RunState, SessionEvent, SessionEventCursor,
-        SessionEventPage, SessionEventPayload, TranscriptCursor, TranscriptEntry, TranscriptPage,
+        SessionEventPage, SessionEventPayload, ToolCallId, TranscriptCursor, TranscriptEntry,
+        TranscriptPage,
     },
     types::{
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
         ServerStopResult, Session, SessionCatalogEvent, SessionCatalogEventCursor,
-        SessionCatalogEventPage, SessionId, SessionListCursor, SessionPage, WorkspaceBlockReason,
-        WorkspaceState, WorkspaceSummary,
+        SessionCatalogEventPage, SessionId, SessionListCursor, SessionPage,
+        ToolUncertaintyAcknowledgement, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
     },
 };
 
 pub(crate) use self::types::{RepositoryImportOutcome, RepositoryImportPlan};
 
 pub(crate) use self::run_types::{
-    ActivationOutcome, CompletedAssistant, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
+    ActivationOutcome, AssistantMessagePhase, CommittedToolCall, CommittedToolTurn,
+    CompletedAssistant, CompletedToolTurn, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
     PrepareOperationOutcome, ProviderOperationFailureState, ProviderUsage, RunContext,
+    ToolOperationRecovery,
 };
 
 const WORKER_QUEUE_CAPACITY: usize = 64;
@@ -348,6 +351,10 @@ impl SessionStore {
 
     pub(crate) fn subscribe_event_notifications(&self) -> watch::Receiver<u64> {
         self.event_notifications.subscribe()
+    }
+
+    pub(crate) fn worktree_path(&self, workspace_id: &[u8; 16]) -> std::path::PathBuf {
+        self.paths.worktree_path(workspace_id)
     }
 
     fn sender(&self) -> Result<&mpsc::Sender<WorkerRequest>, PersistenceError> {

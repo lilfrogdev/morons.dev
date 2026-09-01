@@ -1,4 +1,4 @@
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 
 use super::{
     Backend,
@@ -8,7 +8,8 @@ use super::{
     session_events::{active_run_id_at_sequence, load_run_at_sequence, session_event_high_water},
 };
 use crate::persistence::{
-    PersistenceError, Run, RunId, SessionEventCursor, SessionId, TranscriptCursor, TranscriptPage,
+    PersistenceError, Run, RunId, SessionEventCursor, SessionId, TranscriptCursor, TranscriptEntry,
+    TranscriptPage,
     run_types::{CONTEXT_POLICY_VERSION, RunContext},
 };
 
@@ -106,21 +107,30 @@ impl Backend {
 
         let mut statement = self.connection.prepare(
             "SELECT
-                entry_sequence,
-                message_id,
-                run_id,
-                entry_kind,
-                open_code_service,
-                model_id,
-                text,
-                refusal,
-                created_at_milliseconds
-             FROM session_entries
-             WHERE session_id = ?1
-               AND entry_sequence > ?2
-               AND entry_sequence <= ?3
-               AND fact_sequence <= ?4
-             ORDER BY entry_sequence
+                entry.entry_sequence,
+                entry.message_id,
+                entry.run_id,
+                entry.entry_kind,
+                entry.open_code_service,
+                entry.model_id,
+                entry.text,
+                entry.refusal,
+                entry.created_at_milliseconds,
+                entry.assistant_phase,
+                entry.tool_call_id,
+                call.operation_id,
+                call.provider_operation_id,
+                call.input_payload,
+                result.result_payload
+             FROM session_entries AS entry
+             LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
+             LEFT JOIN tool_operation_facts AS result
+               ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
+             WHERE entry.session_id = ?1
+               AND entry.entry_sequence > ?2
+               AND entry.entry_sequence <= ?3
+               AND entry.fact_sequence <= ?4
+             ORDER BY entry.entry_sequence
              LIMIT ?5",
         )?;
         let mut entries = statement
@@ -190,38 +200,116 @@ impl Backend {
                 reason: "a run uses an unsupported context policy version",
             });
         }
+        let current_entry_high_water = self.connection.query_row(
+            "SELECT entry_high_water FROM session_run_states WHERE session_id = ?1",
+            [&run.session_id.as_bytes()[..]],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let current_entry_high_water = u64::try_from(current_entry_high_water).map_err(|_| {
+            PersistenceError::InvalidState {
+                reason: "the current run entry high water is invalid",
+            }
+        })?;
+        if current_entry_high_water < run.source_entry_high_water {
+            return Err(PersistenceError::InvalidState {
+                reason: "the current run context precedes its accepted source",
+            });
+        }
         let mut statement = self.connection.prepare(
             "SELECT
-                entry_sequence,
-                message_id,
-                run_id,
-                entry_kind,
-                open_code_service,
-                model_id,
-                text,
-                refusal,
-                created_at_milliseconds
-             FROM session_entries
-             WHERE session_id = ?1 AND entry_sequence <= ?2
-             ORDER BY entry_sequence",
+                entry.entry_sequence,
+                entry.message_id,
+                entry.run_id,
+                entry.entry_kind,
+                entry.open_code_service,
+                entry.model_id,
+                entry.text,
+                entry.refusal,
+                entry.created_at_milliseconds,
+                entry.assistant_phase,
+                entry.tool_call_id,
+                call.operation_id,
+                call.provider_operation_id,
+                call.input_payload,
+                result.result_payload
+             FROM session_entries AS entry
+             LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
+             LEFT JOIN tool_operation_facts AS result
+               ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
+             WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2
+             ORDER BY entry.entry_sequence",
         )?;
         let entries = statement
             .query_map(
                 params![
                     &run.session_id.as_bytes()[..],
-                    sequence_to_sql(run.source_entry_high_water)?
+                    sequence_to_sql(current_entry_high_water)?
                 ],
                 transcript_entry_from_row,
             )?
             .collect::<Result<Vec<_>, _>>()?;
         if entries.is_empty()
-            || entries.last().map(|entry| entry.entry_sequence())
-                != Some(run.source_entry_high_water)
+            || entries.last().map(TranscriptEntry::entry_sequence) != Some(current_entry_high_water)
         {
             return Err(PersistenceError::InvalidState {
-                reason: "a run context source high water is not present",
+                reason: "a run context high water is not present",
             });
         }
-        Ok(RunContext { run, entries })
+        let context_bytes = entries
+            .iter()
+            .try_fold(0_u64, |total, entry| {
+                let bytes = match entry {
+                    TranscriptEntry::UserMessage { text, .. }
+                    | TranscriptEntry::AssistantMessage { text, .. } => text.len(),
+                    TranscriptEntry::ToolCall { input, .. } => {
+                        serde_json::to_vec(input).ok()?.len()
+                    }
+                    TranscriptEntry::ToolResult { result, .. } => {
+                        result.provider_output().ok()?.len()
+                    }
+                };
+                total.checked_add(bytes as u64)
+            })
+            .ok_or(PersistenceError::ResourceLimit {
+                resource: crate::persistence::PersistenceResourceLimit::Context,
+            })?;
+        let estimated_input_tokens =
+            crate::persistence::run_types::conservative_input_token_estimate(
+                context_bytes,
+                entries.len() as u64,
+            )
+            .filter(|estimate| *estimate <= run.maximum_input_tokens)
+            .ok_or(PersistenceError::ResourceLimit {
+                resource: crate::persistence::PersistenceResourceLimit::Context,
+            })?;
+        let workspace_id = self
+            .connection
+            .query_row(
+                "SELECT session.workspace_id
+                 FROM session_created_facts AS session
+                 JOIN repository_import_requests AS repository
+                   ON repository.session_id = session.session_id AND repository.state = 2
+                 WHERE session.session_id = ?1",
+                [&run.session_id.as_bytes()[..]],
+                |row| row.get::<_, [u8; 16]>(0),
+            )
+            .optional()?;
+        let valid_tool_versions =
+            matches!((run.tool_catalog_version, run.tool_limits_version), (0, 0))
+                || (run.tool_catalog_version == crate::tools::TOOL_CATALOG_VERSION
+                    && run.tool_limits_version == crate::tools::TOOL_LIMITS_VERSION
+                    && workspace_id.is_some());
+        if !valid_tool_versions {
+            return Err(PersistenceError::InvalidState {
+                reason: "the run tool catalog conflicts with its ready workspace",
+            });
+        }
+        Ok(RunContext {
+            run,
+            entries,
+            current_entry_high_water,
+            estimated_input_tokens,
+            workspace_id,
+        })
     }
 }

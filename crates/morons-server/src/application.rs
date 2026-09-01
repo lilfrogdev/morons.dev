@@ -321,6 +321,7 @@ impl ServerApplication {
                             protocol_revision: model.responses_protocol_revision,
                             maximum_input_tokens: model.maximum_input_tokens,
                             maximum_output_tokens: model.maximum_output_tokens,
+                            supports_tool_calls: model.capabilities.tool_calls,
                         },
                     )
                     .await
@@ -426,6 +427,28 @@ impl ServerApplication {
                         run_id: to_protocol_run_id(result.run_id),
                         state: to_protocol_run_state(result.state),
                         cancellation_requested: result.cancellation_requested,
+                    },
+                ))
+            }
+            ApplicationRequest::AcknowledgeToolUncertainty {
+                mutation_request_id,
+                session_id,
+                run_id,
+            } => {
+                let acknowledgement = self
+                    .sessions
+                    .acknowledge_tool_uncertainty(
+                        to_persistence_mutation_id(mutation_request_id),
+                        to_persistence_session_id(session_id),
+                        to_persistence_run_id(run_id),
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::ToolUncertaintyAcknowledged {
+                        session_id,
+                        run_id,
+                        workspace: to_protocol_workspace_summary(acknowledgement.workspace),
                     },
                 ))
             }

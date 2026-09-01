@@ -288,6 +288,11 @@ pub enum ApplicationRequest {
         session_id: SessionId,
         run_id: crate::RunId,
     },
+    AcknowledgeToolUncertainty {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        run_id: crate::RunId,
+    },
     StopServer {
         mutation_request_id: MutationRequestId,
     },
@@ -394,6 +399,16 @@ impl fmt::Debug for ApplicationRequest {
                 .field("session_id", session_id)
                 .field("run_id", run_id)
                 .finish(),
+            Self::AcknowledgeToolUncertainty {
+                mutation_request_id,
+                session_id,
+                run_id,
+            } => formatter
+                .debug_struct("AcknowledgeToolUncertainty")
+                .field("mutation_request_id", mutation_request_id)
+                .field("session_id", session_id)
+                .field("run_id", run_id)
+                .finish(),
             Self::StopServer {
                 mutation_request_id,
             } => formatter
@@ -459,6 +474,11 @@ pub enum ApplicationResponse {
         run_id: crate::RunId,
         state: crate::RunState,
         cancellation_requested: bool,
+    },
+    ToolUncertaintyAcknowledged {
+        session_id: SessionId,
+        run_id: crate::RunId,
+        workspace: WorkspaceSummary,
     },
     ServerStopAccepted {
         current_server_stopping: bool,
@@ -590,6 +610,7 @@ pub enum WorkspaceState {
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceBlockReason {
     InconsistentImportState,
+    UncertainToolEffect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -599,6 +620,8 @@ pub struct WorkspaceSummary {
     pub file_count: u64,
     pub logical_bytes: u64,
     pub block_reason: Option<WorkspaceBlockReason>,
+    pub blocked_run_id: Option<crate::RunId>,
+    pub blocked_tool: Option<crate::ToolKind>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

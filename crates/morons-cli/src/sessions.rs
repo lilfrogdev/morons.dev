@@ -14,8 +14,8 @@ use morons_protocol::{
     MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
     OpenCodeService, ResourceLimit, RunId, RunState, RunSummary, ServerMessage,
     SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
-    TranscriptCursor, TranscriptEntry, WorkspaceState, WorkspaceSummary, read_server_message,
-    write_client_message,
+    TranscriptCursor, TranscriptEntry, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
+    read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -201,13 +201,26 @@ fn valid_workspace_summary(workspace: WorkspaceSummary) -> bool {
             workspace.file_count == 0
                 && workspace.logical_bytes == 0
                 && workspace.block_reason.is_none()
+                && workspace.blocked_run_id.is_none()
+                && workspace.blocked_tool.is_none()
         }
-        WorkspaceState::Ready => workspace.block_reason.is_none(),
-        WorkspaceState::Blocked => {
-            workspace.file_count == 0
-                && workspace.logical_bytes == 0
-                && workspace.block_reason.is_some()
+        WorkspaceState::Ready => {
+            workspace.block_reason.is_none()
+                && workspace.blocked_run_id.is_none()
+                && workspace.blocked_tool.is_none()
         }
+        WorkspaceState::Blocked => match workspace.block_reason {
+            Some(WorkspaceBlockReason::InconsistentImportState) => {
+                workspace.file_count == 0
+                    && workspace.logical_bytes == 0
+                    && workspace.blocked_run_id.is_none()
+                    && workspace.blocked_tool.is_none()
+            }
+            Some(WorkspaceBlockReason::UncertainToolEffect) => {
+                workspace.blocked_run_id.is_some() && workspace.blocked_tool.is_some()
+            }
+            None => false,
+        },
     }
 }
 
@@ -401,6 +414,10 @@ where
             } => runs.iter().any(|run| {
                 run.id == *run_id && run.service == *service && run.model_id == *model_id
             }),
+            TranscriptEntry::ToolCall { run_id, .. }
+            | TranscriptEntry::ToolResult { run_id, .. } => {
+                runs.iter().any(|run| run.id == *run_id)
+            }
         });
         let active_run_is_valid = active_run_id.is_none_or(|active_run_id| {
             runs.iter()
@@ -483,6 +500,38 @@ where
             state,
             cancellation_requested,
         })
+    }
+
+    pub async fn acknowledge_tool_uncertainty(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        run_id: RunId,
+    ) -> Result<WorkspaceSummary, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::AcknowledgeToolUncertainty {
+                mutation_request_id,
+                session_id,
+                run_id,
+            })
+            .await?;
+        let ApplicationResponse::ToolUncertaintyAcknowledged {
+            session_id: response_session_id,
+            run_id: response_run_id,
+            workspace,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        if response_session_id != session_id
+            || response_run_id != run_id
+            || !valid_workspace_summary(workspace)
+            || workspace.state != WorkspaceState::Ready
+        {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(workspace)
     }
 
     pub async fn list_open_code_models(

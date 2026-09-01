@@ -29,6 +29,7 @@ pub(super) enum PendingOperation {
     SubmitInput,
     CancelRun,
     ImportRepository,
+    AcknowledgeToolUncertainty,
     UpdateCredential,
     StopServer,
 }
@@ -68,6 +69,10 @@ pub(super) enum AppAction {
     ImportRepository {
         session_id: SessionId,
         source_path: String,
+    },
+    AcknowledgeToolUncertainty {
+        session_id: SessionId,
+        run_id: RunId,
     },
     SetCredential {
         expected_generation: u64,
@@ -117,6 +122,11 @@ impl fmt::Debug for AppAction {
                 .debug_struct("ImportRepository")
                 .field("session_id", session_id)
                 .field("source_path_bytes", &source_path.len())
+                .finish(),
+            Self::AcknowledgeToolUncertainty { session_id, run_id } => formatter
+                .debug_struct("AcknowledgeToolUncertainty")
+                .field("session_id", session_id)
+                .field("run_id", run_id)
                 .finish(),
             Self::SetCredential {
                 expected_generation,
@@ -176,6 +186,7 @@ pub(super) struct AppState {
     pub(super) pending: Option<PendingOperation>,
     pub(super) pending_unknown: bool,
     pub(super) confirm_stop: bool,
+    pub(super) confirm_uncertainty: bool,
     pub(super) transcript_scroll: u16,
 }
 
@@ -197,6 +208,7 @@ impl AppState {
             pending: None,
             pending_unknown: false,
             confirm_stop: false,
+            confirm_uncertainty: false,
             transcript_scroll: 0,
         }
     }
@@ -539,6 +551,12 @@ impl SessionView {
                 morons_protocol::WorkspaceState::Ready,
                 morons_protocol::WorkspaceState::Ready
             ) | (
+                morons_protocol::WorkspaceState::Ready,
+                morons_protocol::WorkspaceState::Blocked
+            ) | (
+                morons_protocol::WorkspaceState::Blocked,
+                morons_protocol::WorkspaceState::Ready
+            ) | (
                 morons_protocol::WorkspaceState::Blocked,
                 morons_protocol::WorkspaceState::Blocked
             )
@@ -662,6 +680,27 @@ impl PresentedTranscriptEntry {
                 text: SafeText::from_untrusted(&text),
                 refusal,
             },
+            TranscriptEntry::ToolCall { id, tool, path, .. } => Self {
+                id,
+                role: "Tool call",
+                text: SafeText::from_untrusted(&format!("{} · {path}", tool_label(tool))),
+                refusal: false,
+            },
+            TranscriptEntry::ToolResult {
+                id,
+                tool,
+                status,
+                summary,
+                ..
+            } => Self {
+                id,
+                role: "Tool result",
+                text: SafeText::from_untrusted(&format!(
+                    "{} · {status:?} · {summary}",
+                    tool_label(tool)
+                )),
+                refusal: false,
+            },
         }
     }
 }
@@ -706,21 +745,36 @@ const fn valid_run_transition(previous: RunState, next: RunState) -> bool {
         RunState::Failed => matches!(next, RunState::Failed),
         RunState::Cancelled => matches!(next, RunState::Cancelled),
         RunState::Interrupted => matches!(next, RunState::Interrupted),
+        RunState::Uncertain => matches!(next, RunState::Uncertain),
     }
 }
 
 fn transcript_entry_id(entry: &TranscriptEntry) -> MessageId {
     match entry {
-        TranscriptEntry::UserMessage { id, .. } | TranscriptEntry::AssistantMessage { id, .. } => {
-            *id
-        }
+        TranscriptEntry::UserMessage { id, .. }
+        | TranscriptEntry::AssistantMessage { id, .. }
+        | TranscriptEntry::ToolCall { id, .. }
+        | TranscriptEntry::ToolResult { id, .. } => *id,
     }
 }
 
 fn transcript_entry_run_id(entry: &TranscriptEntry) -> RunId {
     match entry {
         TranscriptEntry::UserMessage { run_id, .. }
-        | TranscriptEntry::AssistantMessage { run_id, .. } => *run_id,
+        | TranscriptEntry::AssistantMessage { run_id, .. }
+        | TranscriptEntry::ToolCall { run_id, .. }
+        | TranscriptEntry::ToolResult { run_id, .. } => *run_id,
+    }
+}
+
+const fn tool_label(tool: morons_protocol::ToolKind) -> &'static str {
+    match tool {
+        morons_protocol::ToolKind::ListDirectory => "list_directory",
+        morons_protocol::ToolKind::ReadFile => "read_file",
+        morons_protocol::ToolKind::SearchText => "search_text",
+        morons_protocol::ToolKind::EditFile => "edit_file",
+        morons_protocol::ToolKind::CreateFile => "create_file",
+        morons_protocol::ToolKind::CreateDirectory => "create_directory",
     }
 }
 

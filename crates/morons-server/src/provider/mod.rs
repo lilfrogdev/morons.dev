@@ -1,7 +1,7 @@
 mod cancellation;
 mod catalog;
 mod error;
-mod json;
+pub(crate) mod json;
 mod models;
 mod opencode;
 mod outcome;

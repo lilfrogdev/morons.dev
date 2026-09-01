@@ -8,7 +8,9 @@ use morons_protocol::{
     RunSummary, SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
     SessionEventCursor as ProtocolSessionEventCursor, SessionId as ProtocolSessionId,
     SessionListCursor as ProtocolSessionListCursor, SessionSummary,
-    TranscriptCursor as ProtocolTranscriptCursor, TranscriptEntry as ProtocolTranscriptEntry,
+    ToolCallId as ProtocolToolCallId, ToolKind as ProtocolToolKind,
+    ToolResultStatus as ProtocolToolResultStatus, TranscriptCursor as ProtocolTranscriptCursor,
+    TranscriptEntry as ProtocolTranscriptEntry,
     WorkspaceBlockReason as ProtocolWorkspaceBlockReason, WorkspaceState as ProtocolWorkspaceState,
     WorkspaceSummary as ProtocolWorkspaceSummary,
 };
@@ -197,7 +199,7 @@ pub(super) const fn to_protocol_credential_status(
     }
 }
 
-pub(super) const fn to_protocol_workspace_summary(
+pub(super) fn to_protocol_workspace_summary(
     workspace: WorkspaceSummary,
 ) -> ProtocolWorkspaceSummary {
     ProtocolWorkspaceSummary {
@@ -213,8 +215,13 @@ pub(super) const fn to_protocol_workspace_summary(
             Some(WorkspaceBlockReason::InconsistentImportState) => {
                 Some(ProtocolWorkspaceBlockReason::InconsistentImportState)
             }
+            Some(WorkspaceBlockReason::UncertainToolEffect) => {
+                Some(ProtocolWorkspaceBlockReason::UncertainToolEffect)
+            }
             None => None,
         },
+        blocked_run_id: workspace.blocked_run_id.map(to_protocol_run_id),
+        blocked_tool: workspace.blocked_tool.map(to_protocol_tool_kind),
     }
 }
 
@@ -228,6 +235,8 @@ pub(super) fn to_run_summary(run: Run) -> RunSummary {
         protocol_revision: run.protocol_revision,
         credential_generation: run.credential_generation,
         context_policy_version: run.context_policy_version,
+        tool_catalog_version: run.tool_catalog_version,
+        tool_limits_version: run.tool_limits_version,
         state: to_protocol_run_state(run.state),
         cancellation_requested: run.cancellation_requested,
         failure: run.failure.map(to_protocol_run_failure),
@@ -244,6 +253,7 @@ pub(super) const fn to_protocol_run_state(state: RunState) -> ProtocolRunState {
         RunState::Failed => ProtocolRunState::Failed,
         RunState::Cancelled => ProtocolRunState::Cancelled,
         RunState::Interrupted => ProtocolRunState::Interrupted,
+        RunState::Uncertain => ProtocolRunState::Uncertain,
     }
 }
 
@@ -259,6 +269,7 @@ const fn to_protocol_run_failure(failure: RunFailureKind) -> ProtocolRunFailureK
         RunFailureKind::ProviderRejected => ProtocolRunFailureKind::ProviderRejected,
         RunFailureKind::ProviderProtocol => ProtocolRunFailureKind::ProviderProtocol,
         RunFailureKind::InvalidProviderOutput => ProtocolRunFailureKind::InvalidProviderOutput,
+        RunFailureKind::ToolExecution => ProtocolRunFailureKind::ToolExecution,
         RunFailureKind::ResourceLimit => ProtocolRunFailureKind::ResourceLimit,
         RunFailureKind::Internal => ProtocolRunFailureKind::Internal,
     }
@@ -296,6 +307,67 @@ pub(super) fn to_protocol_transcript_entry(entry: TranscriptEntry) -> ProtocolTr
             refusal,
             created_at_milliseconds,
         },
+        TranscriptEntry::ToolCall {
+            id,
+            run_id,
+            call_id,
+            input,
+            created_at_milliseconds,
+            ..
+        } => ProtocolTranscriptEntry::ToolCall {
+            id: ProtocolMessageId::from_bytes(*id.as_bytes()),
+            run_id: to_protocol_run_id(run_id),
+            call_id: ProtocolToolCallId::from_bytes(*call_id.as_bytes()),
+            tool: to_protocol_tool_kind(input.kind()),
+            path: input.path().as_str().to_owned(),
+            created_at_milliseconds,
+        },
+        TranscriptEntry::ToolResult {
+            id,
+            run_id,
+            call_id,
+            tool,
+            result,
+            created_at_milliseconds,
+            ..
+        } => ProtocolTranscriptEntry::ToolResult {
+            id: ProtocolMessageId::from_bytes(*id.as_bytes()),
+            run_id: to_protocol_run_id(run_id),
+            call_id: ProtocolToolCallId::from_bytes(*call_id.as_bytes()),
+            tool: to_protocol_tool_kind(tool),
+            status: protocol_tool_result_status(&result),
+            summary: result.summary(),
+            created_at_milliseconds,
+        },
+    }
+}
+
+const fn to_protocol_tool_kind(tool: crate::tools::ToolKind) -> ProtocolToolKind {
+    match tool {
+        crate::tools::ToolKind::ListDirectory => ProtocolToolKind::ListDirectory,
+        crate::tools::ToolKind::ReadFile => ProtocolToolKind::ReadFile,
+        crate::tools::ToolKind::SearchText => ProtocolToolKind::SearchText,
+        crate::tools::ToolKind::EditFile => ProtocolToolKind::EditFile,
+        crate::tools::ToolKind::CreateFile => ProtocolToolKind::CreateFile,
+        crate::tools::ToolKind::CreateDirectory => ProtocolToolKind::CreateDirectory,
+    }
+}
+
+const fn protocol_tool_result_status(
+    result: &crate::tools::ToolResult,
+) -> ProtocolToolResultStatus {
+    match result {
+        crate::tools::ToolResult::Ok { .. } => ProtocolToolResultStatus::Succeeded,
+        crate::tools::ToolResult::Error {
+            error: crate::tools::ToolErrorKind::Uncertain,
+        } => ProtocolToolResultStatus::Uncertain,
+        crate::tools::ToolResult::Error {
+            error:
+                crate::tools::ToolErrorKind::Interrupted
+                | crate::tools::ToolErrorKind::Cancelled
+                | crate::tools::ToolErrorKind::NotDispatched,
+        } => ProtocolToolResultStatus::Interrupted,
+        crate::tools::ToolResult::Error { .. } => ProtocolToolResultStatus::Failed,
     }
 }
 
@@ -343,7 +415,9 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::RepositoryImportNotApplied => {
             ApplicationError::RepositoryImportNotApplied
         }
-        PersistenceError::WorkspaceBlocked => ApplicationError::WorkspaceBlocked,
+        PersistenceError::WorkspaceBlocked | PersistenceError::ToolUncertaintyNotFound => {
+            ApplicationError::WorkspaceBlocked
+        }
         PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Sessions,
         } => ApplicationError::ResourceLimit {

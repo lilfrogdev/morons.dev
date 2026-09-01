@@ -1,6 +1,7 @@
 use std::fmt;
 
 use super::{Session, SessionId, types::IDENTIFIER_BYTES};
+use crate::tools::{ToolInput, ToolKind, ToolResult, ValidatedProviderCall};
 
 pub const CONTEXT_POLICY_VERSION: u16 = 1;
 pub(super) const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
@@ -64,6 +65,29 @@ impl fmt::Debug for MessageId {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ToolCallId([u8; IDENTIFIER_BYTES]);
+
+impl ToolCallId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ToolCallId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ToolCallId(")?;
+        write_hex(formatter, &self.0)?;
+        formatter.write_str(")")
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunOpenCodeService {
     Zen,
@@ -99,6 +123,7 @@ pub enum RunState {
     Failed,
     Cancelled,
     Interrupted,
+    Uncertain,
 }
 
 impl RunState {
@@ -106,7 +131,7 @@ impl RunState {
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted | Self::Uncertain
         )
     }
 
@@ -118,6 +143,7 @@ impl RunState {
             Self::Failed => 4,
             Self::Cancelled => 5,
             Self::Interrupted => 6,
+            Self::Uncertain => 7,
         }
     }
 
@@ -129,6 +155,7 @@ impl RunState {
             4 => Ok(Self::Failed),
             5 => Ok(Self::Cancelled),
             6 => Ok(Self::Interrupted),
+            7 => Ok(Self::Uncertain),
             _ => Err(rusqlite::Error::InvalidColumnType(
                 0,
                 "run_state".to_owned(),
@@ -148,6 +175,7 @@ pub enum RunFailureKind {
     ProviderRejected,
     ProviderProtocol,
     InvalidProviderOutput,
+    ToolExecution,
     ResourceLimit,
     Internal,
 }
@@ -165,6 +193,7 @@ impl RunFailureKind {
             Self::InvalidProviderOutput => 8,
             Self::ResourceLimit => 9,
             Self::Internal => 10,
+            Self::ToolExecution => 11,
         }
     }
 
@@ -180,6 +209,7 @@ impl RunFailureKind {
             8 => Ok(Self::InvalidProviderOutput),
             9 => Ok(Self::ResourceLimit),
             10 => Ok(Self::Internal),
+            11 => Ok(Self::ToolExecution),
             _ => Err(rusqlite::Error::InvalidColumnType(
                 0,
                 "run_failure_kind".to_owned(),
@@ -199,6 +229,8 @@ pub struct Run {
     pub protocol_revision: u16,
     pub credential_generation: u64,
     pub context_policy_version: u16,
+    pub tool_catalog_version: u16,
+    pub tool_limits_version: u16,
     pub state: RunState,
     pub cancellation_requested: bool,
     pub failure: Option<RunFailureKind>,
@@ -208,6 +240,10 @@ pub struct Run {
     pub(crate) estimated_input_tokens: u32,
     pub(crate) maximum_input_tokens: u32,
     pub(crate) maximum_output_tokens: u32,
+    pub(crate) provider_turns: u16,
+    pub(crate) tool_calls: u32,
+    pub(crate) tool_mutations: u32,
+    pub(crate) tool_result_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -270,6 +306,12 @@ impl TranscriptCursor {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AssistantMessagePhase {
+    Commentary,
+    Final,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum TranscriptEntry {
     UserMessage {
@@ -287,6 +329,27 @@ pub enum TranscriptEntry {
         model_id: String,
         text: String,
         refusal: bool,
+        phase: AssistantMessagePhase,
+        created_at_milliseconds: u64,
+    },
+    ToolCall {
+        entry_sequence: u64,
+        id: MessageId,
+        run_id: RunId,
+        call_id: ToolCallId,
+        operation_id: ToolOperationId,
+        provider_operation_id: ProviderOperationId,
+        input: ToolInput,
+        created_at_milliseconds: u64,
+    },
+    ToolResult {
+        entry_sequence: u64,
+        id: MessageId,
+        run_id: RunId,
+        call_id: ToolCallId,
+        operation_id: ToolOperationId,
+        tool: ToolKind,
+        result: ToolResult,
         created_at_milliseconds: u64,
     },
 }
@@ -296,14 +359,19 @@ impl TranscriptEntry {
     pub const fn entry_sequence(&self) -> u64 {
         match self {
             Self::UserMessage { entry_sequence, .. }
-            | Self::AssistantMessage { entry_sequence, .. } => *entry_sequence,
+            | Self::AssistantMessage { entry_sequence, .. }
+            | Self::ToolCall { entry_sequence, .. }
+            | Self::ToolResult { entry_sequence, .. } => *entry_sequence,
         }
     }
 
     #[must_use]
     pub const fn run_id(&self) -> RunId {
         match self {
-            Self::UserMessage { run_id, .. } | Self::AssistantMessage { run_id, .. } => *run_id,
+            Self::UserMessage { run_id, .. }
+            | Self::AssistantMessage { run_id, .. }
+            | Self::ToolCall { run_id, .. }
+            | Self::ToolResult { run_id, .. } => *run_id,
         }
     }
 }
@@ -333,6 +401,7 @@ impl fmt::Debug for TranscriptEntry {
                 model_id,
                 text,
                 refusal,
+                phase,
                 created_at_milliseconds,
             } => formatter
                 .debug_struct("AssistantMessage")
@@ -343,6 +412,44 @@ impl fmt::Debug for TranscriptEntry {
                 .field("model_id", model_id)
                 .field("text_bytes", &text.len())
                 .field("refusal", refusal)
+                .field("phase", phase)
+                .field("created_at_milliseconds", created_at_milliseconds)
+                .finish(),
+            Self::ToolCall {
+                entry_sequence,
+                id,
+                run_id,
+                call_id,
+                input,
+                created_at_milliseconds,
+                ..
+            } => formatter
+                .debug_struct("ToolCall")
+                .field("entry_sequence", entry_sequence)
+                .field("id", id)
+                .field("run_id", run_id)
+                .field("call_id", call_id)
+                .field("tool", &input.kind())
+                .field("path_bytes", &input.path().as_str().len())
+                .field("created_at_milliseconds", created_at_milliseconds)
+                .finish(),
+            Self::ToolResult {
+                entry_sequence,
+                id,
+                run_id,
+                call_id,
+                tool,
+                result,
+                created_at_milliseconds,
+                ..
+            } => formatter
+                .debug_struct("ToolResult")
+                .field("entry_sequence", entry_sequence)
+                .field("id", id)
+                .field("run_id", run_id)
+                .field("call_id", call_id)
+                .field("tool", tool)
+                .field("uncertain", &result.is_uncertain())
                 .field("created_at_milliseconds", created_at_milliseconds)
                 .finish(),
         }
@@ -412,12 +519,16 @@ pub struct RunModelSelection {
     pub protocol_revision: u16,
     pub maximum_input_tokens: u32,
     pub maximum_output_tokens: u32,
+    pub supports_tool_calls: bool,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct RunContext {
     pub run: Run,
     pub entries: Vec<TranscriptEntry>,
+    pub current_entry_high_water: u64,
+    pub estimated_input_tokens: u32,
+    pub workspace_id: Option<[u8; IDENTIFIER_BYTES]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -487,6 +598,51 @@ impl fmt::Debug for CompletedAssistant {
 pub(crate) enum ProviderOperationFailureState {
     Failed,
     Uncertain,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ToolOperationId([u8; IDENTIFIER_BYTES]);
+
+impl ToolOperationId {
+    pub(crate) const fn from_bytes(bytes: [u8; IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CommittedToolCall {
+    pub call_id: ToolCallId,
+    pub operation_id: ToolOperationId,
+    pub input: ToolInput,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompletedToolTurn {
+    pub provider_response_id: String,
+    pub usage: ProviderUsage,
+    pub commentary: Option<(String, bool)>,
+    pub calls: Vec<ValidatedProviderCall>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CommittedToolTurn {
+    pub calls: Vec<CommittedToolCall>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ToolOperationRecovery {
+    pub run_id: RunId,
+    pub call_id: ToolCallId,
+    pub operation_id: ToolOperationId,
+    pub input: ToolInput,
+    pub prepared: bool,
+    pub dispatched: bool,
+    pub recovery_plan: Option<Vec<u8>>,
+    pub workspace_id: [u8; IDENTIFIER_BYTES],
 }
 
 fn write_hex(formatter: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {

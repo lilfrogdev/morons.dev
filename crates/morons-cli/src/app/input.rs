@@ -1,4 +1,4 @@
-use morons_protocol::{MAX_OPENCODE_API_KEY_BYTES, WorkspaceState};
+use morons_protocol::{MAX_OPENCODE_API_KEY_BYTES, WorkspaceBlockReason, WorkspaceState};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{AppAction, AppState, CredentialDialog, RepositoryDialog, View};
@@ -13,6 +13,30 @@ impl AppState {
             return match key.code {
                 KeyCode::Char('r') => AppAction::RetryPending,
                 KeyCode::Char('a') | KeyCode::Esc => AppAction::AbandonPending,
+                _ => AppAction::None,
+            };
+        }
+        if self.confirm_uncertainty {
+            return match key.code {
+                KeyCode::Char('y') => {
+                    self.confirm_uncertainty = false;
+                    self.session
+                        .as_ref()
+                        .and_then(|session| {
+                            session.workspace.blocked_run_id.map(|run_id| {
+                                AppAction::AcknowledgeToolUncertainty {
+                                    session_id: session.summary.id,
+                                    run_id,
+                                }
+                            })
+                        })
+                        .unwrap_or(AppAction::None)
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.confirm_uncertainty = false;
+                    self.set_status("Tool uncertainty acknowledgement cancelled");
+                    AppAction::None
+                }
                 _ => AppAction::None,
             };
         }
@@ -62,6 +86,7 @@ impl AppState {
             && self.view == View::Session
             && self.pending.is_none()
             && !self.confirm_stop
+            && !self.confirm_uncertainty
         {
             self.prompt.push_paste(paste);
         }
@@ -80,6 +105,18 @@ impl AppState {
             }
             KeyCode::Char('s') if self.pending.is_none() => {
                 self.confirm_stop = true;
+                AppAction::None
+            }
+            KeyCode::Char('a') if self.pending.is_none() && self.view == View::Session => {
+                let uncertain = self.session.as_ref().is_some_and(|session| {
+                    session.workspace.block_reason
+                        == Some(WorkspaceBlockReason::UncertainToolEffect)
+                        && session.workspace.blocked_run_id.is_some()
+                });
+                if uncertain {
+                    self.confirm_uncertainty = true;
+                    self.set_status("Confirm parking the uncertain effect without resolving it");
+                }
                 AppAction::None
             }
             KeyCode::Char('x') if self.view == View::Session && self.pending.is_none() => self

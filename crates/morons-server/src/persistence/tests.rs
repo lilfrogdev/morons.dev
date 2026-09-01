@@ -513,6 +513,7 @@ async fn slow_session_event_subscriber_is_disconnected() {
                 protocol_revision: 1,
                 maximum_input_tokens: 96_000,
                 maximum_output_tokens: 32_000,
+                supports_tool_calls: true,
             },
         )
         .await
@@ -823,7 +824,7 @@ async fn startup_reconciles_a_dispatched_workspace_before_finalizing_the_session
 }
 
 #[test]
-fn schema_version_one_migrates_to_version_five() {
+fn schema_version_one_migrates_to_version_six() {
     let root = TestRoot::new("schema-v1-migration");
     let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
     let (initialization_path, file) = paths
@@ -884,7 +885,7 @@ fn schema_version_one_migrates_to_version_five() {
         .expect("version one database should install");
 
     let connection = database::open(&paths).expect("version one database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 5);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 6);
     let mutation_operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -910,7 +911,7 @@ fn stale_private_migration_backup_temporary_file_is_removed() {
 }
 
 #[test]
-fn schema_version_two_migrates_to_version_five() {
+fn schema_version_two_migrates_to_version_six() {
     let root = TestRoot::new("schema-v2-migration");
     let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
     let (initialization_path, file) = paths
@@ -956,7 +957,7 @@ fn schema_version_two_migrates_to_version_five() {
         .expect("version two database should install");
 
     let connection = database::open(&paths).expect("version two database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 5);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 6);
     let operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -984,7 +985,7 @@ fn schema_version_two_migrates_to_version_five() {
 }
 
 #[test]
-fn schema_version_three_migrates_to_version_five() {
+fn schema_version_three_migrates_to_version_six() {
     let root = TestRoot::new("schema-v3-migration");
     let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
     let (initialization_path, file) = paths
@@ -1008,7 +1009,7 @@ fn schema_version_three_migrates_to_version_five() {
         .expect("version three database should install");
 
     let connection = database::open(&paths).expect("version three database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 5);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 6);
     let stop_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'server_stop_requests'",
@@ -1026,7 +1027,7 @@ fn schema_version_three_migrates_to_version_five() {
 }
 
 #[test]
-fn schema_version_four_migrates_to_version_five() {
+fn schema_version_four_migrates_to_version_six() {
     let root = TestRoot::new("schema-v4-migration");
     let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
     let (initialization_path, file) = paths
@@ -1053,7 +1054,7 @@ fn schema_version_four_migrates_to_version_five() {
         .expect("version four database should install");
 
     let connection = database::open(&paths).expect("version four database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 5);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 6);
     let import_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1069,6 +1070,54 @@ fn schema_version_four_migrates_to_version_five() {
         .join("sessions-before-schema-v4.sqlite3");
     let backup = Connection::open(backup_path).expect("version four backup should open");
     assert_eq!(pragma_integer(&backup, "PRAGMA user_version"), 4);
+}
+
+#[test]
+fn schema_version_five_migrates_to_version_six() {
+    let root = TestRoot::new("schema-v5-migration");
+    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
+    let (initialization_path, file) = paths
+        .create_database_initialization_file(&[0xc5; 16])
+        .expect("initialization file should be created");
+    drop(file);
+    let connection =
+        Connection::open(&initialization_path).expect("version five fixture should open");
+    connection
+        .execute_batch(include_str!("schema_v1.sql"))
+        .expect("version one schema should initialize");
+    connection
+        .execute_batch(include_str!("schema_v2.sql"))
+        .expect("version two schema should initialize");
+    connection
+        .execute_batch(include_str!("schema_v3.sql"))
+        .expect("version three schema should initialize");
+    connection
+        .execute_batch(include_str!("schema_v4.sql"))
+        .expect("version four schema should initialize");
+    connection
+        .execute_batch(include_str!("schema_v5.sql"))
+        .expect("version five schema should initialize");
+    drop(connection);
+    paths
+        .install_database(&initialization_path)
+        .expect("version five database should install");
+
+    let connection = database::open(&paths).expect("version five database should migrate");
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 6);
+    let tool_table: String = connection
+        .query_row(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'tool_calls'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("tool call table should exist");
+    assert_eq!(tool_table, "tool_calls");
+    let backup_path = root
+        .path()
+        .join("backups")
+        .join("sessions-before-schema-v5.sqlite3");
+    let backup = Connection::open(backup_path).expect("version five backup should open");
+    assert_eq!(pragma_integer(&backup, "PRAGMA user_version"), 5);
 }
 
 #[test]
@@ -1105,7 +1154,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     let connection =
         Connection::open(&database_path).expect("database should open for test change");
     connection
-        .execute_batch("PRAGMA user_version = 6;")
+        .execute_batch("PRAGMA user_version = 7;")
         .expect("test schema version should change");
     drop(connection);
 
@@ -1113,7 +1162,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
 
     let connection = Connection::open(database_path).expect("database should remain readable");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 6);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 7);
 }
 
 #[tokio::test(flavor = "current_thread")]

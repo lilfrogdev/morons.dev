@@ -275,6 +275,20 @@ impl RuntimeState {
                 self.app
                     .set_status("Importing repository into isolated workspace");
             }
+            AppAction::AcknowledgeToolUncertainty { session_id, run_id } => {
+                let command = RequestCommand::AcknowledgeToolUncertainty {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    session_id,
+                    run_id,
+                };
+                self.start_mutation(
+                    command,
+                    PendingOperation::AcknowledgeToolUncertainty,
+                    commands,
+                )?;
+                self.app
+                    .set_status("Acknowledging and parking the uncertain workspace effect");
+            }
             AppAction::SetCredential {
                 expected_generation,
                 api_key,
@@ -423,6 +437,17 @@ impl RuntimeState {
                     "Repository imported: {} files, {} logical bytes",
                     workspace.file_count, workspace.logical_bytes
                 ));
+            }
+            RequestEvent::ToolUncertaintyAcknowledged {
+                mutation_request_id,
+                session_id,
+                workspace,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                self.app.repository_imported(session_id, workspace)?;
+                self.app.set_status(
+                    "Uncertain effect acknowledged and parked; no effect was retried or resolved",
+                );
             }
             RequestEvent::CredentialUpdated {
                 mutation_request_id,

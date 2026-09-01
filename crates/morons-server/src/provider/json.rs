@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, de, de::Error as _};
 use serde_json::{Map, Number, Value};
 
-pub(super) fn parse_strict_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
+pub(crate) fn parse_strict_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let value = StrictValue::deserialize(&mut deserializer)?.0;
     deserializer.end()?;

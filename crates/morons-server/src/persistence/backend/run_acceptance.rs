@@ -11,14 +11,17 @@ use super::{
         accepted_run_from_request, load_run_input_request,
     },
 };
-use crate::persistence::{
-    AcceptedRun, MessageId, MutationRequestId, PersistenceError, PersistenceResourceLimit, RunId,
-    RunModelSelection,
-    run_types::{
-        CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES, MAX_TRANSCRIPT_ENTRIES,
-        conservative_input_token_estimate,
+use crate::{
+    persistence::{
+        AcceptedRun, MessageId, MutationRequestId, PersistenceError, PersistenceResourceLimit,
+        RunId, RunModelSelection,
+        run_types::{
+            CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES, MAX_TRANSCRIPT_ENTRIES,
+            conservative_input_token_estimate,
+        },
+        types::{REQUEST_FINGERPRINT_BYTES, validate_model_selection, validate_user_text},
     },
-    types::{REQUEST_FINGERPRINT_BYTES, validate_model_selection, validate_user_text},
+    tools::{TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION},
 };
 
 const MAX_RUNS: i64 = 100_000;
@@ -98,6 +101,35 @@ impl Backend {
             }
             None => {}
         }
+        let uncertain_tool_effect: bool = transaction.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM tool_operation_facts AS uncertain
+                WHERE uncertain.session_id = ?1 AND uncertain.fact_kind = 6
+                  AND NOT EXISTS (
+                      SELECT 1 FROM tool_uncertainty_acknowledgements AS acknowledgement
+                      WHERE acknowledgement.run_id = uncertain.run_id
+                  )
+             )",
+            [&session_id.as_bytes()[..]],
+            |row| row.get(0),
+        )?;
+        if uncertain_tool_effect {
+            return Err(PersistenceError::WorkspaceBlocked);
+        }
+        let workspace_ready: bool = transaction.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM repository_import_requests
+                WHERE session_id = ?1 AND state = 2
+             )",
+            [&session_id.as_bytes()[..]],
+            |row| row.get(0),
+        )?;
+        let (tool_catalog_version, tool_limits_version) =
+            if workspace_ready && selection.supports_tool_calls {
+                (TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION)
+            } else {
+                (0, 0)
+            };
         if entry_high_water
             .checked_add(2)
             .is_none_or(|reserved_high_water| reserved_high_water > MAX_TRANSCRIPT_ENTRIES)
@@ -171,10 +203,12 @@ impl Backend {
                 maximum_input_tokens,
                 maximum_output_tokens,
                 accepted_at_milliseconds,
-                delivery_event_id
+                delivery_event_id,
+                tool_catalog_version,
+                tool_limits_version
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17
+                ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
              )",
             params![
                 &run_fact_id[..],
@@ -194,6 +228,8 @@ impl Backend {
                 i64::from(selection.maximum_output_tokens),
                 time_to_sql(accepted_at_milliseconds)?,
                 &run_delivery_event_id[..],
+                i64::from(tool_catalog_version),
+                i64::from(tool_limits_version),
             ],
         )?;
         transaction.execute(
@@ -235,10 +271,16 @@ impl Backend {
                 protocol_revision,
                 credential_generation,
                 context_policy_version,
+                tool_catalog_version,
+                tool_limits_version,
                 source_entry_high_water,
                 estimated_input_tokens,
                 maximum_input_tokens,
                 maximum_output_tokens,
+                provider_turns,
+                tool_calls,
+                tool_mutations,
+                tool_result_bytes,
                 state,
                 cancellation_requested,
                 failure_kind,
@@ -247,8 +289,8 @@ impl Backend {
                 accepted_at_milliseconds,
                 updated_at_milliseconds
              ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-                ?10, ?11, ?12, 1, 0, NULL, ?13, ?13, ?14, ?14
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                ?11, ?12, ?13, ?14, 0, 0, 0, 0, 1, 0, NULL, ?15, ?15, ?16, ?16
              )",
             params![
                 &run_id.as_bytes()[..],
@@ -259,6 +301,8 @@ impl Backend {
                 i64::from(selection.protocol_revision),
                 sequence_to_sql(credential.generation)?,
                 i64::from(CONTEXT_POLICY_VERSION),
+                i64::from(tool_catalog_version),
+                i64::from(tool_limits_version),
                 sequence_to_sql(source_entry_high_water)?,
                 i64::from(estimated_input_tokens),
                 i64::from(selection.maximum_input_tokens),
@@ -394,9 +438,16 @@ fn estimate_context_tokens(
     maximum_input_tokens: u32,
 ) -> Result<u32, PersistenceError> {
     let (entry_count, text_bytes) = transaction.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(length(CAST(text AS BLOB))), 0)
-         FROM session_entries
-         WHERE session_id = ?1 AND entry_sequence <= ?2",
+        "SELECT COUNT(*), COALESCE(SUM(
+             COALESCE(length(CAST(entry.text AS BLOB)),
+                      length(call.input_payload),
+                      length(result.result_payload), 0)
+         ), 0)
+         FROM session_entries AS entry
+         LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
+         LEFT JOIN tool_operation_facts AS result
+           ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
+         WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2",
         params![
             &session_id.as_bytes()[..],
             sequence_to_sql(entry_high_water)?

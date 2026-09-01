@@ -6,6 +6,7 @@ use crate::{APPLICATION_IDENTIFIER_BYTES, SessionId};
 
 const RUN_ID_PREFIX: &str = "run_";
 const MESSAGE_ID_PREFIX: &str = "msg_";
+const TOOL_CALL_ID_PREFIX: &str = "tool_";
 const TRANSCRIPT_CURSOR_PREFIX: &str = "tc2_";
 const TRANSCRIPT_CURSOR_BYTES: usize = 40;
 
@@ -88,6 +89,48 @@ impl<'de> Deserialize<'de> for MessageId {
     {
         let encoded = String::deserialize(deserializer)?;
         decode_prefixed_hex(&encoded, MESSAGE_ID_PREFIX)
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ToolCallId([u8; APPLICATION_IDENTIFIER_BYTES]);
+
+impl ToolCallId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; APPLICATION_IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; APPLICATION_IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ToolCallId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_prefixed_hex(formatter, TOOL_CALL_ID_PREFIX, &self.0)
+    }
+}
+
+impl Serialize for ToolCallId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&encode_prefixed_hex(TOOL_CALL_ID_PREFIX, &self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolCallId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        decode_prefixed_hex(&encoded, TOOL_CALL_ID_PREFIX)
             .map(Self)
             .map_err(de::Error::custom)
     }
@@ -189,6 +232,7 @@ pub enum RunState {
     Failed,
     Cancelled,
     Interrupted,
+    Uncertain,
 }
 
 impl RunState {
@@ -196,7 +240,7 @@ impl RunState {
     pub const fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted | Self::Uncertain
         )
     }
 }
@@ -212,6 +256,7 @@ pub enum RunFailureKind {
     ProviderRejected,
     ProviderProtocol,
     InvalidProviderOutput,
+    ToolExecution,
     ResourceLimit,
     Internal,
 }
@@ -227,11 +272,33 @@ pub struct RunSummary {
     pub protocol_revision: u16,
     pub credential_generation: u64,
     pub context_policy_version: u16,
+    pub tool_catalog_version: u16,
+    pub tool_limits_version: u16,
     pub state: RunState,
     pub cancellation_requested: bool,
     pub failure: Option<RunFailureKind>,
     pub accepted_at_milliseconds: u64,
     pub updated_at_milliseconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolKind {
+    ListDirectory,
+    ReadFile,
+    SearchText,
+    EditFile,
+    CreateFile,
+    CreateDirectory,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolResultStatus {
+    Succeeded,
+    Failed,
+    Interrupted,
+    Uncertain,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,6 +317,23 @@ pub enum TranscriptEntry {
         model_id: String,
         text: String,
         refusal: bool,
+        created_at_milliseconds: u64,
+    },
+    ToolCall {
+        id: MessageId,
+        run_id: RunId,
+        call_id: ToolCallId,
+        tool: ToolKind,
+        path: String,
+        created_at_milliseconds: u64,
+    },
+    ToolResult {
+        id: MessageId,
+        run_id: RunId,
+        call_id: ToolCallId,
+        tool: ToolKind,
+        status: ToolResultStatus,
+        summary: String,
         created_at_milliseconds: u64,
     },
 }
@@ -285,6 +369,40 @@ impl fmt::Debug for TranscriptEntry {
                 .field("model_id", model_id)
                 .field("text_bytes", &text.len())
                 .field("refusal", refusal)
+                .field("created_at_milliseconds", created_at_milliseconds)
+                .finish(),
+            Self::ToolCall {
+                id,
+                run_id,
+                call_id,
+                tool,
+                path,
+                created_at_milliseconds,
+            } => formatter
+                .debug_struct("ToolCall")
+                .field("id", id)
+                .field("run_id", run_id)
+                .field("call_id", call_id)
+                .field("tool", tool)
+                .field("path_bytes", &path.len())
+                .field("created_at_milliseconds", created_at_milliseconds)
+                .finish(),
+            Self::ToolResult {
+                id,
+                run_id,
+                call_id,
+                tool,
+                status,
+                summary,
+                created_at_milliseconds,
+            } => formatter
+                .debug_struct("ToolResult")
+                .field("id", id)
+                .field("run_id", run_id)
+                .field("call_id", call_id)
+                .field("tool", tool)
+                .field("status", status)
+                .field("summary_bytes", &summary.len())
                 .field("created_at_milliseconds", created_at_milliseconds)
                 .finish(),
         }
@@ -351,9 +469,11 @@ mod tests {
     fn run_and_message_identifiers_round_trip() {
         let run = RunId::from_bytes([0x11; APPLICATION_IDENTIFIER_BYTES]);
         let message = MessageId::from_bytes([0x22; APPLICATION_IDENTIFIER_BYTES]);
+        let tool = ToolCallId::from_bytes([0x23; APPLICATION_IDENTIFIER_BYTES]);
 
         let run_json = serde_json::to_vec(&run).expect("run identifier should encode");
         let message_json = serde_json::to_vec(&message).expect("message identifier should encode");
+        let tool_json = serde_json::to_vec(&tool).expect("tool identifier should encode");
 
         assert_eq!(
             serde_json::from_slice::<RunId>(&run_json).expect("run identifier should decode"),
@@ -364,8 +484,14 @@ mod tests {
                 .expect("message identifier should decode"),
             message
         );
+        assert_eq!(
+            serde_json::from_slice::<ToolCallId>(&tool_json)
+                .expect("tool identifier should decode"),
+            tool
+        );
         assert!(format!("{run:?}").starts_with(RUN_ID_PREFIX));
         assert!(format!("{message:?}").starts_with(MESSAGE_ID_PREFIX));
+        assert!(format!("{tool:?}").starts_with(TOOL_CALL_ID_PREFIX));
     }
 
     #[test]
@@ -398,6 +524,29 @@ mod tests {
     }
 
     #[test]
+    fn tool_transcript_debug_omits_paths_and_results() {
+        let call = TranscriptEntry::ToolCall {
+            id: MessageId::from_bytes([0x61; APPLICATION_IDENTIFIER_BYTES]),
+            run_id: RunId::from_bytes([0x62; APPLICATION_IDENTIFIER_BYTES]),
+            call_id: ToolCallId::from_bytes([0x63; APPLICATION_IDENTIFIER_BYTES]),
+            tool: ToolKind::ReadFile,
+            path: "sensitive/repository/path".to_owned(),
+            created_at_milliseconds: 1,
+        };
+        let result = TranscriptEntry::ToolResult {
+            id: MessageId::from_bytes([0x64; APPLICATION_IDENTIFIER_BYTES]),
+            run_id: RunId::from_bytes([0x62; APPLICATION_IDENTIFIER_BYTES]),
+            call_id: ToolCallId::from_bytes([0x63; APPLICATION_IDENTIFIER_BYTES]),
+            tool: ToolKind::ReadFile,
+            status: ToolResultStatus::Succeeded,
+            summary: "sensitive repository result".to_owned(),
+            created_at_milliseconds: 2,
+        };
+        assert!(!format!("{call:?}").contains("sensitive/repository/path"));
+        assert!(!format!("{result:?}").contains("sensitive repository result"));
+    }
+
+    #[test]
     fn only_terminal_run_states_are_terminal() {
         assert!(!RunState::Accepted.is_terminal());
         assert!(!RunState::Active.is_terminal());
@@ -406,6 +555,7 @@ mod tests {
             RunState::Failed,
             RunState::Cancelled,
             RunState::Interrupted,
+            RunState::Uncertain,
         ] {
             assert!(state.is_terminal());
         }
