@@ -150,6 +150,8 @@
 - A command writes outside its candidate, alters a shared toolchain or cache, reaches the authoritative worktree before publication, or poisons another session's execution environment.
 - A process connects to the Internet, loopback, a Unix socket, a Windows named pipe, the Morons endpoint, a package registry, a metadata service, or another host-local service.
 - A descendant escapes its sandbox, process group, PID namespace, AppContainer, or Job Object; signals or inspects the server; creates a new namespace; retains an inherited handle; daemonizes; or survives cancellation and server loss.
+- A Windows process begins before Job assignment, requests breakaway, inherits a host standard or control handle, or leaves an operation SID on a shared image, installation, or trusted root.
+- A native Windows FFI bug misstates pointer, buffer, handle, ownership, thread, or lifetime requirements and weakens AppContainer, ACL, process-attribute, or Job enforcement.
 - Repository configuration redirects Cargo, a compiler, linker, runner, shell, credential provider, or package manager to a host path or executable outside the execution image.
 - Host environment variables, dynamic-loader settings, proxy state, credential helpers, agents, terminal handles, current directories, or absolute paths enter the sandbox.
 - Output blocks one pipe, exhausts memory or disk, emits invalid bytes or terminal controls, discloses a host path, or reaches the model or terminal before becoming a committed bounded result.
@@ -228,6 +230,9 @@
 - Record prepared, dispatched, and terminal facts for every tool call; never rerun or resume one on startup, and reconcile a mutation only from exact target identity, operation staging state, and committed before-or-after digests.
 - Resolve commands only through one bound immutable execution-image generation, a fixed empty environment, structured arguments, a relative candidate working directory, closed standard input, bounded pipes, and an exact packaged one-shot sandbox helper selected without `PATH`, shell, repository, configuration, or model input.
 - Use verified Linux namespaces with Landlock and seccomp, a default-deny macOS Seatbelt profile, or an operation-specific Windows AppContainer and non-breakaway Job Object; fail closed when complete enforcement is unavailable.
+- Confine Windows native FFI to one target-only internal adapter with no public binary or generic launch API, keep unsafe code denied elsewhere, and require documented preconditions for every unsafe block.
+- Create Windows bootstrap processes suspended with an exact capability and handle list, assign the configured Job before resume, use only dedicated standard/control handles, and verify zero active Job members before accepting a result.
+- Apply AppContainer ACLs only to operation-private candidate, cache, runner, and image views so profile deletion and exact staging cleanup remove every operation grant without mutating shared trusted state.
 - Deny all command network and host-local service access, inherited terminals and handles, host process inspection and signaling, namespace weakening, privilege changes, and background descendants.
 - Execute commands only against nonauthoritative candidates, copy admissible normal-exit output into a clean synchronized generation, and atomically commit its active pointer with the terminal command result.
 - Discard candidates after cancellation, timeout, resource termination, sandbox failure, helper loss, shutdown, or restart, and never promote command staging during recovery.
