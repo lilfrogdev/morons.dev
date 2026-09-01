@@ -9,6 +9,8 @@ use std::{
 use fence_windows::{DirectoryHandle, NodeHandle, NodeKind, RootHandle};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 
 use sha2::{Digest, Sha256};
 
