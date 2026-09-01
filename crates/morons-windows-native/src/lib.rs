@@ -4,4 +4,7 @@
 mod windows;
 
 #[cfg(windows)]
-pub use windows::{NativeError, OperationPaths, OperationProfile};
+pub use windows::{
+    BootstrapLaunch, BootstrapLimits, BootstrapProcess, NativeError, OperationPaths,
+    OperationProfile,
+};

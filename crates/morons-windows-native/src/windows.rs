@@ -1,8 +1,10 @@
 mod acl;
+mod launch;
 mod profile;
 
 use std::fmt;
 
+pub use launch::{BootstrapLaunch, BootstrapLimits, BootstrapProcess};
 pub use profile::OperationProfile;
 
 pub struct OperationPaths<'a> {
@@ -25,6 +27,14 @@ pub struct NativeError {
 }
 
 impl NativeError {
+    fn last(stage: &'static str) -> Self {
+        let code = std::io::Error::last_os_error()
+            .raw_os_error()
+            .map(|code| code as u32)
+            .unwrap_or(0);
+        Self { stage, code }
+    }
+
     fn code(stage: &'static str, code: u32) -> Self {
         Self { stage, code }
     }
