@@ -12,7 +12,9 @@ use windows_sys::Win32::{
     },
 };
 
-use super::{Access, NativeError, OperationPaths, acl, wide};
+use super::{
+    Access, BootstrapLaunch, BootstrapProcess, NativeError, OperationPaths, acl, launch, wide,
+};
 
 pub struct OperationProfile {
     name: Vec<u16>,
@@ -65,6 +67,13 @@ impl OperationProfile {
         acl::grant(paths.runtime, self.sid, Access::ReadWriteExecute, true)?;
         acl::grant(paths.image, self.sid, Access::ReadExecute, true)?;
         acl::grant(paths.bootstrap, self.sid, Access::ReadExecute, false)
+    }
+
+    pub fn launch_bootstrap(
+        &self,
+        launch: BootstrapLaunch<'_>,
+    ) -> Result<BootstrapProcess, NativeError> {
+        launch::launch(self.sid, launch)
     }
 
     pub fn delete(mut self) -> Result<(), NativeError> {
