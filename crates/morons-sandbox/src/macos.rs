@@ -20,7 +20,10 @@ use rustix::{
 use crate::{Cancellation, SandboxExit, SandboxResult, SandboxStatus, runner::PreparedRequest};
 
 const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+const PS_EXEC: &str = "/bin/ps";
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const TREE_TERMINATION_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_PROCESS_SNAPSHOT_BYTES: usize = 256 * 1024;
 
 pub(crate) fn execute(request: PreparedRequest, cancellation: &Cancellation) -> SandboxResult {
     let profile = match profile(&request) {
@@ -198,11 +201,65 @@ fn join_stream(handle: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
 }
 
 fn terminate_group(child: &mut Child, group: Pid) -> bool {
-    // A successful group SIGKILL plus denied group escape proves no descendant can execute again.
     match kill_process_group(group, Signal::KILL) {
-        Ok(()) | Err(Errno::SRCH) => child.wait().is_ok(),
-        Err(_) => false,
+        Ok(()) | Err(Errno::SRCH) => {}
+        Err(_) => return false,
     }
+    if child.wait().is_err() {
+        return false;
+    }
+    let deadline = Instant::now() + TREE_TERMINATION_TIMEOUT;
+    loop {
+        match process_group_has_live_members(group) {
+            Ok(false) => return true,
+            Ok(true) if Instant::now() < deadline => thread::sleep(POLL_INTERVAL),
+            Ok(true) | Err(()) => return false,
+        }
+    }
+}
+
+fn process_group_has_live_members(group: Pid) -> Result<bool, ()> {
+    let group_id = group.as_raw_nonzero().get().to_string();
+    let output = Command::new(PS_EXEC)
+        .args(["-o", "pid=", "-o", "pgid=", "-o", "state=", "-g", &group_id])
+        .env_clear()
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| ())?;
+    if output.stdout.len() > MAX_PROCESS_SNAPSHOT_BYTES
+        || output.stderr.len() > MAX_PROCESS_SNAPSHOT_BYTES
+    {
+        return Err(());
+    }
+    if !output.status.success() {
+        return if output.status.code() == Some(1)
+            && output.stdout.is_empty()
+            && output.stderr.is_empty()
+        {
+            Ok(false)
+        } else {
+            Err(())
+        };
+    }
+    if !output.stderr.is_empty() {
+        return Err(());
+    }
+    let snapshot = std::str::from_utf8(&output.stdout).map_err(|_| ())?;
+    for line in snapshot.lines() {
+        let mut fields = line.split_ascii_whitespace();
+        let _process_id = fields.next().ok_or(())?.parse::<u32>().map_err(|_| ())?;
+        let process_group = fields.next().ok_or(())?;
+        let state = fields.next().ok_or(())?;
+        if fields.next().is_some() || process_group != group_id || state.is_empty() {
+            return Err(());
+        }
+        if !state.starts_with('Z') {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn create_private_directory(path: &Path) -> io::Result<()> {
