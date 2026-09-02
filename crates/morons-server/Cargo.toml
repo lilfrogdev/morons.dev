@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 bytes.workspace = true
 getrandom.workspace = true
+hmac.workspace = true
 http.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true

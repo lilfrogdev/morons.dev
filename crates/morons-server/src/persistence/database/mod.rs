@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -32,6 +32,7 @@ const SCHEMA_V6: &str = include_str!("../schema_v6.sql");
 const SCHEMA_V7: &str = include_str!("../schema_v7.sql");
 const SCHEMA_V8: &str = include_str!("../schema_v8.sql");
 const SCHEMA_V9: &str = include_str!("../schema_v9.sql");
+const SCHEMA_V10: &str = include_str!("../schema_v10.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -145,6 +146,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V7)?;
     connection.execute_batch(SCHEMA_V8)?;
     connection.execute_batch(SCHEMA_V9)?;
+    connection.execute_batch(SCHEMA_V10)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -219,75 +221,38 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
     }
 
     let schema_version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    match schema_version {
-        1 => {
-            ensure_migration_backup(connection, paths, schema_version)?;
-            connection.execute_batch(SCHEMA_V2)?;
-            migrate_schema(connection, SCHEMA_V3)?;
-            migrate_schema(connection, SCHEMA_V4)?;
-            migrate_schema(connection, SCHEMA_V5)?;
-            migrate_schema(connection, SCHEMA_V6)?;
-            migrate_schema(connection, SCHEMA_V7)?;
-            migrate_schema(connection, SCHEMA_V8)?;
-            migrate_schema(connection, SCHEMA_V9)
-        }
-        2 => {
-            ensure_migration_backup(connection, paths, schema_version)?;
-            migrate_schema(connection, SCHEMA_V3)?;
-            migrate_schema(connection, SCHEMA_V4)?;
-            migrate_schema(connection, SCHEMA_V5)?;
-            migrate_schema(connection, SCHEMA_V6)?;
-            migrate_schema(connection, SCHEMA_V7)?;
-            migrate_schema(connection, SCHEMA_V8)?;
-            migrate_schema(connection, SCHEMA_V9)
-        }
-        3 => {
-            ensure_migration_backup(connection, paths, schema_version)?;
-            migrate_schema(connection, SCHEMA_V4)?;
-            migrate_schema(connection, SCHEMA_V5)?;
-            migrate_schema(connection, SCHEMA_V6)?;
-            migrate_schema(connection, SCHEMA_V7)?;
-            migrate_schema(connection, SCHEMA_V8)?;
-            migrate_schema(connection, SCHEMA_V9)
-        }
-        4 => {
-            ensure_migration_backup(connection, paths, schema_version)?;
-            migrate_schema(connection, SCHEMA_V5)?;
-            migrate_schema(connection, SCHEMA_V6)?;
-            migrate_schema(connection, SCHEMA_V7)?;
-            migrate_schema(connection, SCHEMA_V8)?;
-            migrate_schema(connection, SCHEMA_V9)
-        }
-        5 => {
-            ensure_migration_backup(connection, paths, schema_version)?;
-            migrate_schema(connection, SCHEMA_V6)?;
-            migrate_schema(connection, SCHEMA_V7)?;
-            migrate_schema(connection, SCHEMA_V8)?;
-            migrate_schema(connection, SCHEMA_V9)
-        }
-        6 => {
-            ensure_migration_backup(connection, paths, schema_version)?;
-            migrate_schema(connection, SCHEMA_V7)?;
-            migrate_schema(connection, SCHEMA_V8)?;
-            migrate_schema(connection, SCHEMA_V9)
-        }
-        7 => {
-            ensure_migration_backup(connection, paths, schema_version)?;
-            migrate_schema(connection, SCHEMA_V8)?;
-            migrate_schema(connection, SCHEMA_V9)
-        }
-        8 => {
-            ensure_migration_backup(connection, paths, schema_version)?;
-            migrate_schema(connection, SCHEMA_V9)
-        }
-        SCHEMA_VERSION => Ok(()),
-        version if version > SCHEMA_VERSION => Err(PersistenceError::InvalidState {
-            reason: "the authoritative database schema is newer than this server",
-        }),
-        _ => Err(PersistenceError::InvalidState {
-            reason: "the authoritative database schema version is unsupported",
-        }),
+    if schema_version == SCHEMA_VERSION {
+        return Ok(());
     }
+    if schema_version > SCHEMA_VERSION {
+        return Err(PersistenceError::InvalidState {
+            reason: "the authoritative database schema is newer than this server",
+        });
+    }
+    if !(1..SCHEMA_VERSION).contains(&schema_version) {
+        return Err(PersistenceError::InvalidState {
+            reason: "the authoritative database schema version is unsupported",
+        });
+    }
+    ensure_migration_backup(connection, paths, schema_version)?;
+    if schema_version == 1 {
+        connection.execute_batch(SCHEMA_V2)?;
+    }
+    for (version, schema) in [
+        (3, SCHEMA_V3),
+        (4, SCHEMA_V4),
+        (5, SCHEMA_V5),
+        (6, SCHEMA_V6),
+        (7, SCHEMA_V7),
+        (8, SCHEMA_V8),
+        (9, SCHEMA_V9),
+        (10, SCHEMA_V10),
+    ] {
+        if version > schema_version {
+            migrate_schema(connection, schema)?;
+        }
+    }
+    Ok(())
 }
 
 fn ensure_migration_backup(

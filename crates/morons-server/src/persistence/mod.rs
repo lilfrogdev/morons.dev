@@ -6,6 +6,7 @@ mod execution_image;
 mod execution_image_operation;
 mod paths;
 mod repository;
+mod review;
 mod run_types;
 mod runs;
 mod types;
@@ -15,6 +16,7 @@ use std::{fmt, path::Path, thread};
 
 use morons_protocol::ServerEndpoint;
 use tokio::sync::{Mutex, MutexGuard, mpsc, oneshot, watch};
+use zeroize::Zeroizing;
 
 use self::{
     backend::Backend,
@@ -44,7 +46,7 @@ pub use self::{
 
 pub(crate) use self::types::{
     CommandResources, ExecutionImageOutcome, ExecutionImagePlan, RepositoryImportOutcome,
-    RepositoryImportPlan, WorktreeLayoutPlan,
+    RepositoryImportPlan, ReviewResources, WorktreeLayoutPlan,
 };
 
 pub(crate) use self::run_types::{
@@ -62,6 +64,7 @@ pub struct SessionStore {
     credential_dispatch_lock: Mutex<()>,
     repository_import_lock: Mutex<()>,
     execution_image_lock: Mutex<()>,
+    review_cursor_key: Zeroizing<[u8; 32]>,
     paths: paths::StoragePaths,
     event_notifications: watch::Sender<u64>,
 }
@@ -107,6 +110,8 @@ impl SessionStore {
     fn open_at(application_root: &Path) -> Result<Self, PersistenceError> {
         let backend = Backend::open(application_root)?;
         let paths = backend.paths.clone();
+        let mut review_cursor_key = Zeroizing::new([0_u8; 32]);
+        getrandom::fill(review_cursor_key.as_mut()).map_err(PersistenceError::Randomness)?;
         let event_high_water = backend.delivery_event_high_water()?;
         let (event_notifications, _) = watch::channel(event_high_water);
         let notification_sender = event_notifications.clone();
@@ -120,6 +125,7 @@ impl SessionStore {
             credential_dispatch_lock: Mutex::new(()),
             repository_import_lock: Mutex::new(()),
             execution_image_lock: Mutex::new(()),
+            review_cursor_key,
             paths,
             event_notifications,
         })
@@ -435,6 +441,10 @@ enum WorkerRequest {
         workspace_id: [u8; 16],
         response: oneshot::Sender<Result<[u8; 16], PersistenceError>>,
     },
+    GetReviewResources {
+        session_id: SessionId,
+        response: oneshot::Sender<Result<ReviewResources, PersistenceError>>,
+    },
     GetCommandResources {
         run_id: RunId,
         workspace_id: [u8; 16],
@@ -589,6 +599,12 @@ fn run_worker(
                 response,
             } => {
                 let _ = response.send(backend.active_worktree_generation(&workspace_id));
+            }
+            WorkerRequest::GetReviewResources {
+                session_id,
+                response,
+            } => {
+                let _ = response.send(backend.review_resources(session_id));
             }
             WorkerRequest::GetCommandResources {
                 run_id,
@@ -758,6 +774,8 @@ mod credential_tests;
 mod execution_image_tests;
 #[cfg(test)]
 mod repository_tests;
+#[cfg(test)]
+mod review_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]

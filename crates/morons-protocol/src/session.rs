@@ -264,6 +264,11 @@ pub enum ApplicationRequest {
         mutation_request_id: MutationRequestId,
         expected_generation: u64,
     },
+    ReviewDiff {
+        session_id: SessionId,
+        cursor: Option<crate::DiffCursor>,
+        limit: u16,
+    },
     ImportRepository {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
@@ -361,6 +366,16 @@ impl fmt::Debug for ApplicationRequest {
                 .debug_struct("RemoveOpenCodeCredential")
                 .field("mutation_request_id", mutation_request_id)
                 .field("expected_generation", expected_generation)
+                .finish(),
+            Self::ReviewDiff {
+                session_id,
+                cursor,
+                limit,
+            } => formatter
+                .debug_struct("ReviewDiff")
+                .field("session_id", session_id)
+                .field("cursor", cursor)
+                .field("limit", limit)
                 .finish(),
             Self::ImportRepository {
                 mutation_request_id,
@@ -468,6 +483,12 @@ pub enum ApplicationResponse {
     },
     ExecutionImageProvisioned {
         image: crate::ExecutionImageSummary,
+    },
+    DiffReviewed {
+        session_id: SessionId,
+        changes: Vec<crate::DiffChange>,
+        next_cursor: Option<crate::DiffCursor>,
+        generation: crate::ReviewGeneration,
     },
     RepositoryImported {
         session_id: SessionId,
@@ -661,6 +682,8 @@ pub enum ApplicationError {
     CredentialMutationNotApplied,
     ExecutionImageProvisionNotApplied,
     ExecutionImageBlocked,
+    ReviewCursorStale,
+    ReviewUnavailable,
     WorkspaceNotPristine,
     WorkspaceBusy,
     RepositoryAlreadyImported,

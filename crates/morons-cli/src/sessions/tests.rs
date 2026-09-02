@@ -1,10 +1,11 @@
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
-    ExecutionImageState, ExecutionImageSummary, ExecutionTargetArch, ExecutionTargetOs, MessageId,
-    MutationRequestId, OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
-    OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, ServerMessage,
-    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, WorkspaceState,
-    WorkspaceSummary, read_client_message, write_server_message,
+    DiffChange, DiffChangeKind, DiffNodeKind, ExecutionImageState, ExecutionImageSummary,
+    ExecutionTargetArch, ExecutionTargetOs, MessageId, MutationRequestId,
+    OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
+    OpenCodeModelTrainingUse, OpenCodeService, ReviewGeneration, RunId, RunState, RunSummary,
+    ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary,
+    WorkspaceState, WorkspaceSummary, read_client_message, write_server_message,
 };
 
 use super::{ApplicationClient, ApplicationClientError};
@@ -388,6 +389,58 @@ async fn client_acknowledges_only_the_exact_uncertain_run() {
         )
         .await
         .expect("acknowledgement response should write");
+    };
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_reviews_only_the_exact_session_scope() {
+    let (client_connection, mut server) = tokio::io::duplex(8_192);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let session_id = SessionId::from_bytes([0x51; 16]);
+    let generation = ReviewGeneration::from_bytes([0x52; 98]);
+    let change = DiffChange {
+        path: "src/lib.rs".to_owned(),
+        kind: DiffChangeKind::Modified,
+        old_kind: Some(DiffNodeKind::File),
+        new_kind: Some(DiffNodeKind::File),
+        old_sha256: Some("00".repeat(32)),
+        new_sha256: Some("11".repeat(32)),
+        old_bytes: Some(4),
+        new_bytes: Some(5),
+        binary: false,
+        excerpt: Some("-old\n+new\n".to_owned()),
+    };
+    let client_exchange = async {
+        let result = client
+            .review_diff(session_id, None, 50)
+            .await
+            .expect("review should resolve");
+        assert_eq!(result, (vec![change.clone()], None, generation));
+    };
+    let server_exchange = async {
+        assert_eq!(
+            read_request(&mut server, 1).await,
+            ApplicationRequest::ReviewDiff {
+                session_id,
+                cursor: None,
+                limit: 50,
+            }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::DiffReviewed {
+                    session_id,
+                    changes: vec![change.clone()],
+                    next_cursor: None,
+                    generation,
+                },
+            ),
+        )
+        .await
+        .expect("review response should be written");
     };
     tokio::join!(client_exchange, server_exchange);
 }
