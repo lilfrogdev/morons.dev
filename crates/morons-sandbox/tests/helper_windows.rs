@@ -224,16 +224,15 @@ fn sandbox_child_background() {
     if !inside_sandbox() {
         return;
     }
-    let descendant = std::env::current_dir()
-        .expect("candidate working directory")
-        .join("descendant.exe");
-    fs::copy(
-        std::env::current_exe().expect("private executable"),
-        &descendant,
-    )
-    .expect("candidate descendant copy should be created");
-    let mut child = Command::new(descendant)
-        .args(["--exact", "sandbox_child_descendant", "--nocapture"])
+    let powershell = PathBuf::from(std::env::var_os("SYSTEMROOT").expect("fixed system root"))
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let mut child = Command::new(powershell)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep -Seconds 10; [IO.File]::WriteAllText('survived','escaped')",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -242,15 +241,6 @@ fn sandbox_child_background() {
     thread::spawn(move || {
         let _ = child.wait();
     });
-}
-
-#[test]
-fn sandbox_child_descendant() {
-    if !inside_sandbox() {
-        return;
-    }
-    thread::sleep(Duration::from_secs(10));
-    fs::write("survived", b"escaped").expect("candidate remains writable");
 }
 
 #[test]
