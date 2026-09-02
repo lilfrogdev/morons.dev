@@ -73,7 +73,11 @@ pub fn execute(request: SandboxRequest, cancellation: &Cancellation) -> SandboxR
     {
         crate::linux::execute(prepared, request, cancellation)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows::execute(prepared, request, cancellation)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let PreparedRequest {
             operation_id: prepared_operation_id,
@@ -318,7 +322,7 @@ mod tests {
         assert!(validate_request(&zero).is_err());
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     #[test]
     fn unsupported_native_backends_fail_closed_after_validation() {
         let roots = Roots::new();

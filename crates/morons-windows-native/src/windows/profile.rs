@@ -13,7 +13,7 @@ use windows_sys::Win32::{
 };
 
 use super::{
-    Access, BootstrapLaunch, BootstrapProcess, NativeError, OperationPaths, acl, launch, wide,
+    Access, CommandLaunch, CommandProcess, NativeError, OperationPaths, acl, launch, wide,
 };
 
 pub struct OperationProfile {
@@ -65,14 +65,10 @@ impl OperationProfile {
     pub fn grant_operation(&self, paths: OperationPaths<'_>) -> Result<(), NativeError> {
         acl::grant(paths.candidate, self.sid, Access::ReadWriteExecute, true)?;
         acl::grant(paths.runtime, self.sid, Access::ReadWriteExecute, true)?;
-        acl::grant(paths.image, self.sid, Access::ReadExecute, true)?;
-        acl::grant(paths.bootstrap, self.sid, Access::ReadExecute, false)
+        acl::grant(paths.image, self.sid, Access::ReadExecute, true)
     }
 
-    pub fn launch_bootstrap(
-        &self,
-        launch: BootstrapLaunch<'_>,
-    ) -> Result<BootstrapProcess, NativeError> {
+    pub fn launch_command(&self, launch: CommandLaunch<'_>) -> Result<CommandProcess, NativeError> {
         launch::launch(self.sid, launch)
     }
 

@@ -1,5 +1,6 @@
 use std::{
     ffi::{OsStr, c_void},
+    fs::File,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::{Path, PathBuf},
     thread,
@@ -8,7 +9,8 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        GENERIC_READ, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     Security::{SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES},
     Storage::FileSystem::{
@@ -23,6 +25,7 @@ use windows_sys::Win32::{
             JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
             TerminateJobObject,
         },
+        Pipes::CreatePipe,
         SystemInformation::GetWindowsDirectoryW,
         Threading::{
             CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
@@ -38,38 +41,51 @@ use windows_sys::Win32::{
 use super::{NativeError, wide};
 
 const MAX_PROCESS_COUNT: u32 = 256;
+const MAX_ARGUMENTS: usize = 128;
+const MAX_ARGUMENT_BYTES: usize = 4096;
+const MAX_ARGUMENT_TOTAL_BYTES: usize = 64 * 1024;
 const MIN_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const TERMINATION_EXIT_CODE: u32 = 0xffff_fffe;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BootstrapLimits {
+pub struct CommandLimits {
     pub memory_bytes: u64,
     pub process_count: u32,
 }
 
-pub struct BootstrapLaunch<'a> {
+pub struct CommandLaunch<'a> {
     pub executable: &'a Path,
+    pub arguments: &'a [String],
+    pub candidate: &'a Path,
     pub working_directory: &'a Path,
     pub runtime: &'a Path,
-    pub input: &'a Path,
-    pub output: &'a Path,
-    pub gate: &'a Path,
-    pub done: &'a Path,
-    pub limits: BootstrapLimits,
+    pub image: &'a Path,
+    pub limits: CommandLimits,
 }
 
-pub struct BootstrapProcess {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandCompletion {
+    Clean { exit_code: u32 },
+    DescendantsTerminated,
+}
+
+pub struct CommandProcess {
     process: OwnedHandle,
     job: OwnedHandle,
-    process_id: u32,
+    stdout: Option<File>,
+    stderr: Option<File>,
     stopped: bool,
 }
 
-impl BootstrapProcess {
-    pub fn id(&self) -> u32 {
-        self.process_id
+impl CommandProcess {
+    pub fn take_stdout(&mut self) -> Option<File> {
+        self.stdout.take()
+    }
+
+    pub fn take_stderr(&mut self) -> Option<File> {
+        self.stderr.take()
     }
 
     pub fn wait_root(&self, timeout: Duration) -> Result<Option<u32>, NativeError> {
@@ -88,6 +104,22 @@ impl BootstrapProcess {
             return Err(NativeError::last("process-exit"));
         }
         Ok(Some(exit_code))
+    }
+
+    pub fn complete_and_verify(
+        mut self,
+        timeout: Duration,
+    ) -> Result<CommandCompletion, NativeError> {
+        let deadline = Instant::now() + timeout;
+        let exit_code = self
+            .wait_root(deadline.saturating_duration_since(Instant::now()))?
+            .ok_or_else(|| NativeError::code("process-active", 0))?;
+        if active_processes(&self.job)? == 0 {
+            self.stopped = true;
+            return Ok(CommandCompletion::Clean { exit_code });
+        }
+        self.stop(deadline.saturating_duration_since(Instant::now()))?;
+        Ok(CommandCompletion::DescendantsTerminated)
     }
 
     pub fn terminate_and_verify(mut self, timeout: Duration) -> Result<(), NativeError> {
@@ -120,7 +152,7 @@ impl BootstrapProcess {
     }
 }
 
-impl Drop for BootstrapProcess {
+impl Drop for CommandProcess {
     fn drop(&mut self) {
         if !self.stopped {
             // SAFETY: Failure still leaves kill-on-close enforcement when the owned Job handle drops.
@@ -133,17 +165,17 @@ impl Drop for BootstrapProcess {
 
 pub(super) fn launch(
     sid: *mut c_void,
-    request: BootstrapLaunch<'_>,
-) -> Result<BootstrapProcess, NativeError> {
+    request: CommandLaunch<'_>,
+) -> Result<CommandProcess, NativeError> {
     validate(&request)?;
     if sid.is_null() {
         return Err(NativeError::code("launch-sid", 0));
     }
     let executable = launch_path(request.executable)?;
     let working_directory = launch_path(request.working_directory)?;
-    let command_line = command_line(&executable, &request)?;
-    let environment = environment_block(request.runtime)?;
-    let null_handles = NullHandles::new()?;
+    let command_line = command_line(&executable, request.arguments)?;
+    let environment = environment_block(request.runtime, request.image)?;
+    let io = ChildIo::new()?;
     let job = create_job(request.limits)?;
     let mut attributes = AttributeList::new(2)?;
     let capabilities = SECURITY_CAPABILITIES {
@@ -158,7 +190,7 @@ pub(super) fn launch(
         std::mem::size_of::<SECURITY_CAPABILITIES>(),
         "attribute-capabilities",
     )?;
-    let inherited = null_handles.raw_handles();
+    let inherited = io.raw_handles();
     attributes.update(
         PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
         inherited.as_ptr().cast(),
@@ -172,9 +204,9 @@ pub(super) fn launch(
     startup.StartupInfo.cb = u32::try_from(std::mem::size_of::<STARTUPINFOEXW>())
         .map_err(|_| NativeError::code("startup-size", 0))?;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = raw(&null_handles.input);
-    startup.StartupInfo.hStdOutput = raw(&null_handles.output);
-    startup.StartupInfo.hStdError = raw(&null_handles.error);
+    startup.StartupInfo.hStdInput = raw(&io.input);
+    startup.StartupInfo.hStdOutput = raw(&io.stdout_child);
+    startup.StartupInfo.hStdError = raw(&io.stderr_child);
     startup.lpAttributeList = attributes.pointer();
     let mut information = PROCESS_INFORMATION::default();
     let mut command_line = command_line;
@@ -209,61 +241,86 @@ pub(super) fn launch(
     if unsafe { ResumeThread(raw(&suspended.thread)) } == u32::MAX {
         return Err(NativeError::last("process-resume"));
     }
-    let process_id = suspended.process_id;
     let process = suspended.into_process();
-    Ok(BootstrapProcess {
+    let (stdout, stderr) = io.into_parent_streams();
+    Ok(CommandProcess {
         process,
         job,
-        process_id,
+        stdout: Some(stdout),
+        stderr: Some(stderr),
         stopped: false,
     })
 }
 
-fn validate(request: &BootstrapLaunch<'_>) -> Result<(), NativeError> {
+fn validate(request: &CommandLaunch<'_>) -> Result<(), NativeError> {
     if request.limits.memory_bytes < MIN_MEMORY_BYTES
         || request.limits.memory_bytes > MAX_MEMORY_BYTES
         || request.limits.process_count == 0
         || request.limits.process_count > MAX_PROCESS_COUNT
+        || request.arguments.len() > MAX_ARGUMENTS
     {
         return Err(NativeError::code("limits", 0));
     }
     for path in [
         request.executable,
+        request.candidate,
         request.working_directory,
         request.runtime,
-        request.input,
-        request.output,
-        request.gate,
-        request.done,
+        request.image,
     ] {
         if !path.is_absolute() || path.to_str().is_none() {
             return Err(NativeError::code("launch-path", 0));
         }
     }
     if !request.executable.is_file()
+        || !request.candidate.is_dir()
         || !request.working_directory.is_dir()
         || !request.runtime.is_dir()
+        || !request.image.is_dir()
     {
         return Err(NativeError::code("launch-node", 0));
     }
+    let argument_bytes = request.arguments.iter().try_fold(0usize, |total, value| {
+        if value.len() > MAX_ARGUMENT_BYTES || value.contains('\0') {
+            return None;
+        }
+        total.checked_add(value.len())
+    });
+    if argument_bytes.is_none_or(|total| total > MAX_ARGUMENT_TOTAL_BYTES) {
+        return Err(NativeError::code("command-arguments", 0));
+    }
+    let candidate = request
+        .candidate
+        .canonicalize()
+        .map_err(|_| NativeError::last("candidate-canonical"))?;
     let runtime = request
         .runtime
         .canonicalize()
         .map_err(|_| NativeError::last("runtime-canonical"))?;
-    for path in [request.input, request.output, request.gate, request.done] {
-        let parent = path
-            .parent()
-            .ok_or_else(|| NativeError::code("control-parent", 0))?
-            .canonicalize()
-            .map_err(|_| NativeError::last("control-canonical"))?;
-        if !parent.starts_with(&runtime) {
-            return Err(NativeError::code("control-scope", 0));
-        }
+    let image = request
+        .image
+        .canonicalize()
+        .map_err(|_| NativeError::last("image-canonical"))?;
+    let executable = request
+        .executable
+        .canonicalize()
+        .map_err(|_| NativeError::last("executable-canonical"))?;
+    let working_directory = request
+        .working_directory
+        .canonicalize()
+        .map_err(|_| NativeError::last("working-directory-canonical"))?;
+    if !executable.starts_with(&image)
+        || !working_directory.starts_with(&candidate)
+        || overlaps(&candidate, &runtime)
+        || overlaps(&candidate, &image)
+        || overlaps(&runtime, &image)
+    {
+        return Err(NativeError::code("command-scope", 0));
     }
     Ok(())
 }
 
-fn create_job(limits: BootstrapLimits) -> Result<OwnedHandle, NativeError> {
+fn create_job(limits: CommandLimits) -> Result<OwnedHandle, NativeError> {
     // SAFETY: no security attributes or global name are supplied.
     let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
     let job = owned(handle, "job-create")?;
@@ -337,7 +394,6 @@ fn active_processes(job: &OwnedHandle) -> Result<u32, NativeError> {
 struct SuspendedProcess {
     process: Option<OwnedHandle>,
     thread: OwnedHandle,
-    process_id: u32,
 }
 
 impl SuspendedProcess {
@@ -349,7 +405,6 @@ impl SuspendedProcess {
         Self {
             process: Some(process),
             thread,
-            process_id: information.dwProcessId,
         }
     }
 
@@ -377,34 +432,68 @@ impl Drop for SuspendedProcess {
     }
 }
 
-struct NullHandles {
+struct ChildIo {
     input: OwnedHandle,
-    output: OwnedHandle,
-    error: OwnedHandle,
+    stdout_child: OwnedHandle,
+    stderr_child: OwnedHandle,
+    stdout_parent: Option<OwnedHandle>,
+    stderr_parent: Option<OwnedHandle>,
 }
 
-impl NullHandles {
+impl ChildIo {
     fn new() -> Result<Self, NativeError> {
+        let (stdout_parent, stdout_child) = output_pipe()?;
+        let (stderr_parent, stderr_child) = output_pipe()?;
         Ok(Self {
             input: open_null(GENERIC_READ)?,
-            output: open_null(GENERIC_WRITE)?,
-            error: open_null(GENERIC_WRITE)?,
+            stdout_child,
+            stderr_child,
+            stdout_parent: Some(stdout_parent),
+            stderr_parent: Some(stderr_parent),
         })
     }
 
     fn raw_handles(&self) -> [HANDLE; 3] {
-        [raw(&self.input), raw(&self.output), raw(&self.error)]
+        [
+            raw(&self.input),
+            raw(&self.stdout_child),
+            raw(&self.stderr_child),
+        ]
     }
+
+    fn into_parent_streams(mut self) -> (File, File) {
+        let stdout = self
+            .stdout_parent
+            .take()
+            .expect("stdout parent endpoint is transferred exactly once");
+        let stderr = self
+            .stderr_parent
+            .take()
+            .expect("stderr parent endpoint is transferred exactly once");
+        (File::from(stdout), File::from(stderr))
+    }
+}
+
+fn output_pipe() -> Result<(OwnedHandle, OwnedHandle), NativeError> {
+    let attributes = inheritable_attributes()?;
+    let mut parent = std::ptr::null_mut();
+    let mut child = std::ptr::null_mut();
+    // SAFETY: Both output pointers and the inheritable security attributes are valid for the call.
+    if unsafe { CreatePipe(&mut parent, &mut child, &attributes, 0) } == 0 {
+        return Err(NativeError::last("pipe-create"));
+    }
+    let parent = owned(parent, "pipe-parent")?;
+    let child = owned(child, "pipe-child")?;
+    // SAFETY: The owned parent endpoint is valid and only its inheritance flag is cleared.
+    if unsafe { SetHandleInformation(raw(&parent), HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(NativeError::last("pipe-inheritance"));
+    }
+    Ok((parent, child))
 }
 
 fn open_null(access: u32) -> Result<OwnedHandle, NativeError> {
     let name = wide(OsStr::new("NUL"))?;
-    let attributes = SECURITY_ATTRIBUTES {
-        nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
-            .map_err(|_| NativeError::code("handle-size", 0))?,
-        lpSecurityDescriptor: std::ptr::null_mut(),
-        bInheritHandle: 1,
-    };
+    let attributes = inheritable_attributes()?;
     // SAFETY: The name and attributes are valid and the returned handle is transferred exactly once.
     let handle = unsafe {
         CreateFileW(
@@ -418,6 +507,15 @@ fn open_null(access: u32) -> Result<OwnedHandle, NativeError> {
         )
     };
     owned(handle, "null-open")
+}
+
+fn inheritable_attributes() -> Result<SECURITY_ATTRIBUTES, NativeError> {
+    Ok(SECURITY_ATTRIBUTES {
+        nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
+            .map_err(|_| NativeError::code("handle-size", 0))?,
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: 1,
+    })
 }
 
 struct AttributeList {
@@ -495,7 +593,7 @@ impl Drop for AttributeList {
     }
 }
 
-fn environment_block(runtime: &Path) -> Result<Vec<u16>, NativeError> {
+fn environment_block(runtime: &Path, image: &Path) -> Result<Vec<u16>, NativeError> {
     let windows = windows_directory()?;
     let windows = windows
         .to_str()
@@ -509,17 +607,19 @@ fn environment_block(runtime: &Path) -> Result<Vec<u16>, NativeError> {
     let local = runtime.join("local-app-data");
     let roaming = runtime.join("app-data");
     let public = runtime.join("public");
-    for directory in [&temporary, &home, &local, &roaming, &public] {
+    let cargo = runtime.join("cargo-home");
+    for directory in [&temporary, &home, &local, &roaming, &public, &cargo] {
         if !directory.is_dir() {
             return Err(NativeError::code("runtime-directory", 0));
         }
     }
-    let path = format!(r"{windows}\System32;{windows}");
+    let path = environment_path(&image.join("bin"))?;
     let temporary = environment_path(&temporary)?;
     let home = environment_path(&home)?;
     let local = environment_path(&local)?;
     let roaming = environment_path(&roaming)?;
     let public = environment_path(&public)?;
+    let cargo = environment_path(&cargo)?;
     let processor = if cfg!(target_arch = "aarch64") {
         "ARM64"
     } else {
@@ -528,6 +628,8 @@ fn environment_block(runtime: &Path) -> Result<Vec<u16>, NativeError> {
     let mut entries = vec![
         ("ALLUSERSPROFILE", public.clone()),
         ("APPDATA", roaming),
+        ("CARGO_HOME", cargo),
+        ("CARGO_NET_OFFLINE", "true".to_owned()),
         ("COMPUTERNAME", "MORONS-SANDBOX".to_owned()),
         ("ComSpec", format!(r"{windows}\System32\cmd.exe")),
         ("HOME", home.clone()),
@@ -540,6 +642,8 @@ fn environment_block(runtime: &Path) -> Result<Vec<u16>, NativeError> {
         ("PUBLIC", public),
         ("SYSTEMROOT", windows.to_owned()),
         ("SystemDrive", system_drive.to_owned()),
+        ("TERM", "dumb".to_owned()),
+        ("NO_COLOR", "1".to_owned()),
         ("TEMP", temporary.clone()),
         ("TMP", temporary),
         ("USERNAME", "morons-sandbox".to_owned()),
@@ -584,31 +688,53 @@ fn windows_directory() -> Result<PathBuf, NativeError> {
     ))
 }
 
-fn command_line(executable: &Path, request: &BootstrapLaunch<'_>) -> Result<Vec<u16>, NativeError> {
-    let values = [
-        executable,
-        Path::new("--windows-command-stage"),
-        request.input,
-        request.output,
-        request.gate,
-        request.done,
-    ];
+fn command_line(executable: &Path, arguments: &[String]) -> Result<Vec<u16>, NativeError> {
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| NativeError::code("command-line", 0))?;
     let mut command = String::new();
-    for (index, value) in values.into_iter().enumerate() {
-        let value = value
-            .to_str()
-            .ok_or_else(|| NativeError::code("command-line", 0))?;
-        if value.contains(['\0', '"', '\r', '\n']) {
-            return Err(NativeError::code("command-line", 0));
-        }
-        if index != 0 {
-            command.push(' ');
-        }
-        command.push('"');
-        command.push_str(value);
-        command.push('"');
+    append_quoted_argument(&mut command, executable)?;
+    for argument in arguments {
+        command.push(' ');
+        append_quoted_argument(&mut command, argument)?;
     }
     Ok(command.encode_utf16().chain(std::iter::once(0)).collect())
+}
+
+fn append_quoted_argument(command: &mut String, value: &str) -> Result<(), NativeError> {
+    if value.contains('\0') {
+        return Err(NativeError::code("command-line", 0));
+    }
+    command.push('"');
+    let mut backslashes = 0usize;
+    for character in value.chars() {
+        if character == '\\' {
+            backslashes += 1;
+            continue;
+        }
+        if character == '"' {
+            let escaped = backslashes
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| NativeError::code("command-line", 0))?;
+            command.extend(std::iter::repeat_n('\\', escaped));
+            command.push('"');
+        } else {
+            command.extend(std::iter::repeat_n('\\', backslashes));
+            command.push(character);
+        }
+        backslashes = 0;
+    }
+    let escaped = backslashes
+        .checked_mul(2)
+        .ok_or_else(|| NativeError::code("command-line", 0))?;
+    command.extend(std::iter::repeat_n('\\', escaped));
+    command.push('"');
+    Ok(())
+}
+
+fn overlaps(left: &Path, right: &Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
 }
 
 fn launch_path(path: &Path) -> Result<PathBuf, NativeError> {

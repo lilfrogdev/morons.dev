@@ -18,6 +18,9 @@ path = "src/main.rs"
 serde.workspace = true
 serde_json.workspace = true
 
+[target.'cfg(target_os = "windows")'.dependencies]
+morons-windows-native = { path = "../morons-windows-native" }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 rustix = { workspace = true, features = ["process", "std"] }
 
