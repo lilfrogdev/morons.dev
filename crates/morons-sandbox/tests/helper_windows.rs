@@ -100,8 +100,18 @@ fn appcontainer_confines_files_environment_and_network() {
         port
     );
     let result = invoke_helper(fixture.request(command, 10_000));
-    assert_eq!(result.status, SandboxStatus::Exited, "{result:?}");
-    assert_eq!(result.exit.and_then(|exit| exit.code), Some(0));
+    assert_eq!(
+        result.status,
+        SandboxStatus::Exited,
+        "{result:?}, stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        result.exit.and_then(|exit| exit.code),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert!(
         String::from_utf8_lossy(&result.stdout).contains("confined"),
         "stdout={}",
@@ -129,7 +139,12 @@ fn appcontainer_enforces_timeout_output_and_background_tree_ownership() {
         "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 30\"".to_owned(),
         100,
     ));
-    assert_eq!(result.status, SandboxStatus::TimedOut, "{result:?}");
+    assert_eq!(
+        result.status,
+        SandboxStatus::TimedOut,
+        "{result:?}, stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert!(!result.candidate_eligible);
 
     let output = Fixture::new();

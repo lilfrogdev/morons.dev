@@ -48,6 +48,7 @@ const MIN_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const TERMINATION_EXIT_CODE: u32 = 0xffff_fffe;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const JOB_ACCOUNTING_SETTLE_TIME: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommandLimits {
@@ -114,9 +115,16 @@ impl CommandProcess {
         let exit_code = self
             .wait_root(deadline.saturating_duration_since(Instant::now()))?
             .ok_or_else(|| NativeError::code("process-active", 0))?;
-        if active_processes(&self.job)? == 0 {
-            self.stopped = true;
-            return Ok(CommandCompletion::Clean { exit_code });
+        let settle_deadline = (Instant::now() + JOB_ACCOUNTING_SETTLE_TIME).min(deadline);
+        loop {
+            if active_processes(&self.job)? == 0 {
+                self.stopped = true;
+                return Ok(CommandCompletion::Clean { exit_code });
+            }
+            if Instant::now() >= settle_deadline {
+                break;
+            }
+            thread::sleep(POLL_INTERVAL);
         }
         self.stop(deadline.saturating_duration_since(Instant::now()))?;
         Ok(CommandCompletion::DescendantsTerminated)
