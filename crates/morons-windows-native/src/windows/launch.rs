@@ -28,13 +28,12 @@ use windows_sys::Win32::{
         Pipes::CreatePipe,
         SystemInformation::GetWindowsDirectoryW,
         Threading::{
-            CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, CREATE_SUSPENDED,
-            CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
-            EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-            PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
-            STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-            WaitForSingleObject,
+            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
+            DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
+            InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+            PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+            TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
         },
     },
 };
@@ -229,7 +228,6 @@ pub(super) fn launch(
     let mut command_line = command_line;
     let flags = EXTENDED_STARTUPINFO_PRESENT
         | CREATE_SUSPENDED
-        | CREATE_BREAKAWAY_FROM_JOB
         | CREATE_NO_WINDOW
         | CREATE_UNICODE_ENVIRONMENT;
     // SAFETY: All buffers remain live, the command line is mutable, and only the exact three listed handles are inheritable.
