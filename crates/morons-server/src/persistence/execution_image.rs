@@ -5,6 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(windows)]
+use fence_windows::{DirectoryEntry, DirectoryHandle, NodeHandle, NodeKind, RootHandle};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 #[cfg(windows)]
@@ -37,7 +39,11 @@ const MANIFEST_CONTEXT: &[u8] = b"morons.dev/execution-image-manifest/v1\0";
 const METADATA_CONTEXT: &[u8] = b"morons.dev/execution-image/v1\0";
 const METADATA_BYTES: usize = METADATA_CONTEXT.len() + 16 + 16 + 1 + 1 + 2 + 2 + 8 + 8 + 8 + 32;
 #[cfg(windows)]
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+#[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+#[cfg(windows)]
+const WINDOWS_STRUCTURAL_ATTRIBUTES: u32 = FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT;
 
 pub(crate) enum ExecutionImageRecovery {
     Complete(ExecutionImageOutcome),
@@ -231,6 +237,7 @@ fn validate_source_root(paths: &StoragePaths, source: &Path) -> Result<PathBuf, 
     Ok(source)
 }
 
+#[cfg(unix)]
 fn copy_tree(
     source: &Path,
     destination: &Path,
@@ -288,6 +295,7 @@ fn copy_tree(
     Ok(())
 }
 
+#[cfg(unix)]
 fn snapshot_entries(path: &Path) -> Result<Vec<Vec<u8>>, PersistenceError> {
     let mut names = fs::read_dir(path)
         .map_err(|_| changed_source())?
@@ -301,6 +309,7 @@ fn snapshot_entries(path: &Path) -> Result<Vec<Vec<u8>>, PersistenceError> {
     Ok(names)
 }
 
+#[cfg(unix)]
 fn copy_file(
     source: &Path,
     destination: &Path,
@@ -358,6 +367,133 @@ fn copy_file(
     let digest: [u8; 32] = content.finalize().into();
     state.record_file(relative, size, executable, &digest)?;
     Ok(())
+}
+
+#[cfg(windows)]
+fn copy_tree(
+    source: &Path,
+    destination: &Path,
+    components: &mut Vec<String>,
+    state: &mut CopyState,
+) -> Result<(), PersistenceError> {
+    let root = RootHandle::open(source).map_err(|_| changed_source())?;
+    copy_windows_directory(root.directory(), destination, components, state)
+}
+
+#[cfg(windows)]
+fn copy_windows_directory(
+    source: &DirectoryHandle,
+    destination: &Path,
+    components: &mut Vec<String>,
+    state: &mut CopyState,
+) -> Result<(), PersistenceError> {
+    if components.len() > MAX_DEPTH {
+        return Err(limit());
+    }
+    let mut entries = source.entries().map_err(|_| changed_source())?;
+    entries.sort_by(|left, right| {
+        left.name
+            .as_encoded_bytes()
+            .cmp(right.name.as_encoded_bytes())
+    });
+    for entry in &entries {
+        let name = entry.name.to_str().ok_or_else(changed_source)?.to_owned();
+        validate_component(&name)?;
+        if name.eq_ignore_ascii_case(".git") {
+            continue;
+        }
+        components.push(name.clone());
+        let relative = relative_bytes(components)?;
+        state.reserve_entry()?;
+        let destination_path = destination.join(&name);
+        let node = source.open_child(entry).map_err(|_| changed_source())?;
+        match node.metadata().kind {
+            NodeKind::Directory => {
+                ensure_private_directory(&destination_path)?;
+                state.record_directory(&relative)?;
+                let directory = node.into_directory().map_err(|_| changed_source())?;
+                copy_windows_directory(&directory, &destination_path, components, state)?;
+                sync_directory(&destination_path)?;
+            }
+            NodeKind::RegularFile => {
+                copy_windows_file(&node, &destination_path, &relative, state)?;
+            }
+            NodeKind::ReparsePoint => return Err(changed_source()),
+        }
+        components.pop();
+    }
+    let mut after = source.entries().map_err(|_| changed_source())?;
+    after.sort_by(|left, right| {
+        left.name
+            .as_encoded_bytes()
+            .cmp(right.name.as_encoded_bytes())
+    });
+    if !same_windows_directory_entries(&entries, &after) {
+        return Err(changed_source());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn copy_windows_file(
+    source: &NodeHandle,
+    destination: &Path,
+    relative: &[u8],
+    state: &mut CopyState,
+) -> Result<(), PersistenceError> {
+    let expected = source.metadata();
+    let size = expected.size;
+    state.reserve_bytes(size)?;
+    if size > MAX_FILE_BYTES {
+        return Err(limit());
+    }
+    let mut input = source.try_clone_file().map_err(|_| changed_source())?;
+    let mut output = create_private_file(destination)?;
+    let mut content = Sha256::new();
+    let mut copied = 0_u64;
+    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
+    loop {
+        let read = input.read(&mut buffer).map_err(|_| changed_source())?;
+        if read == 0 {
+            break;
+        }
+        copied = copied
+            .checked_add(u64::try_from(read).map_err(|_| limit())?)
+            .ok_or_else(limit)?;
+        if copied > size {
+            return Err(changed_source());
+        }
+        content.update(&buffer[..read]);
+        output.write_all(&buffer[..read])?;
+    }
+    buffer.fill(0);
+    if copied != size
+        || source.refresh_metadata().map_err(|_| changed_source())? != expected
+        || source.verify_path_identity().is_err()
+    {
+        return Err(changed_source());
+    }
+    output.sync_all()?;
+    let digest: [u8; 32] = content.finalize().into();
+    state.record_file(relative, size, true, &digest)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn same_windows_directory_entries(left: &[DirectoryEntry], right: &[DirectoryEntry]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            let left_structural = left.attributes & WINDOWS_STRUCTURAL_ATTRIBUTES;
+            let right_structural = right.attributes & WINDOWS_STRUCTURAL_ATTRIBUTES;
+            left.name == right.name
+                && left.file_id == right.file_id
+                && left.reparse_tag == right.reparse_tag
+                && left_structural == right_structural
+                && (left_structural & FILE_ATTRIBUTE_DIRECTORY != 0
+                    || (left.size == right.size
+                        && left.last_write_time == right.last_write_time
+                        && left.change_time == right.change_time))
+        })
 }
 
 fn validate_toolchain(content: &Path) -> Result<(), PersistenceError> {
@@ -701,21 +837,9 @@ fn same_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
     left.dev() == right.dev() && left.ino() == right.ino() && left.file_type() == right.file_type()
 }
 
-#[cfg(windows)]
-fn same_identity(left: &fs::Metadata, right: &fs::Metadata) -> bool {
-    left.volume_serial_number() == right.volume_serial_number()
-        && left.file_index() == right.file_index()
-        && left.file_type() == right.file_type()
-}
-
 #[cfg(unix)]
 fn modified_value(metadata: &fs::Metadata) -> Option<std::time::SystemTime> {
     metadata.modified().ok()
-}
-
-#[cfg(windows)]
-fn modified_value(metadata: &fs::Metadata) -> Option<std::time::SystemTime> {
-    Some(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(metadata.last_write_time() * 100))
 }
 
 #[cfg(unix)]
