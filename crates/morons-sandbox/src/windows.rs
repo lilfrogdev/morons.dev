@@ -50,6 +50,7 @@ pub(crate) fn execute(
             image: &layout.image,
         })
         .is_err()
+        || layout.populate_image(&prepared).is_err()
     {
         return cleanup_failure(
             operation_id,

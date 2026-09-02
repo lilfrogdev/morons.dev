@@ -224,13 +224,8 @@ fn sandbox_child_background() {
     if !inside_sandbox() {
         return;
     }
-    let command = std::env::var_os("ComSpec").expect("fixed command processor");
-    let mut child = Command::new(command)
-        .args([
-            "/D",
-            "/C",
-            "for /L %i in (1,1,100000000) do @rem & echo escaped>survived",
-        ])
+    let mut child = Command::new(std::env::current_exe().expect("private executable"))
+        .args(["--exact", "sandbox_child_descendant", "--nocapture"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -239,6 +234,15 @@ fn sandbox_child_background() {
     thread::spawn(move || {
         let _ = child.wait();
     });
+}
+
+#[test]
+fn sandbox_child_descendant() {
+    if !inside_sandbox() {
+        return;
+    }
+    thread::sleep(Duration::from_secs(10));
+    fs::write("survived", b"escaped").expect("candidate remains writable");
 }
 
 #[test]

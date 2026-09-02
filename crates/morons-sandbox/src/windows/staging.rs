@@ -40,17 +40,11 @@ impl Layout {
             ] {
                 fs::create_dir(directory).map_err(|_| ())?;
             }
-            copy_image(&request.image_root, &image)?;
             let relative = request
                 .executable
                 .strip_prefix(&request.image_root)
                 .map_err(|_| ())?;
             let executable = image.join(relative);
-            let metadata = fs::symlink_metadata(&executable).map_err(|_| ())?;
-            if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-            {
-                return Err(());
-            }
             Ok(Self {
                 root: root.clone(),
                 image,
@@ -62,6 +56,15 @@ impl Layout {
             let _ = remove_tree(&root);
         }
         prepared
+    }
+
+    pub(super) fn populate_image(&self, request: &PreparedRequest) -> Result<(), ()> {
+        copy_image(&request.image_root, &self.image)?;
+        let metadata = fs::symlink_metadata(&self.executable).map_err(|_| ())?;
+        if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(());
+        }
+        Ok(())
     }
 
     pub(super) fn cleanup(&self) -> Result<(), ()> {
