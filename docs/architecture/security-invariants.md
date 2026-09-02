@@ -88,7 +88,10 @@
 - A Windows sandbox process must be created suspended with only dedicated closed-input and bounded-output handles, assigned to its configured non-breakaway Job Object before resume, and must never inherit host standard streams or execute before complete Job ownership.
 - Trusted Windows result classification, cancellation, deadlines, output draining, and process-tree ownership must remain in the outer helper; no trusted bootstrap, result file, gate, or authoritative control channel may share the command AppContainer identity or writable namespace.
 - Operation AppContainer SIDs and ACL grants may reach only operation-private candidate, cache, and image staging; shared images, packaged executables, control roots, and persistent trusted state must never accumulate operation ACL entries.
-- Morons-controlled tools, commands, and kernels must share one session workspace lease and must not retain uncontrolled background access that can race a successor operation.
+- Diff review must compare only the immutable baseline with the exact committed active generation and return bounded repository-relative metadata and terminal-safe excerpts without Git or host paths.
+- Export requires an explicit authenticated owner mutation, an exact reviewed generation, and one absent non-protected destination; it never overwrites, merges, invokes Git, or writes back implicitly.
+- Export destination paths are transient and durable state may contain only a role-separated digest; dispatched exports without a committed outcome remain uncertain and are never retried or removed automatically.
+- Morons-controlled tools, commands, review, export, and kernels must share one session workspace lease and must not retain uncontrolled background access that can race a successor operation.
 - Untrusted runtimes, tools, subprocesses, kernels, and sandboxes may receive only the mutable worktree, never the baseline, workspace metadata, workspace root, original source tree, or another session's workspace.
 - Repository source and destination paths must not become session identity, authorization evidence, durable public state, model context, audit data, logs, errors, events, or protocol results.
 - Temporary runtimes, subprocesses, Python kernels, provider response identifiers, and provider continuation state must not become authoritative session storage or receive control-plane credentials.
@@ -114,6 +117,7 @@
 - Tool recovery must never rerun a call or provider turn, reread an interrupted observation, or publish an intended edit; it may reconcile or remove only exact operation-bound state when target identity and before-or-after digests prove the outcome.
 - Active worktree generations are server-generated identities; a command result and generation-pointer change must commit in one transaction after the complete clean generation is synchronized and validated.
 - Startup must never launch, resume, or repeat a command or promote its unreferenced candidate; it may remove only exact inactive operation-bound staging after process-tree termination is proven.
+- Startup must not inspect an external export destination without the exact transient path from a deliberate retry; prepared exports become not applied, while dispatched exports without committed outcomes remain uncertain.
 - Every committed tool call must receive a durable terminal result during normal execution or recovery; an unprovable mutating outcome must terminate the run as uncertain and block new input.
 - A dispatched effect without a committed outcome is uncertain and must never be retried automatically.
 - A run must not become cancelled until its controlled execution is known to have stopped; an unprovable cancellation remains interrupted or uncertain.
