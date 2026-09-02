@@ -22,6 +22,8 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             UNION ALL SELECT session_id, fact_sequence FROM tool_calls
             UNION ALL SELECT session_id, fact_sequence FROM tool_operation_facts
             UNION ALL SELECT session_id, fact_sequence FROM tool_uncertainty_acknowledgements
+            UNION ALL SELECT session_id, updated_sequence FROM local_commands
+            UNION ALL SELECT session_id, accepted_sequence FROM local_command_cancellations
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
@@ -142,6 +144,8 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             UNION ALL SELECT session_id, fact_sequence FROM tool_calls
             UNION ALL SELECT session_id, fact_sequence FROM tool_operation_facts
             UNION ALL SELECT session_id, fact_sequence FROM tool_uncertainty_acknowledgements
+            UNION ALL SELECT session_id, updated_sequence FROM local_commands
+            UNION ALL SELECT session_id, accepted_sequence FROM local_command_cancellations
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
@@ -154,8 +158,12 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             (SELECT run.run_id FROM runs AS run
              WHERE run.session_id = session.session_id AND run.state IN (1, 2)
              LIMIT 1),
-            COALESCE((SELECT MAX(entry.entry_sequence) FROM session_entries AS entry
-                      WHERE entry.session_id = session.session_id), 0),
+            MAX(
+                COALESCE((SELECT MAX(entry.entry_sequence) FROM session_entries AS entry
+                          WHERE entry.session_id = session.session_id), 0),
+                COALESCE((SELECT MAX(command.entry_sequence) FROM local_commands AS command
+                          WHERE command.session_id = session.session_id), 0)
+            ),
             updates.updated_sequence
          FROM session_created_facts AS session
          JOIN latest_updates AS updates ON updates.session_id = session.session_id",
@@ -175,6 +183,14 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
                 CASE entry_kind WHEN 1 THEN 2 WHEN 2 THEN 6 WHEN 3 THEN 12 ELSE 13 END,
                 1, created_at_milliseconds
          FROM session_entries
+         UNION ALL
+         SELECT accepted_event_id, accepted_sequence, session_id, 16, 1,
+                accepted_at_milliseconds
+         FROM local_commands
+         UNION ALL
+         SELECT delivery_event_id, updated_sequence, session_id, 17, 1,
+                updated_at_milliseconds
+         FROM local_commands WHERE state BETWEEN 3 AND 5
          UNION ALL
          SELECT delivery_event_id, fact_sequence, session_id, 3, 1,
                 accepted_at_milliseconds

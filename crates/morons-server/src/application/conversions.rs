@@ -339,6 +339,43 @@ pub(super) fn to_protocol_transcript_entry(entry: TranscriptEntry) -> ProtocolTr
             summary: result.summary(),
             created_at_milliseconds,
         },
+        TranscriptEntry::LocalCommand {
+            id,
+            command_id,
+            command,
+            context_visible,
+            status,
+            exit_code,
+            signal,
+            stdout,
+            stderr,
+            created_at_milliseconds,
+            ..
+        } => ProtocolTranscriptEntry::LocalCommand {
+            id: ProtocolMessageId::from_bytes(*id.as_bytes()),
+            command_id: morons_protocol::LocalCommandId::from_bytes(*command_id.as_bytes()),
+            command,
+            context_visible,
+            status: match status {
+                crate::persistence::LocalCommandStatus::Succeeded => {
+                    morons_protocol::LocalCommandStatus::Succeeded
+                }
+                crate::persistence::LocalCommandStatus::Failed => {
+                    morons_protocol::LocalCommandStatus::Failed
+                }
+                crate::persistence::LocalCommandStatus::Interrupted => {
+                    morons_protocol::LocalCommandStatus::Interrupted
+                }
+                crate::persistence::LocalCommandStatus::Uncertain => {
+                    morons_protocol::LocalCommandStatus::Uncertain
+                }
+            },
+            exit_code,
+            signal,
+            stdout,
+            stderr,
+            created_at_milliseconds,
+        },
     }
 }
 
@@ -405,9 +442,17 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::RequestConflict => ApplicationError::RequestConflict,
         PersistenceError::SessionNotFound => ApplicationError::SessionNotFound,
         PersistenceError::RunNotFound => ApplicationError::RunNotFound,
+        PersistenceError::LocalCommandNotFound => ApplicationError::LocalCommandNotFound,
         PersistenceError::SessionBusy { active_run_id } => ApplicationError::SessionBusy {
             active_run_id: to_protocol_run_id(active_run_id),
         },
+        PersistenceError::SessionCommandBusy { active_command_id } => {
+            ApplicationError::SessionCommandBusy {
+                active_command_id: morons_protocol::LocalCommandId::from_bytes(
+                    *active_command_id.as_bytes(),
+                ),
+            }
+        }
         PersistenceError::WorkingDirectoryUnavailable => {
             ApplicationError::WorkingDirectoryUnavailable
         }

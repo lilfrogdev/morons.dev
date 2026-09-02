@@ -22,6 +22,7 @@ use morons_protocol::{
 use tokio::sync::{Mutex, watch};
 
 use crate::{
+    command_supervisor::CommandSupervisor,
     persistence::{
         PersistenceError, RunModelSelection, SessionCatalogEventCursor, SessionEventCursor,
         SessionEventPayload, SessionId, SessionStore,
@@ -40,6 +41,7 @@ pub struct ServerApplication {
     sessions: Arc<SessionStore>,
     open_code: Arc<OpenCodeProvider>,
     run_supervisor: Arc<RunSupervisor>,
+    command_supervisor: Arc<CommandSupervisor>,
     session_event_hub: Arc<SessionEventHub>,
     host_epoch: [u8; 16],
     stopping: AtomicBool,
@@ -105,6 +107,7 @@ impl ServerApplication {
     pub async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
         self.run_supervisor.shutdown().await;
+        self.command_supervisor.shutdown().await;
     }
 
     pub(crate) async fn execute_for_local_owner(
@@ -315,6 +318,105 @@ impl ServerApplication {
                 }
                 Ok(input_accepted_response(accepted))
             }
+            ApplicationRequest::ExecuteLocalCommand {
+                mutation_request_id,
+                session_id,
+                command,
+                context_visible,
+            } => {
+                let persistence_request_id = to_persistence_mutation_id(mutation_request_id);
+                let persistence_session_id = to_persistence_session_id(session_id);
+                if let Some(existing) = self
+                    .sessions
+                    .find_local_command_retry(
+                        persistence_request_id,
+                        persistence_session_id,
+                        &command,
+                        context_visible,
+                    )
+                    .await
+                    .map_err(to_application_error)?
+                {
+                    return Ok(ApplicationOutcome::Response(
+                        ApplicationResponse::LocalCommandAccepted {
+                            command_id: morons_protocol::LocalCommandId::from_bytes(
+                                *existing.id.as_bytes(),
+                            ),
+                        },
+                    ));
+                }
+                let _lifecycle_guard = self.lifecycle_mutations.lock().await;
+                if let Some(existing) = self
+                    .sessions
+                    .find_local_command_retry(
+                        persistence_request_id,
+                        persistence_session_id,
+                        &command,
+                        context_visible,
+                    )
+                    .await
+                    .map_err(to_application_error)?
+                {
+                    return Ok(ApplicationOutcome::Response(
+                        ApplicationResponse::LocalCommandAccepted {
+                            command_id: morons_protocol::LocalCommandId::from_bytes(
+                                *existing.id.as_bytes(),
+                            ),
+                        },
+                    ));
+                }
+                if self.stopping.load(Ordering::Acquire) {
+                    return Err(ApplicationError::ServiceUnavailable);
+                }
+                let permit = self.command_supervisor.try_reserve().ok_or(
+                    ApplicationError::ResourceLimit {
+                        resource: ResourceLimit::Runs,
+                    },
+                )?;
+                let session_id = persistence_session_id;
+                let accepted = self
+                    .sessions
+                    .accept_local_command(
+                        persistence_request_id,
+                        session_id,
+                        command,
+                        context_visible,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                if accepted.newly_accepted {
+                    let working_directory = self
+                        .sessions
+                        .get_session(session_id)
+                        .await
+                        .map_err(to_application_error)?
+                        .and_then(|session| session.working_directory)
+                        .ok_or(ApplicationError::WorkingDirectoryUnavailable)?;
+                    if let Err(error) = self
+                        .command_supervisor
+                        .start(accepted.clone(), working_directory.into(), permit)
+                        .await
+                    {
+                        eprintln!("accepted local command could not start: {error}");
+                        self.sessions
+                            .complete_local_command(
+                                accepted.id,
+                                crate::tools::ToolResult::error(
+                                    crate::tools::ToolErrorKind::NotDispatched,
+                                ),
+                            )
+                            .await
+                            .map_err(to_application_error)?;
+                    }
+                }
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::LocalCommandAccepted {
+                        command_id: morons_protocol::LocalCommandId::from_bytes(
+                            *accepted.id.as_bytes(),
+                        ),
+                    },
+                ))
+            }
             ApplicationRequest::GetRun { session_id, run_id } => {
                 let run = self
                     .sessions
@@ -356,6 +458,9 @@ impl ServerApplication {
                             .collect(),
                         runs: page.runs.into_iter().map(to_run_summary).collect(),
                         active_run_id: page.active_run_id.map(to_protocol_run_id),
+                        active_command_id: page
+                            .active_command_id
+                            .map(|id| morons_protocol::LocalCommandId::from_bytes(*id.as_bytes())),
                         next_cursor: page.next_cursor.map(to_protocol_transcript_cursor),
                         event_cursor: to_protocol_session_event_cursor(page.event_cursor),
                     },
@@ -402,6 +507,32 @@ impl ServerApplication {
                     ApplicationResponse::RunCancellationResolved {
                         run_id: to_protocol_run_id(result.run_id),
                         state: to_protocol_run_state(result.state),
+                        cancellation_requested: result.cancellation_requested,
+                    },
+                ))
+            }
+            ApplicationRequest::CancelLocalCommand {
+                mutation_request_id,
+                session_id,
+                command_id,
+            } => {
+                let result = self
+                    .sessions
+                    .cancel_local_command(
+                        to_persistence_mutation_id(mutation_request_id),
+                        to_persistence_session_id(session_id),
+                        crate::persistence::LocalCommandId::from_bytes(*command_id.as_bytes()),
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                if result.intent_applied {
+                    self.command_supervisor
+                        .signal_cancellation(result.command_id)
+                        .await;
+                }
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::LocalCommandCancellationResolved {
+                        command_id,
                         cancellation_requested: result.cancellation_requested,
                     },
                 ))
@@ -506,6 +637,21 @@ impl ServerApplication {
                         run: to_run_summary(run),
                     },
                 },
+                SessionEventPayload::LocalCommandChanged { command_id, active } => {
+                    DeliveredSessionEvent {
+                        cursor: event.cursor,
+                        event: ApplicationEvent::SessionLocalCommandChanged {
+                            cursor: to_protocol_session_event_cursor(event.cursor),
+                            session_id: morons_protocol::SessionId::from_bytes(
+                                *session_id.as_bytes(),
+                            ),
+                            command_id: morons_protocol::LocalCommandId::from_bytes(
+                                *command_id.as_bytes(),
+                            ),
+                            active,
+                        },
+                    }
+                }
                 SessionEventPayload::WorkspaceChanged(workspace) => DeliveredSessionEvent {
                     cursor: event.cursor,
                     event: ApplicationEvent::SessionWorkspaceChanged {
@@ -557,11 +703,13 @@ impl ServerApplication {
             Arc::clone(&open_code),
             Arc::clone(&session_event_hub),
         );
+        let command_supervisor = CommandSupervisor::new(Arc::clone(&sessions));
         let (shutdown_requests, _) = watch::channel(false);
         Self {
             sessions,
             open_code,
             run_supervisor,
+            command_supervisor,
             session_event_hub,
             host_epoch,
             stopping: AtomicBool::new(false),

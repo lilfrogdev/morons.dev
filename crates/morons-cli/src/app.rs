@@ -4,9 +4,9 @@ mod render;
 use std::{error::Error, fmt};
 
 use morons_protocol::{
-    ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
-    OpenCodeService, RunId, RunState, RunSummary, SessionId, SessionSummary, TranscriptEntry,
-    WorkspaceSummary,
+    ApplicationEvent, LocalCommandId, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
+    OpenCodeModelSummary, OpenCodeService, RunId, RunState, RunSummary, SessionId, SessionSummary,
+    TranscriptEntry, WorkspaceSummary,
 };
 use ratatui::Frame;
 
@@ -27,7 +27,9 @@ pub(super) enum View {
 pub(super) enum PendingOperation {
     CreateSession,
     SubmitInput,
+    ExecuteLocalCommand,
     CancelRun,
+    CancelLocalCommand,
     AcknowledgeToolUncertainty,
     UpdateCredential,
     StopServer,
@@ -56,9 +58,18 @@ pub(super) enum AppAction {
         service: OpenCodeService,
         model_id: String,
     },
+    ExecuteLocalCommand {
+        session_id: SessionId,
+        command: String,
+        context_visible: bool,
+    },
     CancelRun {
         session_id: SessionId,
         run_id: RunId,
+    },
+    CancelLocalCommand {
+        session_id: SessionId,
+        command_id: LocalCommandId,
     },
     AcknowledgeToolUncertainty {
         session_id: SessionId,
@@ -100,10 +111,28 @@ impl fmt::Debug for AppAction {
                 .field("service", service)
                 .field("model_id", model_id)
                 .finish(),
+            Self::ExecuteLocalCommand {
+                session_id,
+                command,
+                context_visible,
+            } => formatter
+                .debug_struct("ExecuteLocalCommand")
+                .field("session_id", session_id)
+                .field("command_bytes", &command.len())
+                .field("context_visible", context_visible)
+                .finish(),
             Self::CancelRun { session_id, run_id } => formatter
                 .debug_struct("CancelRun")
                 .field("session_id", session_id)
                 .field("run_id", run_id)
+                .finish(),
+            Self::CancelLocalCommand {
+                session_id,
+                command_id,
+            } => formatter
+                .debug_struct("CancelLocalCommand")
+                .field("session_id", session_id)
+                .field("command_id", command_id)
                 .finish(),
             Self::AcknowledgeToolUncertainty { session_id, run_id } => formatter
                 .debug_struct("AcknowledgeToolUncertainty")
@@ -284,8 +313,16 @@ impl AppState {
         entries: Vec<TranscriptEntry>,
         runs: Vec<RunSummary>,
         active_run_id: Option<RunId>,
+        active_command_id: Option<LocalCommandId>,
     ) -> Result<(), UiStateError> {
-        let session = SessionView::new(summary, workspace, entries, runs, active_run_id)?;
+        let session = SessionView::new(
+            summary,
+            workspace,
+            entries,
+            runs,
+            active_run_id,
+            active_command_id,
+        )?;
         self.session = Some(session);
         self.view = View::Session;
         self.prompt.clear();
@@ -310,6 +347,16 @@ impl AppState {
             } => self.session_mut(session_id)?.append_transcript_entry(entry),
             ApplicationEvent::SessionRunChanged { run, .. } => {
                 self.session_mut(run.session_id)?.apply_run(run)
+            }
+            ApplicationEvent::SessionLocalCommandChanged {
+                session_id,
+                command_id,
+                active,
+                ..
+            } => {
+                let session = self.session_mut(session_id)?;
+                session.active_command_id = active.then_some(command_id);
+                Ok(())
             }
             ApplicationEvent::SessionWorkspaceChanged {
                 session_id,
@@ -348,6 +395,39 @@ impl AppState {
         self.prompt.clear();
         self.clear_pending();
         self.session_mut(run.session_id)?.apply_run(run)
+    }
+
+    pub(super) fn local_command_accepted(
+        &mut self,
+        session_id: SessionId,
+        command_id: LocalCommandId,
+    ) -> Result<(), UiStateError> {
+        self.prompt.clear();
+        self.clear_pending();
+        let session = self.session_mut(session_id)?;
+        if !session
+            .entries
+            .iter()
+            .any(|entry| entry.command_id == Some(command_id))
+        {
+            session.active_command_id = Some(command_id);
+        }
+        Ok(())
+    }
+
+    pub(super) fn local_command_cancellation_resolved(
+        &mut self,
+        command_id: LocalCommandId,
+    ) -> Result<(), UiStateError> {
+        self.clear_pending();
+        let session = self
+            .session
+            .as_ref()
+            .ok_or(UiStateError::ResourceScopeMismatch)?;
+        if session.active_command_id != Some(command_id) {
+            return Err(UiStateError::ResourceScopeMismatch);
+        }
+        Ok(())
     }
 
     pub(super) fn workspace_updated(
@@ -459,6 +539,7 @@ pub(super) struct SessionView {
     pub(super) entries: Vec<PresentedTranscriptEntry>,
     pub(super) runs: Vec<RunSummary>,
     pub(super) active_run_id: Option<RunId>,
+    pub(super) active_command_id: Option<LocalCommandId>,
     pub(super) transient: Option<TransientAssistant>,
 }
 
@@ -469,20 +550,22 @@ impl SessionView {
         entries: Vec<TranscriptEntry>,
         runs: Vec<RunSummary>,
         active_run_id: Option<RunId>,
+        active_command_id: Option<LocalCommandId>,
     ) -> Result<Self, UiStateError> {
         if entries.len() > MAX_CLIENT_TRANSCRIPT_ENTRIES || runs.len() > MAX_CLIENT_RUNS {
             return Err(UiStateError::ResourceLimitExceeded);
         }
         if runs.iter().any(|run| run.session_id != summary.id)
             || entries.iter().any(|entry| {
-                let run_id = transcript_entry_run_id(entry);
-                !runs.iter().any(|run| run.id == run_id)
+                transcript_entry_run_id(entry)
+                    .is_some_and(|run_id| !runs.iter().any(|run| run.id == run_id))
             })
             || active_run_id.is_some_and(|active_run_id| {
                 !runs
                     .iter()
                     .any(|run| run.id == active_run_id && !run.state.is_terminal())
             })
+            || (active_run_id.is_some() && active_command_id.is_some())
         {
             return Err(UiStateError::ResourceScopeMismatch);
         }
@@ -502,6 +585,7 @@ impl SessionView {
                 .collect(),
             runs,
             active_run_id,
+            active_command_id,
             transient: None,
         })
     }
@@ -563,9 +647,14 @@ impl SessionView {
             && self
                 .transient
                 .as_ref()
-                .is_some_and(|transient| transient.run_id == run_id)
+                .is_some_and(|transient| Some(transient.run_id) == run_id)
         {
             self.transient = None;
+        }
+        if let TranscriptEntry::LocalCommand { command_id, .. } = &entry
+            && self.active_command_id == Some(*command_id)
+        {
+            self.active_command_id = None;
         }
         self.entries.push(PresentedTranscriptEntry::new(entry));
         Ok(())
@@ -640,6 +729,7 @@ impl SessionView {
 
 pub(super) struct PresentedTranscriptEntry {
     pub(super) id: MessageId,
+    command_id: Option<LocalCommandId>,
     pub(super) role: &'static str,
     pub(super) text: SafeText,
     pub(super) refusal: bool,
@@ -650,6 +740,7 @@ impl PresentedTranscriptEntry {
         match entry {
             TranscriptEntry::UserMessage { id, text, .. } => Self {
                 id,
+                command_id: None,
                 role: "You",
                 text: SafeText::from_untrusted(&text),
                 refusal: false,
@@ -658,12 +749,14 @@ impl PresentedTranscriptEntry {
                 id, text, refusal, ..
             } => Self {
                 id,
+                command_id: None,
                 role: "Assistant",
                 text: SafeText::from_untrusted(&text),
                 refusal,
             },
             TranscriptEntry::ToolCall { id, tool, path, .. } => Self {
                 id,
+                command_id: None,
                 role: "Tool call",
                 text: SafeText::from_untrusted(&format!("{} · {path}", tool_label(tool))),
                 refusal: false,
@@ -676,10 +769,35 @@ impl PresentedTranscriptEntry {
                 ..
             } => Self {
                 id,
+                command_id: None,
                 role: "Tool result",
                 text: SafeText::from_untrusted(&format!(
                     "{} · {status:?} · {summary}",
                     tool_label(tool)
+                )),
+                refusal: false,
+            },
+            TranscriptEntry::LocalCommand {
+                id,
+                command_id,
+                command,
+                context_visible,
+                status,
+                exit_code,
+                signal,
+                stdout,
+                stderr,
+                ..
+            } => Self {
+                id,
+                command_id: Some(command_id),
+                role: if context_visible {
+                    "Command !"
+                } else {
+                    "Command !!"
+                },
+                text: SafeText::from_untrusted(&format!(
+                    "{status:?} · exit {exit_code:?} · signal {signal:?}\n$ {command}\nstdout:\n{stdout}\nstderr:\n{stderr}"
                 )),
                 refusal: false,
             },
@@ -736,16 +854,18 @@ fn transcript_entry_id(entry: &TranscriptEntry) -> MessageId {
         TranscriptEntry::UserMessage { id, .. }
         | TranscriptEntry::AssistantMessage { id, .. }
         | TranscriptEntry::ToolCall { id, .. }
-        | TranscriptEntry::ToolResult { id, .. } => *id,
+        | TranscriptEntry::ToolResult { id, .. }
+        | TranscriptEntry::LocalCommand { id, .. } => *id,
     }
 }
 
-fn transcript_entry_run_id(entry: &TranscriptEntry) -> RunId {
+fn transcript_entry_run_id(entry: &TranscriptEntry) -> Option<RunId> {
     match entry {
         TranscriptEntry::UserMessage { run_id, .. }
         | TranscriptEntry::AssistantMessage { run_id, .. }
         | TranscriptEntry::ToolCall { run_id, .. }
-        | TranscriptEntry::ToolResult { run_id, .. } => *run_id,
+        | TranscriptEntry::ToolResult { run_id, .. } => Some(*run_id),
+        TranscriptEntry::LocalCommand { .. } => None,
     }
 }
 

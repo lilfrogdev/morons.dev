@@ -167,6 +167,14 @@ where
                 }
                 Ok(())
             }
+            ApplicationEvent::SessionLocalCommandChanged {
+                cursor, session_id, ..
+            } => {
+                if *session_id != self.session_id {
+                    return Err(self.event_scope_mismatch());
+                }
+                self.advance_cursor(*cursor)
+            }
             ApplicationEvent::SessionWorkspaceChanged {
                 cursor,
                 session_id,

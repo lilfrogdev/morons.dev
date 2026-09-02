@@ -109,10 +109,20 @@ impl AppState {
                 .session
                 .as_ref()
                 .and_then(|session| {
-                    session.active_run_id.map(|run_id| AppAction::CancelRun {
-                        session_id: session.summary.id,
-                        run_id,
-                    })
+                    session
+                        .active_run_id
+                        .map(|run_id| AppAction::CancelRun {
+                            session_id: session.summary.id,
+                            run_id,
+                        })
+                        .or_else(|| {
+                            session.active_command_id.map(|command_id| {
+                                AppAction::CancelLocalCommand {
+                                    session_id: session.summary.id,
+                                    command_id,
+                                }
+                            })
+                        })
                 })
                 .unwrap_or(AppAction::None),
             _ => AppAction::None,
@@ -316,9 +326,34 @@ impl AppState {
         let Some(session) = self.session.as_ref() else {
             return AppAction::None;
         };
-        if session.active_run_id.is_some() {
-            self.set_status("The selected session already has an active run");
+        if session.active_run_id.is_some() || session.active_command_id.is_some() {
+            self.set_status("The selected session already has active work");
             return AppAction::None;
+        }
+        let prompt = self.prompt.as_str();
+        if let Some(command) = prompt.strip_prefix("!!") {
+            let command = command.trim_start();
+            if command.is_empty() {
+                self.set_status("Enter a command after !!");
+                return AppAction::None;
+            }
+            return AppAction::ExecuteLocalCommand {
+                session_id: session.summary.id,
+                command: command.to_owned(),
+                context_visible: false,
+            };
+        }
+        if let Some(command) = prompt.strip_prefix('!') {
+            let command = command.trim_start();
+            if command.is_empty() {
+                self.set_status("Enter a command after !");
+                return AppAction::None;
+            }
+            return AppAction::ExecuteLocalCommand {
+                session_id: session.summary.id,
+                command: command.to_owned(),
+                context_visible: true,
+            };
         }
         let Some(model) = self.selected_model() else {
             self.set_status("No reviewed model is currently available");

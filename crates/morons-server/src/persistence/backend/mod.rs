@@ -1,6 +1,7 @@
 pub(super) mod command_execution;
 mod creation;
 mod credential_mutation;
+pub(super) mod local_command;
 mod queries;
 mod records;
 mod repository_import;
@@ -39,6 +40,7 @@ impl Backend {
         backend.recover_credential_mutations()?;
         backend.recover_incomplete_session_creations()?;
         backend.recover_tool_operations()?;
+        backend.recover_local_commands()?;
         backend.recover_nonterminal_runs()?;
         Ok(backend)
     }

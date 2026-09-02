@@ -515,6 +515,26 @@ fn build_provider_request(
                     .provider_output()
                     .map_err(|_| ProviderError::InvalidRequest)?,
             },
+            TranscriptEntry::LocalCommand {
+                command,
+                status,
+                exit_code,
+                signal,
+                stdout,
+                stderr,
+                context_visible: true,
+                ..
+            } => ProviderInputItem::Message {
+                role: ProviderMessageRole::User,
+                text: format!(
+                    "Local command (status: {status:?}, exit_code: {exit_code:?}, signal: {signal:?}):\n{command}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                ),
+                phase: None,
+            },
+            TranscriptEntry::LocalCommand {
+                context_visible: false,
+                ..
+            } => return Err(ProviderError::InvalidRequest),
         });
     }
     if reasoning_continuation.is_some() && !continuation_inserted {

@@ -7,9 +7,10 @@ use super::{
     SessionSummary, WorkspaceState, WorkspaceSummary,
 };
 use crate::{
-    ClientMessage, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelCapabilities,
-    OpenCodeModelRetention, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
-    RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
+    ClientMessage, LocalCommandId, LocalCommandStatus, MessageId, OpenCodeApiKey,
+    OpenCodeCredentialStatus, OpenCodeModelCapabilities, OpenCodeModelRetention,
+    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId,
+    RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
 };
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
@@ -60,6 +61,46 @@ fn run_request_has_stable_json_shape() {
             "service": "zen",
             "model_id": "muse-spark-1.2",
         })
+    );
+}
+
+#[test]
+fn local_command_contract_is_stable_and_debug_redacts_content() {
+    let session_id = SessionId::from_bytes([0x21; 16]);
+    let request = ApplicationRequest::ExecuteLocalCommand {
+        mutation_request_id: MutationRequestId::from_bytes([0x22; 16]),
+        session_id,
+        command: "printf sensitive".to_owned(),
+        context_visible: false,
+    };
+    assert!(!format!("{request:?}").contains("printf sensitive"));
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        json!({
+            "operation": "execute_local_command",
+            "mutation_request_id": "mut_22222222222222222222222222222222",
+            "session_id": "ses_21212121212121212121212121212121",
+            "command": "printf sensitive",
+            "context_visible": false,
+        })
+    );
+    let entry = crate::TranscriptEntry::LocalCommand {
+        id: MessageId::from_bytes([0x23; 16]),
+        command_id: LocalCommandId::from_bytes([0x24; 16]),
+        command: "printf sensitive".to_owned(),
+        context_visible: false,
+        status: LocalCommandStatus::Succeeded,
+        exit_code: Some(0),
+        signal: None,
+        stdout: "sensitive output".to_owned(),
+        stderr: String::new(),
+        created_at_milliseconds: 9,
+    };
+    let debug = format!("{entry:?}");
+    assert!(!debug.contains("sensitive"));
+    assert_eq!(
+        serde_json::to_value(entry).unwrap()["entry"],
+        "local_command"
     );
 }
 
@@ -312,6 +353,7 @@ fn transcript_snapshot_response_has_stable_json_shape() {
         entries: Vec::new(),
         runs: Vec::new(),
         active_run_id: None,
+        active_command_id: None,
         next_cursor: None,
         event_cursor: session_event_cursor(session_id, 9),
     };
@@ -336,6 +378,7 @@ fn transcript_snapshot_response_has_stable_json_shape() {
             "entries": [],
             "runs": [],
             "active_run_id": null,
+            "active_command_id": null,
             "next_cursor": null,
             "event_cursor": "sec1_232323232323232323232323232323230000000000000009",
         })

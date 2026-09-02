@@ -266,6 +266,12 @@ pub enum ApplicationRequest {
         service: crate::OpenCodeService,
         model_id: String,
     },
+    ExecuteLocalCommand {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        command: String,
+        context_visible: bool,
+    },
     GetRun {
         session_id: SessionId,
         run_id: crate::RunId,
@@ -283,6 +289,11 @@ pub enum ApplicationRequest {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
         run_id: crate::RunId,
+    },
+    CancelLocalCommand {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        command_id: crate::LocalCommandId,
     },
     AcknowledgeToolUncertainty {
         mutation_request_id: MutationRequestId,
@@ -357,6 +368,18 @@ impl fmt::Debug for ApplicationRequest {
                 .field("service", service)
                 .field("model_id", model_id)
                 .finish(),
+            Self::ExecuteLocalCommand {
+                mutation_request_id,
+                session_id,
+                command,
+                context_visible,
+            } => formatter
+                .debug_struct("ExecuteLocalCommand")
+                .field("mutation_request_id", mutation_request_id)
+                .field("session_id", session_id)
+                .field("command_bytes", &command.len())
+                .field("context_visible", context_visible)
+                .finish(),
             Self::GetRun { session_id, run_id } => formatter
                 .debug_struct("GetRun")
                 .field("session_id", session_id)
@@ -386,6 +409,16 @@ impl fmt::Debug for ApplicationRequest {
                 .field("mutation_request_id", mutation_request_id)
                 .field("session_id", session_id)
                 .field("run_id", run_id)
+                .finish(),
+            Self::CancelLocalCommand {
+                mutation_request_id,
+                session_id,
+                command_id,
+            } => formatter
+                .debug_struct("CancelLocalCommand")
+                .field("mutation_request_id", mutation_request_id)
+                .field("session_id", session_id)
+                .field("command_id", command_id)
                 .finish(),
             Self::AcknowledgeToolUncertainty {
                 mutation_request_id,
@@ -438,6 +471,9 @@ pub enum ApplicationResponse {
         user_message_id: crate::MessageId,
         run: crate::RunSummary,
     },
+    LocalCommandAccepted {
+        command_id: crate::LocalCommandId,
+    },
     RunFound {
         run: crate::RunSummary,
     },
@@ -447,6 +483,7 @@ pub enum ApplicationResponse {
         entries: Vec<crate::TranscriptEntry>,
         runs: Vec<crate::RunSummary>,
         active_run_id: Option<crate::RunId>,
+        active_command_id: Option<crate::LocalCommandId>,
         next_cursor: Option<crate::TranscriptCursor>,
         event_cursor: SessionEventCursor,
     },
@@ -457,6 +494,10 @@ pub enum ApplicationResponse {
     RunCancellationResolved {
         run_id: crate::RunId,
         state: crate::RunState,
+        cancellation_requested: bool,
+    },
+    LocalCommandCancellationResolved {
+        command_id: crate::LocalCommandId,
         cancellation_requested: bool,
     },
     ToolUncertaintyAcknowledged {
@@ -485,6 +526,12 @@ pub enum ApplicationEvent {
         cursor: SessionEventCursor,
         run: crate::RunSummary,
     },
+    SessionLocalCommandChanged {
+        cursor: SessionEventCursor,
+        session_id: SessionId,
+        command_id: crate::LocalCommandId,
+        active: bool,
+    },
     SessionWorkspaceChanged {
         cursor: SessionEventCursor,
         session_id: SessionId,
@@ -506,6 +553,7 @@ impl ApplicationEvent {
             Self::SessionCreated { cursor, .. } => Some(*cursor),
             Self::SessionTranscriptEntryCommitted { .. }
             | Self::SessionRunChanged { .. }
+            | Self::SessionLocalCommandChanged { .. }
             | Self::SessionWorkspaceChanged { .. }
             | Self::SessionAssistantDelta { .. } => None,
         }
@@ -516,6 +564,7 @@ impl ApplicationEvent {
         match self {
             Self::SessionTranscriptEntryCommitted { cursor, .. }
             | Self::SessionRunChanged { cursor, .. }
+            | Self::SessionLocalCommandChanged { cursor, .. }
             | Self::SessionWorkspaceChanged { cursor, .. } => Some(*cursor),
             Self::SessionCreated { .. } | Self::SessionAssistantDelta { .. } => None,
         }
@@ -544,6 +593,18 @@ impl fmt::Debug for ApplicationEvent {
                 .debug_struct("SessionRunChanged")
                 .field("cursor", cursor)
                 .field("run", run)
+                .finish(),
+            Self::SessionLocalCommandChanged {
+                cursor,
+                session_id,
+                command_id,
+                active,
+            } => formatter
+                .debug_struct("SessionLocalCommandChanged")
+                .field("cursor", cursor)
+                .field("session_id", session_id)
+                .field("command_id", command_id)
+                .field("active", active)
                 .finish(),
             Self::SessionWorkspaceChanged {
                 cursor,
@@ -616,14 +677,22 @@ pub enum ApplicationError {
     RequestConflict,
     SessionNotFound,
     RunNotFound,
-    SessionBusy { active_run_id: crate::RunId },
+    LocalCommandNotFound,
+    SessionBusy {
+        active_run_id: crate::RunId,
+    },
+    SessionCommandBusy {
+        active_command_id: crate::LocalCommandId,
+    },
     WorkingDirectoryUnavailable,
     UnsupportedModel,
     OpenCodeCredentialNotConfigured,
     CredentialGenerationConflict,
     CredentialMutationNotApplied,
     WorkspaceBlocked,
-    ResourceLimit { resource: ResourceLimit },
+    ResourceLimit {
+        resource: ResourceLimit,
+    },
     ServiceUnavailable,
     Internal,
 }

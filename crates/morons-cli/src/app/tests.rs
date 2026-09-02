@@ -29,6 +29,7 @@ fn rendering_strips_terminal_and_bidirectional_controls() {
         }],
         vec![run],
         None,
+        None,
     )
     .expect("session should open");
 
@@ -60,6 +61,7 @@ fn durable_assistant_message_replaces_transient_output() {
         Vec::new(),
         vec![run.clone()],
         Some(run.id),
+        None,
     )
     .expect("session should open");
     app.apply_event(ApplicationEvent::SessionAssistantDelta {
@@ -102,8 +104,15 @@ fn durable_assistant_message_replaces_transient_output() {
 fn prompt_paste_and_rendering_remain_bounded() {
     let (session, run) = fixture_session_and_run();
     let mut app = AppState::new("test-server");
-    app.open_session(session, empty_workspace(), Vec::new(), vec![run], None)
-        .expect("session should open");
+    app.open_session(
+        session,
+        empty_workspace(),
+        Vec::new(),
+        vec![run],
+        None,
+        None,
+    )
+    .expect("session should open");
     app.handle_paste(&format!(
         "{}\u{1b}\u{202e}",
         "x".repeat(MAX_PROMPT_BYTES + 100)
@@ -119,6 +128,33 @@ fn prompt_paste_and_rendering_remain_bounded() {
             .draw(|frame| app.render(frame))
             .expect("small terminal should render without panic");
     }
+}
+
+#[test]
+fn bang_prompts_execute_local_commands_without_requiring_a_model() {
+    let (session, run) = fixture_session_and_run();
+    let session_id = session.id;
+    let mut app = AppState::new("test-server");
+    app.open_session(
+        session,
+        empty_workspace(),
+        Vec::new(),
+        vec![run],
+        None,
+        None,
+    )
+    .expect("session should open");
+    app.handle_paste("!!  printf private");
+    let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        action,
+        AppAction::ExecuteLocalCommand {
+            session_id: selected,
+            ref command,
+            context_visible: false,
+        } if selected == session_id && command == "printf private"
+    ));
+    assert!(!format!("{action:?}").contains("printf private"));
 }
 
 #[test]
@@ -239,6 +275,7 @@ fn uncertain_tool_effect_requires_explicit_acknowledgement_confirmation() {
         },
         Vec::new(),
         vec![run.clone()],
+        None,
         None,
     )
     .expect("blocked session should open");
