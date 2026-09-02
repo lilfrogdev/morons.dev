@@ -262,11 +262,6 @@ impl RuntimeState {
                 self.start_mutation(command, PendingOperation::CancelRun, commands)?;
                 self.app.set_status("Requesting exact-run cancellation");
             }
-            AppAction::ReviewDiff { session_id, cursor } => {
-                send_command(commands, RequestCommand::ReviewDiff { session_id, cursor })?;
-                self.app
-                    .set_status("Reviewing the committed worktree generation");
-            }
             AppAction::ImportRepository {
                 session_id,
                 source_path,
@@ -415,22 +410,6 @@ impl RuntimeState {
                 self.install_session_snapshot(snapshot, subscription_events)?;
                 self.app.set_status("Session transcript is current");
             }
-            RequestEvent::DiffReviewed {
-                changes,
-                next_cursor,
-                generation,
-                continued,
-            } => {
-                let count = changes.len();
-                let has_next = next_cursor.is_some();
-                self.app
-                    .set_review(changes, next_cursor, generation, continued)?;
-                self.app.set_status(if has_next {
-                    format!("Reviewed {count} changes on this page · Ctrl+D loads the next page")
-                } else {
-                    format!("Reviewed {count} changes · this is the final page")
-                });
-            }
             RequestEvent::SessionCreated {
                 mutation_request_id,
                 session,
@@ -546,9 +525,6 @@ impl RuntimeState {
                 model_service,
                 error,
             } => {
-                if context == "diff review" {
-                    self.app.clear_review();
-                }
                 if matches!(
                     context,
                     "session list" | "model list" | "credential status" | "execution image status"

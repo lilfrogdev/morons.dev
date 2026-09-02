@@ -277,25 +277,6 @@ impl ServerApplication {
                     },
                 ))
             }
-            ApplicationRequest::ReviewDiff {
-                session_id,
-                cursor,
-                limit,
-            } => {
-                let (changes, next_cursor, generation) = self
-                    .sessions
-                    .review_diff(to_persistence_session_id(session_id), cursor, limit)
-                    .await
-                    .map_err(to_application_error)?;
-                Ok(ApplicationOutcome::Response(
-                    ApplicationResponse::DiffReviewed {
-                        session_id,
-                        changes,
-                        next_cursor,
-                        generation,
-                    },
-                ))
-            }
             ApplicationRequest::ImportRepository {
                 mutation_request_id,
                 session_id,

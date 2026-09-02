@@ -1,6 +1,5 @@
 mod command;
 mod repository_import;
-mod review;
 
 pub(crate) use repository_import::{RepositoryRecovery, WorktreeLayoutRecovery};
 

@@ -444,8 +444,6 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
             ApplicationError::ExecutionImageProvisionNotApplied
         }
         PersistenceError::ExecutionImageBlocked => ApplicationError::ExecutionImageBlocked,
-        PersistenceError::ReviewCursorStale => ApplicationError::ReviewCursorStale,
-        PersistenceError::ReviewUnavailable => ApplicationError::ReviewUnavailable,
         PersistenceError::WorkspaceNotPristine => ApplicationError::WorkspaceNotPristine,
         PersistenceError::WorkspaceBusy => ApplicationError::WorkspaceBusy,
         PersistenceError::RepositoryAlreadyImported => ApplicationError::RepositoryAlreadyImported,

@@ -152,7 +152,7 @@ fn render_session(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         ])
         .split(area);
     if let Some(session) = app.session.as_ref() {
-        render_transcript(frame, sections[0], session, app, app.transcript_scroll);
+        render_transcript(frame, sections[0], session, app.transcript_scroll);
     } else {
         frame.render_widget(
             Paragraph::new("Session state is unavailable")
@@ -175,13 +175,7 @@ fn render_session(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     );
 }
 
-fn render_transcript(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    session: &SessionView,
-    app: &AppState,
-    scroll: u16,
-) {
+fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, scroll: u16) {
     let mut lines = Vec::new();
     for entry in &session.entries {
         let role_style = if entry.role == "You" {
@@ -199,28 +193,6 @@ fn render_transcript(
         };
         lines.push(Line::from(Span::styled(entry.role, role_style)));
         extend_safe_lines(&mut lines, &entry.text);
-        lines.push(Line::default());
-    }
-    if let Some(review) = app.review.as_ref() {
-        lines.push(Line::from(Span::styled(
-            format!("Diff review · page {}", review.page),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )));
-        if review.changes.is_empty() {
-            lines.push(Line::from("No baseline changes"));
-        }
-        for change in &review.changes {
-            extend_safe_lines(&mut lines, &change.heading);
-            if let Some(excerpt) = change.excerpt.as_ref() {
-                extend_safe_lines(&mut lines, excerpt);
-            }
-            lines.push(Line::default());
-        }
-        if review.next_cursor.is_some() {
-            lines.push(Line::from("Ctrl+D loads the next bounded review page"));
-        }
         lines.push(Line::default());
     }
     if session.workspace.block_reason
@@ -309,7 +281,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             "↑↓ select · Enter open · n new · Tab model · Ctrl+I image · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
-            "Esc sessions · Ctrl+D diff/next · Ctrl+I image · Ctrl+O import · Ctrl+A acknowledge · Ctrl+X cancel"
+            "Esc sessions · Ctrl+I image · Ctrl+O import · Ctrl+A acknowledge · Ctrl+X cancel"
         }
     };
     let status = Line::from(vec![
