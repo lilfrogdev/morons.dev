@@ -10,8 +10,8 @@ use ratatui::{
 };
 
 use super::{
-    AppState, CredentialDialog, ExecutionImageDialog, PendingOperation, PresentedModel,
-    RepositoryDialog, SessionView, View, tool_label,
+    AppState, CredentialDialog, PendingOperation, PresentedModel, RepositoryDialog, SessionView,
+    View, tool_label,
 };
 use crate::terminal::SafeText;
 
@@ -40,9 +40,6 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
     if let Some(dialog) = app.credential_dialog.as_ref() {
         render_credential_dialog(frame, area, dialog);
     }
-    if let Some(dialog) = app.execution_image_dialog.as_ref() {
-        render_execution_image_dialog(frame, area, dialog);
-    }
     if let Some(dialog) = app.repository_dialog.as_ref() {
         render_repository_dialog(frame, area, dialog);
     }
@@ -59,23 +56,12 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         ),
         None => "credential status loading".to_owned(),
     };
-    let image = match app.execution_image {
-        Some(image) => format!(
-            "image {} · {}/{}",
-            image_state_label(image.state),
-            target_os_label(image.target_os),
-            target_arch_label(image.target_arch)
-        ),
-        None => "image status loading".to_owned(),
-    };
     let line = Line::from(vec![
         Span::styled(" morons ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw("connected · server "),
         Span::raw(app.server_version.first_line()),
         Span::raw(" · "),
         Span::raw(credential),
-        Span::raw(" · "),
-        Span::raw(image),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -278,11 +264,9 @@ fn render_model_disclosure(frame: &mut Frame<'_>, area: Rect, model: Option<&Pre
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let help = match app.view {
         View::Sessions => {
-            "↑↓ select · Enter open · n new · Tab model · Ctrl+I image · Ctrl+K credential · Ctrl+S stop · q detach"
+            "↑↓ select · Enter open · n new · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
         }
-        View::Session => {
-            "Esc sessions · Ctrl+I image · Ctrl+O import · Ctrl+A acknowledge · Ctrl+X cancel"
-        }
+        View::Session => "Esc sessions · Ctrl+O import · Ctrl+A acknowledge · Ctrl+X cancel",
     };
     let status = Line::from(vec![
         Span::styled(" ", Style::default()),
@@ -362,72 +346,6 @@ fn render_repository_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &Reposito
         }
     };
     frame.render_widget(paragraph.wrap(Wrap { trim: false }), popup);
-}
-
-fn render_execution_image_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &ExecutionImageDialog) {
-    let width = area.width.min(78);
-    let height = area.height.min(11);
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
-    frame.render_widget(Clear, popup);
-    let lines = match dialog {
-        ExecutionImageDialog::Toolchain { input } => vec![
-            Line::from("Rust toolchain root containing bin/cargo and bin/rustc:"),
-            Line::default(),
-            Line::from(
-                SafeText::from_untrusted(input.as_str())
-                    .first_line()
-                    .to_owned(),
-            ),
-            Line::default(),
-            Line::from("Enter continue · Backspace edit · Esc cancel"),
-        ],
-        ExecutionImageDialog::Cargo { input, .. } => vec![
-            Line::from("Cargo home containing the public registry seed:"),
-            Line::default(),
-            Line::from(
-                SafeText::from_untrusted(input.as_str())
-                    .first_line()
-                    .to_owned(),
-            ),
-            Line::default(),
-            Line::from("Only registry data is copied; config and credentials are excluded."),
-            Line::from("Enter continue · Backspace edit · Esc cancel"),
-        ],
-        ExecutionImageDialog::Confirm {
-            toolchain_source_path,
-            cargo_source_path,
-        } => vec![
-            Line::from("Provision an immutable offline Rust execution image from:"),
-            Line::from(
-                SafeText::from_untrusted(toolchain_source_path)
-                    .first_line()
-                    .to_owned(),
-            ),
-            Line::from(
-                SafeText::from_untrusted(cargo_source_path)
-                    .first_line()
-                    .to_owned(),
-            ),
-            Line::default(),
-            Line::from("Sources are copied without executing toolchain or repository code."),
-            Line::from("y provision · n cancel"),
-        ],
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Execution image "),
-            )
-            .wrap(Wrap { trim: false }),
-        popup,
-    );
 }
 
 fn render_credential_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &CredentialDialog) {
@@ -536,30 +454,6 @@ const fn workspace_label(state: WorkspaceState) -> &'static str {
         WorkspaceState::Importing => "repository importing",
         WorkspaceState::Ready => "repository ready",
         WorkspaceState::Blocked => "workspace blocked",
-    }
-}
-
-const fn image_state_label(state: morons_protocol::ExecutionImageState) -> &'static str {
-    match state {
-        morons_protocol::ExecutionImageState::Unconfigured => "not configured",
-        morons_protocol::ExecutionImageState::Provisioning => "provisioning",
-        morons_protocol::ExecutionImageState::Ready => "ready",
-        morons_protocol::ExecutionImageState::Blocked => "blocked",
-    }
-}
-
-const fn target_os_label(target: morons_protocol::ExecutionTargetOs) -> &'static str {
-    match target {
-        morons_protocol::ExecutionTargetOs::Macos => "macOS",
-        morons_protocol::ExecutionTargetOs::Linux => "Linux",
-        morons_protocol::ExecutionTargetOs::Windows => "Windows",
-    }
-}
-
-const fn target_arch_label(target: morons_protocol::ExecutionTargetArch) -> &'static str {
-    match target {
-        morons_protocol::ExecutionTargetArch::X86_64 => "x86_64",
-        morons_protocol::ExecutionTargetArch::Aarch64 => "aarch64",
     }
 }
 

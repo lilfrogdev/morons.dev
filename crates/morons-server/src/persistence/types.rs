@@ -28,7 +28,6 @@ const IMPORT_REPOSITORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/import-reposit
 const REPOSITORY_SOURCE_PATH_DIGEST_CONTEXT: &[u8] = b"morons.dev/repository-source-path/v1\0";
 const ACKNOWLEDGE_TOOL_UNCERTAINTY_CONTEXT: &[u8] = b"morons.dev/acknowledge-tool-uncertainty/v1\0";
 const PROVISION_EXECUTION_IMAGE_CONTEXT: &[u8] = b"morons.dev/provision-execution-image/v1\0";
-const EXECUTION_IMAGE_SOURCE_PATH_CONTEXT: &[u8] = b"morons.dev/execution-image-source-path/v1\0";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SessionId([u8; IDENTIFIER_BYTES]);
@@ -227,40 +226,15 @@ pub(crate) struct WorktreeLayoutPlan {
     pub state: u8,
 }
 
+/// Historical execution-image target retained only for durable schema validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ExecutionImagePlan {
-    pub request_id: MutationRequestId,
-    pub generation_id: [u8; IDENTIFIER_BYTES],
-    pub operation_id: [u8; IDENTIFIER_BYTES],
-    pub target_os: ExecutionTargetOs,
-    pub target_arch: ExecutionTargetArch,
-    pub state: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ExecutionImageOutcome {
-    pub file_count: u64,
-    pub directory_count: u64,
-    pub logical_bytes: u64,
-    pub manifest_digest: [u8; REQUEST_FINGERPRINT_BYTES],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionTargetOs {
+pub(crate) enum ExecutionTargetOs {
     Macos,
     Linux,
     Windows,
 }
 
 impl ExecutionTargetOs {
-    pub(crate) const fn to_record(self) -> i64 {
-        match self {
-            Self::Macos => 1,
-            Self::Linux => 2,
-            Self::Windows => 3,
-        }
-    }
-
     pub(crate) const fn from_record(value: i64) -> Option<Self> {
         match value {
             1 => Some(Self::Macos),
@@ -271,20 +245,14 @@ impl ExecutionTargetOs {
     }
 }
 
+/// Historical execution-image target retained only for durable schema validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionTargetArch {
+pub(crate) enum ExecutionTargetArch {
     X86_64,
     Aarch64,
 }
 
 impl ExecutionTargetArch {
-    pub(crate) const fn to_record(self) -> i64 {
-        match self {
-            Self::X86_64 => 1,
-            Self::Aarch64 => 2,
-        }
-    }
-
     pub(crate) const fn from_record(value: i64) -> Option<Self> {
         match value {
             1 => Some(Self::X86_64),
@@ -292,25 +260,6 @@ impl ExecutionTargetArch {
             _ => None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionImageState {
-    Unconfigured,
-    Provisioning,
-    Ready,
-    Blocked,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExecutionImageSummary {
-    pub state: ExecutionImageState,
-    pub target_os: ExecutionTargetOs,
-    pub target_arch: ExecutionTargetArch,
-    pub format_version: u16,
-    pub limits_version: u16,
-    pub file_count: u64,
-    pub logical_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,7 +272,6 @@ pub enum PersistenceResourceLimit {
     CredentialGeneration,
     CredentialMutations,
     Workspace,
-    ExecutionImage,
 }
 
 #[derive(Debug)]
@@ -342,8 +290,6 @@ pub enum PersistenceError {
     CredentialGenerationConflict,
     CredentialNotConfigured,
     CredentialMutationNotApplied,
-    ExecutionImageProvisionNotApplied,
-    ExecutionImageBlocked,
     WorkspaceNotPristine,
     WorkspaceBusy,
     RepositoryAlreadyImported,
@@ -386,12 +332,6 @@ impl fmt::Display for PersistenceError {
             Self::CredentialMutationNotApplied => {
                 formatter.write_str("the credential mutation was not applied")
             }
-            Self::ExecutionImageProvisionNotApplied => {
-                formatter.write_str("the execution image provision was not applied")
-            }
-            Self::ExecutionImageBlocked => {
-                formatter.write_str("the execution image state is blocked")
-            }
             Self::WorkspaceNotPristine => {
                 formatter.write_str("the session is not pristine for repository import")
             }
@@ -431,9 +371,6 @@ impl fmt::Display for PersistenceError {
                 PersistenceResourceLimit::Workspace => {
                     formatter.write_str("the workspace resource limit was reached")
                 }
-                PersistenceResourceLimit::ExecutionImage => {
-                    formatter.write_str("the execution image resource limit was reached")
-                }
             },
             Self::WorkerStopped => formatter.write_str("the persistence worker stopped"),
         }
@@ -456,8 +393,6 @@ impl Error for PersistenceError {
             | Self::CredentialGenerationConflict
             | Self::CredentialNotConfigured
             | Self::CredentialMutationNotApplied
-            | Self::ExecutionImageProvisionNotApplied
-            | Self::ExecutionImageBlocked
             | Self::WorkspaceNotPristine
             | Self::WorkspaceBusy
             | Self::RepositoryAlreadyImported
@@ -537,28 +472,6 @@ pub(super) fn validate_repository_source_path(path: &str) -> Result<(), Persiste
     {
         return Err(PersistenceError::InvalidInput {
             reason: "a repository source path must be lexically normalized and absolute",
-        });
-    }
-    Ok(())
-}
-
-pub(super) fn validate_execution_image_source_path(path: &str) -> Result<(), PersistenceError> {
-    if path.is_empty()
-        || path.len() > morons_protocol::MAX_EXECUTION_IMAGE_SOURCE_PATH_BYTES
-        || path.chars().any(char::is_control)
-    {
-        return Err(PersistenceError::InvalidInput {
-            reason: "an execution image source path is invalid",
-        });
-    }
-    let path = Path::new(path);
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
-    {
-        return Err(PersistenceError::InvalidInput {
-            reason: "an execution image source path must be lexically normalized and absolute",
         });
     }
     Ok(())
@@ -670,18 +583,6 @@ pub(super) fn import_repository_fingerprint_from_digest(
     digest.update(IMPORT_REPOSITORY_FINGERPRINT_CONTEXT);
     digest.update(session_id.as_bytes());
     digest.update(source_path_digest);
-    digest.finalize().into()
-}
-
-pub(super) fn execution_image_source_path_digest(
-    role: u8,
-    source_path: &str,
-) -> [u8; REQUEST_FINGERPRINT_BYTES] {
-    let mut digest = Sha256::new();
-    digest.update(EXECUTION_IMAGE_SOURCE_PATH_CONTEXT);
-    digest.update([role]);
-    digest.update((source_path.len() as u32).to_be_bytes());
-    digest.update(source_path.as_bytes());
     digest.finalize().into()
 }
 

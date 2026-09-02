@@ -281,32 +281,6 @@ fn repository_import_requires_confirmation_and_redacts_action_debug() {
 }
 
 #[test]
-fn execution_image_paths_require_confirmation_and_are_redacted() {
-    let mut app = AppState::new("test-server");
-    assert_eq!(
-        app.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL)),
-        AppAction::None
-    );
-    app.handle_paste("/private/toolchain");
-    assert_eq!(
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        AppAction::None
-    );
-    app.handle_paste("/private/cargo");
-    assert_eq!(
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        AppAction::None
-    );
-    let action = app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
-    let debug = format!("{action:?}");
-    assert!(!debug.contains("/private/toolchain"));
-    assert!(!debug.contains("/private/cargo"));
-    assert!(debug.contains("toolchain_source_path_bytes"));
-    assert!(matches!(action, AppAction::ProvisionExecutionImage { .. }));
-    assert!(app.execution_image_dialog.is_none());
-}
-
-#[test]
 fn input_action_debug_omits_prompt_text() {
     let action = AppAction::SubmitInput {
         session_id: SessionId::from_bytes([0x55; 16]),

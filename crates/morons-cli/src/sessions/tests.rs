@@ -1,10 +1,9 @@
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
-    ExecutionImageState, ExecutionImageSummary, ExecutionTargetArch, ExecutionTargetOs, MessageId,
-    MutationRequestId, OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
-    OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, ServerMessage,
-    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, WorkspaceState,
-    WorkspaceSummary, read_client_message, write_server_message,
+    MessageId, MutationRequestId, OpenCodeModelCapabilities, OpenCodeModelRetention,
+    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary,
+    ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary,
+    WorkspaceState, WorkspaceSummary, read_client_message, write_server_message,
 };
 
 use super::{ApplicationClient, ApplicationClientError};
@@ -103,52 +102,6 @@ async fn session_client_correlates_create_get_and_list_requests() {
         .expect("list response should be written");
     };
 
-    tokio::join!(client_exchange, server_exchange);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn client_provisions_execution_image_with_exact_status_validation() {
-    let (client_connection, mut server) = tokio::io::duplex(4096);
-    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
-    let mutation_request_id = MutationRequestId::from_bytes([0x19; 16]);
-    let image = ExecutionImageSummary {
-        state: ExecutionImageState::Ready,
-        target_os: ExecutionTargetOs::Linux,
-        target_arch: ExecutionTargetArch::X86_64,
-        format_version: 1,
-        limits_version: 1,
-        file_count: 3,
-        logical_bytes: 42,
-    };
-    let client_exchange = async {
-        assert_eq!(
-            client
-                .provision_execution_image(
-                    mutation_request_id,
-                    "/toolchain".to_owned(),
-                    "/cargo".to_owned(),
-                )
-                .await
-                .expect("image should provision"),
-            image
-        );
-    };
-    let server_exchange = async {
-        assert_eq!(
-            read_request(&mut server, 1).await,
-            ApplicationRequest::ProvisionExecutionImage {
-                mutation_request_id,
-                toolchain_source_path: "/toolchain".to_owned(),
-                cargo_source_path: "/cargo".to_owned(),
-            }
-        );
-        write_server_message(
-            &mut server,
-            &ServerMessage::response(1, ApplicationResponse::ExecutionImageProvisioned { image }),
-        )
-        .await
-        .expect("image response should be written");
-    };
     tokio::join!(client_exchange, server_exchange);
 }
 

@@ -7,11 +7,9 @@ use super::{
     SessionSummary, WorkspaceState, WorkspaceSummary,
 };
 use crate::{
-    ClientMessage, ExecutionImageState, ExecutionImageSummary, ExecutionTargetArch,
-    ExecutionTargetOs, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
-    OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary,
-    ToolCallId, ToolKind, ToolResultStatus,
+    ClientMessage, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelCapabilities,
+    OpenCodeModelRetention, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
+    RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
 };
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
@@ -278,52 +276,6 @@ fn repository_import_contract_is_stable_and_path_debug_is_redacted() {
                 "block_reason": null,
                 "blocked_run_id": null,
                 "blocked_tool": null,
-            },
-        })
-    );
-}
-
-#[test]
-fn execution_image_contract_is_stable_and_source_debug_is_redacted() {
-    let request = ApplicationRequest::ProvisionExecutionImage {
-        mutation_request_id: MutationRequestId::from_bytes([0x41; 16]),
-        toolchain_source_path: "/private/toolchain".to_owned(),
-        cargo_source_path: "/private/cargo".to_owned(),
-    };
-    let debug = format!("{request:?}");
-    assert!(!debug.contains("/private/toolchain"));
-    assert!(!debug.contains("/private/cargo"));
-    assert_eq!(
-        serde_json::to_value(request).expect("image request should encode"),
-        json!({
-            "operation": "provision_execution_image",
-            "mutation_request_id": "mut_41414141414141414141414141414141",
-            "toolchain_source_path": "/private/toolchain",
-            "cargo_source_path": "/private/cargo",
-        })
-    );
-    let image = ExecutionImageSummary {
-        state: ExecutionImageState::Ready,
-        target_os: ExecutionTargetOs::Linux,
-        target_arch: ExecutionTargetArch::Aarch64,
-        format_version: 1,
-        limits_version: 1,
-        file_count: 12,
-        logical_bytes: 34,
-    };
-    assert_eq!(
-        serde_json::to_value(ApplicationResponse::ExecutionImageProvisioned { image })
-            .expect("image response should encode"),
-        json!({
-            "result": "execution_image_provisioned",
-            "image": {
-                "state": "ready",
-                "target_os": "linux",
-                "target_arch": "aarch64",
-                "format_version": 1,
-                "limits_version": 1,
-                "file_count": 12,
-                "logical_bytes": 34,
             },
         })
     );
