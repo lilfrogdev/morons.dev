@@ -55,6 +55,7 @@ impl SessionStore {
             selection.service,
             &selection.model_id,
         );
+        let _workspace_guard = self.repository_import_lock.lock().await;
         self.run_request(|response| RunWorkerRequest::AcceptInput {
             request_id,
             fingerprint,

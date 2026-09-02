@@ -7,8 +7,8 @@ use super::{
     },
 };
 use crate::persistence::{
-    CommandResources, PersistenceError, RepositoryImportOutcome, RunId, SessionId,
-    WorktreeLayoutPlan,
+    CommandResources, PersistenceError, RepositoryImportOutcome, ReviewResources, RunId, SessionId,
+    WorkspaceState, WorktreeLayoutPlan,
 };
 
 const LAYOUT_PREPARED: u8 = 0;
@@ -69,6 +69,51 @@ impl Backend {
             active_generation_id,
             image_generation_id,
             image_manifest_digest,
+        })
+    }
+
+    pub(crate) fn review_resources(
+        &self,
+        session_id: SessionId,
+    ) -> Result<ReviewResources, PersistenceError> {
+        let summary = self.workspace_summary(session_id)?;
+        if summary.state != WorkspaceState::Ready {
+            return Err(PersistenceError::WorkspaceBlocked);
+        }
+        let (workspace_id, generation_id, baseline_manifest_digest, active_run, baseline_version) =
+            self.connection.query_row(
+                "SELECT session.workspace_id, active.generation_id, import.manifest_digest,
+                    run_state.active_run_id, import.review_baseline_version
+             FROM sessions AS session
+             JOIN active_worktree_generations AS active
+               ON active.workspace_id = session.workspace_id
+             JOIN repository_import_requests AS import
+               ON import.session_id = session.session_id AND import.state = 2
+             JOIN session_run_states AS run_state
+               ON run_state.session_id = session.session_id
+             WHERE session.session_id = ?1",
+                [&session_id.as_bytes()[..]],
+                |row| {
+                    Ok((
+                        row.get::<_, [u8; 16]>(0)?,
+                        row.get::<_, [u8; 16]>(1)?,
+                        row.get::<_, [u8; 32]>(2)?,
+                        row.get::<_, Option<[u8; 16]>>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
+            )?;
+        if baseline_version != 1 {
+            return Err(PersistenceError::ReviewUnavailable);
+        }
+        if active_run.is_some() {
+            return Err(PersistenceError::WorkspaceBusy);
+        }
+        Ok(ReviewResources {
+            session_id,
+            workspace_id,
+            generation_id,
+            baseline_manifest_digest,
         })
     }
 

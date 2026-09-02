@@ -119,8 +119,9 @@ impl Backend {
         transaction.execute(
             "INSERT INTO repository_import_requests (
                 request_id, operation_fingerprint, source_path_digest, session_id,
-                workspace_id, operation_id, accepted_sequence, accepted_at_milliseconds, state
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                workspace_id, operation_id, accepted_sequence, accepted_at_milliseconds, state,
+                review_baseline_version
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)",
             params![
                 &request_id.as_bytes()[..],
                 &fingerprint[..],

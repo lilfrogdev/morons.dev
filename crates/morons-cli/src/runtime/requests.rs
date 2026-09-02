@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
-    ApplicationError, ExecutionImageSummary, FrameError, MutationRequestId, OpenCodeApiKey,
-    OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, RunId, RunSummary,
-    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, TranscriptEntry,
-    WorkspaceSummary,
+    ApplicationError, DiffChange, DiffCursor, ExecutionImageSummary, FrameError, MutationRequestId,
+    OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService,
+    ReviewGeneration, RunId, RunSummary, SessionCatalogEventCursor, SessionEventCursor, SessionId,
+    SessionSummary, TranscriptEntry, WorkspaceSummary,
 };
 use tokio::{sync::mpsc, time};
 
@@ -30,6 +30,10 @@ pub(super) enum RequestCommand {
     LoadCredentialStatus,
     LoadExecutionImageStatus,
     LoadSession(SessionId),
+    ReviewDiff {
+        session_id: SessionId,
+        cursor: Option<DiffCursor>,
+    },
     CreateSession {
         mutation_request_id: MutationRequestId,
     },
@@ -81,7 +85,8 @@ impl RequestCommand {
             | Self::LoadModels(_)
             | Self::LoadCredentialStatus
             | Self::LoadExecutionImageStatus
-            | Self::LoadSession(_) => None,
+            | Self::LoadSession(_)
+            | Self::ReviewDiff { .. } => None,
             Self::CreateSession {
                 mutation_request_id,
             }
@@ -126,6 +131,7 @@ impl RequestCommand {
             Self::LoadCredentialStatus => "credential status",
             Self::LoadExecutionImageStatus => "execution image status",
             Self::LoadSession(_) => "session transcript",
+            Self::ReviewDiff { .. } => "diff review",
             Self::CreateSession { .. } => "session creation",
             Self::SubmitInput { .. } => "message submission",
             Self::CancelRun { .. } => "run cancellation",
@@ -152,6 +158,10 @@ impl RequestCommand {
             Self::LoadCredentialStatus => Some(Self::LoadCredentialStatus),
             Self::LoadExecutionImageStatus => Some(Self::LoadExecutionImageStatus),
             Self::LoadSession(session_id) => Some(Self::LoadSession(*session_id)),
+            Self::ReviewDiff { session_id, cursor } => Some(Self::ReviewDiff {
+                session_id: *session_id,
+                cursor: cursor.clone(),
+            }),
             Self::CreateSession {
                 mutation_request_id,
             } => Some(Self::CreateSession {
@@ -231,6 +241,12 @@ pub(super) enum RequestEvent {
     CredentialStatusLoaded(OpenCodeCredentialStatus),
     ExecutionImageStatusLoaded(ExecutionImageSummary),
     SessionLoaded(SessionSnapshot),
+    DiffReviewed {
+        changes: Vec<DiffChange>,
+        next_cursor: Option<DiffCursor>,
+        generation: ReviewGeneration,
+        continued: bool,
+    },
     SessionCreated {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
@@ -450,6 +466,7 @@ async fn execute_credential(
         | RequestCommand::LoadCredentialStatus
         | RequestCommand::LoadExecutionImageStatus
         | RequestCommand::LoadSession(_)
+        | RequestCommand::ReviewDiff { .. }
         | RequestCommand::CreateSession { .. }
         | RequestCommand::SubmitInput { .. }
         | RequestCommand::CancelRun { .. }
@@ -488,6 +505,17 @@ async fn execute(
         RequestCommand::LoadSession(session_id) => load_session(client, *session_id)
             .await
             .map(RequestResult::Session),
+        RequestCommand::ReviewDiff { session_id, cursor } => client
+            .review_diff(*session_id, cursor.clone(), 50)
+            .await
+            .map(
+                |(changes, next_cursor, generation)| RequestResult::DiffReviewed {
+                    changes,
+                    next_cursor,
+                    generation,
+                    continued: cursor.is_some(),
+                },
+            ),
         RequestCommand::CreateSession {
             mutation_request_id,
         } => client
@@ -682,6 +710,12 @@ enum RequestResult {
     CredentialStatus(OpenCodeCredentialStatus),
     ExecutionImageStatus(ExecutionImageSummary),
     Session(SessionSnapshot),
+    DiffReviewed {
+        changes: Vec<DiffChange>,
+        next_cursor: Option<DiffCursor>,
+        generation: ReviewGeneration,
+        continued: bool,
+    },
     SessionCreated {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
@@ -726,6 +760,17 @@ impl RequestResult {
             Self::CredentialStatus(status) => RequestEvent::CredentialStatusLoaded(status),
             Self::ExecutionImageStatus(image) => RequestEvent::ExecutionImageStatusLoaded(image),
             Self::Session(snapshot) => RequestEvent::SessionLoaded(snapshot),
+            Self::DiffReviewed {
+                changes,
+                next_cursor,
+                generation,
+                continued,
+            } => RequestEvent::DiffReviewed {
+                changes,
+                next_cursor,
+                generation,
+                continued,
+            },
             Self::SessionCreated {
                 mutation_request_id,
                 session,
@@ -809,7 +854,8 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 RequestCommand::LoadSessions
                 | RequestCommand::LoadCredentialStatus
                 | RequestCommand::LoadExecutionImageStatus
-                | RequestCommand::LoadSession(_) => None,
+                | RequestCommand::LoadSession(_)
+                | RequestCommand::ReviewDiff { .. } => None,
                 RequestCommand::CreateSession { .. }
                 | RequestCommand::SubmitInput { .. }
                 | RequestCommand::CancelRun { .. }

@@ -1,9 +1,9 @@
 use morons_protocol::{
-    ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
-    OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, SessionEventCursor,
-    SessionId, SessionSummary, ToolKind, TranscriptEntry, WorkspaceBlockReason, WorkspaceState,
-    WorkspaceSummary,
+    ApplicationEvent, DiffChange, DiffChangeKind, DiffCursor, DiffNodeKind, MessageId,
+    OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelCapabilities, OpenCodeModelRetention,
+    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, ReviewGeneration, RunId,
+    RunState, RunSummary, SessionEventCursor, SessionId, SessionSummary, ToolKind, TranscriptEntry,
+    WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -278,6 +278,77 @@ fn repository_import_requires_confirmation_and_redacts_action_debug() {
     assert!(debug.contains("source_path_bytes"));
     assert!(matches!(action, AppAction::ImportRepository { .. }));
     assert!(app.repository_dialog.is_none());
+}
+
+#[test]
+fn diff_review_is_bounded_terminal_safe_and_pages_explicitly() {
+    let (session, _) = fixture_session_and_run();
+    let session_id = session.id;
+    let mut app = AppState::new("test-server");
+    app.open_session(
+        session,
+        WorkspaceSummary {
+            state: WorkspaceState::Ready,
+            file_count: 1,
+            logical_bytes: 8,
+            block_reason: None,
+            blocked_run_id: None,
+            blocked_tool: None,
+        },
+        Vec::new(),
+        Vec::new(),
+        None,
+    )
+    .expect("ready session should open");
+    assert!(matches!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+        AppAction::ReviewDiff { cursor: None, .. }
+    ));
+    assert!(app.review_loading);
+    let cursor = DiffCursor::from_token("dif1_aabb".to_owned()).expect("cursor should form");
+    app.set_review(
+        vec![DiffChange {
+            path: "safe\u{1b}\u{202e}.txt".to_owned(),
+            kind: DiffChangeKind::Modified,
+            old_kind: Some(DiffNodeKind::File),
+            new_kind: Some(DiffNodeKind::File),
+            old_sha256: Some("00".repeat(32)),
+            new_sha256: Some("11".repeat(32)),
+            old_bytes: Some(1),
+            new_bytes: Some(2),
+            binary: false,
+            excerpt: Some("-old\u{1b}\n+new\u{202e}\n".to_owned()),
+        }],
+        Some(cursor.clone()),
+        ReviewGeneration::from_bytes([7; 98]),
+        false,
+    )
+    .expect("review should apply");
+    let action = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+    assert!(matches!(
+        action,
+        AppAction::ReviewDiff {
+            session_id: returned,
+            cursor: Some(_),
+        } if returned == session_id
+    ));
+    assert!(!format!("{action:?}").contains("aabb"));
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("review should render");
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(!rendered.contains('\u{1b}'));
+    assert!(!rendered.contains('\u{202e}'));
+    assert!(rendered.contains("Diff review"));
 }
 
 #[test]

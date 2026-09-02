@@ -227,6 +227,14 @@ pub(crate) struct CommandResources {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReviewResources {
+    pub session_id: SessionId,
+    pub workspace_id: [u8; IDENTIFIER_BYTES],
+    pub generation_id: [u8; IDENTIFIER_BYTES],
+    pub baseline_manifest_digest: [u8; REQUEST_FINGERPRINT_BYTES],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WorktreeLayoutPlan {
     pub session_id: SessionId,
     pub workspace_id: [u8; IDENTIFIER_BYTES],
@@ -352,6 +360,8 @@ pub enum PersistenceError {
     CredentialMutationNotApplied,
     ExecutionImageProvisionNotApplied,
     ExecutionImageBlocked,
+    ReviewCursorStale,
+    ReviewUnavailable,
     WorkspaceNotPristine,
     WorkspaceBusy,
     RepositoryAlreadyImported,
@@ -399,6 +409,10 @@ impl fmt::Display for PersistenceError {
             }
             Self::ExecutionImageBlocked => {
                 formatter.write_str("the execution image state is blocked")
+            }
+            Self::ReviewCursorStale => formatter.write_str("the review cursor is stale"),
+            Self::ReviewUnavailable => {
+                formatter.write_str("the repository predates safe diff review")
             }
             Self::WorkspaceNotPristine => {
                 formatter.write_str("the session is not pristine for repository import")
@@ -466,6 +480,8 @@ impl Error for PersistenceError {
             | Self::CredentialMutationNotApplied
             | Self::ExecutionImageProvisionNotApplied
             | Self::ExecutionImageBlocked
+            | Self::ReviewCursorStale
+            | Self::ReviewUnavailable
             | Self::WorkspaceNotPristine
             | Self::WorkspaceBusy
             | Self::RepositoryAlreadyImported

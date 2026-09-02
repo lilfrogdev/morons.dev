@@ -431,6 +431,8 @@ fn copy_file(
     drop(worktree_file);
     #[cfg(unix)]
     if expected.mode() & 0o100 != 0 {
+        fs::set_permissions(baseline, fs::Permissions::from_mode(0o700))?;
+        File::open(baseline)?.sync_all()?;
         fs::set_permissions(worktree, fs::Permissions::from_mode(0o700))?;
         File::open(worktree)?.sync_all()?;
     }
@@ -1051,7 +1053,7 @@ fn validate_component(name: &str, components: &[String]) -> Result<(), Persisten
         || name == "."
         || name == ".."
         || components.len() >= MAX_PATH_DEPTH
-        || name.chars().any(|character| character == '\0')
+        || name.chars().any(char::is_control)
     {
         return Err(invalid_source());
     }
