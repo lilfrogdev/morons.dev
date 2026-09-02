@@ -1,6 +1,6 @@
 mod repository_import;
 
-pub(crate) use repository_import::RepositoryRecovery;
+pub(crate) use repository_import::{RepositoryRecovery, WorktreeLayoutRecovery};
 
 use std::{
     ffi::OsStr,

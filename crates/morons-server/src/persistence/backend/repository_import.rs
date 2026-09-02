@@ -47,6 +47,11 @@ impl Backend {
                 }
             }
         }
+        Ok(())
+    }
+
+    pub(super) fn validate_ready_repositories(&self) -> Result<(), PersistenceError> {
+        let paths = self.paths.clone();
         for (plan, outcome) in self.ready_repository_imports()? {
             paths.validate_completed_repository(plan, outcome)?;
         }
@@ -77,6 +82,8 @@ impl Backend {
         let session =
             load_session(&self.connection, session_id)?.ok_or(PersistenceError::SessionNotFound)?;
         let operation_id = random_identifier()?;
+        let generation_id = random_identifier()?;
+        let generation_operation_id = random_identifier()?;
         let fact_id = random_identifier()?;
         let event_id = random_identifier()?;
         let audit_id = random_identifier()?;
@@ -126,6 +133,20 @@ impl Backend {
                 i64::from(IMPORT_STATE_PREPARED),
             ],
         )?;
+        transaction.execute(
+            "INSERT INTO workspace_generation_layouts (
+                workspace_id, session_id, import_request_id, generation_id, operation_id,
+                state, created_sequence, updated_sequence
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?6)",
+            params![
+                &session.workspace_id[..],
+                &session_id.as_bytes()[..],
+                &request_id.as_bytes()[..],
+                &generation_id[..],
+                &generation_operation_id[..],
+                sequence_to_sql(accepted_sequence)?,
+            ],
+        )?;
         insert_fact(
             &transaction,
             &fact_id,
@@ -163,6 +184,7 @@ impl Backend {
             session_id,
             workspace_id: session.workspace_id,
             operation_id,
+            generation_id,
             state: IMPORT_STATE_PREPARED,
         })
     }
@@ -220,9 +242,17 @@ impl Backend {
                 i64::from(IMPORT_STATE_PREPARED),
             ],
         )?;
-        if updated != 1 {
+        let layout_updated = transaction.execute(
+            "UPDATE workspace_generation_layouts SET state = 1, updated_sequence = ?2
+             WHERE import_request_id = ?1 AND state = 0",
+            params![
+                &current.request_id.as_bytes()[..],
+                sequence_to_sql(fact_sequence)?,
+            ],
+        )?;
+        if updated != 1 || layout_updated != 1 {
             return Err(PersistenceError::InvalidState {
-                reason: "a repository import did not reach dispatched state",
+                reason: "a repository import did not reach dispatched generation state",
             });
         }
         transaction.commit()?;
@@ -258,28 +288,33 @@ impl Backend {
         &self,
     ) -> Result<Vec<(RepositoryImportPlan, RepositoryImportOutcome)>, PersistenceError> {
         let mut statement = self.connection.prepare(
-            "SELECT request_id, session_id, workspace_id, operation_id, state,
-                    file_count, directory_count, logical_bytes, manifest_digest
-             FROM repository_import_requests WHERE state = 2 ORDER BY accepted_sequence",
+            "SELECT request.request_id, request.session_id, request.workspace_id,
+                    request.operation_id, layout.generation_id, request.state,
+                    request.file_count, request.directory_count,
+                    request.logical_bytes, request.manifest_digest
+             FROM repository_import_requests AS request
+             JOIN workspace_generation_layouts AS layout
+               ON layout.import_request_id = request.request_id
+             WHERE request.state = 2 ORDER BY request.accepted_sequence",
         )?;
         statement
             .query_map([], |row| {
                 let plan = import_plan_from_row(row)?;
-                let file_count = row.get::<_, i64>(5)?;
-                let directory_count = row.get::<_, i64>(6)?;
-                let logical_bytes = row.get::<_, i64>(7)?;
+                let file_count = row.get::<_, i64>(6)?;
+                let directory_count = row.get::<_, i64>(7)?;
+                let logical_bytes = row.get::<_, i64>(8)?;
                 Ok((
                     plan,
                     RepositoryImportOutcome {
                         file_count: u64::try_from(file_count)
-                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(5, file_count))?,
+                            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(6, file_count))?,
                         directory_count: u64::try_from(directory_count).map_err(|_| {
-                            rusqlite::Error::IntegralValueOutOfRange(6, directory_count)
+                            rusqlite::Error::IntegralValueOutOfRange(7, directory_count)
                         })?,
                         logical_bytes: u64::try_from(logical_bytes).map_err(|_| {
-                            rusqlite::Error::IntegralValueOutOfRange(7, logical_bytes)
+                            rusqlite::Error::IntegralValueOutOfRange(8, logical_bytes)
                         })?,
-                        manifest_digest: row.get(8)?,
+                        manifest_digest: row.get(9)?,
                     },
                 ))
             })?
@@ -291,10 +326,13 @@ impl Backend {
         &self,
     ) -> Result<Vec<RepositoryImportPlan>, PersistenceError> {
         let mut statement = self.connection.prepare(
-            "SELECT request_id, session_id, workspace_id, operation_id, state
-             FROM repository_import_requests
-             WHERE state IN (0, 1)
-             ORDER BY accepted_sequence",
+            "SELECT request.request_id, request.session_id, request.workspace_id,
+                    request.operation_id, layout.generation_id, request.state
+             FROM repository_import_requests AS request
+             JOIN workspace_generation_layouts AS layout
+               ON layout.import_request_id = request.request_id
+             WHERE request.state IN (0, 1)
+             ORDER BY request.accepted_sequence",
         )?;
         statement
             .query_map([], import_plan_from_row)?
@@ -354,6 +392,7 @@ impl Backend {
         let fact_id = random_identifier()?;
         let event_id = random_identifier()?;
         let audit_id = random_identifier()?;
+        let generation_fact_id = random_identifier()?;
         let created_at = current_time_milliseconds()?;
         let transaction = self
             .connection
@@ -407,10 +446,76 @@ impl Backend {
                 i64::from(current.state),
             ],
         )?;
-        if updated != 1 {
+        let layout = transaction.query_row(
+            "SELECT operation_id, state FROM workspace_generation_layouts
+             WHERE import_request_id = ?1 AND generation_id = ?2",
+            params![
+                &current.request_id.as_bytes()[..],
+                &current.generation_id[..],
+            ],
+            |row| Ok((row.get::<_, [u8; 16]>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        let layout_target = if target_state == IMPORT_STATE_READY {
+            2
+        } else {
+            3
+        };
+        let layout_updated = transaction.execute(
+            "UPDATE workspace_generation_layouts
+             SET state = ?3, updated_sequence = ?4,
+                 file_count = ?5, directory_count = ?6,
+                 logical_bytes = ?7, manifest_digest = ?8
+             WHERE import_request_id = ?1 AND generation_id = ?2 AND state = ?9",
+            params![
+                &current.request_id.as_bytes()[..],
+                &current.generation_id[..],
+                layout_target,
+                sequence_to_sql(fact_sequence)?,
+                file_count.map(sequence_to_sql).transpose()?,
+                directory_count.map(sequence_to_sql).transpose()?,
+                logical_bytes.map(sequence_to_sql).transpose()?,
+                manifest_digest.as_ref().map(|digest| &digest[..]),
+                layout.1,
+            ],
+        )?;
+        if updated != 1 || layout_updated != 1 {
             return Err(PersistenceError::InvalidState {
-                reason: "a repository import did not reach terminal state",
+                reason: "a repository import did not reach terminal generation state",
             });
+        }
+        if let Some(outcome) = outcome {
+            transaction.execute(
+                "INSERT INTO worktree_generation_facts (
+                    fact_id, fact_sequence, session_id, workspace_id, generation_id,
+                    predecessor_generation_id, publication_kind, operation_id,
+                    file_count, directory_count, logical_bytes, manifest_digest,
+                    created_at_milliseconds
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, 1, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    &generation_fact_id[..],
+                    sequence_to_sql(fact_sequence)?,
+                    &current.session_id.as_bytes()[..],
+                    &current.workspace_id[..],
+                    &current.generation_id[..],
+                    &layout.0[..],
+                    sequence_to_sql(outcome.file_count)?,
+                    sequence_to_sql(outcome.directory_count)?,
+                    sequence_to_sql(outcome.logical_bytes)?,
+                    &outcome.manifest_digest[..],
+                    time_to_sql(created_at)?,
+                ],
+            )?;
+            transaction.execute(
+                "INSERT INTO active_worktree_generations (
+                    workspace_id, session_id, generation_id, updated_sequence
+                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    &current.workspace_id[..],
+                    &current.session_id.as_bytes()[..],
+                    &current.generation_id[..],
+                    sequence_to_sql(fact_sequence)?,
+                ],
+            )?;
         }
         insert_workspace_event(
             &transaction,
@@ -594,8 +699,12 @@ fn load_import_plan(
 ) -> Result<Option<RepositoryImportPlan>, PersistenceError> {
     connection
         .query_row(
-            "SELECT request_id, session_id, workspace_id, operation_id, state
-             FROM repository_import_requests WHERE request_id = ?1",
+            "SELECT request.request_id, request.session_id, request.workspace_id,
+                    request.operation_id, layout.generation_id, request.state
+             FROM repository_import_requests AS request
+             JOIN workspace_generation_layouts AS layout
+               ON layout.import_request_id = request.request_id
+             WHERE request.request_id = ?1",
             [&request_id.as_bytes()[..]],
             import_plan_from_row,
         )
@@ -604,14 +713,15 @@ fn load_import_plan(
 }
 
 fn import_plan_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RepositoryImportPlan> {
-    let state = row.get::<_, i64>(4)?;
+    let state = row.get::<_, i64>(5)?;
     Ok(RepositoryImportPlan {
         request_id: MutationRequestId::from_bytes(row.get(0)?),
         session_id: SessionId::from_bytes(row.get(1)?),
         workspace_id: row.get(2)?,
         operation_id: row.get(3)?,
+        generation_id: row.get(4)?,
         state: u8::try_from(state)
-            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(4, state))?,
+            .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(5, state))?,
     })
 }
 
@@ -647,6 +757,7 @@ fn validate_plan(
         || current.session_id != expected.session_id
         || current.workspace_id != expected.workspace_id
         || current.operation_id != expected.operation_id
+        || current.generation_id != expected.generation_id
     {
         return Err(PersistenceError::InvalidState {
             reason: "a repository import identity changed",
