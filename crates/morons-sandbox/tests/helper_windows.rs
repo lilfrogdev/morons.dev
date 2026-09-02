@@ -2,7 +2,8 @@
 
 use std::{
     fs,
-    net::TcpListener,
+    io::Write,
+    net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -24,7 +25,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let mut identifier = [0_u8; 16];
+        let mut identifier = [0u8; 16];
         getrandom::fill(&mut identifier).expect("test randomness");
         let parent = std::env::temp_dir().join(format!(
             "morons-windows-helper-test-{}",
@@ -45,8 +46,11 @@ impl Fixture {
         ] {
             fs::create_dir(path).expect("creates fixture directory");
         }
-        let command = std::env::var_os("ComSpec").expect("ComSpec");
-        fs::copy(command, image.join("bin/fixture.exe")).expect("copies command fixture");
+        fs::copy(
+            std::env::current_exe().expect("integration test executable"),
+            image.join("bin/fixture.exe"),
+        )
+        .expect("copies command fixture");
         Self {
             operation_id: identifier,
             parent,
@@ -56,7 +60,7 @@ impl Fixture {
         }
     }
 
-    fn request(&self, command: String, wall_time_milliseconds: u64) -> SandboxRequest {
+    fn request(&self, child_test: &str, wall_time_milliseconds: u64) -> SandboxRequest {
         SandboxRequest {
             protocol_version: SANDBOX_PROTOCOL_VERSION,
             operation_id: self.operation_id,
@@ -64,7 +68,11 @@ impl Fixture {
             scratch_root: utf8(&self.scratch),
             image_root: utf8(&self.image),
             executable: "bin/fixture.exe".to_owned(),
-            arguments: vec!["/D".to_owned(), "/S".to_owned(), "/C".to_owned(), command],
+            arguments: vec![
+                "--exact".to_owned(),
+                child_test.to_owned(),
+                "--nocapture".to_owned(),
+            ],
             working_directory: ".".to_owned(),
             limits: SandboxLimits {
                 wall_time_milliseconds,
@@ -83,35 +91,20 @@ impl Drop for Fixture {
 #[test]
 fn appcontainer_confines_files_environment_and_network() {
     let fixture = Fixture::new();
-    let sentinel = fixture.parent.join("host-sentinel");
-    fs::write(&sentinel, b"must-not-be-readable").expect("writes sentinel");
+    fs::write(
+        fixture.parent.join("host-sentinel"),
+        b"must-not-be-readable",
+    )
+    .expect("writes sentinel");
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("binds listener");
     listener.set_nonblocking(true).expect("sets nonblocking");
     let port = listener.local_addr().expect("listener address").port();
-    let command = format!(
-        "echo changed>created.txt & \
-         type \"{}\" >nul 2>&1 && exit /b 71 || ver>nul & \
-         if defined MORONS_SECRET_SENTINEL exit /b 72 & \
-         echo tamper>\"%PATH%\\..\\tamper\" 2>nul && exit /b 73 || ver>nul & \
-         %SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -Command \
-         \"$c=New-Object Net.Sockets.TcpClient; try {{$c.Connect('127.0.0.1',{}); exit 74}} catch {{exit 0}}\" & \
-         if errorlevel 1 exit /b 75 & echo confined",
-        sentinel.display(),
-        port
-    );
-    let result = invoke_helper(fixture.request(command, 10_000));
-    assert_eq!(
-        result.status,
-        SandboxStatus::Exited,
-        "{result:?}, stderr={}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert_eq!(
-        result.exit.and_then(|exit| exit.code),
-        Some(0),
-        "stderr={}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    fs::write(fixture.candidate.join("network-port"), port.to_string())
+        .expect("writes network fixture");
+
+    let result = invoke_helper(fixture.request("sandbox_child_confine", 10_000));
+    assert_eq!(result.status, SandboxStatus::Exited, "{result:?}");
+    assert_eq!(result.exit.and_then(|exit| exit.code), Some(0));
     assert!(
         String::from_utf8_lossy(&result.stdout).contains("confined"),
         "stdout={}",
@@ -120,7 +113,7 @@ fn appcontainer_confines_files_environment_and_network() {
     assert!(result.candidate_eligible);
     assert_eq!(
         fs::read(fixture.candidate.join("created.txt")).expect("candidate output"),
-        b"changed\r\n"
+        b"changed"
     );
     assert!(!fixture.image.join("tamper").exists());
     assert_eq!(
@@ -135,33 +128,19 @@ fn appcontainer_confines_files_environment_and_network() {
 #[test]
 fn appcontainer_enforces_timeout_output_and_background_tree_ownership() {
     let timeout = Fixture::new();
-    let result = invoke_helper(timeout.request(
-        "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 30\"".to_owned(),
-        100,
-    ));
-    assert_eq!(
-        result.status,
-        SandboxStatus::TimedOut,
-        "{result:?}, stderr={}",
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let result = invoke_helper(timeout.request("sandbox_child_timeout", 100));
+    assert_eq!(result.status, SandboxStatus::TimedOut, "{result:?}");
     assert!(!result.candidate_eligible);
 
     let output = Fixture::new();
-    let mut request = output.request(
-        "for /L %i in (1,1,100000) do @echo 0123456789".to_owned(),
-        10_000,
-    );
+    let mut request = output.request("sandbox_child_output", 10_000);
     request.limits.output_bytes_per_stream = 1_024;
     let result = invoke_helper(request);
     assert_eq!(result.status, SandboxStatus::OutputLimit, "{result:?}");
     assert!(!result.candidate_eligible);
 
     let background = Fixture::new();
-    let command = "start \"\" /B %SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -Command \
-                   \"Start-Sleep -Seconds 10; [IO.File]::WriteAllText('survived','escaped')\""
-        .to_owned();
-    let result = invoke_helper(background.request(command, 10_000));
+    let result = invoke_helper(background.request("sandbox_child_background", 10_000));
     assert_eq!(result.status, SandboxStatus::ResourceLimit, "{result:?}");
     thread::sleep(Duration::from_millis(500));
     assert!(!background.candidate.join("survived").exists());
@@ -170,12 +149,13 @@ fn appcontainer_enforces_timeout_output_and_background_tree_ownership() {
 #[test]
 fn appcontainer_job_closes_when_the_helper_is_lost() {
     let fixture = Fixture::new();
-    let command = "echo started>started & %SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -NonInteractive -Command \
-                   \"Start-Sleep -Seconds 10\" & echo escaped>survived"
-        .to_owned();
     let mut child = helper();
     let mut input = child.stdin.take().expect("helper stdin");
-    write_request(&mut input, &fixture.request(command, 30_000)).expect("writes request");
+    write_request(
+        &mut input,
+        &fixture.request("sandbox_child_helper_loss", 30_000),
+    )
+    .expect("writes request");
     let deadline = Instant::now() + Duration::from_secs(5);
     while !fixture.candidate.join("started").exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
@@ -186,6 +166,84 @@ fn appcontainer_job_closes_when_the_helper_is_lost() {
     drop(input);
     thread::sleep(Duration::from_millis(500));
     assert!(!fixture.candidate.join("survived").exists());
+}
+
+#[test]
+fn sandbox_child_confine() {
+    if !inside_sandbox() {
+        return;
+    }
+    fs::write("created.txt", b"changed").expect("candidate should be writable");
+    assert!(fs::read("../host-sentinel").is_err());
+    assert!(std::env::var_os("MORONS_SECRET_SENTINEL").is_none());
+    let image_bin = PathBuf::from(std::env::var_os("PATH").expect("fixed image PATH"));
+    assert!(fs::write(image_bin.join("..").join("tamper"), b"tamper").is_err());
+    let port = fs::read_to_string("network-port")
+        .expect("network fixture")
+        .parse::<u16>()
+        .expect("network port");
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
+    println!("confined");
+}
+
+#[test]
+fn sandbox_child_timeout() {
+    if inside_sandbox() {
+        thread::sleep(Duration::from_secs(30));
+    }
+}
+
+#[test]
+fn sandbox_child_output() {
+    if !inside_sandbox() {
+        return;
+    }
+    let mut stdout = std::io::stdout().lock();
+    for _ in 0..100_000 {
+        stdout
+            .write_all(b"0123456789\n")
+            .expect("sandbox output should initially drain");
+    }
+}
+
+#[test]
+fn sandbox_child_background() {
+    if !inside_sandbox() {
+        return;
+    }
+    let mut child = Command::new(std::env::current_exe().expect("private executable"))
+        .args(["--exact", "sandbox_child_descendant", "--nocapture"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("background descendant should start");
+    thread::spawn(move || {
+        let _ = child.wait();
+    });
+}
+
+#[test]
+fn sandbox_child_descendant() {
+    if !inside_sandbox() {
+        return;
+    }
+    thread::sleep(Duration::from_secs(10));
+    fs::write("survived", b"escaped").expect("candidate remains writable");
+}
+
+#[test]
+fn sandbox_child_helper_loss() {
+    if !inside_sandbox() {
+        return;
+    }
+    fs::write("started", b"started").expect("candidate should be writable");
+    thread::sleep(Duration::from_secs(10));
+    fs::write("survived", b"escaped").expect("candidate remains writable");
+}
+
+fn inside_sandbox() -> bool {
+    std::env::var_os("MORONS_SANDBOX").as_deref() == Some(std::ffi::OsStr::new("1"))
 }
 
 fn invoke_helper(request: SandboxRequest) -> morons_sandbox::SandboxResult {

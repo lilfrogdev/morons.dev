@@ -642,6 +642,7 @@ fn environment_block(runtime: &Path, image: &Path) -> Result<Vec<u16>, NativeErr
         ("ComSpec", format!(r"{windows}\System32\cmd.exe")),
         ("HOME", home.clone()),
         ("LOCALAPPDATA", local),
+        ("MORONS_SANDBOX", "1".to_owned()),
         ("NUMBER_OF_PROCESSORS", "1".to_owned()),
         ("OS", "Windows_NT".to_owned()),
         ("PATH", path),
