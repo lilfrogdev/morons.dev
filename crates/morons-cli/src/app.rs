@@ -10,7 +10,7 @@ use morons_protocol::{
 };
 use ratatui::Frame;
 
-use crate::terminal::{CredentialBuffer, PromptBuffer, RepositoryPathBuffer, SafeText};
+use crate::terminal::{CredentialBuffer, PromptBuffer, SafeText};
 
 const MAX_CLIENT_SESSIONS: usize = 10_000;
 const MAX_CLIENT_TRANSCRIPT_ENTRIES: usize = 512;
@@ -28,15 +28,9 @@ pub(super) enum PendingOperation {
     CreateSession,
     SubmitInput,
     CancelRun,
-    ImportRepository,
     AcknowledgeToolUncertainty,
     UpdateCredential,
     StopServer,
-}
-
-pub(super) enum RepositoryDialog {
-    Enter { input: RepositoryPathBuffer },
-    Confirm { source_path: String },
 }
 
 pub(super) enum CredentialDialog {
@@ -65,10 +59,6 @@ pub(super) enum AppAction {
     CancelRun {
         session_id: SessionId,
         run_id: RunId,
-    },
-    ImportRepository {
-        session_id: SessionId,
-        source_path: String,
     },
     AcknowledgeToolUncertainty {
         session_id: SessionId,
@@ -114,14 +104,6 @@ impl fmt::Debug for AppAction {
                 .debug_struct("CancelRun")
                 .field("session_id", session_id)
                 .field("run_id", run_id)
-                .finish(),
-            Self::ImportRepository {
-                session_id,
-                source_path,
-            } => formatter
-                .debug_struct("ImportRepository")
-                .field("session_id", session_id)
-                .field("source_path_bytes", &source_path.len())
                 .finish(),
             Self::AcknowledgeToolUncertainty { session_id, run_id } => formatter
                 .debug_struct("AcknowledgeToolUncertainty")
@@ -179,7 +161,6 @@ pub(super) struct AppState {
     pub(super) selected_model: Option<usize>,
     pub(super) credential: Option<OpenCodeCredentialStatus>,
     pub(super) credential_dialog: Option<CredentialDialog>,
-    pub(super) repository_dialog: Option<RepositoryDialog>,
     pub(super) view: View,
     pub(super) session: Option<SessionView>,
     pub(super) prompt: PromptBuffer,
@@ -201,7 +182,6 @@ impl AppState {
             selected_model: None,
             credential: None,
             credential_dialog: None,
-            repository_dialog: None,
             view: View::Sessions,
             session: None,
             prompt: PromptBuffer::default(),
@@ -227,10 +207,6 @@ impl AppState {
 
     pub(super) fn clear_credential_interaction(&mut self) {
         self.credential_dialog = None;
-    }
-
-    pub(super) fn clear_repository_interaction(&mut self) {
-        self.repository_dialog = None;
     }
 
     pub(super) fn mark_credential_status_unknown(&mut self) {
@@ -313,7 +289,6 @@ impl AppState {
         self.session = Some(session);
         self.view = View::Session;
         self.prompt.clear();
-        self.clear_repository_interaction();
         self.transcript_scroll = 0;
         Ok(())
     }
@@ -322,7 +297,6 @@ impl AppState {
         self.view = View::Sessions;
         self.session = None;
         self.prompt.clear();
-        self.clear_repository_interaction();
         self.pending = None;
         self.pending_unknown = false;
         self.transcript_scroll = 0;
@@ -376,7 +350,7 @@ impl AppState {
         self.session_mut(run.session_id)?.apply_run(run)
     }
 
-    pub(super) fn repository_imported(
+    pub(super) fn workspace_updated(
         &mut self,
         session_id: SessionId,
         workspace: WorkspaceSummary,

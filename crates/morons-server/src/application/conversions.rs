@@ -402,6 +402,9 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::SessionBusy { active_run_id } => ApplicationError::SessionBusy {
             active_run_id: to_protocol_run_id(active_run_id),
         },
+        PersistenceError::WorkingDirectoryUnavailable => {
+            ApplicationError::WorkingDirectoryUnavailable
+        }
         PersistenceError::CredentialGenerationConflict => {
             ApplicationError::CredentialGenerationConflict
         }
@@ -411,12 +414,7 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::CredentialMutationNotApplied => {
             ApplicationError::CredentialMutationNotApplied
         }
-        PersistenceError::WorkspaceNotPristine => ApplicationError::WorkspaceNotPristine,
         PersistenceError::WorkspaceBusy => ApplicationError::WorkspaceBusy,
-        PersistenceError::RepositoryAlreadyImported => ApplicationError::RepositoryAlreadyImported,
-        PersistenceError::RepositoryImportNotApplied => {
-            ApplicationError::RepositoryImportNotApplied
-        }
         PersistenceError::WorkspaceBlocked | PersistenceError::ToolUncertaintyNotFound => {
             ApplicationError::WorkspaceBlocked
         }
@@ -440,8 +438,7 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
                 PersistenceResourceLimit::Transcript
                 | PersistenceResourceLimit::LogicalSequence
                 | PersistenceResourceLimit::CredentialGeneration
-                | PersistenceResourceLimit::CredentialMutations
-                | PersistenceResourceLimit::Workspace,
+                | PersistenceResourceLimit::CredentialMutations,
         } => ApplicationError::ResourceLimit {
             resource: ResourceLimit::Storage,
         },

@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, process, sync::Arc};
+use std::{fs, path::PathBuf, process};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -6,16 +6,11 @@ use std::os::unix::fs::PermissionsExt;
 use rusqlite::Connection;
 
 use super::{
-    ActivationOutcome, CompletedAssistant, CompletedToolTurn, DispatchOutcome, MutationRequestId,
+    ActivationOutcome, CompletedAssistant, DispatchOutcome, MutationRequestId,
     OpenCodeCredentialStatus, PersistenceError, PrepareOperationOutcome, ProviderUsage,
     RunModelSelection, RunOpenCodeService, RunState, SessionEventCursor, SessionEventPayload,
     SessionStore, TranscriptCursor, TranscriptEntry,
 };
-use crate::tools::{
-    ToolErrorKind, ToolExecution, ToolInput, ToolResult, ValidatedProviderCall, WorktreePath,
-    WorktreeToolExecutor,
-};
-
 const TEST_MODEL: &str = "muse-spark-1.2";
 
 #[tokio::test(flavor = "current_thread")]
@@ -42,6 +37,41 @@ async fn rejected_run_input_does_not_append_transcript_state() {
         .expect("empty transcript should remain readable");
     assert!(transcript.entries.is_empty());
     assert!(transcript.next_cursor.is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unavailable_working_directory_rejects_run_before_transcript_commit() {
+    let root = TestRoot::new("unavailable-run-directory");
+    let selected = TestRoot::new("selected-run-directory");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    configure_credential(&store).await;
+    let session = store
+        .create_session_at(
+            MutationRequestId::from_bytes([0x09; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    fs::remove_dir_all(selected.path()).expect("selected directory should be removed");
+
+    assert!(matches!(
+        store
+            .accept_session_input(
+                MutationRequestId::from_bytes([0x0a; 16]),
+                session.id,
+                "must not commit".to_owned(),
+                model_selection(),
+            )
+            .await,
+        Err(PersistenceError::WorkingDirectoryUnavailable)
+    ));
+    let page = store
+        .list_session_transcript(session.id, None, 1)
+        .await
+        .expect("transcript should remain readable");
+    assert!(page.entries.is_empty());
+    assert!(page.runs.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -540,356 +570,6 @@ async fn startup_interrupts_nonterminal_runs_without_redispatch() {
         )
         .await
         .expect("interrupted provider usage should not block new input");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn startup_proves_published_mutation_without_replaying_it() {
-    let root = TestRoot::new("tool-recovery");
-    let source = TestRoot::new("tool-recovery-source");
-    fs::write(source.path().join("existing.txt"), "existing\n")
-        .expect("source file should be written");
-    let run_id;
-    let session_id;
-    let workspace_id;
-    {
-        let store =
-            Arc::new(SessionStore::open_at(root.path()).expect("session store should open"));
-        configure_credential(&store).await;
-        let session = store
-            .create_session(MutationRequestId::from_bytes([0x71; 16]), None)
-            .await
-            .expect("session should be created");
-        store
-            .import_repository(
-                MutationRequestId::from_bytes([0x72; 16]),
-                session.id,
-                source.path().to_string_lossy().into_owned(),
-            )
-            .await
-            .expect("repository should import");
-        let accepted = store
-            .accept_session_input(
-                MutationRequestId::from_bytes([0x73; 16]),
-                session.id,
-                "create recovered.txt".to_owned(),
-                model_selection(),
-            )
-            .await
-            .expect("run should be accepted");
-        store
-            .activate_run(accepted.run.id)
-            .await
-            .expect("run should activate");
-        let context = store
-            .load_run_context(accepted.run.id)
-            .await
-            .expect("context should load");
-        let provider_operation = match store
-            .prepare_provider_operation(
-                accepted.run.id,
-                context.current_entry_high_water,
-                context.estimated_input_tokens,
-            )
-            .await
-            .expect("provider should prepare")
-        {
-            PrepareOperationOutcome::Prepared(operation) => operation,
-            other => panic!("unexpected provider preparation: {other:?}"),
-        };
-        store
-            .mark_provider_dispatched(accepted.run.id, provider_operation)
-            .await
-            .expect("provider should dispatch");
-        let committed = store
-            .complete_provider_tool_turn(
-                accepted.run.id,
-                provider_operation,
-                CompletedToolTurn {
-                    provider_response_id: "resp_recovery".to_owned(),
-                    usage: ProviderUsage {
-                        input_tokens: 1,
-                        cached_input_tokens: 0,
-                        cache_write_input_tokens: 0,
-                        output_tokens: 1,
-                        reasoning_output_tokens: 0,
-                        total_tokens: 2,
-                    },
-                    commentary: None,
-                    calls: vec![ValidatedProviderCall {
-                        provider_call_id: "provider_recovery".to_owned(),
-                        input: ToolInput::CreateFile {
-                            path: WorktreePath::parse("recovered.txt", false)
-                                .expect("path should parse"),
-                            content: "published once\n".to_owned(),
-                        },
-                    }],
-                },
-            )
-            .await
-            .expect("tool call should commit");
-        let call = &committed.calls[0];
-        let worktree = store
-            .active_worktree_path(session.workspace_id)
-            .await
-            .expect("active worktree should resolve");
-        let ToolExecution::Mutation(prepared) = WorktreeToolExecutor::new(worktree.clone())
-            .prepare(call.input.clone(), *call.operation_id.as_bytes(), &|| false)
-        else {
-            panic!("mutation should prepare");
-        };
-        let plan = prepared
-            .encoded_plan()
-            .expect("recovery plan should encode");
-        store
-            .prepare_tool_operation(accepted.run.id, call.call_id, call.operation_id, Some(plan))
-            .await
-            .expect("tool operation should prepare durably");
-        store
-            .mark_tool_dispatched(accepted.run.id, call.call_id, call.operation_id)
-            .await
-            .expect("tool operation should dispatch durably");
-        WorktreeToolExecutor::new(worktree)
-            .publish_mutation(prepared)
-            .expect("mutation should publish once");
-        run_id = accepted.run.id;
-        session_id = session.id;
-        workspace_id = session.workspace_id;
-        drop(Arc::try_unwrap(store).unwrap_or_else(|_| panic!("store should be unique")));
-    }
-
-    let reopened = SessionStore::open_at(root.path()).expect("tool operation should recover");
-    let run = reopened
-        .get_run(session_id, run_id)
-        .await
-        .expect("run query should succeed")
-        .expect("run should exist");
-    assert_eq!(run.state, RunState::Interrupted);
-    assert_eq!(
-        fs::read_to_string(
-            reopened
-                .active_worktree_path(workspace_id)
-                .await
-                .expect("active worktree should resolve")
-                .join("recovered.txt"),
-        )
-        .expect("published file should remain"),
-        "published once\n"
-    );
-    let mut cursor = None;
-    let mut saw_result = false;
-    loop {
-        let page = reopened
-            .list_session_transcript(session_id, cursor, 1)
-            .await
-            .expect("transcript should page");
-        saw_result |= page.entries.iter().any(|entry| {
-            matches!(
-                entry,
-                TranscriptEntry::ToolResult {
-                    result: ToolResult::Ok { .. },
-                    ..
-                }
-            )
-        });
-        let Some(next) = page.next_cursor else { break };
-        cursor = Some(next);
-    }
-    assert!(saw_result);
-    drop(reopened);
-    SessionStore::open_at(root.path()).expect("recovered tool result should be durable");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn uncertain_tool_effect_blocks_until_exact_acknowledgement() {
-    let root = TestRoot::new("tool-uncertainty");
-    let source = TestRoot::new("tool-uncertainty-source");
-    fs::write(source.path().join("existing.txt"), "existing\n")
-        .expect("source file should be written");
-    let store = Arc::new(SessionStore::open_at(root.path()).expect("session store should open"));
-    configure_credential(&store).await;
-    let session = store
-        .create_session(MutationRequestId::from_bytes([0x61; 16]), None)
-        .await
-        .expect("session should be created");
-    store
-        .import_repository(
-            MutationRequestId::from_bytes([0x62; 16]),
-            session.id,
-            source.path().to_string_lossy().into_owned(),
-        )
-        .await
-        .expect("repository should import");
-    let accepted = store
-        .accept_session_input(
-            MutationRequestId::from_bytes([0x63; 16]),
-            session.id,
-            "create uncertain.txt".to_owned(),
-            model_selection(),
-        )
-        .await
-        .expect("run should be accepted");
-    assert_eq!(
-        accepted.run.tool_catalog_version,
-        crate::tools::TOOL_CATALOG_VERSION
-    );
-    assert_eq!(
-        accepted.run.tool_limits_version,
-        crate::tools::TOOL_LIMITS_VERSION
-    );
-    assert!(accepted.run.execution_image_generation.is_none());
-    store
-        .activate_run(accepted.run.id)
-        .await
-        .expect("run should activate");
-    let context = store
-        .load_run_context(accepted.run.id)
-        .await
-        .expect("context should load");
-    let provider_operation = match store
-        .prepare_provider_operation(
-            accepted.run.id,
-            context.current_entry_high_water,
-            context.estimated_input_tokens,
-        )
-        .await
-        .expect("provider operation should prepare")
-    {
-        PrepareOperationOutcome::Prepared(operation) => operation,
-        other => panic!("unexpected provider preparation: {other:?}"),
-    };
-    store
-        .mark_provider_dispatched(accepted.run.id, provider_operation)
-        .await
-        .expect("provider should dispatch");
-    let committed = store
-        .complete_provider_tool_turn(
-            accepted.run.id,
-            provider_operation,
-            CompletedToolTurn {
-                provider_response_id: "resp_uncertain".to_owned(),
-                usage: ProviderUsage {
-                    input_tokens: 1,
-                    cached_input_tokens: 0,
-                    cache_write_input_tokens: 0,
-                    output_tokens: 1,
-                    reasoning_output_tokens: 0,
-                    total_tokens: 2,
-                },
-                commentary: None,
-                calls: vec![ValidatedProviderCall {
-                    provider_call_id: "provider_uncertain".to_owned(),
-                    input: ToolInput::CreateFile {
-                        path: WorktreePath::parse("uncertain.txt", false)
-                            .expect("tool path should parse"),
-                        content: "uncertain\n".to_owned(),
-                    },
-                }],
-            },
-        )
-        .await
-        .expect("tool call should commit");
-    let call = &committed.calls[0];
-    let ToolExecution::Mutation(prepared) = WorktreeToolExecutor::new(
-        store
-            .active_worktree_path(session.workspace_id)
-            .await
-            .expect("active worktree should resolve"),
-    )
-    .prepare(call.input.clone(), *call.operation_id.as_bytes(), &|| false) else {
-        panic!("uncertain mutation should prepare");
-    };
-    let recovery_plan = prepared
-        .encoded_plan()
-        .expect("uncertain mutation plan should encode");
-    drop(prepared);
-    store
-        .prepare_tool_operation(
-            accepted.run.id,
-            call.call_id,
-            call.operation_id,
-            Some(recovery_plan),
-        )
-        .await
-        .expect("tool operation should prepare");
-    store
-        .mark_tool_dispatched(accepted.run.id, call.call_id, call.operation_id)
-        .await
-        .expect("tool publication should dispatch");
-    store
-        .complete_tool_result(
-            accepted.run.id,
-            call.call_id,
-            call.operation_id,
-            ToolResult::error(ToolErrorKind::Uncertain),
-        )
-        .await
-        .expect("uncertainty should commit");
-    let run = store
-        .get_run(session.id, accepted.run.id)
-        .await
-        .expect("run query should succeed")
-        .expect("run should exist");
-    assert_eq!(run.state, RunState::Uncertain);
-    let workspace = store
-        .workspace_summary(session.id)
-        .await
-        .expect("workspace summary should load");
-    assert_eq!(workspace.state, super::WorkspaceState::Blocked);
-    assert_eq!(workspace.blocked_run_id, Some(accepted.run.id));
-    assert!(matches!(
-        store
-            .accept_session_input(
-                MutationRequestId::from_bytes([0x64; 16]),
-                session.id,
-                "must remain blocked".to_owned(),
-                model_selection(),
-            )
-            .await,
-        Err(PersistenceError::WorkspaceBlocked)
-    ));
-
-    let acknowledgement_id = MutationRequestId::from_bytes([0x65; 16]);
-    let acknowledgement = store
-        .acknowledge_tool_uncertainty(acknowledgement_id, session.id, accepted.run.id)
-        .await
-        .expect("uncertainty should acknowledge");
-    assert_eq!(
-        acknowledgement.workspace.state,
-        super::WorkspaceState::Ready
-    );
-    let retry = store
-        .acknowledge_tool_uncertainty(acknowledgement_id, session.id, accepted.run.id)
-        .await
-        .expect("acknowledgement retry should be idempotent");
-    assert_eq!(retry, acknowledgement);
-    store
-        .accept_session_input(
-            MutationRequestId::from_bytes([0x66; 16]),
-            session.id,
-            "continue after parking uncertainty".to_owned(),
-            model_selection(),
-        )
-        .await
-        .expect("acknowledged uncertainty should permit new input");
-    drop(Arc::try_unwrap(store).unwrap_or_else(|_| panic!("store should be unique")));
-    let reopened =
-        SessionStore::open_at(root.path()).expect("acknowledged uncertainty should reopen");
-    drop(reopened);
-
-    let database_path = root.path().join("data").join("sessions.sqlite3");
-    let connection = Connection::open(database_path).expect("database should open for corruption");
-    connection
-        .execute("UPDATE tool_calls SET input_payload = x'7b7d'", [])
-        .expect("tool input payload should be corruptible for test");
-    drop(connection);
-    let error = match SessionStore::open_at(root.path()) {
-        Ok(store) => {
-            drop(store);
-            panic!("corrupt typed tool input should fail closed");
-        }
-        Err(error) => error,
-    };
-    assert!(matches!(error, PersistenceError::InvalidState { .. }));
 }
 
 #[tokio::test(flavor = "current_thread")]

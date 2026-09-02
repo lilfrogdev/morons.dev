@@ -2,7 +2,6 @@ mod backend;
 mod credentials;
 mod database;
 mod paths;
-mod repository;
 mod run_types;
 mod runs;
 mod types;
@@ -39,10 +38,7 @@ pub use self::{
     },
 };
 
-pub(crate) use self::types::{
-    ExecutionTargetArch, ExecutionTargetOs, RepositoryImportOutcome, RepositoryImportPlan,
-    WorktreeLayoutPlan,
-};
+pub(crate) use self::types::{ExecutionTargetArch, ExecutionTargetOs};
 
 pub(crate) use self::run_types::{
     ActivationOutcome, AssistantMessagePhase, CommittedToolCall, CommittedToolTurn,
@@ -57,7 +53,6 @@ pub struct SessionStore {
     sender: Option<mpsc::Sender<WorkerRequest>>,
     worker: Option<thread::JoinHandle<()>>,
     credential_dispatch_lock: Mutex<()>,
-    repository_import_lock: Mutex<()>,
     paths: paths::StoragePaths,
     event_notifications: watch::Sender<u64>,
 }
@@ -114,7 +109,6 @@ impl SessionStore {
             sender: Some(sender),
             worker: Some(worker),
             credential_dispatch_lock: Mutex::new(()),
-            repository_import_lock: Mutex::new(()),
             paths,
             event_notifications,
         })
@@ -424,34 +418,6 @@ enum WorkerRequest {
         workspace_id: [u8; 16],
         response: oneshot::Sender<Result<[u8; 16], PersistenceError>>,
     },
-    PrepareRepositoryImport {
-        request_id: MutationRequestId,
-        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
-        source_path_digest: [u8; REQUEST_FINGERPRINT_BYTES],
-        session_id: SessionId,
-        response: oneshot::Sender<Result<RepositoryImportPlan, PersistenceError>>,
-    },
-    DispatchRepositoryImport {
-        plan: RepositoryImportPlan,
-        response: oneshot::Sender<Result<RepositoryImportPlan, PersistenceError>>,
-    },
-    CompleteRepositoryImport {
-        plan: RepositoryImportPlan,
-        outcome: RepositoryImportOutcome,
-        response: oneshot::Sender<Result<WorkspaceSummary, PersistenceError>>,
-    },
-    RepositoryImportNotApplied {
-        plan: RepositoryImportPlan,
-        response: oneshot::Sender<Result<WorkspaceSummary, PersistenceError>>,
-    },
-    BlockRepositoryImport {
-        plan: RepositoryImportPlan,
-        response: oneshot::Sender<Result<WorkspaceSummary, PersistenceError>>,
-    },
-    GetWorkspaceSummary {
-        session_id: SessionId,
-        response: oneshot::Sender<Result<WorkspaceSummary, PersistenceError>>,
-    },
     StopServer {
         request_id: MutationRequestId,
         host_epoch: [u8; 16],
@@ -524,42 +490,6 @@ fn run_worker(
                 response,
             } => {
                 let _ = response.send(backend.active_worktree_generation(&workspace_id));
-            }
-            WorkerRequest::PrepareRepositoryImport {
-                request_id,
-                fingerprint,
-                source_path_digest,
-                session_id,
-                response,
-            } => {
-                let _ = response.send(backend.prepare_repository_import(
-                    request_id,
-                    fingerprint,
-                    source_path_digest,
-                    session_id,
-                ));
-            }
-            WorkerRequest::DispatchRepositoryImport { plan, response } => {
-                let _ = response.send(backend.dispatch_repository_import(plan));
-            }
-            WorkerRequest::CompleteRepositoryImport {
-                plan,
-                outcome,
-                response,
-            } => {
-                let _ = response.send(backend.complete_repository_import(plan, outcome));
-            }
-            WorkerRequest::RepositoryImportNotApplied { plan, response } => {
-                let _ = response.send(backend.mark_repository_import_not_applied(plan));
-            }
-            WorkerRequest::BlockRepositoryImport { plan, response } => {
-                let _ = response.send(backend.block_repository_import(plan));
-            }
-            WorkerRequest::GetWorkspaceSummary {
-                session_id,
-                response,
-            } => {
-                let _ = response.send(backend.workspace_summary(session_id));
             }
             WorkerRequest::StopServer {
                 request_id,
@@ -648,8 +578,6 @@ fn run_worker(
 
 #[cfg(test)]
 mod credential_tests;
-#[cfg(test)]
-mod repository_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]

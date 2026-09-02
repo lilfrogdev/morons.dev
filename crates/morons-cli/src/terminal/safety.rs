@@ -1,9 +1,6 @@
 use std::fmt;
 
-use morons_protocol::{
-    MAX_OPENCODE_API_KEY_BYTES, MAX_REPOSITORY_SOURCE_PATH_BYTES, OpenCodeApiKey,
-    OpenCodeApiKeyError,
-};
+use morons_protocol::{MAX_OPENCODE_API_KEY_BYTES, OpenCodeApiKey, OpenCodeApiKeyError};
 use zeroize::{Zeroize, Zeroizing};
 
 pub const MAX_PRESENTED_TEXT_BYTES: usize = 32 * 1024;
@@ -171,76 +168,6 @@ impl fmt::Debug for PromptBuffer {
     }
 }
 
-#[derive(Default, PartialEq, Eq)]
-pub struct RepositoryPathBuffer {
-    text: String,
-}
-
-impl RepositoryPathBuffer {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.text
-    }
-
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.text.is_empty()
-    }
-
-    pub fn push_character(&mut self, character: char) -> bool {
-        if character.is_control() || is_bidirectional_control(character) {
-            return false;
-        }
-        self.push_visible(character)
-    }
-
-    pub fn push_paste(&mut self, paste: &str) -> bool {
-        if paste
-            .chars()
-            .any(|character| character.is_control() || is_bidirectional_control(character))
-            || self
-                .text
-                .len()
-                .checked_add(paste.len())
-                .is_none_or(|length| length > MAX_REPOSITORY_SOURCE_PATH_BYTES)
-        {
-            return false;
-        }
-        self.text.push_str(paste);
-        true
-    }
-
-    pub fn backspace(&mut self) {
-        self.text.pop();
-    }
-
-    pub fn take(&mut self) -> String {
-        std::mem::take(&mut self.text)
-    }
-
-    fn push_visible(&mut self, character: char) -> bool {
-        if self
-            .text
-            .len()
-            .checked_add(character.len_utf8())
-            .is_none_or(|length| length > MAX_REPOSITORY_SOURCE_PATH_BYTES)
-        {
-            return false;
-        }
-        self.text.push(character);
-        true
-    }
-}
-
-impl fmt::Debug for RepositoryPathBuffer {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RepositoryPathBuffer")
-            .field("path_bytes", &self.text.len())
-            .finish()
-    }
-}
-
 pub struct CredentialBuffer {
     bytes: Zeroizing<Vec<u8>>,
 }
@@ -399,23 +326,6 @@ mod tests {
         assert_eq!(prompt.len_bytes(), MAX_PROMPT_BYTES - 1);
         prompt.clear();
         assert!(prompt.is_empty());
-    }
-
-    #[test]
-    fn repository_path_input_is_single_line_bounded_and_redacted() {
-        let mut path = RepositoryPathBuffer::default();
-        assert!(path.push_paste("/safe/repository"));
-        assert!(!path.push_paste("\nother"));
-        assert_eq!(path.as_str(), "/safe/repository");
-        assert!(!format!("{path:?}").contains("/safe/repository"));
-        path.backspace();
-        assert!(path.push_character('y'));
-        assert_eq!(path.take(), "/safe/repository");
-        assert!(path.is_empty());
-
-        let mut oversized = RepositoryPathBuffer::default();
-        assert!(!oversized.push_paste(&"x".repeat(MAX_REPOSITORY_SOURCE_PATH_BYTES + 1)));
-        assert!(oversized.is_empty());
     }
 
     #[test]

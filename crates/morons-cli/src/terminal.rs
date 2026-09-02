@@ -23,9 +23,7 @@ use ratatui_crossterm::{
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
-pub use safety::{
-    CredentialBuffer, MAX_PROMPT_BYTES, PromptBuffer, RepositoryPathBuffer, SafeText,
-};
+pub use safety::{CredentialBuffer, MAX_PROMPT_BYTES, PromptBuffer, SafeText};
 
 const TERMINAL_EVENT_QUEUE_CAPACITY: usize = 64;
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);

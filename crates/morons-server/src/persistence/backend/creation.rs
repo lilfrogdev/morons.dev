@@ -13,7 +13,7 @@ use super::{
 };
 use crate::persistence::{
     MutationRequestId, PersistenceError, PersistenceResourceLimit, Session, SessionId,
-    types::{IDENTIFIER_BYTES, REQUEST_FINGERPRINT_BYTES},
+    types::REQUEST_FINGERPRINT_BYTES,
 };
 
 const MAX_SESSIONS: i64 = 10_000;
@@ -194,35 +194,6 @@ impl Backend {
                 .provision_workspace(&dispatched.workspace_id)
                 .map_err(PersistenceError::from)?;
             self.finalize_session_creation(&dispatched)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn validate_ready_workspaces(&self) -> Result<(), PersistenceError> {
-        let workspaces = {
-            let mut statement = self.connection.prepare(
-                "SELECT session.workspace_id,
-                        EXISTS (SELECT 1 FROM repository_import_requests AS import
-                                WHERE import.session_id = session.session_id
-                                  AND import.state IN (2, 4)),
-                        EXISTS (SELECT 1 FROM repository_import_requests AS import
-                                WHERE import.session_id = session.session_id AND import.state = 4)
-                 FROM sessions AS session ORDER BY session.created_sequence",
-            )?;
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, [u8; IDENTIFIER_BYTES]>(0)?,
-                        row.get::<_, bool>(1)?,
-                        row.get::<_, bool>(2)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        for (workspace_id, repository_expected, repository_blocked) in workspaces {
-            self.paths
-                .validate_workspace(&workspace_id, repository_expected, repository_blocked)
-                .map_err(PersistenceError::from)?;
         }
         Ok(())
     }

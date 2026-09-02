@@ -258,29 +258,6 @@ fn uncertain_tool_effect_requires_explicit_acknowledgement_confirmation() {
 }
 
 #[test]
-fn repository_import_requires_confirmation_and_redacts_action_debug() {
-    let (session, _) = fixture_session_and_run();
-    let mut app = AppState::new("test-server");
-    app.open_session(session, empty_workspace(), Vec::new(), Vec::new(), None)
-        .expect("pristine session should open");
-    assert_eq!(
-        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
-        AppAction::None
-    );
-    app.handle_paste("/private/sensitive/repository");
-    assert_eq!(
-        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-        AppAction::None
-    );
-    let action = app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
-    let debug = format!("{action:?}");
-    assert!(!debug.contains("/private/sensitive/repository"));
-    assert!(debug.contains("source_path_bytes"));
-    assert!(matches!(action, AppAction::ImportRepository { .. }));
-    assert!(app.repository_dialog.is_none());
-}
-
-#[test]
 fn session_browser_presents_the_bound_working_directory() {
     let (mut session, _) = fixture_session_and_run();
     session.working_directory = Some("/projects/example".to_owned());
