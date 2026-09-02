@@ -205,7 +205,6 @@ pub(super) fn spawn_companion(path: &Path) -> Result<Child, ConnectOrStartError>
 fn companion_command(path: &Path) -> Command {
     let mut command = Command::new(path);
     command
-        .env_clear()
         .current_dir(path.parent().expect("validated companion has a parent"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -215,9 +214,6 @@ fn companion_command(path: &Path) -> Command {
         use std::os::unix::process::CommandExt as _;
 
         command.process_group(0);
-        if let Some(home) = std::env::var_os("HOME") {
-            command.env("HOME", home);
-        }
     }
     #[cfg(windows)]
     {
@@ -328,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn companion_command_has_only_reviewed_environment_and_working_directory() {
+    fn companion_command_inherits_the_user_environment_and_has_a_fixed_working_directory() {
         let path = Path::new(if cfg!(windows) {
             r"C:\morons\morons-server.exe"
         } else {
@@ -339,9 +335,6 @@ mod tests {
             .get_envs()
             .map(|(name, _)| name.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        #[cfg(unix)]
-        assert_eq!(names, vec!["HOME"]);
-        #[cfg(windows)]
         assert!(names.is_empty());
         assert_eq!(command.get_current_dir(), path.parent());
         assert_eq!(command.get_program(), path.as_os_str());

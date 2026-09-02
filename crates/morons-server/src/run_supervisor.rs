@@ -28,8 +28,8 @@ use crate::{
         ProviderToolCall, provider_cancellation,
     },
     tools::{
-        DirectToolExecutor, TOOL_CATALOG_VERSION, ToolCallValidationError, ToolResult,
-        developer_instruction, parse_provider_calls, provider_tools,
+        BashToolExecutor, DirectToolExecutor, TOOL_CATALOG_VERSION, ToolCallValidationError,
+        ToolKind, ToolResult, developer_instruction, parse_provider_calls, provider_tools,
     },
 };
 
@@ -394,10 +394,19 @@ impl RunSupervisor {
             let execution_directory = working_directory.clone();
             let execution_input = call.input.clone();
             let execution_cancellation = cancellation.clone();
-            let mutation = call.input.kind().is_mutation();
+            let tool = call.input.kind();
+            let mutation = tool.is_mutation();
             let result = tokio::task::spawn_blocking(move || {
-                DirectToolExecutor::new(execution_directory)
-                    .execute(&execution_input, &|| execution_cancellation.is_cancelled())
+                let cancelled = || execution_cancellation.is_cancelled();
+                match tool {
+                    ToolKind::Bash => BashToolExecutor::new(execution_directory)
+                        .execute(&execution_input, &cancelled),
+                    ToolKind::Read | ToolKind::Write | ToolKind::Edit => {
+                        DirectToolExecutor::new(execution_directory)
+                            .execute(&execution_input, &cancelled)
+                    }
+                    _ => ToolResult::error(crate::tools::ToolErrorKind::Filesystem),
+                }
             })
             .await
             .unwrap_or_else(|_| {
@@ -407,12 +416,7 @@ impl RunSupervisor {
                     crate::tools::ToolErrorKind::Interrupted
                 })
             });
-            let cancelled = matches!(
-                result,
-                ToolResult::Error {
-                    error: crate::tools::ToolErrorKind::Cancelled
-                }
-            );
+            let cancelled = result.error_kind() == Some(crate::tools::ToolErrorKind::Cancelled);
             let uncertain = result.is_uncertain();
             self.sessions
                 .complete_tool_result(run_id, call.call_id, call.operation_id, result)

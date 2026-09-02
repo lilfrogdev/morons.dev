@@ -295,6 +295,7 @@ pub enum ToolKind {
     Read,
     Write,
     Edit,
+    Bash,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

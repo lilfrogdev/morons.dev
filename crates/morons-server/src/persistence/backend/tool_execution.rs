@@ -1051,13 +1051,16 @@ fn classify_result(result: &ToolResult, dispatched: bool) -> Result<(i64, i64), 
         ToolResult::Ok { .. } if dispatched => Ok((TOOL_FACT_COMPLETED, TOOL_RESULT_SUCCEEDED)),
         ToolResult::Error {
             error: ToolErrorKind::Uncertain,
+            ..
         } if dispatched => Ok((TOOL_FACT_UNCERTAIN, TOOL_RESULT_UNCERTAIN)),
         ToolResult::Error {
             error: ToolErrorKind::Interrupted | ToolErrorKind::Cancelled,
+            ..
         } if dispatched => Ok((TOOL_FACT_INTERRUPTED, TOOL_RESULT_INTERRUPTED)),
         ToolResult::Error {
             error:
                 ToolErrorKind::NotDispatched | ToolErrorKind::Interrupted | ToolErrorKind::Cancelled,
+            ..
         } if !dispatched => Ok((TOOL_FACT_NOT_DISPATCHED, TOOL_RESULT_INTERRUPTED)),
         ToolResult::Error { .. } => Ok((TOOL_FACT_COMPLETED, TOOL_RESULT_FAILED)),
         ToolResult::Ok { .. } => Err(PersistenceError::InvalidState {

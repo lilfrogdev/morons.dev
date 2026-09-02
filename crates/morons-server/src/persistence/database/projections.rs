@@ -1018,7 +1018,8 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                        AND image.state = 2
                  ))
                 OR
-                (accepted.tool_catalog_version = 3 AND accepted.tool_limits_version = 3
+                (accepted.tool_catalog_version IN (3, 4)
+                 AND accepted.tool_limits_version = accepted.tool_catalog_version
                  AND accepted.execution_image_generation IS NULL
                  AND EXISTS (
                      SELECT 1 FROM session_created_facts AS session
@@ -1031,8 +1032,9 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
                OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
-               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version != 3)
-               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version = 3)
+               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4))
+               OR (call.tool_kind = 11 AND run.tool_catalog_version != 4)
+               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4))
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id
@@ -1210,7 +1212,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             plan.as_deref().is_some_and(
                 crate::persistence::backend::command_execution::command_binding_is_valid,
             )
-        } else if matches!(tool_kind, ToolKind::Write | ToolKind::Edit) {
+        } else if matches!(tool_kind, ToolKind::Write | ToolKind::Edit | ToolKind::Bash) {
             plan.is_none()
         } else if tool_kind.is_mutation() {
             plan.as_deref().is_some_and(recovery_plan_is_valid) || !dispatched && plan.is_none()
@@ -1253,12 +1255,14 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                 ToolResult::Ok { .. } => fact_kind == 3 && result_status == 1,
                 ToolResult::Error {
                     error: ToolErrorKind::Uncertain,
+                    ..
                 } => fact_kind == 6 && result_status == 4,
                 ToolResult::Error {
                     error:
                         ToolErrorKind::Interrupted
                         | ToolErrorKind::Cancelled
                         | ToolErrorKind::NotDispatched,
+                    ..
                 } => matches!(fact_kind, 4 | 5) && result_status == 3,
                 ToolResult::Error { .. } => fact_kind == 3 && result_status == 2,
             };

@@ -354,6 +354,7 @@ const fn to_protocol_tool_kind(tool: crate::tools::ToolKind) -> ProtocolToolKind
         crate::tools::ToolKind::Read => ProtocolToolKind::Read,
         crate::tools::ToolKind::Write => ProtocolToolKind::Write,
         crate::tools::ToolKind::Edit => ProtocolToolKind::Edit,
+        crate::tools::ToolKind::Bash => ProtocolToolKind::Bash,
     }
 }
 
@@ -364,12 +365,14 @@ const fn protocol_tool_result_status(
         crate::tools::ToolResult::Ok { .. } => ProtocolToolResultStatus::Succeeded,
         crate::tools::ToolResult::Error {
             error: crate::tools::ToolErrorKind::Uncertain,
+            ..
         } => ProtocolToolResultStatus::Uncertain,
         crate::tools::ToolResult::Error {
             error:
                 crate::tools::ToolErrorKind::Interrupted
                 | crate::tools::ToolErrorKind::Cancelled
                 | crate::tools::ToolErrorKind::NotDispatched,
+            ..
         } => ProtocolToolResultStatus::Interrupted,
         crate::tools::ToolResult::Error { .. } => ProtocolToolResultStatus::Failed,
     }
