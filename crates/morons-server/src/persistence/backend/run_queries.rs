@@ -1,4 +1,4 @@
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 
 use super::{
     Backend,
@@ -282,34 +282,41 @@ impl Backend {
             .ok_or(PersistenceError::ResourceLimit {
                 resource: crate::persistence::PersistenceResourceLimit::Context,
             })?;
-        let workspace_id = self
-            .connection
-            .query_row(
-                "SELECT session.workspace_id
-                 FROM session_created_facts AS session
-                 JOIN repository_import_requests AS repository
-                   ON repository.session_id = session.session_id AND repository.state = 2
-                 WHERE session.session_id = ?1",
-                [&run.session_id.as_bytes()[..]],
-                |row| row.get::<_, [u8; 16]>(0),
-            )
-            .optional()?;
-        let valid_tool_versions =
-            matches!((run.tool_catalog_version, run.tool_limits_version), (0, 0))
-                || (workspace_id.is_some()
-                    && matches!(
-                        (run.tool_catalog_version, run.tool_limits_version),
-                        (
-                            crate::tools::TOOL_CATALOG_VERSION,
-                            crate::tools::TOOL_LIMITS_VERSION
-                        ) | (
-                            crate::tools::LEGACY_SANDBOX_TOOL_CATALOG_VERSION,
-                            crate::tools::LEGACY_SANDBOX_TOOL_LIMITS_VERSION
-                        )
-                    ));
+        let working_directory = self.connection.query_row(
+            "SELECT working_directory FROM sessions WHERE session_id = ?1",
+            [&run.session_id.as_bytes()[..]],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        let legacy_workspace_exists: bool = self.connection.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM repository_import_requests
+                WHERE session_id = ?1 AND state = 2
+             )",
+            [&run.session_id.as_bytes()[..]],
+            |row| row.get(0),
+        )?;
+        let versions = (run.tool_catalog_version, run.tool_limits_version);
+        let valid_tool_versions = versions == (0, 0)
+            || (working_directory.is_some()
+                && versions
+                    == (
+                        crate::tools::TOOL_CATALOG_VERSION,
+                        crate::tools::TOOL_LIMITS_VERSION,
+                    ))
+            || (legacy_workspace_exists
+                && matches!(
+                    versions,
+                    (
+                        crate::tools::LEGACY_WORKTREE_TOOL_CATALOG_VERSION,
+                        crate::tools::LEGACY_WORKTREE_TOOL_LIMITS_VERSION
+                    ) | (
+                        crate::tools::LEGACY_SANDBOX_TOOL_CATALOG_VERSION,
+                        crate::tools::LEGACY_SANDBOX_TOOL_LIMITS_VERSION
+                    )
+                ));
         if !valid_tool_versions {
             return Err(PersistenceError::InvalidState {
-                reason: "the run tool catalog conflicts with its ready workspace",
+                reason: "the run tool catalog conflicts with its session execution context",
             });
         }
         Ok(RunContext {
@@ -317,7 +324,7 @@ impl Backend {
             entries,
             current_entry_high_water,
             estimated_input_tokens,
-            workspace_id,
+            working_directory,
         })
     }
 }

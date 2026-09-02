@@ -319,7 +319,7 @@ pub(super) fn to_protocol_transcript_entry(entry: TranscriptEntry) -> ProtocolTr
             run_id: to_protocol_run_id(run_id),
             call_id: ProtocolToolCallId::from_bytes(*call_id.as_bytes()),
             tool: to_protocol_tool_kind(input.kind()),
-            path: input.path().as_str().to_owned(),
+            path: input.path_text().to_owned(),
             created_at_milliseconds,
         },
         TranscriptEntry::ToolResult {
@@ -351,6 +351,9 @@ const fn to_protocol_tool_kind(tool: crate::tools::ToolKind) -> ProtocolToolKind
         crate::tools::ToolKind::CreateFile => ProtocolToolKind::CreateFile,
         crate::tools::ToolKind::CreateDirectory => ProtocolToolKind::CreateDirectory,
         crate::tools::ToolKind::RunCommand => ProtocolToolKind::RunCommand,
+        crate::tools::ToolKind::Read => ProtocolToolKind::Read,
+        crate::tools::ToolKind::Write => ProtocolToolKind::Write,
+        crate::tools::ToolKind::Edit => ProtocolToolKind::Edit,
     }
 }
 
@@ -414,7 +417,6 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::CredentialMutationNotApplied => {
             ApplicationError::CredentialMutationNotApplied
         }
-        PersistenceError::WorkspaceBusy => ApplicationError::WorkspaceBusy,
         PersistenceError::WorkspaceBlocked | PersistenceError::ToolUncertaintyNotFound => {
             ApplicationError::WorkspaceBlocked
         }

@@ -448,6 +448,118 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn direct_file_tool_loop_reads_edits_and_commits_durable_results() {
+    let root = TestRoot::new("direct-tool-loop");
+    let selected = TestRoot::new("direct-tool-directory");
+    fs::write(selected.path().join("note.txt"), "before\n")
+        .expect("selected file should be written");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x81; 16]),
+            0,
+            b"not-a-real-tool-loop-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session_at(
+            PersistenceMutationRequestId::from_bytes([0x82; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let (base, requests, provider_task) = spawn_direct_tool_loop_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let session_id = SessionId::from_bytes(*session.id.as_bytes());
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x83; 16]),
+            session_id,
+            text: "inspect and update note.txt".to_owned(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("tool run should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run");
+    };
+    assert_eq!(run.tool_catalog_version, crate::tools::TOOL_CATALOG_VERSION);
+    assert_eq!(
+        wait_for_terminal(&application, session_id, run.id).await,
+        RunState::Succeeded
+    );
+    provider_task.await.expect("tool provider should finish");
+    let requests = requests.await.expect("tool requests should be captured");
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].contains("\"name\":\"read\""));
+    assert!(requests[1].contains("function_call_output"));
+    assert!(requests[2].contains("\"name\":\"edit\""));
+    assert!(requests[2].contains("edited"));
+    assert!(!requests.iter().any(|request| request.contains("read_file")));
+    assert_eq!(
+        fs::read_to_string(selected.path().join("note.txt"))
+            .expect("selected file should remain readable"),
+        "after\n"
+    );
+
+    let mut cursor = None;
+    let mut entries = Vec::new();
+    loop {
+        let outcome = application
+            .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+                session_id,
+                cursor,
+                limit: 1,
+            })
+            .await
+            .expect("tool transcript should page");
+        let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+            entries: page,
+            next_cursor,
+            ..
+        }) = outcome
+        else {
+            panic!("transcript should return a page");
+        };
+        entries.extend(page);
+        let Some(next) = next_cursor else { break };
+        cursor = Some(next);
+    }
+    assert_eq!(entries.len(), 6);
+    assert!(matches!(
+        entries[1],
+        morons_protocol::TranscriptEntry::ToolCall {
+            tool: morons_protocol::ToolKind::Read,
+            ..
+        }
+    ));
+    assert!(matches!(
+        entries[3],
+        morons_protocol::TranscriptEntry::ToolCall {
+            tool: morons_protocol::ToolKind::Edit,
+            ..
+        }
+    ));
+    for index in [2, 4] {
+        assert!(matches!(
+            entries[index],
+            morons_protocol::TranscriptEntry::ToolResult {
+                status: morons_protocol::ToolResultStatus::Succeeded,
+                ..
+            }
+        ));
+    }
+    application.shutdown().await;
+    drop(application);
+    SessionStore::open_for_test(root.path()).expect("durable tool history should reopen");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn exact_cancellation_stops_the_supervised_provider_task() {
     let root = TestRoot::new("supervised-cancellation");
     let store = SessionStore::open_for_test(root.path()).expect("session store should open");
@@ -584,7 +696,7 @@ async fn wait_for_terminal(
     session_id: SessionId,
     run_id: RunId,
 ) -> RunState {
-    time::timeout(Duration::from_secs(5), async {
+    time::timeout(Duration::from_secs(15), async {
         loop {
             let outcome = application
                 .execute_for_local_owner(ApplicationRequest::GetRun { session_id, run_id })
@@ -703,6 +815,68 @@ async fn spawn_successful_provider() -> (
         complete_sender,
         server,
     )
+}
+
+async fn spawn_direct_tool_loop_provider() -> (
+    String,
+    oneshot::Receiver<Vec<String>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("tool provider fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("tool provider should have an address");
+    let (requests_sender, requests_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let read_arguments = r#"{"path":"note.txt","offset":1,"limit":20}"#;
+        let edit_arguments =
+            r#"{"path":"note.txt","replacements":[{"old_text":"before","new_text":"after"}]}"#;
+        let outputs = [
+            format!(
+                "{{\"id\":\"fc_read\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_read\",\"name\":\"read\",\"arguments\":{}}}",
+                serde_json::to_string(read_arguments).expect("arguments should encode")
+            ),
+            format!(
+                "{{\"id\":\"fc_edit\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_edit\",\"name\":\"edit\",\"arguments\":{}}}",
+                serde_json::to_string(edit_arguments).expect("arguments should encode")
+            ),
+            "{\"id\":\"msg_final\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"Updated note.txt.\",\"annotations\":[]}] }".to_owned(),
+        ];
+        let mut captured = Vec::new();
+        for (index, output) in outputs.into_iter().enumerate() {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("tool request should connect");
+            captured.push(
+                String::from_utf8(read_http_request(&mut stream).await)
+                    .expect("tool request should be UTF-8"),
+            );
+            let response_id = format!("resp_tool_{}", index + 1);
+            let body = format!(
+                "event: response.created\ndata: {{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"muse-spark-1.2\"}}}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"model\":\"muse-spark-1.2\",\"status\":\"completed\",\"output\":[{output}],\"usage\":{{\"input_tokens\":8,\"input_tokens_details\":{{\"cached_tokens\":0}},\"output_tokens\":3,\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":11}}}}}}\n\ndata: [DONE]\n\n"
+            );
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .await
+                .expect("tool response headers should write");
+            stream
+                .write_all(body.as_bytes())
+                .await
+                .expect("tool response should write");
+            stream.shutdown().await.expect("tool response should close");
+        }
+        requests_sender
+            .send(captured)
+            .unwrap_or_else(|_| panic!("tool requests should be observed"));
+    });
+    (format!("http://{address}"), requests_receiver, server)
 }
 
 async fn spawn_stalled_provider() -> (String, oneshot::Receiver<()>, tokio::task::JoinHandle<()>) {

@@ -264,7 +264,6 @@ pub enum PersistenceError {
     CredentialGenerationConflict,
     CredentialNotConfigured,
     CredentialMutationNotApplied,
-    WorkspaceBusy,
     WorkspaceBlocked,
     ToolUncertaintyNotFound,
     ResourceLimit { resource: PersistenceResourceLimit },
@@ -306,7 +305,6 @@ impl fmt::Display for PersistenceError {
             Self::CredentialMutationNotApplied => {
                 formatter.write_str("the credential mutation was not applied")
             }
-            Self::WorkspaceBusy => formatter.write_str("the session workspace is busy"),
             Self::WorkspaceBlocked => formatter.write_str("the session workspace is blocked"),
             Self::ToolUncertaintyNotFound => {
                 formatter.write_str("the uncertain tool effect was not found")
@@ -356,7 +354,6 @@ impl Error for PersistenceError {
             | Self::CredentialGenerationConflict
             | Self::CredentialNotConfigured
             | Self::CredentialMutationNotApplied
-            | Self::WorkspaceBusy
             | Self::WorkspaceBlocked
             | Self::ToolUncertaintyNotFound
             | Self::ResourceLimit { .. }

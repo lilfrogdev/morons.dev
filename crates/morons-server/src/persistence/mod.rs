@@ -53,7 +53,6 @@ pub struct SessionStore {
     sender: Option<mpsc::Sender<WorkerRequest>>,
     worker: Option<thread::JoinHandle<()>>,
     credential_dispatch_lock: Mutex<()>,
-    paths: paths::StoragePaths,
     event_notifications: watch::Sender<u64>,
 }
 
@@ -97,7 +96,6 @@ impl SessionStore {
 
     fn open_at(application_root: &Path) -> Result<Self, PersistenceError> {
         let backend = Backend::open(application_root)?;
-        let paths = backend.paths.clone();
         let event_high_water = backend.delivery_event_high_water()?;
         let (event_notifications, _) = watch::channel(event_high_water);
         let notification_sender = event_notifications.clone();
@@ -109,7 +107,6 @@ impl SessionStore {
             sender: Some(sender),
             worker: Some(worker),
             credential_dispatch_lock: Mutex::new(()),
-            paths,
             event_notifications,
         })
     }
@@ -371,26 +368,6 @@ impl SessionStore {
         self.event_notifications.subscribe()
     }
 
-    pub(crate) async fn active_worktree_path(
-        &self,
-        workspace_id: [u8; 16],
-    ) -> Result<std::path::PathBuf, PersistenceError> {
-        let (response, receiver) = oneshot::channel();
-        self.sender()?
-            .send(WorkerRequest::GetActiveWorktreeGeneration {
-                workspace_id,
-                response,
-            })
-            .await
-            .map_err(|_| PersistenceError::WorkerStopped)?;
-        let generation_id = receiver
-            .await
-            .map_err(|_| PersistenceError::WorkerStopped)??;
-        Ok(self
-            .paths
-            .worktree_generation_path(&workspace_id, &generation_id))
-    }
-
     fn sender(&self) -> Result<&mpsc::Sender<WorkerRequest>, PersistenceError> {
         self.sender.as_ref().ok_or(PersistenceError::WorkerStopped)
     }
@@ -414,10 +391,6 @@ enum WorkerRequest {
         response: oneshot::Sender<Result<Session, PersistenceError>>,
     },
     Run(RunWorkerRequest),
-    GetActiveWorktreeGeneration {
-        workspace_id: [u8; 16],
-        response: oneshot::Sender<Result<[u8; 16], PersistenceError>>,
-    },
     StopServer {
         request_id: MutationRequestId,
         host_epoch: [u8; 16],
@@ -485,12 +458,6 @@ fn run_worker(
                 ));
             }
             WorkerRequest::Run(request) => request.execute(&mut backend),
-            WorkerRequest::GetActiveWorktreeGeneration {
-                workspace_id,
-                response,
-            } => {
-                let _ = response.send(backend.active_worktree_generation(&workspace_id));
-            }
             WorkerRequest::StopServer {
                 request_id,
                 host_epoch,

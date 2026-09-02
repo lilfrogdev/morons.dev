@@ -6,14 +6,14 @@ use serde_json::{Value, json};
 use super::{
     MAX_COMMAND_ARGUMENTS, MAX_FILE_BYTES, MAX_READ_LINES, MAX_REPLACEMENT_BYTES, MAX_REPLACEMENTS,
     MAX_SEARCH_QUERY_BYTES, MAX_TOOL_CALLS_PER_TURN, TextReplacement, ToolInput, ToolKind,
-    ValidatedProviderCall, WorktreePath,
+    ToolPath, ValidatedProviderCall, WorktreePath,
 };
 use crate::provider::{ProviderTool, ProviderToolCall, json::parse_strict_value};
 
-pub(crate) const TOOL_CATALOG_VERSION: u16 = 1;
+pub(crate) const TOOL_CATALOG_VERSION: u16 = 3;
 pub(crate) const LEGACY_SANDBOX_TOOL_CATALOG_VERSION: u16 = 2;
 
-const DEVELOPER_INSTRUCTION: &str = "You are operating in an isolated mutable repository worktree. Use only the offered structured tools. Every path is slash-separated and relative to the worktree; use `.` only for read-only directory-scoped tools. Read a complete file digest before editing it. Never assume that a tool succeeded until its committed result says so.";
+const DEVELOPER_INSTRUCTION: &str = "You are operating directly in the user's selected working directory with the user's normal filesystem authority. Relative paths resolve from that directory; absolute paths and normal operating-system path semantics are allowed. Use the offered read, write, and edit tools for bounded file operations. Edit requires exact unique non-overlapping replacements. Never assume that a tool succeeded until its committed result says so.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ToolCallValidationError {
@@ -28,46 +28,34 @@ pub(crate) fn developer_instruction() -> &'static str {
 pub(crate) fn provider_tools() -> Vec<ProviderTool> {
     vec![
         ProviderTool {
-            name: ToolKind::ListDirectory.name().to_owned(),
-            description: "List one bounded, byte-sorted page of ordinary children in a worktree directory.".to_owned(),
+            name: ToolKind::Read.name().to_owned(),
+            description: "Read a bounded UTF-8 line window from one file. Relative paths resolve from the selected working directory; absolute paths are allowed.".to_owned(),
             parameters: object_schema(
                 json!({
-                    "path": {"type": "string", "maxLength": 1024},
-                    "after": {"type": ["string", "null"], "maxLength": 255}
+                    "path": {"type": "string", "maxLength": super::path::MAX_TOOL_PATH_BYTES},
+                    "offset": {"type": "integer", "minimum": 1, "maximum": 4294967295_u64},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_READ_LINES}
                 }),
-                &["path", "after"],
+                &["path", "offset", "limit"],
             ),
         },
         ProviderTool {
-            name: ToolKind::ReadFile.name().to_owned(),
-            description: "Read a bounded one-indexed UTF-8 line window and return the complete file SHA-256 digest.".to_owned(),
+            name: ToolKind::Write.name().to_owned(),
+            description: "Write one complete bounded UTF-8 file, creating or replacing it with normal filesystem semantics.".to_owned(),
             parameters: object_schema(
                 json!({
-                    "path": {"type": "string", "maxLength": 1024},
-                    "start_line": {"type": "integer", "minimum": 1, "maximum": 4294967295_u64},
-                    "line_count": {"type": "integer", "minimum": 1, "maximum": MAX_READ_LINES}
+                    "path": {"type": "string", "maxLength": super::path::MAX_TOOL_PATH_BYTES},
+                    "content": {"type": "string", "maxLength": MAX_FILE_BYTES}
                 }),
-                &["path", "start_line", "line_count"],
+                &["path", "content"],
             ),
         },
         ProviderTool {
-            name: ToolKind::SearchText.name().to_owned(),
-            description: "Search for bounded literal UTF-8 text beneath one worktree directory without regex, glob, or ignore-file semantics.".to_owned(),
+            name: ToolKind::Edit.name().to_owned(),
+            description: "Apply exact unique non-overlapping replacements to one bounded UTF-8 file. Every replacement must match exactly once.".to_owned(),
             parameters: object_schema(
                 json!({
-                    "path": {"type": "string", "maxLength": 1024},
-                    "query": {"type": "string", "minLength": 1, "maxLength": MAX_SEARCH_QUERY_BYTES}
-                }),
-                &["path", "query"],
-            ),
-        },
-        ProviderTool {
-            name: ToolKind::EditFile.name().to_owned(),
-            description: "Atomically apply exact unique non-overlapping replacements to an existing UTF-8 file after a complete-file digest precondition.".to_owned(),
-            parameters: object_schema(
-                json!({
-                    "path": {"type": "string", "maxLength": 1024},
-                    "expected_sha256": {"type": "string", "minLength": 64, "maxLength": 64},
+                    "path": {"type": "string", "maxLength": super::path::MAX_TOOL_PATH_BYTES},
                     "replacements": {
                         "type": "array",
                         "minItems": 1,
@@ -76,33 +64,14 @@ pub(crate) fn provider_tools() -> Vec<ProviderTool> {
                             "type": "object",
                             "additionalProperties": false,
                             "properties": {
-                                "old_text": {"type": "string", "maxLength": MAX_REPLACEMENT_BYTES},
+                                "old_text": {"type": "string", "minLength": 1, "maxLength": MAX_REPLACEMENT_BYTES},
                                 "new_text": {"type": "string", "maxLength": MAX_REPLACEMENT_BYTES}
                             },
                             "required": ["old_text", "new_text"]
                         }
                     }
                 }),
-                &["path", "expected_sha256", "replacements"],
-            ),
-        },
-        ProviderTool {
-            name: ToolKind::CreateFile.name().to_owned(),
-            description: "Atomically create one new UTF-8 file without replacing an existing child or creating missing parents.".to_owned(),
-            parameters: object_schema(
-                json!({
-                    "path": {"type": "string", "maxLength": 1024},
-                    "content": {"type": "string", "maxLength": MAX_FILE_BYTES}
-                }),
-                &["path", "content"],
-            ),
-        },
-        ProviderTool {
-            name: ToolKind::CreateDirectory.name().to_owned(),
-            description: "Create one empty directory without replacing an existing child or creating missing parents.".to_owned(),
-            parameters: object_schema(
-                json!({"path": {"type": "string", "maxLength": 1024}}),
-                &["path"],
+                &["path", "replacements"],
             ),
         },
     ]
@@ -152,7 +121,59 @@ fn parse_input(
     allow_legacy_command: bool,
 ) -> Result<ToolInput, ToolCallValidationError> {
     match name {
-        "list_directory" => {
+        "read" => {
+            require_fields(&value, &["path", "offset", "limit"])?;
+            let arguments: Read = decode(value)?;
+            if arguments.offset == 0 || arguments.limit == 0 || arguments.limit > MAX_READ_LINES {
+                return Err(ToolCallValidationError::InvalidProviderOutput);
+            }
+            Ok(ToolInput::Read {
+                path: ToolPath::parse(&arguments.path).map_err(invalid)?,
+                offset: arguments.offset,
+                limit: arguments.limit,
+            })
+        }
+        "write" => {
+            require_fields(&value, &["path", "content"])?;
+            let arguments: Write = decode(value)?;
+            if arguments.content.len() as u64 > MAX_FILE_BYTES {
+                return Err(ToolCallValidationError::ResourceLimit);
+            }
+            Ok(ToolInput::Write {
+                path: ToolPath::parse(&arguments.path).map_err(invalid)?,
+                content: arguments.content,
+            })
+        }
+        "edit" => {
+            require_fields(&value, &["path", "replacements"])?;
+            let arguments: Edit = decode(value)?;
+            if arguments.replacements.is_empty()
+                || arguments.replacements.len() > MAX_REPLACEMENTS
+                || arguments
+                    .replacements
+                    .iter()
+                    .any(|replacement| replacement.old_text.is_empty())
+            {
+                return Err(ToolCallValidationError::InvalidProviderOutput);
+            }
+            let replacement_bytes =
+                arguments
+                    .replacements
+                    .iter()
+                    .try_fold(0_usize, |total, replacement| {
+                        total
+                            .checked_add(replacement.old_text.len())?
+                            .checked_add(replacement.new_text.len())
+                    });
+            if replacement_bytes.is_none_or(|bytes| bytes > MAX_REPLACEMENT_BYTES) {
+                return Err(ToolCallValidationError::ResourceLimit);
+            }
+            Ok(ToolInput::Edit {
+                path: ToolPath::parse(&arguments.path).map_err(invalid)?,
+                replacements: arguments.replacements,
+            })
+        }
+        "list_directory" if allow_legacy_command => {
             require_fields(&value, &["path", "after"])?;
             let arguments: ListDirectory = decode(value)?;
             let path = WorktreePath::parse(&arguments.path, true).map_err(invalid)?;
@@ -164,7 +185,7 @@ fn parse_input(
                 after: arguments.after,
             })
         }
-        "read_file" => {
+        "read_file" if allow_legacy_command => {
             require_fields(&value, &["path", "start_line", "line_count"])?;
             let arguments: ReadFile = decode(value)?;
             if arguments.start_line == 0
@@ -179,7 +200,7 @@ fn parse_input(
                 line_count: arguments.line_count,
             })
         }
-        "search_text" => {
+        "search_text" if allow_legacy_command => {
             require_fields(&value, &["path", "query"])?;
             let arguments: SearchText = decode(value)?;
             if arguments.query.is_empty()
@@ -193,7 +214,7 @@ fn parse_input(
                 query: arguments.query,
             })
         }
-        "edit_file" => {
+        "edit_file" if allow_legacy_command => {
             require_fields(&value, &["path", "expected_sha256", "replacements"])?;
             let arguments: EditFile = decode(value)?;
             if !valid_digest(&arguments.expected_sha256)
@@ -220,7 +241,7 @@ fn parse_input(
                 replacements: arguments.replacements,
             })
         }
-        "create_file" => {
+        "create_file" if allow_legacy_command => {
             require_fields(&value, &["path", "content"])?;
             let arguments: CreateFile = decode(value)?;
             if arguments.content.len() as u64 > MAX_FILE_BYTES {
@@ -231,7 +252,7 @@ fn parse_input(
                 content: arguments.content,
             })
         }
-        "create_directory" => {
+        "create_directory" if allow_legacy_command => {
             require_fields(&value, &["path"])?;
             let arguments: CreateDirectory = decode(value)?;
             Ok(ToolInput::CreateDirectory {
@@ -312,6 +333,28 @@ const fn invalid(_: super::ToolErrorKind) -> ToolCallValidationError {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Read {
+    path: String,
+    offset: u32,
+    limit: u16,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Write {
+    path: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Edit {
+    path: String,
+    replacements: Vec<TextReplacement>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ListDirectory {
     path: String,
     after: Option<String>,
@@ -377,20 +420,13 @@ mod tests {
     #[test]
     fn catalog_is_fixed_strict_and_complete() {
         let tools = provider_tools();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 3);
         assert_eq!(
             tools
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            [
-                "list_directory",
-                "read_file",
-                "search_text",
-                "edit_file",
-                "create_file",
-                "create_directory"
-            ]
+            ["read", "write", "edit"]
         );
         assert!(
             tools
@@ -403,22 +439,21 @@ mod tests {
     fn provider_calls_decode_into_closed_typed_inputs() {
         let parsed = parse_provider_calls(
             vec![call(
-                "edit_file",
-                r#"{"path":"src/lib.rs","expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","replacements":[{"old_text":"before","new_text":"after"}]}"#,
+                "edit",
+                r#"{"path":"src/lib.rs","replacements":[{"old_text":"before","new_text":"after"}]}"#,
             )],
             TOOL_CATALOG_VERSION,
         )
         .expect("valid call should decode");
-        assert!(matches!(parsed[0].input, ToolInput::EditFile { .. }));
+        assert!(matches!(parsed[0].input, ToolInput::Edit { .. }));
 
         for arguments in [
-            r#"{"path":"src/lib.rs","start_line":1,"line_count":10,"extra":true}"#,
-            r#"{"path":"src/lib.rs","start_line":1}"#,
-            r#"{"path":"src/lib.rs","path":"other","start_line":1,"line_count":10}"#,
+            r#"{"path":"src/lib.rs","offset":1,"limit":10,"extra":true}"#,
+            r#"{"path":"src/lib.rs","offset":1}"#,
+            r#"{"path":"src/lib.rs","path":"other","offset":1,"limit":10}"#,
         ] {
             assert!(
-                parse_provider_calls(vec![call("read_file", arguments)], TOOL_CATALOG_VERSION,)
-                    .is_err()
+                parse_provider_calls(vec![call("read", arguments)], TOOL_CATALOG_VERSION,).is_err()
             );
         }
         assert!(

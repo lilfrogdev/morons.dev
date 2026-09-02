@@ -28,7 +28,7 @@ use crate::{
     tools::{
         MAX_TOOL_CALLS_PER_RUN, MAX_TOOL_MUTATIONS_PER_RUN, MAX_TOOL_PAYLOAD_BYTES,
         MAX_TOOL_RESULT_BYTES_PER_RUN, ToolErrorKind, ToolInput, ToolKind, ToolResult,
-        WorktreeToolExecutor, tool_path_digest,
+        tool_path_digest,
     },
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
@@ -155,7 +155,7 @@ impl Backend {
             let delivery_event_id = random_identifier()?;
             let call_audit_id = random_identifier()?;
             let input_payload = encode_payload(&call.input)?;
-            let path_digest = tool_path_digest(call.input.path().as_str());
+            let path_digest = tool_path_digest(call.input.path_text());
             transaction.execute(
                 "INSERT INTO tool_calls (
                     call_id, operation_id, provider_operation_id, provider_call_id,
@@ -551,48 +551,41 @@ impl Backend {
                 )?;
                 continue;
             }
-            let result = if operation.input.kind() == ToolKind::RunCommand {
-                let payload =
-                    operation
-                        .recovery_plan
-                        .as_deref()
-                        .ok_or(PersistenceError::InvalidState {
-                            reason: "an incomplete command is missing its durable binding",
-                        })?;
-                let binding: super::command_execution::CommandBinding =
-                    serde_json::from_slice(payload).map_err(|_| {
+            let result =
+                if operation.input.kind() == ToolKind::RunCommand {
+                    let payload = operation.recovery_plan.as_deref().ok_or(
                         PersistenceError::InvalidState {
-                            reason: "an incomplete command has an invalid durable binding",
-                        }
-                    })?;
-                self.paths
-                    .remove_command_operation(operation.operation_id.as_bytes())?;
-                self.paths.remove_unreferenced_generation(
-                    &binding.workspace_id,
-                    &binding.generation_id,
-                )?;
-                ToolResult::error(if operation.dispatched {
-                    ToolErrorKind::Interrupted
-                } else {
-                    ToolErrorKind::NotDispatched
-                })
-            } else if operation.input.kind().is_mutation() {
-                let plan = operation.recovery_plan.as_deref().ok_or(
-                    PersistenceError::InvalidState {
-                        reason: "an incomplete mutating tool operation is missing its recovery plan",
-                    },
-                )?;
-                let generation_id = self.active_worktree_generation(&operation.workspace_id)?;
-                WorktreeToolExecutor::new(
+                            reason: "an incomplete command is missing its durable binding",
+                        },
+                    )?;
+                    let binding: super::command_execution::CommandBinding =
+                        serde_json::from_slice(payload).map_err(|_| {
+                            PersistenceError::InvalidState {
+                                reason: "an incomplete command has an invalid durable binding",
+                            }
+                        })?;
                     self.paths
-                        .worktree_generation_path(&operation.workspace_id, &generation_id),
-                )
-                .recover_mutation(plan)
-            } else if operation.dispatched {
-                ToolResult::error(ToolErrorKind::Interrupted)
-            } else {
-                ToolResult::error(ToolErrorKind::NotDispatched)
-            };
+                        .remove_command_operation(operation.operation_id.as_bytes())?;
+                    self.paths.remove_unreferenced_generation(
+                        &binding.workspace_id,
+                        &binding.generation_id,
+                    )?;
+                    ToolResult::error(if operation.dispatched {
+                        ToolErrorKind::Interrupted
+                    } else {
+                        ToolErrorKind::NotDispatched
+                    })
+                } else if operation.input.kind().is_mutation() {
+                    ToolResult::error(if operation.dispatched {
+                        ToolErrorKind::Uncertain
+                    } else {
+                        ToolErrorKind::NotDispatched
+                    })
+                } else if operation.dispatched {
+                    ToolResult::error(ToolErrorKind::Interrupted)
+                } else {
+                    ToolResult::error(ToolErrorKind::NotDispatched)
+                };
             self.complete_tool_result(
                 operation.run_id,
                 operation.call_id,
@@ -647,10 +640,8 @@ impl Backend {
                 prepared.fact_id IS NOT NULL,
                 EXISTS (SELECT 1 FROM tool_operation_facts AS dispatched
                         WHERE dispatched.call_id = call.call_id AND dispatched.fact_kind = 2),
-                prepared.recovery_payload,
-                session.workspace_id
+                prepared.recovery_payload
              FROM tool_calls AS call
-             JOIN session_created_facts AS session ON session.session_id = call.session_id
              LEFT JOIN tool_operation_facts AS prepared
                ON prepared.call_id = call.call_id AND prepared.fact_kind = 1
              WHERE NOT EXISTS (
@@ -677,7 +668,6 @@ impl Backend {
                     prepared: row.get(4)?,
                     dispatched: row.get(5)?,
                     recovery_plan: row.get(6)?,
-                    workspace_id: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()

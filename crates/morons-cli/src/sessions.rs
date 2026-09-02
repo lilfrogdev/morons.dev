@@ -166,7 +166,6 @@ fn write_application_error(
         ApplicationError::CredentialMutationNotApplied => {
             formatter.write_str("OpenCode credential update was not applied")
         }
-        ApplicationError::WorkspaceBusy => formatter.write_str("session workspace is busy"),
         ApplicationError::WorkspaceBlocked => formatter.write_str("session workspace is blocked"),
         ApplicationError::ResourceLimit {
             resource: ResourceLimit::Sessions,
