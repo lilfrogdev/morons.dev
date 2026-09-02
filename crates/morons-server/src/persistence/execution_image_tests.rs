@@ -55,13 +55,11 @@ async fn execution_image_is_private_idempotent_durable_and_replaceable() {
     assert!(!content.join("cargo/config.toml").exists());
     assert!(!content.join("cargo/registry/.git").exists());
 
+    let changed_toolchain = format!("{}-changed", first.toolchain_path());
+    let changed_cargo = format!("{}-changed", first.cargo_path());
     drop(first);
     let retry = store
-        .provision_execution_image(
-            request_id,
-            "/source/no-longer-present/toolchain".to_owned(),
-            "/source/no-longer-present/cargo".to_owned(),
-        )
+        .provision_execution_image(request_id, changed_toolchain, changed_cargo)
         .await
         .expect_err("a retry with changed path bytes should conflict");
     assert!(matches!(retry, PersistenceError::RequestConflict));
