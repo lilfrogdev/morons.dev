@@ -4,6 +4,7 @@ use std::{
     fs,
     io::Write,
     net::{SocketAddr, TcpListener, TcpStream},
+    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Mutex, MutexGuard},
@@ -15,6 +16,8 @@ use morons_sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxLimits, SandboxRequest, SandboxStatus, read_result,
     write_request,
 };
+
+const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
 static SANDBOX_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -280,6 +283,7 @@ fn helper() -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_morons-sandbox"))
         .env_clear()
         .env("MORONS_SECRET_SENTINEL", "must-not-cross")
+        .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
