@@ -26,6 +26,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_server_stop_facts(connection)?;
     validate_repository_import_facts(connection)?;
     validate_execution_image_facts(connection)?;
+    validate_worktree_generation_facts(connection)?;
     validate_run_canonical_facts(connection)?;
     validate_tool_facts(connection)?;
     validate_logical_sequences(connection)?;
@@ -497,6 +498,54 @@ fn validate_execution_image_facts(connection: &Connection) -> Result<(), Persist
                 reason: "an execution image request has invalid canonical input",
             });
         }
+    }
+    Ok(())
+}
+
+fn validate_worktree_generation_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM workspace_generation_layouts AS layout
+            JOIN repository_import_requests AS request
+              ON request.request_id = layout.import_request_id
+            WHERE layout.workspace_id IS NOT request.workspace_id
+               OR layout.session_id IS NOT request.session_id
+               OR (layout.state = 2 AND request.state != 2)
+               OR (layout.state = 2 AND (
+                    (SELECT COUNT(*) FROM worktree_generation_facts AS fact
+                     WHERE fact.generation_id = layout.generation_id
+                       AND fact.workspace_id = layout.workspace_id
+                       AND fact.session_id = layout.session_id
+                       AND fact.operation_id = layout.operation_id
+                       AND fact.publication_kind = 1
+                       AND fact.file_count = layout.file_count
+                       AND fact.directory_count = layout.directory_count
+                       AND fact.logical_bytes = layout.logical_bytes
+                       AND fact.manifest_digest IS layout.manifest_digest) != 1
+                    OR (SELECT COUNT(*) FROM active_worktree_generations AS active
+                        WHERE active.workspace_id = layout.workspace_id
+                          AND active.session_id = layout.session_id
+                          AND active.generation_id = layout.generation_id) != 1
+               ))
+               OR (layout.state != 2 AND EXISTS (
+                    SELECT 1 FROM active_worktree_generations AS active
+                    WHERE active.workspace_id = layout.workspace_id
+               ))
+            UNION ALL
+            SELECT 1 FROM active_worktree_generations AS active
+            JOIN worktree_generation_facts AS fact
+              ON fact.generation_id = active.generation_id
+            WHERE fact.workspace_id IS NOT active.workspace_id
+               OR fact.session_id IS NOT active.session_id
+               OR fact.fact_sequence IS NOT active.updated_sequence
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "worktree generation facts conflict with the active pointer",
+        });
     }
     Ok(())
 }
@@ -1213,6 +1262,7 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
             UNION ALL SELECT fact_sequence FROM run_cancellation_requests
             UNION ALL SELECT fact_sequence FROM provider_operation_facts
             UNION ALL SELECT audit_sequence FROM run_audit_facts
+            UNION ALL SELECT fact_sequence FROM worktree_generation_facts
          )
          SELECT EXISTS (
             SELECT 1 FROM canonical_sequences

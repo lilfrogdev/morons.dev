@@ -514,12 +514,19 @@ async fn structured_tool_loop_reads_edits_and_finishes_from_durable_results() {
     assert!(requests[2].contains("\"name\":\"edit_file\""));
     assert!(requests[2].contains("file_edited"));
 
-    let workspace = root
+    let generations = root
         .path()
         .join("workspaces")
         .join(hex_identifier(&session.workspace_id))
         .join("repository")
-        .join("worktree");
+        .join("generations");
+    let workspace = fs::read_dir(generations)
+        .expect("generations should be readable")
+        .next()
+        .expect("one generation should exist")
+        .expect("generation entry should be readable")
+        .path()
+        .join("content");
     assert_eq!(
         fs::read_to_string(workspace.join("note.txt")).expect("worktree file should exist"),
         "after\n"

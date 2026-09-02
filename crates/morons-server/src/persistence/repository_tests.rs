@@ -62,7 +62,10 @@ async fn repository_import_is_isolated_idempotent_and_durable() {
         .join(encode_hex(&session.workspace_id))
         .join("repository");
     let baseline = repository.join("baseline");
-    let worktree = repository.join("worktree");
+    let worktree = store
+        .active_worktree_path(session.workspace_id)
+        .await
+        .expect("active worktree should resolve");
     assert_eq!(
         fs::read(baseline.join("nested").join("main.rs")).expect("baseline should be readable"),
         b"fn main() {}\n"
@@ -172,6 +175,122 @@ async fn repository_import_is_isolated_idempotent_and_durable() {
         .await
         .expect("durable snapshot should load");
     assert_eq!(durable.workspace, workspace);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn legacy_worktree_layout_migrates_to_an_active_generation() {
+    let application = TestRoot::new("legacy-worktree-layout-app");
+    let source = TestRoot::new("legacy-worktree-layout-source");
+    fs::write(source.path().join("legacy.txt"), b"legacy\n").expect("source should be written");
+    let store = Arc::new(SessionStore::open_at(application.path()).expect("store should open"));
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x71; 16]), None)
+        .await
+        .expect("session should be created");
+    store
+        .import_repository(
+            MutationRequestId::from_bytes([0x72; 16]),
+            session.id,
+            source.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("repository should import");
+    drop(store);
+
+    let database_path = application.path().join("data/sessions.sqlite3");
+    let connection = rusqlite::Connection::open(&database_path).expect("database should open");
+    let fixture = connection
+        .query_row(
+            "SELECT request.request_id, request.operation_id, layout.generation_id,
+                    request.file_count, request.directory_count,
+                    request.logical_bytes, request.manifest_digest
+             FROM repository_import_requests AS request
+             JOIN workspace_generation_layouts AS layout
+               ON layout.import_request_id = request.request_id
+             WHERE request.session_id = ?1",
+            [&session.id.as_bytes()[..]],
+            |row| {
+                Ok(LegacyGenerationFixture {
+                    request_id: row.get(0)?,
+                    import_operation: row.get(1)?,
+                    generation_id: row.get(2)?,
+                    file_count: row.get(3)?,
+                    directory_count: row.get(4)?,
+                    logical_bytes: row.get(5)?,
+                    manifest: row.get(6)?,
+                })
+            },
+        )
+        .expect("generation state should load");
+    connection
+        .execute("DELETE FROM active_worktree_generations", [])
+        .expect("active pointer should be removed");
+    connection
+        .execute("DELETE FROM worktree_generation_facts", [])
+        .expect("generation fact should be removed");
+    connection
+        .execute(
+            "UPDATE workspace_generation_layouts
+             SET state = 0, file_count = NULL, directory_count = NULL,
+                 logical_bytes = NULL, manifest_digest = NULL
+             WHERE import_request_id = ?1",
+            [&fixture.request_id[..]],
+        )
+        .expect("layout should become legacy-pending");
+    drop(connection);
+
+    let repository = application
+        .path()
+        .join("workspaces")
+        .join(encode_hex(&session.workspace_id))
+        .join("repository");
+    let generation = repository
+        .join("generations")
+        .join(encode_hex(&fixture.generation_id));
+    fs::remove_file(generation.join("generation-metadata"))
+        .expect("generation metadata should be removed");
+    fs::rename(generation.join("content"), repository.join("worktree"))
+        .expect("content should return to legacy layout");
+    fs::remove_dir(generation).expect("generation directory should be removed");
+    fs::remove_dir(repository.join("generations")).expect("generations root should be removed");
+    let mut legacy = Vec::new();
+    legacy.extend_from_slice(b"morons.dev/repository-import/v1\0");
+    legacy.extend_from_slice(&session.workspace_id);
+    legacy.extend_from_slice(&fixture.import_operation);
+    legacy.extend_from_slice(
+        &u64::try_from(fixture.file_count)
+            .expect("file count")
+            .to_be_bytes(),
+    );
+    legacy.extend_from_slice(
+        &u64::try_from(fixture.directory_count)
+            .expect("directory count")
+            .to_be_bytes(),
+    );
+    legacy.extend_from_slice(
+        &u64::try_from(fixture.logical_bytes)
+            .expect("logical bytes")
+            .to_be_bytes(),
+    );
+    legacy.extend_from_slice(&fixture.manifest);
+    fs::write(repository.join("import-metadata"), legacy)
+        .expect("legacy metadata should be restored");
+
+    let reopened = SessionStore::open_at(application.path()).expect("layout should migrate");
+    let active = reopened
+        .active_worktree_path(session.workspace_id)
+        .await
+        .expect("active generation should resolve");
+    assert_eq!(
+        fs::read(active.join("legacy.txt")).expect("migrated file should be readable"),
+        b"legacy\n"
+    );
+    assert!(!repository.join("worktree").exists());
+    assert!(
+        fs::read(repository.join("import-metadata"))
+            .expect("metadata should be readable")
+            .starts_with(b"morons.dev/repository-import/v2\0")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -493,6 +612,16 @@ async fn startup_finishes_a_published_dispatched_import_without_source_access() 
         .await
         .expect("workspace summary should load");
     assert_eq!(workspace.state, WorkspaceState::Ready);
+}
+
+struct LegacyGenerationFixture {
+    request_id: [u8; 16],
+    import_operation: [u8; 16],
+    generation_id: [u8; 16],
+    file_count: i64,
+    directory_count: i64,
+    logical_bytes: i64,
+    manifest: [u8; 32],
 }
 
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {

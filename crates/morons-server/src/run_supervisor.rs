@@ -367,7 +367,7 @@ impl RunSupervisor {
         calls: Vec<crate::persistence::CommittedToolCall>,
         cancellation: &ProviderCancellation,
     ) -> Result<bool, PersistenceError> {
-        let root = self.sessions.worktree_path(&workspace_id);
+        let root = self.sessions.active_worktree_path(workspace_id).await?;
         for call in calls {
             let prepare_root = root.clone();
             let prepare_input = call.input.clone();

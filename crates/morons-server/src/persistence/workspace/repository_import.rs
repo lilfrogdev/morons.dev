@@ -16,20 +16,27 @@ use sha2::{Digest, Sha256};
 
 use crate::persistence::{
     PersistenceError, PersistenceResourceLimit, RepositoryImportOutcome, RepositoryImportPlan,
+    WorktreeLayoutPlan,
 };
 
 use super::{StoragePaths, validate_workspace_identity};
 use crate::persistence::paths::{
-    create_private_file, ensure_private_directory, path_entry_exists, sync_directory,
+    create_private_file, encode_hex, ensure_private_directory, path_entry_exists, sync_directory,
     validate_private_directory, validate_private_file,
 };
 
 const REPOSITORY_DIRECTORY_NAME: &str = "repository";
 const BASELINE_DIRECTORY_NAME: &str = "baseline";
-const WORKTREE_DIRECTORY_NAME: &str = "worktree";
+const LEGACY_WORKTREE_DIRECTORY_NAME: &str = "worktree";
+const GENERATIONS_DIRECTORY_NAME: &str = "generations";
+const GENERATION_CONTENT_DIRECTORY_NAME: &str = "content";
+const GENERATION_METADATA_FILE_NAME: &str = "generation-metadata";
 const IMPORT_METADATA_FILE_NAME: &str = "import-metadata";
+const IMPORT_METADATA_UPGRADE_FILE_NAME: &str = ".import-metadata-upgrading";
 const STAGING_PREFIX: &str = ".repository-importing-";
-const METADATA_CONTEXT: &[u8] = b"morons.dev/repository-import/v1\0";
+const METADATA_CONTEXT: &[u8] = b"morons.dev/repository-import/v2\0";
+const LEGACY_METADATA_CONTEXT: &[u8] = b"morons.dev/repository-import/v1\0";
+const GENERATION_METADATA_CONTEXT: &[u8] = b"morons.dev/worktree-generation/v1\0";
 const MANIFEST_CONTEXT: &[u8] = b"morons.dev/repository-manifest/v1\0";
 const MAX_PATH_DEPTH: usize = 64;
 const MAX_RELATIVE_PATH_BYTES: usize = 4096;
@@ -43,7 +50,10 @@ const WINDOWS_DIRECTORY_ATTRIBUTE: u32 = 0x10;
 const WINDOWS_REPARSE_ATTRIBUTE: u32 = 0x400;
 #[cfg(windows)]
 const WINDOWS_STRUCTURAL_ATTRIBUTES: u32 = WINDOWS_DIRECTORY_ATTRIBUTE | WINDOWS_REPARSE_ATTRIBUTE;
-const METADATA_BYTES: usize = METADATA_CONTEXT.len() + 16 + 16 + 8 + 8 + 8 + 32;
+const METADATA_BYTES: usize = METADATA_CONTEXT.len() + 16 + 16 + 16 + 8 + 8 + 8 + 32;
+const LEGACY_METADATA_BYTES: usize = LEGACY_METADATA_CONTEXT.len() + 16 + 16 + 8 + 8 + 8 + 32;
+const GENERATION_METADATA_BYTES: usize =
+    GENERATION_METADATA_CONTEXT.len() + 16 + 16 + 8 + 8 + 8 + 32;
 
 pub(crate) enum RepositoryRecovery {
     Complete(RepositoryImportOutcome),
@@ -51,7 +61,88 @@ pub(crate) enum RepositoryRecovery {
     Blocked,
 }
 
+pub(crate) enum WorktreeLayoutRecovery {
+    Complete(RepositoryImportOutcome),
+    Blocked,
+}
+
 impl StoragePaths {
+    pub(crate) fn migrate_worktree_layout(
+        &self,
+        plan: WorktreeLayoutPlan,
+    ) -> Result<WorktreeLayoutRecovery, PersistenceError> {
+        let repository = self
+            .workspace_path(&plan.workspace_id)
+            .join(REPOSITORY_DIRECTORY_NAME);
+        validate_private_directory(&repository)?;
+        let legacy = repository.join(LEGACY_WORKTREE_DIRECTORY_NAME);
+        let generations = repository.join(GENERATIONS_DIRECTORY_NAME);
+        let generation = generations.join(encode_hex(&plan.generation_id));
+        let content = generation.join(GENERATION_CONTENT_DIRECTORY_NAME);
+        let final_exists = path_entry_exists(&content)?;
+        let legacy_exists = path_entry_exists(&legacy)?;
+        if final_exists {
+            validate_private_directory(&generations)?;
+            validate_private_directory(&generation)?;
+            validate_private_directory(&content)?;
+            let outcome = scan_baseline_tree(&content)?;
+            let metadata = generation.join(GENERATION_METADATA_FILE_NAME);
+            if path_entry_exists(&metadata)? {
+                if read_generation_metadata(&generation, &plan.workspace_id, &plan.generation_id)?
+                    != outcome
+                {
+                    return Ok(WorktreeLayoutRecovery::Blocked);
+                }
+            } else {
+                write_generation_metadata(
+                    &generation,
+                    &plan.workspace_id,
+                    &plan.generation_id,
+                    outcome,
+                )?;
+                sync_directory(&generation)?;
+            }
+            upgrade_import_metadata(&repository, &plan, outcome)?;
+            return Ok(WorktreeLayoutRecovery::Complete(outcome));
+        }
+        if !legacy_exists || path_entry_exists(&generations)? {
+            return Ok(WorktreeLayoutRecovery::Blocked);
+        }
+        validate_private_directory(&legacy)?;
+        ensure_private_directory(&generations)?;
+        ensure_private_directory(&generation)?;
+        fs::rename(&legacy, &content)?;
+        sync_directory(&generation)?;
+        let outcome = scan_baseline_tree(&content)?;
+        write_generation_metadata(
+            &generation,
+            &plan.workspace_id,
+            &plan.generation_id,
+            outcome,
+        )?;
+        sync_directory(&generation)?;
+        sync_directory(&generations)?;
+        upgrade_import_metadata(&repository, &plan, outcome)?;
+        sync_directory(&repository)?;
+        Ok(WorktreeLayoutRecovery::Complete(outcome))
+    }
+
+    pub(crate) fn cleanup_legacy_worktree(
+        &self,
+        workspace_id: &[u8; 16],
+    ) -> Result<(), PersistenceError> {
+        let repository = self
+            .workspace_path(workspace_id)
+            .join(REPOSITORY_DIRECTORY_NAME);
+        let legacy = repository.join(LEGACY_WORKTREE_DIRECTORY_NAME);
+        if path_entry_exists(&legacy)? {
+            validate_private_directory(&legacy)?;
+            fs::remove_dir_all(&legacy)?;
+            sync_directory(&repository)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn import_repository(
         &self,
         plan: RepositoryImportPlan,
@@ -69,10 +160,22 @@ impl StoragePaths {
 
         ensure_private_directory(&staging)?;
         let baseline = staging.join(BASELINE_DIRECTORY_NAME);
-        let worktree = staging.join(WORKTREE_DIRECTORY_NAME);
+        let generations = staging.join(GENERATIONS_DIRECTORY_NAME);
+        let generation = generations.join(encode_hex(&plan.generation_id));
+        let worktree = generation.join(GENERATION_CONTENT_DIRECTORY_NAME);
         ensure_private_directory(&baseline)?;
+        ensure_private_directory(&generations)?;
+        ensure_private_directory(&generation)?;
         ensure_private_directory(&worktree)?;
         let result = copy_repository_tree(&source, &baseline, &worktree).and_then(|outcome| {
+            write_generation_metadata(
+                &generation,
+                &plan.workspace_id,
+                &plan.generation_id,
+                outcome,
+            )?;
+            sync_directory(&generation)?;
+            sync_directory(&generations)?;
             write_import_metadata(&staging, &plan, outcome)?;
             sync_directory(&staging)?;
             fs::rename(&staging, &final_path)?;
@@ -104,11 +207,17 @@ impl StoragePaths {
         validate_private_directory(&repository)?;
         let metadata = read_import_metadata(&repository, &plan)?;
         let baseline = repository.join(BASELINE_DIRECTORY_NAME);
-        let worktree = repository.join(WORKTREE_DIRECTORY_NAME);
+        let generation = repository
+            .join(GENERATIONS_DIRECTORY_NAME)
+            .join(encode_hex(&plan.generation_id));
+        let worktree = generation.join(GENERATION_CONTENT_DIRECTORY_NAME);
         validate_private_directory(&baseline)?;
+        validate_private_directory(&generation)?;
         validate_private_directory(&worktree)?;
         let actual = scan_baseline_tree(&baseline)?;
-        if metadata != expected || actual != expected {
+        let generation_metadata =
+            read_generation_metadata(&generation, &plan.workspace_id, &plan.generation_id)?;
+        if metadata != expected || actual != expected || generation_metadata != expected {
             return Err(invalid_repository());
         }
         Ok(())
@@ -515,9 +624,16 @@ fn validate_repository_directory(
     validate_private_directory(repository)?;
     let expected = read_import_metadata(repository, plan)?;
     let baseline = repository.join(BASELINE_DIRECTORY_NAME);
-    let worktree = repository.join(WORKTREE_DIRECTORY_NAME);
+    let generation = repository
+        .join(GENERATIONS_DIRECTORY_NAME)
+        .join(encode_hex(&plan.generation_id));
+    let worktree = generation.join(GENERATION_CONTENT_DIRECTORY_NAME);
     validate_private_directory(&baseline)?;
+    validate_private_directory(&generation)?;
     validate_private_directory(&worktree)?;
+    if read_generation_metadata(&generation, &plan.workspace_id, &plan.generation_id)? != expected {
+        return Err(invalid_repository());
+    }
     let actual = scan_repository_pair(&baseline, &worktree)?;
     if actual != expected {
         return Err(PersistenceError::InvalidState {
@@ -684,23 +800,131 @@ fn hash_file(path: &Path) -> Result<([u8; 32], u64), PersistenceError> {
     Ok((digest.finalize().into(), size))
 }
 
-fn write_import_metadata(
-    repository: &Path,
-    plan: &RepositoryImportPlan,
+fn write_generation_metadata(
+    generation: &Path,
+    workspace_id: &[u8; 16],
+    generation_id: &[u8; 16],
     outcome: RepositoryImportOutcome,
 ) -> Result<(), PersistenceError> {
-    let path = repository.join(IMPORT_METADATA_FILE_NAME);
+    let path = generation.join(GENERATION_METADATA_FILE_NAME);
     let mut file = create_private_file(&path)?;
-    file.write_all(METADATA_CONTEXT)?;
-    file.write_all(&plan.workspace_id)?;
-    file.write_all(&plan.operation_id)?;
+    file.write_all(GENERATION_METADATA_CONTEXT)?;
+    file.write_all(workspace_id)?;
+    file.write_all(generation_id)?;
     file.write_all(&outcome.file_count.to_be_bytes())?;
     file.write_all(&outcome.directory_count.to_be_bytes())?;
     file.write_all(&outcome.logical_bytes.to_be_bytes())?;
     file.write_all(&outcome.manifest_digest)?;
     file.sync_all()?;
-    validate_private_file(&path, Some(METADATA_BYTES as u64))?;
+    validate_private_file(&path, Some(GENERATION_METADATA_BYTES as u64))?;
     Ok(())
+}
+
+fn read_generation_metadata(
+    generation: &Path,
+    workspace_id: &[u8; 16],
+    generation_id: &[u8; 16],
+) -> Result<RepositoryImportOutcome, PersistenceError> {
+    let path = generation.join(GENERATION_METADATA_FILE_NAME);
+    validate_private_file(&path, Some(GENERATION_METADATA_BYTES as u64))?;
+    let mut bytes = vec![0_u8; GENERATION_METADATA_BYTES];
+    File::open(path)?.read_exact(&mut bytes)?;
+    let mut offset = GENERATION_METADATA_CONTEXT.len();
+    if &bytes[..offset] != GENERATION_METADATA_CONTEXT
+        || bytes[offset..offset + 16] != *workspace_id
+        || bytes[offset + 16..offset + 32] != *generation_id
+    {
+        return Err(invalid_repository());
+    }
+    offset += 32;
+    let file_count = take_u64(&bytes, &mut offset)?;
+    let directory_count = take_u64(&bytes, &mut offset)?;
+    let logical_bytes = take_u64(&bytes, &mut offset)?;
+    let manifest_digest = bytes[offset..offset + 32]
+        .try_into()
+        .map_err(|_| invalid_repository())?;
+    Ok(RepositoryImportOutcome {
+        file_count,
+        directory_count,
+        logical_bytes,
+        manifest_digest,
+    })
+}
+
+fn write_import_metadata(
+    repository: &Path,
+    plan: &RepositoryImportPlan,
+    outcome: RepositoryImportOutcome,
+) -> Result<(), PersistenceError> {
+    write_import_metadata_at(&repository.join(IMPORT_METADATA_FILE_NAME), plan, outcome)
+}
+
+fn write_import_metadata_at(
+    path: &Path,
+    plan: &RepositoryImportPlan,
+    outcome: RepositoryImportOutcome,
+) -> Result<(), PersistenceError> {
+    let mut file = create_private_file(path)?;
+    file.write_all(METADATA_CONTEXT)?;
+    file.write_all(&plan.workspace_id)?;
+    file.write_all(&plan.operation_id)?;
+    file.write_all(&plan.generation_id)?;
+    file.write_all(&outcome.file_count.to_be_bytes())?;
+    file.write_all(&outcome.directory_count.to_be_bytes())?;
+    file.write_all(&outcome.logical_bytes.to_be_bytes())?;
+    file.write_all(&outcome.manifest_digest)?;
+    file.sync_all()?;
+    validate_private_file(path, Some(METADATA_BYTES as u64))?;
+    Ok(())
+}
+
+fn upgrade_import_metadata(
+    repository: &Path,
+    layout: &WorktreeLayoutPlan,
+    outcome: RepositoryImportOutcome,
+) -> Result<(), PersistenceError> {
+    let import_plan = RepositoryImportPlan {
+        request_id: crate::persistence::MutationRequestId::from_bytes([0; 16]),
+        session_id: layout.session_id,
+        workspace_id: layout.workspace_id,
+        operation_id: read_legacy_import_operation_id(repository)?,
+        generation_id: layout.generation_id,
+        state: 2,
+    };
+    let current = read_import_metadata(repository, &import_plan)?;
+    if current != outcome {
+        return Err(invalid_repository());
+    }
+    let path = repository.join(IMPORT_METADATA_FILE_NAME);
+    if fs::symlink_metadata(&path)?.len() == METADATA_BYTES as u64 {
+        return Ok(());
+    }
+    let temporary = repository.join(IMPORT_METADATA_UPGRADE_FILE_NAME);
+    if path_entry_exists(&temporary)? {
+        validate_private_file(&temporary, None)?;
+        fs::remove_file(&temporary)?;
+    }
+    write_import_metadata_at(&temporary, &import_plan, outcome)?;
+    fs::rename(&temporary, &path)?;
+    sync_directory(repository)?;
+    Ok(())
+}
+
+fn read_legacy_import_operation_id(repository: &Path) -> Result<[u8; 16], PersistenceError> {
+    let path = repository.join(IMPORT_METADATA_FILE_NAME);
+    validate_private_file(&path, None)?;
+    let mut prefix = vec![0_u8; LEGACY_METADATA_CONTEXT.len() + 32];
+    File::open(path)?.read_exact(&mut prefix)?;
+    let context_length = if prefix.starts_with(LEGACY_METADATA_CONTEXT) {
+        LEGACY_METADATA_CONTEXT.len()
+    } else if prefix.starts_with(METADATA_CONTEXT) {
+        METADATA_CONTEXT.len()
+    } else {
+        return Err(invalid_repository());
+    };
+    prefix[context_length + 16..context_length + 32]
+        .try_into()
+        .map_err(|_| invalid_repository())
 }
 
 fn read_import_metadata(
@@ -708,17 +932,29 @@ fn read_import_metadata(
     plan: &RepositoryImportPlan,
 ) -> Result<RepositoryImportOutcome, PersistenceError> {
     let path = repository.join(IMPORT_METADATA_FILE_NAME);
-    validate_private_file(&path, Some(METADATA_BYTES as u64))?;
-    let mut bytes = vec![0_u8; METADATA_BYTES];
+    validate_private_file(&path, None)?;
+    let length =
+        usize::try_from(fs::symlink_metadata(&path)?.len()).map_err(|_| invalid_repository())?;
+    if length != METADATA_BYTES && length != LEGACY_METADATA_BYTES {
+        return Err(invalid_repository());
+    }
+    let mut bytes = vec![0_u8; length];
     File::open(path)?.read_exact(&mut bytes)?;
-    let mut offset = METADATA_CONTEXT.len();
-    if &bytes[..offset] != METADATA_CONTEXT
+    let legacy = length == LEGACY_METADATA_BYTES;
+    let context = if legacy {
+        LEGACY_METADATA_CONTEXT
+    } else {
+        METADATA_CONTEXT
+    };
+    let mut offset = context.len();
+    if &bytes[..offset] != context
         || bytes[offset..offset + 16] != plan.workspace_id
         || bytes[offset + 16..offset + 32] != plan.operation_id
+        || (!legacy && bytes[offset + 32..offset + 48] != plan.generation_id)
     {
         return Err(invalid_repository());
     }
-    offset += 32;
+    offset += if legacy { 32 } else { 48 };
     let file_count = take_u64(&bytes, &mut offset)?;
     let directory_count = take_u64(&bytes, &mut offset)?;
     let logical_bytes = take_u64(&bytes, &mut offset)?;

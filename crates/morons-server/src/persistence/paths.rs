@@ -110,10 +110,16 @@ impl StoragePaths {
         self.workspace_directory.join(encode_hex(workspace_id))
     }
 
-    pub(crate) fn worktree_path(&self, workspace_id: &[u8; IDENTIFIER_BYTES]) -> PathBuf {
+    pub(crate) fn worktree_generation_path(
+        &self,
+        workspace_id: &[u8; IDENTIFIER_BYTES],
+        generation_id: &[u8; IDENTIFIER_BYTES],
+    ) -> PathBuf {
         self.workspace_path(workspace_id)
             .join("repository")
-            .join("worktree")
+            .join("generations")
+            .join(encode_hex(generation_id))
+            .join("content")
     }
 
     pub(crate) fn database_exists(&self) -> Result<bool, PathError> {

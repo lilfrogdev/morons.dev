@@ -557,8 +557,12 @@ impl Backend {
                         reason: "an incomplete mutating tool operation is missing its recovery plan",
                     },
                 )?;
-                WorktreeToolExecutor::new(self.paths.worktree_path(&operation.workspace_id))
-                    .recover_mutation(plan)
+                let generation_id = self.active_worktree_generation(&operation.workspace_id)?;
+                WorktreeToolExecutor::new(
+                    self.paths
+                        .worktree_generation_path(&operation.workspace_id, &generation_id),
+                )
+                .recover_mutation(plan)
             } else if operation.dispatched {
                 ToolResult::error(ToolErrorKind::Interrupted)
             } else {

@@ -43,6 +43,7 @@ pub use self::{
 
 pub(crate) use self::types::{
     ExecutionImageOutcome, ExecutionImagePlan, RepositoryImportOutcome, RepositoryImportPlan,
+    WorktreeLayoutPlan,
 };
 
 pub(crate) use self::run_types::{
@@ -360,8 +361,24 @@ impl SessionStore {
         self.event_notifications.subscribe()
     }
 
-    pub(crate) fn worktree_path(&self, workspace_id: &[u8; 16]) -> std::path::PathBuf {
-        self.paths.worktree_path(workspace_id)
+    pub(crate) async fn active_worktree_path(
+        &self,
+        workspace_id: [u8; 16],
+    ) -> Result<std::path::PathBuf, PersistenceError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::GetActiveWorktreeGeneration {
+                workspace_id,
+                response,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        let generation_id = receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)??;
+        Ok(self
+            .paths
+            .worktree_generation_path(&workspace_id, &generation_id))
     }
 
     fn sender(&self) -> Result<&mpsc::Sender<WorkerRequest>, PersistenceError> {
@@ -412,6 +429,10 @@ enum WorkerRequest {
     },
     GetExecutionImageSummary {
         response: oneshot::Sender<Result<ExecutionImageSummary, PersistenceError>>,
+    },
+    GetActiveWorktreeGeneration {
+        workspace_id: [u8; 16],
+        response: oneshot::Sender<Result<[u8; 16], PersistenceError>>,
     },
     PrepareRepositoryImport {
         request_id: MutationRequestId,
@@ -535,6 +556,12 @@ fn run_worker(
             }
             WorkerRequest::GetExecutionImageSummary { response } => {
                 let _ = response.send(backend.execution_image_summary());
+            }
+            WorkerRequest::GetActiveWorktreeGeneration {
+                workspace_id,
+                response,
+            } => {
+                let _ = response.send(backend.active_worktree_generation(&workspace_id));
             }
             WorkerRequest::PrepareRepositoryImport {
                 request_id,

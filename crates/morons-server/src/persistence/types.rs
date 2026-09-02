@@ -206,6 +206,7 @@ pub(crate) struct RepositoryImportPlan {
     pub session_id: SessionId,
     pub workspace_id: [u8; IDENTIFIER_BYTES],
     pub operation_id: [u8; IDENTIFIER_BYTES],
+    pub generation_id: [u8; IDENTIFIER_BYTES],
     pub state: u8,
 }
 
@@ -215,6 +216,15 @@ pub(crate) struct RepositoryImportOutcome {
     pub directory_count: u64,
     pub logical_bytes: u64,
     pub manifest_digest: [u8; REQUEST_FINGERPRINT_BYTES],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorktreeLayoutPlan {
+    pub session_id: SessionId,
+    pub workspace_id: [u8; IDENTIFIER_BYTES],
+    pub generation_id: [u8; IDENTIFIER_BYTES],
+    pub operation_id: [u8; IDENTIFIER_BYTES],
+    pub state: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

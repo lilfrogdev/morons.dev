@@ -628,7 +628,10 @@ async fn startup_proves_published_mutation_without_replaying_it() {
             .await
             .expect("tool call should commit");
         let call = &committed.calls[0];
-        let worktree = store.worktree_path(&session.workspace_id);
+        let worktree = store
+            .active_worktree_path(session.workspace_id)
+            .await
+            .expect("active worktree should resolve");
         let ToolExecution::Mutation(prepared) = WorktreeToolExecutor::new(worktree.clone())
             .prepare(call.input.clone(), *call.operation_id.as_bytes(), &|| false)
         else {
@@ -662,8 +665,14 @@ async fn startup_proves_published_mutation_without_replaying_it() {
         .expect("run should exist");
     assert_eq!(run.state, RunState::Interrupted);
     assert_eq!(
-        fs::read_to_string(reopened.worktree_path(&workspace_id).join("recovered.txt"))
-            .expect("published file should remain"),
+        fs::read_to_string(
+            reopened
+                .active_worktree_path(workspace_id)
+                .await
+                .expect("active worktree should resolve")
+                .join("recovered.txt"),
+        )
+        .expect("published file should remain"),
         "published once\n"
     );
     let mut cursor = None;
@@ -776,7 +785,10 @@ async fn uncertain_tool_effect_blocks_until_exact_acknowledgement() {
         .expect("tool call should commit");
     let call = &committed.calls[0];
     let ToolExecution::Mutation(prepared) = WorktreeToolExecutor::new(
-        store.worktree_path(&session.workspace_id),
+        store
+            .active_worktree_path(session.workspace_id)
+            .await
+            .expect("active worktree should resolve"),
     )
     .prepare(call.input.clone(), *call.operation_id.as_bytes(), &|| false) else {
         panic!("uncertain mutation should prepare");
