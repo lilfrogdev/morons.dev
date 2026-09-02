@@ -300,11 +300,11 @@ impl Backend {
                     && matches!(
                         (run.tool_catalog_version, run.tool_limits_version),
                         (
-                            crate::tools::STRUCTURED_TOOL_CATALOG_VERSION,
-                            crate::tools::STRUCTURED_TOOL_LIMITS_VERSION
-                        ) | (
                             crate::tools::TOOL_CATALOG_VERSION,
                             crate::tools::TOOL_LIMITS_VERSION
+                        ) | (
+                            crate::tools::LEGACY_SANDBOX_TOOL_CATALOG_VERSION,
+                            crate::tools::LEGACY_SANDBOX_TOOL_LIMITS_VERSION
                         )
                     ));
         if !valid_tool_versions {

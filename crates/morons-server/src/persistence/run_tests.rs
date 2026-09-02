@@ -730,8 +730,13 @@ async fn uncertain_tool_effect_blocks_until_exact_acknowledgement() {
         .expect("run should be accepted");
     assert_eq!(
         accepted.run.tool_catalog_version,
-        crate::tools::STRUCTURED_TOOL_CATALOG_VERSION
+        crate::tools::TOOL_CATALOG_VERSION
     );
+    assert_eq!(
+        accepted.run.tool_limits_version,
+        crate::tools::TOOL_LIMITS_VERSION
+    );
+    assert!(accepted.run.execution_image_generation.is_none());
     store
         .activate_run(accepted.run.id)
         .await

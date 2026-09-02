@@ -1,5 +1,4 @@
 mod backend;
-mod commands;
 mod credentials;
 mod database;
 mod execution_image;
@@ -43,8 +42,8 @@ pub use self::{
 };
 
 pub(crate) use self::types::{
-    CommandResources, ExecutionImageOutcome, ExecutionImagePlan, RepositoryImportOutcome,
-    RepositoryImportPlan, WorktreeLayoutPlan,
+    ExecutionImageOutcome, ExecutionImagePlan, RepositoryImportOutcome, RepositoryImportPlan,
+    WorktreeLayoutPlan,
 };
 
 pub(crate) use self::run_types::{
@@ -435,32 +434,6 @@ enum WorkerRequest {
         workspace_id: [u8; 16],
         response: oneshot::Sender<Result<[u8; 16], PersistenceError>>,
     },
-    GetCommandResources {
-        run_id: RunId,
-        workspace_id: [u8; 16],
-        response: oneshot::Sender<Result<CommandResources, PersistenceError>>,
-    },
-    PrepareCommandOperation {
-        run_id: RunId,
-        call_id: ToolCallId,
-        operation_id: run_types::ToolOperationId,
-        resources: CommandResources,
-        generation_id: [u8; 16],
-        source: RepositoryImportOutcome,
-        response:
-            oneshot::Sender<Result<backend::command_execution::CommandBinding, PersistenceError>>,
-    },
-    CompleteCommandResult {
-        run_id: RunId,
-        call_id: ToolCallId,
-        operation_id: run_types::ToolOperationId,
-        result: crate::tools::ToolResult,
-        publication: Option<(
-            backend::command_execution::CommandBinding,
-            RepositoryImportOutcome,
-        )>,
-        response: oneshot::Sender<Result<TranscriptEntry, PersistenceError>>,
-    },
     PrepareRepositoryImport {
         request_id: MutationRequestId,
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
@@ -589,47 +562,6 @@ fn run_worker(
                 response,
             } => {
                 let _ = response.send(backend.active_worktree_generation(&workspace_id));
-            }
-            WorkerRequest::GetCommandResources {
-                run_id,
-                workspace_id,
-                response,
-            } => {
-                let _ = response.send(backend.command_resources(run_id, &workspace_id));
-            }
-            WorkerRequest::PrepareCommandOperation {
-                run_id,
-                call_id,
-                operation_id,
-                resources,
-                generation_id,
-                source,
-                response,
-            } => {
-                let _ = response.send(backend.prepare_command_operation(
-                    run_id,
-                    call_id,
-                    operation_id,
-                    resources,
-                    generation_id,
-                    source,
-                ));
-            }
-            WorkerRequest::CompleteCommandResult {
-                run_id,
-                call_id,
-                operation_id,
-                result,
-                publication,
-                response,
-            } => {
-                let _ = response.send(backend.complete_command_result(
-                    run_id,
-                    call_id,
-                    operation_id,
-                    result,
-                    publication,
-                ));
             }
             WorkerRequest::PrepareRepositoryImport {
                 request_id,

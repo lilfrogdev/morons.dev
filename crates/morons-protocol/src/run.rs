@@ -290,6 +290,7 @@ pub enum ToolKind {
     EditFile,
     CreateFile,
     CreateDirectory,
+    // Retained for historical transcript compatibility; it is not an offered MVP tool.
     RunCommand,
 }
 

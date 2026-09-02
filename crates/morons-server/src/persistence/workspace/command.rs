@@ -1,101 +1,15 @@
 use std::{ffi::OsStr, fs, path::PathBuf};
 
-use crate::persistence::{PersistenceError, RepositoryImportOutcome};
+use crate::persistence::PersistenceError;
 
-use super::repository_import::{copy_command_tree, write_command_generation_metadata};
 use crate::persistence::paths::{
-    StoragePaths, encode_hex, ensure_private_directory, path_entry_exists, sync_directory,
-    validate_private_directory,
+    StoragePaths, encode_hex, path_entry_exists, sync_directory, validate_private_directory,
 };
 
 const OPERATION_PREFIX: &str = "command-";
 
-pub(crate) struct CommandWorkspace {
-    pub candidate: PathBuf,
-    pub scratch: PathBuf,
-    pub source_outcome: RepositoryImportOutcome,
-}
-
 impl StoragePaths {
-    pub(crate) fn prepare_command_workspace(
-        &self,
-        workspace_id: &[u8; 16],
-        active_generation: &[u8; 16],
-        operation_id: &[u8; 16],
-    ) -> Result<CommandWorkspace, PersistenceError> {
-        let operation_root = self
-            .sandbox_operation_directory
-            .join(format!("{OPERATION_PREFIX}{}", encode_hex(operation_id)));
-        if path_entry_exists(&operation_root)? {
-            return Err(PersistenceError::InvalidState {
-                reason: "command operation staging already exists",
-            });
-        }
-        ensure_private_directory(&operation_root)?;
-        let candidate = operation_root.join("candidate");
-        let mirror = operation_root.join("candidate-mirror");
-        let scratch = operation_root.join("scratch");
-        ensure_private_directory(&candidate)?;
-        ensure_private_directory(&mirror)?;
-        ensure_private_directory(&scratch)?;
-        let active = self.worktree_generation_path(workspace_id, active_generation);
-        let source_outcome = match copy_command_tree(&active, &mirror, &candidate) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                let _ = self.remove_command_workspace(&operation_root);
-                return Err(error);
-            }
-        };
-        sync_directory(&candidate)?;
-        sync_directory(&operation_root)?;
-        Ok(CommandWorkspace {
-            candidate,
-            scratch,
-            source_outcome,
-        })
-    }
-
-    pub(crate) fn publish_command_generation(
-        &self,
-        workspace_id: &[u8; 16],
-        generation_id: &[u8; 16],
-        operation_id: &[u8; 16],
-        candidate: &std::path::Path,
-    ) -> Result<RepositoryImportOutcome, PersistenceError> {
-        let operation_root = self.command_operation_path(operation_id)?;
-        if candidate.parent() != Some(operation_root.as_path())
-            || candidate.file_name() != Some(OsStr::new("candidate"))
-        {
-            return Err(PersistenceError::InvalidState {
-                reason: "command candidate escaped operation staging",
-            });
-        }
-        let generation = operation_root.join("clean-generation");
-        let content = generation.join("content");
-        let mirror = operation_root.join("clean-mirror");
-        ensure_private_directory(&generation)?;
-        ensure_private_directory(&content)?;
-        ensure_private_directory(&mirror)?;
-        let outcome = copy_command_tree(candidate, &mirror, &content)?;
-        write_command_generation_metadata(&generation, workspace_id, generation_id, outcome)?;
-        sync_directory(&content)?;
-        sync_directory(&generation)?;
-        let repository_generations = self
-            .workspace_path(workspace_id)
-            .join("repository")
-            .join("generations");
-        validate_private_directory(&repository_generations)?;
-        let destination = repository_generations.join(encode_hex(generation_id));
-        if path_entry_exists(&destination)? {
-            return Err(PersistenceError::InvalidState {
-                reason: "a command generation destination already exists",
-            });
-        }
-        fs::rename(&generation, &destination)?;
-        sync_directory(&repository_generations)?;
-        Ok(outcome)
-    }
-
+    /// Remove operation state left by the superseded sandbox-command implementation.
     pub(crate) fn validate_sandbox_operations_empty(&self) -> Result<(), PersistenceError> {
         validate_private_directory(&self.sandbox_operation_directory)?;
         if fs::read_dir(&self.sandbox_operation_directory)?
