@@ -224,14 +224,12 @@ fn sandbox_child_background() {
     if !inside_sandbox() {
         return;
     }
-    let powershell = PathBuf::from(std::env::var_os("SYSTEMROOT").expect("fixed system root"))
-        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let mut child = Command::new(powershell)
+    let command = std::env::var_os("ComSpec").expect("fixed command processor");
+    let mut child = Command::new(command)
         .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "Start-Sleep -Seconds 10; [IO.File]::WriteAllText('survived','escaped')",
+            "/D",
+            "/C",
+            "for /L %i in (1,1,100000000) do @rem & echo escaped>survived",
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
