@@ -448,7 +448,7 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn direct_file_tool_loop_reads_edits_and_commits_durable_results() {
+async fn direct_tool_loop_reads_edits_runs_bash_and_commits_durable_results() {
     let root = TestRoot::new("direct-tool-loop");
     let selected = TestRoot::new("direct-tool-directory");
     fs::write(selected.path().join("note.txt"), "before\n")
@@ -495,16 +495,23 @@ async fn direct_file_tool_loop_reads_edits_and_commits_durable_results() {
     );
     provider_task.await.expect("tool provider should finish");
     let requests = requests.await.expect("tool requests should be captured");
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert!(requests[0].contains("\"name\":\"read\""));
     assert!(requests[1].contains("function_call_output"));
     assert!(requests[2].contains("\"name\":\"edit\""));
     assert!(requests[2].contains("edited"));
+    assert!(requests[3].contains("\"name\":\"bash\""));
+    assert!(requests[3].contains("shell stdout"));
     assert!(!requests.iter().any(|request| request.contains("read_file")));
     assert_eq!(
         fs::read_to_string(selected.path().join("note.txt"))
             .expect("selected file should remain readable"),
         "after\n"
+    );
+    assert_eq!(
+        fs::read_to_string(selected.path().join("shell.txt"))
+            .expect("bash output file should remain readable"),
+        "shell"
     );
 
     let mut cursor = None;
@@ -530,7 +537,7 @@ async fn direct_file_tool_loop_reads_edits_and_commits_durable_results() {
         let Some(next) = next_cursor else { break };
         cursor = Some(next);
     }
-    assert_eq!(entries.len(), 6);
+    assert_eq!(entries.len(), 8);
     assert!(matches!(
         entries[1],
         morons_protocol::TranscriptEntry::ToolCall {
@@ -545,7 +552,14 @@ async fn direct_file_tool_loop_reads_edits_and_commits_durable_results() {
             ..
         }
     ));
-    for index in [2, 4] {
+    assert!(matches!(
+        entries[5],
+        morons_protocol::TranscriptEntry::ToolCall {
+            tool: morons_protocol::ToolKind::Bash,
+            ..
+        }
+    ));
+    for index in [2, 4, 6] {
         assert!(matches!(
             entries[index],
             morons_protocol::TranscriptEntry::ToolResult {
@@ -833,6 +847,7 @@ async fn spawn_direct_tool_loop_provider() -> (
         let read_arguments = r#"{"path":"note.txt","offset":1,"limit":20}"#;
         let edit_arguments =
             r#"{"path":"note.txt","replacements":[{"old_text":"before","new_text":"after"}]}"#;
+        let bash_arguments = r#"{"command":"printf shell > shell.txt; printf 'shell stdout'"}"#;
         let outputs = [
             format!(
                 "{{\"id\":\"fc_read\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_read\",\"name\":\"read\",\"arguments\":{}}}",
@@ -841,6 +856,10 @@ async fn spawn_direct_tool_loop_provider() -> (
             format!(
                 "{{\"id\":\"fc_edit\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_edit\",\"name\":\"edit\",\"arguments\":{}}}",
                 serde_json::to_string(edit_arguments).expect("arguments should encode")
+            ),
+            format!(
+                "{{\"id\":\"fc_bash\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_bash\",\"name\":\"bash\",\"arguments\":{}}}",
+                serde_json::to_string(bash_arguments).expect("arguments should encode")
             ),
             "{\"id\":\"msg_final\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"Updated note.txt.\",\"annotations\":[]}] }".to_owned(),
         ];

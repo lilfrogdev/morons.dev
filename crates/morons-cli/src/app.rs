@@ -761,6 +761,7 @@ const fn tool_label(tool: morons_protocol::ToolKind) -> &'static str {
         morons_protocol::ToolKind::Read => "read",
         morons_protocol::ToolKind::Write => "write",
         morons_protocol::ToolKind::Edit => "edit",
+        morons_protocol::ToolKind::Bash => "bash",
     }
 }
 

@@ -1,3 +1,4 @@
+mod bash;
 mod catalog;
 mod direct;
 mod path;
@@ -8,6 +9,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub(crate) use bash::BashToolExecutor;
 pub(crate) use catalog::{
     LEGACY_SANDBOX_TOOL_CATALOG_VERSION, TOOL_CATALOG_VERSION, ToolCallValidationError,
     developer_instruction, parse_provider_calls, provider_tools, validate_canonical_input,
@@ -16,10 +18,12 @@ pub(crate) use direct::DirectToolExecutor;
 pub(crate) use path::{ToolPath, WorktreePath};
 pub(crate) use worktree::recovery_plan_is_valid;
 
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 3;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 4;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
+pub(crate) const MAX_BASH_COMMAND_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_BASH_OUTPUT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_COMMAND_ARGUMENTS: usize = 128;
 pub(crate) const MAX_COMMAND_ARGUMENT_BYTES: usize = 4096;
 pub(crate) const MAX_COMMAND_ARGUMENT_TOTAL_BYTES: usize = 64 * 1024;
@@ -63,6 +67,7 @@ pub(crate) enum ToolKind {
     Read,
     Write,
     Edit,
+    Bash,
 }
 
 impl ToolKind {
@@ -78,6 +83,7 @@ impl ToolKind {
             Self::Read => "read",
             Self::Write => "write",
             Self::Edit => "edit",
+            Self::Bash => "bash",
         }
     }
 
@@ -93,6 +99,7 @@ impl ToolKind {
             Self::Read => 8,
             Self::Write => 9,
             Self::Edit => 10,
+            Self::Bash => 11,
         }
     }
 
@@ -108,6 +115,7 @@ impl ToolKind {
             8 => Some(Self::Read),
             9 => Some(Self::Write),
             10 => Some(Self::Edit),
+            11 => Some(Self::Bash),
             _ => None,
         }
     }
@@ -121,6 +129,7 @@ impl ToolKind {
                 | Self::RunCommand
                 | Self::Write
                 | Self::Edit
+                | Self::Bash
         )
     }
 }
@@ -171,6 +180,9 @@ pub(crate) enum ToolInput {
         path: ToolPath,
         replacements: Vec<TextReplacement>,
     },
+    Bash {
+        command: String,
+    },
 }
 
 impl ToolInput {
@@ -186,10 +198,11 @@ impl ToolInput {
             Self::Read { .. } => ToolKind::Read,
             Self::Write { .. } => ToolKind::Write,
             Self::Edit { .. } => ToolKind::Edit,
+            Self::Bash { .. } => ToolKind::Bash,
         }
     }
 
-    pub(crate) const fn path_text(&self) -> &str {
+    pub(crate) fn path_text(&self) -> &str {
         match self {
             Self::ListDirectory { path, .. }
             | Self::ReadFile { path, .. }
@@ -204,6 +217,7 @@ impl ToolInput {
             Self::Read { path, .. } | Self::Write { path, .. } | Self::Edit { path, .. } => {
                 path.as_str()
             }
+            Self::Bash { command } => command,
         }
     }
 
@@ -268,6 +282,7 @@ impl ToolInput {
                 path: path.as_str(),
                 replacements,
             }),
+            Self::Bash { command } => serde_json::to_string(&BashArguments { command }),
         }
     }
 }
@@ -304,6 +319,11 @@ struct EditArguments<'a> {
     replacements: &'a [TextReplacement],
 }
 
+#[derive(Serialize)]
+struct BashArguments<'a> {
+    command: &'a str,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TextReplacement {
@@ -333,6 +353,9 @@ pub(crate) enum ToolErrorKind {
     ReplacementOverlap,
     AlreadyExists,
     ResourceLimit,
+    OutputLimit,
+    TimedOut,
+    InactivityTimeout,
     Cancelled,
     Interrupted,
     NotDispatched,
@@ -343,22 +366,40 @@ pub(crate) enum ToolErrorKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ToolResult {
-    Ok { output: ToolOutput },
-    Error { error: ToolErrorKind },
+    Ok {
+        output: ToolOutput,
+    },
+    Error {
+        error: ToolErrorKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<ToolOutput>,
+    },
 }
 
 impl ToolResult {
     pub(crate) const fn error(error: ToolErrorKind) -> Self {
-        Self::Error { error }
+        Self::Error {
+            error,
+            output: None,
+        }
+    }
+
+    pub(crate) const fn error_with_output(error: ToolErrorKind, output: ToolOutput) -> Self {
+        Self::Error {
+            error,
+            output: Some(output),
+        }
+    }
+
+    pub(crate) const fn error_kind(&self) -> Option<ToolErrorKind> {
+        match self {
+            Self::Ok { .. } => None,
+            Self::Error { error, .. } => Some(*error),
+        }
     }
 
     pub(crate) const fn is_uncertain(&self) -> bool {
-        matches!(
-            self,
-            Self::Error {
-                error: ToolErrorKind::Uncertain
-            }
-        )
+        matches!(self.error_kind(), Some(ToolErrorKind::Uncertain))
     }
 
     pub(crate) fn provider_output(&self) -> Result<String, serde_json::Error> {
@@ -368,7 +409,14 @@ impl ToolResult {
     pub(crate) fn summary(&self) -> String {
         match self {
             Self::Ok { output } => output.summary(),
-            Self::Error { error } => format!("{} failed: {}", error.tool_label(), error.label()),
+            Self::Error { error, output } => {
+                let mut summary = format!("{} failed: {}", error.tool_label(), error.label());
+                if let Some(output) = output {
+                    summary.push('\n');
+                    summary.push_str(&output.summary());
+                }
+                summary
+            }
         }
     }
 }
@@ -393,6 +441,9 @@ impl ToolErrorKind {
             Self::ReplacementOverlap => "replacement ranges overlap",
             Self::AlreadyExists => "target already exists",
             Self::ResourceLimit => "resource limit reached",
+            Self::OutputLimit => "output limit reached",
+            Self::TimedOut => "wall-clock timeout reached",
+            Self::InactivityTimeout => "inactivity timeout reached",
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
             Self::NotDispatched => "not dispatched",
@@ -460,6 +511,12 @@ pub(crate) enum ToolOutput {
         replacements: u16,
         bytes: u64,
     },
+    Bash {
+        exit_code: Option<i32>,
+        signal: Option<u16>,
+        stdout: String,
+        stderr: String,
+    },
 }
 
 impl ToolOutput {
@@ -475,6 +532,7 @@ impl ToolOutput {
             Self::Read { .. } => ToolKind::Read,
             Self::Written { .. } => ToolKind::Write,
             Self::Edited { .. } => ToolKind::Edit,
+            Self::Bash { .. } => ToolKind::Bash,
         }
     }
 
@@ -529,6 +587,27 @@ impl ToolOutput {
                 bytes,
                 ..
             } => format!("applied {replacements} replacement(s) ({bytes} bytes)"),
+            Self::Bash {
+                exit_code,
+                signal,
+                stdout,
+                stderr,
+            } => {
+                let mut summary = match (exit_code, signal) {
+                    (Some(code), None) => format!("bash exited with code {code}"),
+                    (None, Some(signal)) => format!("bash exited from signal {signal}"),
+                    _ => "bash exit status unavailable".to_owned(),
+                };
+                for (label, output) in [("stdout", stdout), ("stderr", stderr)] {
+                    if !output.is_empty() {
+                        summary.push('\n');
+                        summary.push_str(label);
+                        summary.push_str(":\n");
+                        summary.push_str(output);
+                    }
+                }
+                summary
+            }
             Self::CommandCompleted {
                 executable,
                 exit_code,
@@ -571,7 +650,19 @@ fn bounded_text(value: &str, maximum: usize) -> &str {
 
 pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> bool {
     match result {
-        ToolResult::Error { .. } => true,
+        ToolResult::Error { error, output } => output.as_ref().is_none_or(|output| {
+            tool == ToolKind::Bash
+                && matches!(
+                    error,
+                    ToolErrorKind::OutputLimit
+                        | ToolErrorKind::TimedOut
+                        | ToolErrorKind::InactivityTimeout
+                        | ToolErrorKind::Cancelled
+                        | ToolErrorKind::Uncertain
+                )
+                && output.kind() == ToolKind::Bash
+                && validate_bash_output(output, false)
+        }),
         ToolResult::Ok { output } if output.kind() != tool => false,
         ToolResult::Ok {
             output: ToolOutput::DirectoryPage { path, entries, .. },
@@ -689,6 +780,24 @@ pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> 
                 && stdout.len() <= MAX_COMMAND_OUTPUT_BYTES
                 && stderr.len() <= MAX_COMMAND_OUTPUT_BYTES
         }
+        ToolResult::Ok { output } => validate_bash_output(output, true),
+    }
+}
+
+fn validate_bash_output(output: &ToolOutput, require_exit: bool) -> bool {
+    match output {
+        ToolOutput::Bash {
+            exit_code,
+            signal,
+            stdout,
+            stderr,
+        } => {
+            ((!require_exit && exit_code.is_none() && signal.is_none())
+                || (exit_code.is_some() ^ signal.is_some()))
+                && stdout.len() <= MAX_BASH_OUTPUT_BYTES
+                && stderr.len() <= MAX_BASH_OUTPUT_BYTES
+        }
+        _ => false,
     }
 }
 
