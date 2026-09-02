@@ -151,6 +151,7 @@
 - A process connects to the Internet, loopback, a Unix socket, a Windows named pipe, the Morons endpoint, a package registry, a metadata service, or another host-local service.
 - A descendant escapes its sandbox, process group, PID namespace, AppContainer, or Job Object; signals or inspects the server; creates a new namespace; retains an inherited handle; daemonizes; or survives cancellation and server loss.
 - A Windows process begins before Job assignment, requests breakaway, inherits a host standard or control handle, or leaves an operation SID on a shared image, installation, or trusted root.
+- An untrusted Windows command shares an AppContainer identity or writable namespace with a trusted bootstrap and forges its result, gate, status, cancellation, deadline, output, or process-tree state.
 - A native Windows FFI bug misstates pointer, buffer, handle, ownership, thread, or lifetime requirements and weakens AppContainer, ACL, process-attribute, or Job enforcement.
 - Repository configuration redirects Cargo, a compiler, linker, runner, shell, credential provider, or package manager to a host path or executable outside the execution image.
 - Host environment variables, dynamic-loader settings, proxy state, credential helpers, agents, terminal handles, current directories, or absolute paths enter the sandbox.
@@ -231,8 +232,9 @@
 - Resolve commands only through one bound immutable execution-image generation, a fixed empty environment, structured arguments, a relative candidate working directory, closed standard input, bounded pipes, and an exact packaged one-shot sandbox helper selected without `PATH`, shell, repository, configuration, or model input.
 - Use verified Linux namespaces with Landlock and seccomp, a default-deny macOS Seatbelt profile, or an operation-specific Windows AppContainer and non-breakaway Job Object; fail closed when complete enforcement is unavailable.
 - Confine Windows native FFI to one target-only internal adapter with no public binary or generic launch API, keep unsafe code denied elsewhere, and require documented preconditions for every unsafe block.
-- Create Windows bootstrap processes suspended with an exact capability and handle list, assign the configured Job before resume, use only dedicated standard/control handles, and verify zero active Job members before accepting a result.
-- Apply AppContainer ACLs only to operation-private candidate, cache, runner, and image views so profile deletion and exact staging cleanup remove every operation grant without mutating shared trusted state.
+- Keep Windows supervision and result authority in the outer trusted helper, launch the requested target directly into the AppContainer, and place no trusted bootstrap, result file, gate, or control channel inside the sandbox identity.
+- Create Windows targets suspended with an exact capability and dedicated closed-input and bounded-output handle list, assign the configured Job before resume, and verify zero active Job members before accepting a result.
+- Apply AppContainer ACLs only to operation-private candidate, cache, and image views so profile deletion and exact staging cleanup remove every operation grant without mutating shared trusted state.
 - Deny all command network and host-local service access, inherited terminals and handles, host process inspection and signaling, namespace weakening, privilege changes, and background descendants.
 - Execute commands only against nonauthoritative candidates, copy admissible normal-exit output into a clean synchronized generation, and atomically commit its active pointer with the terminal command result.
 - Discard candidates after cancellation, timeout, resource termination, sandbox failure, helper loss, shutdown, or restart, and never promote command staging during recovery.
