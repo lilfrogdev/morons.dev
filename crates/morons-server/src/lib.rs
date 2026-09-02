@@ -96,6 +96,7 @@ mod tests {
             ApplicationRequest::CreateSession {
                 mutation_request_id: MutationRequestId::from_bytes([0x11; 16]),
                 display_name: None,
+                working_directory: "/projects/example".to_owned(),
             },
         );
         write_client_message(&mut client, &request)

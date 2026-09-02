@@ -31,6 +31,7 @@ fn application_messages_have_stable_json_shapes() {
         ApplicationRequest::CreateSession {
             mutation_request_id: MutationRequestId::from_bytes([0x11; 16]),
             display_name: None,
+            working_directory: "/projects/example".to_owned(),
         },
     );
     let response = ServerMessage::response(
@@ -39,6 +40,7 @@ fn application_messages_have_stable_json_shapes() {
             session: SessionSummary {
                 id: SessionId::from_bytes([0x22; 16]),
                 display_name: None,
+                working_directory: Some("/projects/example".to_owned()),
                 created_at_milliseconds: 42,
             },
         },
@@ -49,6 +51,7 @@ fn application_messages_have_stable_json_shapes() {
         session: SessionSummary {
             id: SessionId::from_bytes([0x23; 16]),
             display_name: Some("Event session".to_owned()),
+            working_directory: Some("/projects/example".to_owned()),
             created_at_milliseconds: 43,
         },
     });
@@ -62,6 +65,7 @@ fn application_messages_have_stable_json_shapes() {
                 "operation": "create_session",
                 "mutation_request_id": "mut_11111111111111111111111111111111",
                 "display_name": null,
+                "working_directory": "/projects/example",
             },
         })
     );
@@ -75,6 +79,7 @@ fn application_messages_have_stable_json_shapes() {
                 "session": {
                     "id": "ses_22222222222222222222222222222222",
                     "display_name": null,
+                    "working_directory": "/projects/example",
                     "created_at_milliseconds": 42,
                 },
             },
@@ -98,6 +103,7 @@ fn application_messages_have_stable_json_shapes() {
                 "session": {
                     "id": "ses_23232323232323232323232323232323",
                     "display_name": "Event session",
+                    "working_directory": "/projects/example",
                     "created_at_milliseconds": 43,
                 },
             },

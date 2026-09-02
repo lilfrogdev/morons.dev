@@ -19,7 +19,8 @@ use self::{
     runs::RunWorkerRequest,
     types::{
         MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE,
-        REQUEST_FINGERPRINT_BYTES, create_session_fingerprint, validate_display_name,
+        REQUEST_FINGERPRINT_BYTES, create_session_with_directory_fingerprint,
+        validate_display_name, validate_working_directory_path,
     },
 };
 
@@ -119,10 +120,27 @@ impl SessionStore {
         })
     }
 
+    #[cfg(test)]
     pub async fn create_session(
         &self,
         request_id: MutationRequestId,
         display_name: Option<String>,
+    ) -> Result<Session, PersistenceError> {
+        let working_directory = std::env::current_dir()?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| PersistenceError::InvalidInput {
+                reason: "the test working directory is not valid UTF-8",
+            })?;
+        self.create_session_at(request_id, display_name, working_directory)
+            .await
+    }
+
+    pub async fn create_session_at(
+        &self,
+        request_id: MutationRequestId,
+        display_name: Option<String>,
+        working_directory: String,
     ) -> Result<Session, PersistenceError> {
         if request_id.is_zero() {
             return Err(PersistenceError::InvalidInput {
@@ -130,13 +148,16 @@ impl SessionStore {
             });
         }
         validate_display_name(display_name.as_deref())?;
-        let fingerprint = create_session_fingerprint(display_name.as_deref());
+        validate_working_directory_path(&working_directory)?;
+        let fingerprint =
+            create_session_with_directory_fingerprint(display_name.as_deref(), &working_directory);
         let (response_sender, response_receiver) = oneshot::channel();
         self.sender()?
             .send(WorkerRequest::CreateSession {
                 request_id,
                 fingerprint,
                 display_name,
+                working_directory,
                 response: response_sender,
             })
             .await
@@ -395,6 +416,7 @@ enum WorkerRequest {
         request_id: MutationRequestId,
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
         display_name: Option<String>,
+        working_directory: String,
         response: oneshot::Sender<Result<Session, PersistenceError>>,
     },
     Run(RunWorkerRequest),
@@ -486,10 +508,15 @@ fn run_worker(
                 request_id,
                 fingerprint,
                 display_name,
+                working_directory,
                 response,
             } => {
-                let _ =
-                    response.send(backend.create_session(request_id, fingerprint, display_name));
+                let _ = response.send(backend.create_session(
+                    request_id,
+                    fingerprint,
+                    display_name,
+                    working_directory,
+                ));
             }
             WorkerRequest::Run(request) => request.execute(&mut backend),
             WorkerRequest::GetActiveWorktreeGeneration {

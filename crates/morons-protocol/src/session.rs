@@ -4,6 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 pub const APPLICATION_IDENTIFIER_BYTES: usize = 16;
 pub const MAX_REPOSITORY_SOURCE_PATH_BYTES: usize = 4096;
+pub const MAX_WORKING_DIRECTORY_PATH_BYTES: usize = 4096;
 const SESSION_LIST_CURSOR_BYTES: usize = 16;
 const SESSION_CATALOG_CURSOR_BYTES: usize = 8;
 const SESSION_EVENT_CURSOR_BYTES: usize = 24;
@@ -234,6 +235,7 @@ pub enum ApplicationRequest {
     CreateSession {
         mutation_request_id: MutationRequestId,
         display_name: Option<String>,
+        working_directory: String,
     },
     GetSession {
         session_id: SessionId,
@@ -304,10 +306,12 @@ impl fmt::Debug for ApplicationRequest {
             Self::CreateSession {
                 mutation_request_id,
                 display_name,
+                working_directory,
             } => formatter
                 .debug_struct("CreateSession")
                 .field("mutation_request_id", mutation_request_id)
                 .field("display_name", display_name)
+                .field("working_directory_bytes", &working_directory.len())
                 .finish(),
             Self::GetSession { session_id } => formatter
                 .debug_struct("GetSession")
@@ -594,6 +598,7 @@ impl fmt::Debug for ApplicationEvent {
 pub struct SessionSummary {
     pub id: SessionId,
     pub display_name: Option<String>,
+    pub working_directory: Option<String>,
     pub created_at_milliseconds: u64,
 }
 

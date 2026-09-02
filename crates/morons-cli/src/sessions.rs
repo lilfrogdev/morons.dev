@@ -2,7 +2,7 @@ mod subscriptions;
 
 pub use subscriptions::{SessionCatalogSubscription, SessionSubscription};
 
-use std::{collections::BTreeSet, error::Error, fmt};
+use std::{collections::BTreeSet, error::Error, fmt, path::Path};
 
 const MAX_MODEL_SUMMARIES: usize = 256;
 const MAX_MODEL_METADATA_BYTES: usize = 128;
@@ -61,6 +61,7 @@ pub enum ApplicationClientError {
     Frame(FrameError),
     ServerDisconnected,
     ConnectionUnusable,
+    WorkingDirectoryUnavailable,
     RequestIdentifierExhausted,
     ResponseIdentifierMismatch {
         expected_request_id: u64,
@@ -83,6 +84,9 @@ impl fmt::Display for ApplicationClientError {
             }
             Self::ConnectionUnusable => {
                 formatter.write_str("application connection is no longer usable")
+            }
+            Self::WorkingDirectoryUnavailable => {
+                formatter.write_str("the selected working directory is unavailable or unsupported")
             }
             Self::RequestIdentifierExhausted => {
                 formatter.write_str("connection request identifiers are exhausted")
@@ -120,6 +124,7 @@ impl Error for ApplicationClientError {
             Self::Frame(error) => Some(error),
             Self::ServerDisconnected
             | Self::ConnectionUnusable
+            | Self::WorkingDirectoryUnavailable
             | Self::RequestIdentifierExhausted
             | Self::ResponseIdentifierMismatch { .. }
             | Self::UnexpectedServerMessage
@@ -192,6 +197,23 @@ fn valid_session_summary(session: &SessionSummary) -> bool {
     session.id.as_bytes().iter().any(|byte| *byte != 0)
         && session.display_name.as_ref().is_none_or(|display_name| {
             !display_name.is_empty() && display_name.len() <= MAX_SESSION_DISPLAY_NAME_BYTES
+        })
+        && session
+            .working_directory
+            .as_deref()
+            .is_none_or(valid_working_directory)
+}
+
+fn valid_working_directory(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= morons_protocol::MAX_WORKING_DIRECTORY_PATH_BYTES
+        && !path.chars().any(char::is_control)
+        && Path::new(path).is_absolute()
+        && !Path::new(path).components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
         })
 }
 
@@ -281,16 +303,38 @@ where
         mutation_request_id: MutationRequestId,
         display_name: Option<String>,
     ) -> Result<SessionSummary, ApplicationClientError> {
+        let working_directory = std::env::current_dir()
+            .map_err(|_| ApplicationClientError::WorkingDirectoryUnavailable)?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| ApplicationClientError::WorkingDirectoryUnavailable)?;
+        self.create_session_at(mutation_request_id, display_name, working_directory)
+            .await
+    }
+
+    pub async fn create_session_at(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        display_name: Option<String>,
+        working_directory: String,
+    ) -> Result<SessionSummary, ApplicationClientError> {
+        if !valid_working_directory(&working_directory) {
+            return Err(ApplicationClientError::WorkingDirectoryUnavailable);
+        }
         let response = self
             .request(ApplicationRequest::CreateSession {
                 mutation_request_id,
                 display_name: display_name.clone(),
+                working_directory: working_directory.clone(),
             })
             .await?;
         let ApplicationResponse::SessionCreated { session } = response else {
             return Err(self.unexpected_application_response());
         };
-        if !valid_session_summary(&session) || session.display_name != display_name {
+        if !valid_session_summary(&session)
+            || session.display_name != display_name
+            || session.working_directory.as_deref() != Some(&working_directory)
+        {
             self.usable = false;
             return Err(ApplicationClientError::EventScopeMismatch);
         }

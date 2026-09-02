@@ -116,12 +116,14 @@ impl ServerApplication {
             ApplicationRequest::CreateSession {
                 mutation_request_id,
                 display_name,
+                working_directory,
             } => {
                 let session = self
                     .sessions
-                    .create_session(
+                    .create_session_at(
                         to_persistence_mutation_id(mutation_request_id),
                         display_name,
+                        working_directory,
                     )
                     .await
                     .map_err(to_application_error)?;

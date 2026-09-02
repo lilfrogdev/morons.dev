@@ -437,6 +437,7 @@ impl AppState {
 pub(super) struct PresentedSession {
     pub(super) summary: SessionSummary,
     pub(super) display_name: SafeText,
+    pub(super) working_directory: SafeText,
 }
 
 impl PresentedSession {
@@ -447,9 +448,16 @@ impl PresentedSession {
                 .as_deref()
                 .unwrap_or("Untitled session"),
         );
+        let working_directory = SafeText::from_untrusted(
+            summary
+                .working_directory
+                .as_deref()
+                .unwrap_or("Legacy session · no direct working directory"),
+        );
         Self {
             summary,
             display_name,
+            working_directory,
         }
     }
 }

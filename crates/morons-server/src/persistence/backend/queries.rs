@@ -44,6 +44,7 @@ impl Backend {
                 session.session_id,
                 session.workspace_id,
                 session.display_name,
+                session.working_directory,
                 session.created_sequence,
                 session.updated_sequence,
                 session.created_at_milliseconds
@@ -101,6 +102,7 @@ impl Backend {
                 fact.session_id,
                 fact.workspace_id,
                 fact.display_name,
+                fact.working_directory,
                 fact.accepted_sequence,
                 fact.fact_sequence,
                 fact.created_at_milliseconds

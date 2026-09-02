@@ -8,6 +8,14 @@ use morons_protocol::{
 
 use super::{ApplicationClient, ApplicationClientError};
 
+fn fixture_working_directory() -> String {
+    if cfg!(windows) {
+        r"C:\projects\example".to_owned()
+    } else {
+        "/projects/example".to_owned()
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn session_client_correlates_create_get_and_list_requests() {
     let (client_connection, mut server) = tokio::io::duplex(4096);
@@ -16,13 +24,18 @@ async fn session_client_correlates_create_get_and_list_requests() {
     let session = SessionSummary {
         id: SessionId::from_bytes([0x22; 16]),
         display_name: Some("Client session".to_owned()),
+        working_directory: Some(fixture_working_directory()),
         created_at_milliseconds: 42,
     };
     let catalog_cursor = SessionCatalogEventCursor::from_bytes(9_u64.to_be_bytes());
 
     let client_exchange = async {
         let created = client
-            .create_session(mutation_request_id, session.display_name.clone())
+            .create_session_at(
+                mutation_request_id,
+                session.display_name.clone(),
+                fixture_working_directory(),
+            )
             .await
             .expect("client should create a session");
         assert_eq!(created, session);
@@ -48,6 +61,7 @@ async fn session_client_correlates_create_get_and_list_requests() {
             ApplicationRequest::CreateSession {
                 mutation_request_id,
                 display_name: Some("Client session".to_owned()),
+                working_directory: fixture_working_directory(),
             }
         );
         write_server_message(
@@ -446,6 +460,7 @@ async fn session_subscription_tracks_durable_catalog_cursor() {
     let session = SessionSummary {
         id: SessionId::from_bytes([0x24; 16]),
         display_name: Some("Subscribed session".to_owned()),
+        working_directory: Some(fixture_working_directory()),
         created_at_milliseconds: 43,
     };
 

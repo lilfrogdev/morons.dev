@@ -19,7 +19,11 @@ fn application_request_has_stable_json_shape() {
     let request = ApplicationRequest::CreateSession {
         mutation_request_id: MutationRequestId::from_bytes([0x11; 16]),
         display_name: Some("A session".to_owned()),
+        working_directory: "/projects/example".to_owned(),
     };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("/projects/example"));
+    assert!(debug.contains("working_directory_bytes"));
     let actual = serde_json::to_value(request).expect("request should encode");
 
     assert_eq!(
@@ -28,6 +32,7 @@ fn application_request_has_stable_json_shape() {
             "operation": "create_session",
             "mutation_request_id": "mut_11111111111111111111111111111111",
             "display_name": "A session",
+            "working_directory": "/projects/example",
         })
     );
 }
@@ -310,6 +315,7 @@ fn application_response_has_stable_json_shape() {
         sessions: vec![SessionSummary {
             id: SessionId::from_bytes([0x22; 16]),
             display_name: None,
+            working_directory: Some("/projects/example".to_owned()),
             created_at_milliseconds: 42,
         }],
         next_cursor: Some(SessionListCursor::from_bytes(list_cursor)),
@@ -324,6 +330,7 @@ fn application_response_has_stable_json_shape() {
             "sessions": [{
                 "id": "ses_22222222222222222222222222222222",
                 "display_name": null,
+                "working_directory": "/projects/example",
                 "created_at_milliseconds": 42,
             }],
             "next_cursor": "sc2_00000000000000090000000000000007",
@@ -339,6 +346,7 @@ fn transcript_snapshot_response_has_stable_json_shape() {
         session: SessionSummary {
             id: session_id,
             display_name: None,
+            working_directory: None,
             created_at_milliseconds: 42,
         },
         workspace: WorkspaceSummary {
@@ -362,6 +370,7 @@ fn transcript_snapshot_response_has_stable_json_shape() {
             "session": {
                 "id": "ses_23232323232323232323232323232323",
                 "display_name": null,
+                "working_directory": null,
                 "created_at_milliseconds": 42,
             },
             "workspace": {
@@ -468,6 +477,7 @@ fn application_event_has_stable_json_shape() {
         session: SessionSummary {
             id: SessionId::from_bytes([0x22; 16]),
             display_name: Some("Created".to_owned()),
+            working_directory: Some("/projects/example".to_owned()),
             created_at_milliseconds: 42,
         },
     };
@@ -480,6 +490,7 @@ fn application_event_has_stable_json_shape() {
             "session": {
                 "id": "ses_22222222222222222222222222222222",
                 "display_name": "Created",
+                "working_directory": "/projects/example",
                 "created_at_milliseconds": 42,
             },
         })

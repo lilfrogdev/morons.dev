@@ -26,6 +26,7 @@ pub(super) struct CreationRequest {
     pub(super) session_id: SessionId,
     pub(super) workspace_id: [u8; IDENTIFIER_BYTES],
     pub(super) display_name: Option<String>,
+    pub(super) working_directory: Option<String>,
     pub(super) accepted_sequence: u64,
     pub(super) accepted_at_milliseconds: u64,
     pub(super) state: i64,
@@ -57,6 +58,7 @@ pub(super) fn load_creation_request(
                 session_id,
                 workspace_id,
                 display_name,
+                working_directory,
                 accepted_sequence,
                 accepted_at_milliseconds,
                 state
@@ -78,9 +80,10 @@ pub(super) fn creation_request_from_row(
         session_id: SessionId::from_bytes(row.get(2)?),
         workspace_id: row.get(3)?,
         display_name: row.get(4)?,
-        accepted_sequence: nonnegative_integer_from_row(row, 5)?,
-        accepted_at_milliseconds: nonnegative_integer_from_row(row, 6)?,
-        state: row.get(7)?,
+        working_directory: row.get(5)?,
+        accepted_sequence: nonnegative_integer_from_row(row, 6)?,
+        accepted_at_milliseconds: nonnegative_integer_from_row(row, 7)?,
+        state: row.get(8)?,
     })
 }
 
@@ -88,9 +91,11 @@ pub(super) fn validate_request_retry(
     existing: &CreationRequest,
     expected_fingerprint: &[u8; REQUEST_FINGERPRINT_BYTES],
     expected_display_name: Option<&str>,
+    expected_working_directory: Option<&str>,
 ) -> Result<(), PersistenceError> {
     if &existing.fingerprint != expected_fingerprint
         || existing.display_name.as_deref() != expected_display_name
+        || existing.working_directory.as_deref() != expected_working_directory
     {
         return Err(PersistenceError::RequestConflict);
     }
@@ -105,6 +110,7 @@ pub(super) fn validate_creation_identity(
         current,
         &expected.fingerprint,
         expected.display_name.as_deref(),
+        expected.working_directory.as_deref(),
     )?;
     if current.session_id != expected.session_id
         || current.workspace_id != expected.workspace_id
@@ -147,6 +153,7 @@ pub(super) fn load_session(
                 session_id,
                 workspace_id,
                 display_name,
+                working_directory,
                 created_sequence,
                 updated_sequence,
                 created_at_milliseconds
@@ -171,9 +178,10 @@ pub(super) fn session_from_row_at(
         id: SessionId::from_bytes(row.get(offset)?),
         workspace_id: row.get(offset + 1)?,
         display_name: row.get(offset + 2)?,
-        created_sequence: nonnegative_integer_from_row(row, offset + 3)?,
-        updated_sequence: nonnegative_integer_from_row(row, offset + 4)?,
-        created_at_milliseconds: nonnegative_integer_from_row(row, offset + 5)?,
+        working_directory: row.get(offset + 3)?,
+        created_sequence: nonnegative_integer_from_row(row, offset + 4)?,
+        updated_sequence: nonnegative_integer_from_row(row, offset + 5)?,
+        created_at_milliseconds: nonnegative_integer_from_row(row, offset + 6)?,
     })
 }
 

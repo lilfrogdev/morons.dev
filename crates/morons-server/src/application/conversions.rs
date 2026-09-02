@@ -376,6 +376,7 @@ pub(super) fn to_session_summary(session: Session) -> SessionSummary {
     SessionSummary {
         id: ProtocolSessionId::from_bytes(*session.id.as_bytes()),
         display_name: session.display_name,
+        working_directory: session.working_directory,
         created_at_milliseconds: session.created_at_milliseconds,
     }
 }

@@ -281,6 +281,29 @@ fn repository_import_requires_confirmation_and_redacts_action_debug() {
 }
 
 #[test]
+fn session_browser_presents_the_bound_working_directory() {
+    let (mut session, _) = fixture_session_and_run();
+    session.working_directory = Some("/projects/example".to_owned());
+    let mut app = AppState::new("test-server");
+    app.replace_sessions(vec![session])
+        .expect("session should be presented");
+
+    let backend = TestBackend::new(100, 12);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("session browser should render");
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("/projects/example"));
+}
+
+#[test]
 fn input_action_debug_omits_prompt_text() {
     let action = AppAction::SubmitInput {
         session_id: SessionId::from_bytes([0x55; 16]),
@@ -355,6 +378,7 @@ fn fixture_session_and_run() -> (SessionSummary, RunSummary) {
         SessionSummary {
             id: session_id,
             display_name: Some("Test session".to_owned()),
+            working_directory: None,
             created_at_milliseconds: 1,
         },
         run,
