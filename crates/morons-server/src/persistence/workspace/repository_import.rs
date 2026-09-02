@@ -712,53 +712,6 @@ fn scan_pair_directory(
     Ok(())
 }
 
-pub(super) fn copy_command_tree(
-    source: &Path,
-    mirror: &Path,
-    destination: &Path,
-) -> Result<RepositoryImportOutcome, PersistenceError> {
-    reject_git_tree(source, 0)?;
-    let outcome = copy_repository_tree(source, mirror, destination)?;
-    fs::remove_dir_all(mirror)?;
-    Ok(outcome)
-}
-
-pub(super) fn write_command_generation_metadata(
-    generation: &Path,
-    workspace_id: &[u8; 16],
-    generation_id: &[u8; 16],
-    outcome: RepositoryImportOutcome,
-) -> Result<(), PersistenceError> {
-    write_generation_metadata(generation, workspace_id, generation_id, outcome)
-}
-
-fn reject_git_tree(directory: &Path, depth: usize) -> Result<(), PersistenceError> {
-    if depth > MAX_PATH_DEPTH {
-        return Err(limit());
-    }
-    let metadata = fs::symlink_metadata(directory)?;
-    if !ordinary_directory(&metadata) {
-        return Err(invalid_repository());
-    }
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| invalid_repository())?;
-        if name.eq_ignore_ascii_case(".git") {
-            return Err(invalid_repository());
-        }
-        let metadata = fs::symlink_metadata(entry.path())?;
-        if ordinary_directory(&metadata) {
-            reject_git_tree(&entry.path(), depth + 1)?;
-        } else if !ordinary_file(&metadata) {
-            return Err(invalid_repository());
-        }
-    }
-    Ok(())
-}
-
 fn scan_baseline_tree(baseline: &Path) -> Result<RepositoryImportOutcome, PersistenceError> {
     let mut state = ImportState {
         manifest: Sha256::new(),

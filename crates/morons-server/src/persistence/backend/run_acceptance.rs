@@ -21,10 +21,7 @@ use crate::{
         },
         types::{REQUEST_FINGERPRINT_BYTES, validate_model_selection, validate_user_text},
     },
-    tools::{
-        STRUCTURED_TOOL_CATALOG_VERSION, STRUCTURED_TOOL_LIMITS_VERSION, TOOL_CATALOG_VERSION,
-        TOOL_LIMITS_VERSION,
-    },
+    tools::{TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION},
 };
 
 const MAX_RUNS: i64 = 100_000;
@@ -127,27 +124,13 @@ impl Backend {
             [&session_id.as_bytes()[..]],
             |row| row.get(0),
         )?;
-        let execution_image_generation = if workspace_ready && selection.supports_tool_calls {
-            transaction
-                .query_row(
-                    "SELECT generation_id FROM current_execution_image WHERE singleton = 1",
-                    [],
-                    |row| row.get::<_, [u8; 16]>(0),
-                )
-                .optional()?
-        } else {
-            None
-        };
-        let (tool_catalog_version, tool_limits_version) = if execution_image_generation.is_some() {
-            (TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION)
-        } else if workspace_ready && selection.supports_tool_calls {
-            (
-                STRUCTURED_TOOL_CATALOG_VERSION,
-                STRUCTURED_TOOL_LIMITS_VERSION,
-            )
-        } else {
-            (0, 0)
-        };
+        let execution_image_generation: Option<[u8; 16]> = None;
+        let (tool_catalog_version, tool_limits_version) =
+            if workspace_ready && selection.supports_tool_calls {
+                (TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION)
+            } else {
+                (0, 0)
+            };
         if entry_high_water
             .checked_add(2)
             .is_none_or(|reserved_high_water| reserved_high_water > MAX_TRANSCRIPT_ENTRIES)

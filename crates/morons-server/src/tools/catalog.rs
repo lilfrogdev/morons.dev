@@ -10,8 +10,8 @@ use super::{
 };
 use crate::provider::{ProviderTool, ProviderToolCall, json::parse_strict_value};
 
-pub(crate) const STRUCTURED_TOOL_CATALOG_VERSION: u16 = 1;
-pub(crate) const TOOL_CATALOG_VERSION: u16 = 2;
+pub(crate) const TOOL_CATALOG_VERSION: u16 = 1;
+pub(crate) const LEGACY_SANDBOX_TOOL_CATALOG_VERSION: u16 = 2;
 
 const DEVELOPER_INSTRUCTION: &str = "You are operating in an isolated mutable repository worktree. Use only the offered structured tools. Every path is slash-separated and relative to the worktree; use `.` only for read-only directory-scoped tools. Read a complete file digest before editing it. Never assume that a tool succeeded until its committed result says so.";
 
@@ -25,8 +25,8 @@ pub(crate) fn developer_instruction() -> &'static str {
     DEVELOPER_INSTRUCTION
 }
 
-pub(crate) fn provider_tools(version: u16) -> Vec<ProviderTool> {
-    let mut tools = vec![
+pub(crate) fn provider_tools() -> Vec<ProviderTool> {
+    vec![
         ProviderTool {
             name: ToolKind::ListDirectory.name().to_owned(),
             description: "List one bounded, byte-sorted page of ordinary children in a worktree directory.".to_owned(),
@@ -105,26 +105,7 @@ pub(crate) fn provider_tools(version: u16) -> Vec<ProviderTool> {
                 &["path"],
             ),
         },
-    ];
-    if version >= 2 {
-        tools.push(ProviderTool {
-            name: ToolKind::RunCommand.name().to_owned(),
-            description: "Run one structured offline command from the bound Rust image in a discardable candidate worktree.".to_owned(),
-            parameters: object_schema(
-                json!({
-                    "executable": {"type": "string", "minLength": 1, "maxLength": 64},
-                    "arguments": {
-                        "type": "array",
-                        "maxItems": MAX_COMMAND_ARGUMENTS,
-                        "items": {"type": "string", "maxLength": 4096}
-                    },
-                    "working_directory": {"type": "string", "maxLength": 1024}
-                }),
-                &["executable", "arguments", "working_directory"],
-            ),
-        });
-    }
-    tools
+    ]
 }
 
 pub(crate) fn validate_canonical_input(input: &ToolInput) -> bool {
@@ -132,7 +113,7 @@ pub(crate) fn validate_canonical_input(input: &ToolInput) -> bool {
         .provider_arguments()
         .ok()
         .and_then(|arguments| parse_strict_value(arguments.as_bytes()).ok())
-        .and_then(|value| parse_input(input.kind().name(), value).ok())
+        .and_then(|value| parse_input(input.kind().name(), value, true).ok())
         .as_ref()
         == Some(input)
 }
@@ -141,7 +122,7 @@ pub(crate) fn parse_provider_calls(
     calls: Vec<ProviderToolCall>,
     catalog_version: u16,
 ) -> Result<Vec<ValidatedProviderCall>, ToolCallValidationError> {
-    if calls.is_empty() {
+    if calls.is_empty() || catalog_version != TOOL_CATALOG_VERSION {
         return Err(ToolCallValidationError::InvalidProviderOutput);
     }
     if calls.len() > MAX_TOOL_CALLS_PER_TURN {
@@ -156,10 +137,7 @@ pub(crate) fn parse_provider_calls(
             }
             let value = parse_strict_value(call.arguments.as_bytes())
                 .map_err(|_| ToolCallValidationError::InvalidProviderOutput)?;
-            let input = parse_input(&call.name, value)?;
-            if input.kind() == ToolKind::RunCommand && catalog_version < 2 {
-                return Err(ToolCallValidationError::InvalidProviderOutput);
-            }
+            let input = parse_input(&call.name, value, false)?;
             Ok(ValidatedProviderCall {
                 provider_call_id: call.provider_call_id,
                 input,
@@ -168,7 +146,11 @@ pub(crate) fn parse_provider_calls(
         .collect()
 }
 
-fn parse_input(name: &str, value: Value) -> Result<ToolInput, ToolCallValidationError> {
+fn parse_input(
+    name: &str,
+    value: Value,
+    allow_legacy_command: bool,
+) -> Result<ToolInput, ToolCallValidationError> {
     match name {
         "list_directory" => {
             require_fields(&value, &["path", "after"])?;
@@ -256,7 +238,7 @@ fn parse_input(name: &str, value: Value) -> Result<ToolInput, ToolCallValidation
                 path: WorktreePath::parse(&arguments.path, false).map_err(invalid)?,
             })
         }
-        "run_command" => {
+        "run_command" if allow_legacy_command => {
             require_fields(&value, &["executable", "arguments", "working_directory"])?;
             let arguments: RunCommand = decode(value)?;
             let total = arguments
@@ -394,8 +376,8 @@ mod tests {
 
     #[test]
     fn catalog_is_fixed_strict_and_complete() {
-        let tools = provider_tools(TOOL_CATALOG_VERSION);
-        assert_eq!(tools.len(), 7);
+        let tools = provider_tools();
+        assert_eq!(tools.len(), 6);
         assert_eq!(
             tools
                 .iter()
@@ -407,8 +389,7 @@ mod tests {
                 "search_text",
                 "edit_file",
                 "create_file",
-                "create_directory",
-                "run_command"
+                "create_directory"
             ]
         );
         assert!(
@@ -416,7 +397,6 @@ mod tests {
                 .iter()
                 .all(|tool| tool.parameters["additionalProperties"] == false)
         );
-        assert_eq!(provider_tools(STRUCTURED_TOOL_CATALOG_VERSION).len(), 6);
     }
 
     #[test]
@@ -452,9 +432,11 @@ mod tests {
             "run_command",
             r#"{"executable":"cargo","arguments":["check","--locked"],"working_directory":"."}"#,
         );
-        assert!(
-            parse_provider_calls(vec![command.clone()], STRUCTURED_TOOL_CATALOG_VERSION).is_err()
-        );
-        assert!(parse_provider_calls(vec![command], TOOL_CATALOG_VERSION).is_ok());
+        assert!(parse_provider_calls(vec![command], TOOL_CATALOG_VERSION).is_err());
+        assert!(validate_canonical_input(&ToolInput::RunCommand {
+            executable: "cargo".to_owned(),
+            arguments: vec!["check".to_owned(), "--locked".to_owned()],
+            working_directory: WorktreePath::parse(".", true).expect("root path should parse"),
+        }));
     }
 }

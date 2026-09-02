@@ -219,14 +219,6 @@ pub(crate) struct RepositoryImportOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CommandResources {
-    pub workspace_id: [u8; IDENTIFIER_BYTES],
-    pub active_generation_id: [u8; IDENTIFIER_BYTES],
-    pub image_generation_id: [u8; IDENTIFIER_BYTES],
-    pub image_manifest_digest: [u8; REQUEST_FINGERPRINT_BYTES],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WorktreeLayoutPlan {
     pub session_id: SessionId,
     pub workspace_id: [u8; IDENTIFIER_BYTES],

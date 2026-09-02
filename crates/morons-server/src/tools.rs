@@ -8,14 +8,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub(crate) use catalog::{
-    STRUCTURED_TOOL_CATALOG_VERSION, TOOL_CATALOG_VERSION, ToolCallValidationError,
+    LEGACY_SANDBOX_TOOL_CATALOG_VERSION, TOOL_CATALOG_VERSION, ToolCallValidationError,
     developer_instruction, parse_provider_calls, provider_tools, validate_canonical_input,
 };
 pub(crate) use path::WorktreePath;
 pub(crate) use worktree::{ToolExecution, WorktreeToolExecutor, recovery_plan_is_valid};
 
-pub(crate) const STRUCTURED_TOOL_LIMITS_VERSION: u16 = 1;
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 2;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 1;
+pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
 pub(crate) const MAX_COMMAND_ARGUMENTS: usize = 128;
 pub(crate) const MAX_COMMAND_ARGUMENT_BYTES: usize = 4096;
 pub(crate) const MAX_COMMAND_ARGUMENT_TOTAL_BYTES: usize = 64 * 1024;
@@ -56,6 +56,7 @@ pub(crate) enum ToolKind {
     EditFile,
     CreateFile,
     CreateDirectory,
+    // Retained only to decode durable transcripts created before ADR 0012.
     RunCommand,
 }
 

@@ -475,15 +475,6 @@ async fn structured_tool_loop_reads_edits_and_finishes_from_durable_results() {
         )
         .await
         .expect("repository should import");
-    let image = RustImageSources::new("structured-tool-image");
-    store
-        .provision_execution_image(
-            PersistenceMutationRequestId::from_bytes([0x85; 16]),
-            image.toolchain_path(),
-            image.cargo_path(),
-        )
-        .await
-        .expect("execution image should provision");
     let expected_digest = {
         let digest: [u8; 32] = Sha256::digest(b"before\n").into();
         digest
@@ -491,6 +482,10 @@ async fn structured_tool_loop_reads_edits_and_finishes_from_durable_results() {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     };
+    let worktree = store
+        .active_worktree_path(session.workspace_id)
+        .await
+        .expect("active worktree should resolve");
     let (base, requests, provider_task) = spawn_tool_loop_provider(expected_digest).await;
     let store = Arc::try_unwrap(store).unwrap_or_else(|_| panic!("test store should be unique"));
     let application = ServerApplication::from_session_store_for_test(store, &base);
@@ -517,46 +512,21 @@ async fn structured_tool_loop_reads_edits_and_finishes_from_durable_results() {
     );
     provider_task.await.expect("tool provider should finish");
     let requests = requests.await.expect("tool requests should be captured");
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 3);
     assert!(requests[0].contains("\"name\":\"read_file\""));
     assert!(requests[1].contains("function_call_output"));
     assert!(requests[1].contains("note.txt"));
     assert!(requests[2].contains("\"name\":\"edit_file\""));
     assert!(requests[2].contains("file_edited"));
-    assert!(requests[3].contains("command_completed"));
-
-    let connection = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3"))
-        .expect("database should open");
-    let generation: [u8; 16] = connection
-        .query_row(
-            "SELECT generation_id FROM active_worktree_generations WHERE workspace_id = ?1",
-            [&session.workspace_id[..]],
-            |row| row.get(0),
-        )
-        .expect("active generation should load");
-    let workspace = root
-        .path()
-        .join("workspaces")
-        .join(hex_identifier(&session.workspace_id))
-        .join("repository/generations")
-        .join(hex_identifier(&generation))
-        .join("content");
-    assert_eq!(
-        fs::read_to_string(workspace.join("note.txt")).expect("worktree file should exist"),
-        "after\n"
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.contains("run_command"))
     );
-    #[cfg(unix)]
-    assert!(workspace.join("command.txt").exists());
+
     assert_eq!(
-        fs::read_dir(
-            workspace
-                .parent()
-                .and_then(|generation| generation.parent())
-                .expect("generations root"),
-        )
-        .expect("generations should be readable")
-        .count(),
-        1
+        fs::read_to_string(worktree.join("note.txt")).expect("worktree file should exist"),
+        "after\n"
     );
     assert_eq!(
         fs::read_to_string(source.path().join("note.txt")).expect("source should remain readable"),
@@ -586,7 +556,7 @@ async fn structured_tool_loop_reads_edits_and_finishes_from_durable_results() {
         let Some(next) = next_cursor else { break };
         cursor = Some(next);
     }
-    assert_eq!(entries.len(), 8);
+    assert_eq!(entries.len(), 6);
     assert!(matches!(
         entries[1],
         morons_protocol::TranscriptEntry::ToolCall {
@@ -617,21 +587,6 @@ async fn structured_tool_loop_reads_edits_and_finishes_from_durable_results() {
     ));
     assert!(matches!(
         entries[5],
-        morons_protocol::TranscriptEntry::ToolCall {
-            tool: morons_protocol::ToolKind::RunCommand,
-            ..
-        }
-    ));
-    assert!(matches!(
-        entries[6],
-        morons_protocol::TranscriptEntry::ToolResult {
-            tool: morons_protocol::ToolKind::RunCommand,
-            status: morons_protocol::ToolResultStatus::Succeeded,
-            ..
-        }
-    ));
-    assert!(matches!(
-        entries[7],
         morons_protocol::TranscriptEntry::AssistantMessage { .. }
     ));
     application.shutdown().await;
@@ -916,11 +871,6 @@ async fn spawn_tool_loop_provider(
         let edit_arguments = format!(
             "{{\"path\":\"note.txt\",\"expected_sha256\":\"{expected_digest}\",\"replacements\":[{{\"old_text\":\"before\",\"new_text\":\"after\"}}]}}"
         );
-        let command_arguments = if cfg!(windows) {
-            r#"{"executable":"fixture","arguments":["/D","/C","exit /b 7"],"working_directory":"."}"#
-        } else {
-            r#"{"executable":"fixture","arguments":[],"working_directory":"."}"#
-        };
         let outputs = [
             format!(
                 "{{\"id\":\"fc_read\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_read\",\"name\":\"read_file\",\"arguments\":{}}}",
@@ -929,10 +879,6 @@ async fn spawn_tool_loop_provider(
             format!(
                 "{{\"id\":\"fc_edit\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_edit\",\"name\":\"edit_file\",\"arguments\":{}}}",
                 serde_json::to_string(&edit_arguments).expect("arguments should encode")
-            ),
-            format!(
-                "{{\"id\":\"fc_command\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_command\",\"name\":\"run_command\",\"arguments\":{}}}",
-                serde_json::to_string(command_arguments).expect("arguments should encode")
             ),
             "{\"id\":\"msg_final\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"Updated note.txt.\",\"annotations\":[]}]}".to_owned(),
         ];
@@ -969,10 +915,6 @@ async fn spawn_tool_loop_provider(
             .unwrap_or_else(|_| panic!("tool requests should be observed"));
     });
     (format!("http://{address}"), requests_receiver, server)
-}
-
-fn hex_identifier(bytes: &[u8; 16]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 async fn spawn_stalled_provider() -> (String, oneshot::Receiver<()>, tokio::task::JoinHandle<()>) {
@@ -1056,54 +998,6 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window == needle)
-}
-
-struct RustImageSources {
-    toolchain: TestRoot,
-    cargo: TestRoot,
-}
-
-impl RustImageSources {
-    fn new(label: &str) -> Self {
-        let toolchain = TestRoot::new(&format!("{label}-toolchain"));
-        let cargo = TestRoot::new(&format!("{label}-cargo"));
-        fs::create_dir(toolchain.path().join("bin")).expect("image bin should be created");
-        #[cfg(unix)]
-        for name in ["cargo", "rustc", "fixture"] {
-            let path = toolchain.path().join("bin").join(name);
-            fs::write(
-                &path,
-                b"#!/bin/sh\nprintf 'command\\n' > command.txt\nexit 7\n",
-            )
-            .expect("fixture tool should be written");
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                .expect("fixture tool should be executable");
-        }
-        #[cfg(windows)]
-        {
-            let command = PathBuf::from(std::env::var_os("ComSpec").expect("ComSpec should exist"));
-            for name in ["cargo.exe", "rustc.exe", "fixture.exe"] {
-                fs::copy(&command, toolchain.path().join("bin").join(name))
-                    .expect("Windows fixture tool should copy");
-            }
-        }
-        fs::create_dir(cargo.path().join("registry")).expect("registry should be created");
-        fs::create_dir(cargo.path().join("registry/cache")).expect("cache should be created");
-        fs::write(
-            cargo.path().join("registry/cache/fixture.crate"),
-            b"fixture",
-        )
-        .expect("cache fixture should be written");
-        Self { toolchain, cargo }
-    }
-
-    fn toolchain_path(&self) -> String {
-        self.toolchain.path().to_string_lossy().into_owned()
-    }
-
-    fn cargo_path(&self) -> String {
-        self.cargo.path().to_string_lossy().into_owned()
-    }
 }
 
 struct TestRoot(PathBuf);

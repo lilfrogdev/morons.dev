@@ -85,34 +85,8 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features --target ${{ matrix.target }} --locked -- -D warnings
 
-      - name: Allow the exact Linux sandbox test helper to create user namespaces
-        if: ${{ startsWith(matrix.platform, 'Linux') }}
-        shell: bash
-        run: |
-          restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [[ -r "$restriction" ]] && [[ "$(cat "$restriction")" == "1" ]]; then
-            sandbox_path="$GITHUB_WORKSPACE/target/${{ matrix.target }}/debug/morons-sandbox"
-            cat > /tmp/morons-sandbox-ci.apparmor <<EOF
-          abi <abi/4.0>,
-          include <tunables/global>
-
-          profile morons-sandbox-ci $sandbox_path flags=(unconfined) {
-            userns,
-          }
-          EOF
-            sudo apparmor_parser -r /tmp/morons-sandbox-ci.apparmor
-          fi
-
       - name: Run tests
         run: cargo test --workspace --target ${{ matrix.target }} --locked
-
-      - name: Remove the Linux sandbox test profile
-        if: ${{ always() && startsWith(matrix.platform, 'Linux') }}
-        shell: bash
-        run: |
-          if [[ -f /tmp/morons-sandbox-ci.apparmor ]]; then
-            sudo apparmor_parser -R /tmp/morons-sandbox-ci.apparmor
-          fi
 
       - name: Install cross-compilation target
         if: ${{ matrix.cross_target != '' }}

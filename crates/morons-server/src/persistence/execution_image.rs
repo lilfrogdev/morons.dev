@@ -184,12 +184,6 @@ impl StoragePaths {
         Ok(())
     }
 
-    pub(crate) fn execution_image_path(&self, generation_id: &[u8; 16]) -> PathBuf {
-        self.execution_image_directory
-            .join(encode_hex(generation_id))
-            .join(CONTENT_DIRECTORY)
-    }
-
     pub(crate) fn cleanup_inactive_execution_images(
         &self,
         active_generation: Option<[u8; 16]>,
