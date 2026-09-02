@@ -362,6 +362,14 @@ fn scan_windows_file(
     if expected.size > MAX_FILE_BYTES {
         return Err(limit());
     }
+    if expected.may_recall_data() || expected.is_efs_encrypted() {
+        return Err(invalid());
+    }
+    let streams = node.streams().map_err(|_| invalid())?;
+    if !matches!(streams.as_slice(), [stream] if stream.is_default_data_stream() && stream.size == expected.size)
+    {
+        return Err(invalid());
+    }
     let mut file = node.try_clone_file().map_err(|_| invalid())?;
     let (digest, binary, text) = read_file(&mut file, expected.size, state)?;
     if node.refresh_metadata().map_err(|_| invalid())? != expected
