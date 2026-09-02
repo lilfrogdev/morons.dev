@@ -1,5 +1,7 @@
 use std::{
     fs,
+    fs::{File, OpenOptions},
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
         Arc,
@@ -9,6 +11,8 @@ use std::{
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 
 use crate::{SANDBOX_PROTOCOL_VERSION, SandboxRequest, SandboxResult, SandboxStatus};
 
@@ -21,6 +25,9 @@ const MIN_WALL_TIME_MILLISECONDS: u64 = 100;
 const MAX_WALL_TIME_MILLISECONDS: u64 = 30 * 60 * 1000;
 const MIN_OUTPUT_BYTES: u32 = 1024;
 const MAX_OUTPUT_BYTES: u32 = 256 * 1024;
+const MAX_CARGO_SEED_ENTRIES: u64 = 200_000;
+const MAX_CARGO_SEED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const CARGO_COPY_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Default)]
 pub struct Cancellation(Arc<AtomicBool>);
@@ -231,6 +238,120 @@ fn valid_relative_path(value: &str, root_allowed: bool) -> bool {
         && value.split('/').all(|component| !component.is_empty())
 }
 
+pub(crate) fn seed_cargo_home(image: &Path, destination: &Path) -> Result<(), ()> {
+    let source = image.join("cargo");
+    let source_metadata = fs::symlink_metadata(&source).map_err(|_| ())?;
+    let destination_metadata = fs::symlink_metadata(destination).map_err(|_| ())?;
+    if !source_metadata.file_type().is_dir()
+        || source_metadata.file_type().is_symlink()
+        || metadata_is_reparse(&source_metadata)
+        || !destination_metadata.file_type().is_dir()
+        || destination_metadata.file_type().is_symlink()
+        || metadata_is_reparse(&destination_metadata)
+        || fs::read_dir(destination).map_err(|_| ())?.next().is_some()
+    {
+        return Err(());
+    }
+    let mut state = CargoSeedState::default();
+    copy_cargo_seed(&source, destination, 0, &mut state)
+}
+
+#[derive(Default)]
+struct CargoSeedState {
+    entries: u64,
+    bytes: u64,
+}
+
+fn copy_cargo_seed(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    state: &mut CargoSeedState,
+) -> Result<(), ()> {
+    if depth > 128 {
+        return Err(());
+    }
+    let mut entries = fs::read_dir(source)
+        .map_err(|_| ())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ())?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let name = entry.file_name();
+        if name.to_str().is_none() {
+            return Err(());
+        }
+        state.entries = state.entries.checked_add(1).ok_or(())?;
+        if state.entries > MAX_CARGO_SEED_ENTRIES {
+            return Err(());
+        }
+        let source_path = entry.path();
+        let destination_path = destination.join(&name);
+        let metadata = fs::symlink_metadata(&source_path).map_err(|_| ())?;
+        if metadata.file_type().is_symlink() || metadata_is_reparse(&metadata) {
+            return Err(());
+        }
+        if metadata.is_dir() {
+            fs::create_dir(&destination_path).map_err(|_| ())?;
+            copy_cargo_seed(&source_path, &destination_path, depth + 1, state)?;
+        } else if metadata.is_file() {
+            state.bytes = state.bytes.checked_add(metadata.len()).ok_or(())?;
+            if state.bytes > MAX_CARGO_SEED_BYTES {
+                return Err(());
+            }
+            copy_seed_file(&source_path, &destination_path, metadata.len())?;
+        } else {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn copy_seed_file(source: &Path, destination: &Path, expected: u64) -> Result<(), ()> {
+    let mut input = File::open(source).map_err(|_| ())?;
+    let mut output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(destination)
+        .map_err(|_| ())?;
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; CARGO_COPY_BUFFER_BYTES];
+    loop {
+        let read = input.read(&mut buffer).map_err(|_| ())?;
+        if read == 0 {
+            break;
+        }
+        copied = copied
+            .checked_add(u64::try_from(read).map_err(|_| ())?)
+            .ok_or(())?;
+        if copied > expected {
+            return Err(());
+        }
+        output.write_all(&buffer[..read]).map_err(|_| ())?;
+    }
+    output.sync_all().map_err(|_| ())?;
+    let after = fs::symlink_metadata(source).map_err(|_| ())?;
+    if copied != expected
+        || !after.is_file()
+        || after.file_type().is_symlink()
+        || metadata_is_reparse(&after)
+        || after.len() != expected
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn metadata_is_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn metadata_is_reparse(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
 fn overlaps(left: &Path, right: &Path) -> bool {
     left.starts_with(right) || right.starts_with(left)
 }
@@ -263,7 +384,14 @@ mod tests {
             let candidate = parent.join("candidate");
             let scratch = parent.join("scratch");
             let image = parent.join("image");
-            for path in [&parent, &candidate, &scratch, &image, &image.join("bin")] {
+            for path in [
+                &parent,
+                &candidate,
+                &scratch,
+                &image,
+                &image.join("bin"),
+                &image.join("cargo"),
+            ] {
                 create_private_directory(path);
             }
             let executable = image.join("bin/tool");
@@ -329,6 +457,27 @@ mod tests {
         let result = execute(roots.request(), &Cancellation::new());
         assert_eq!(result.status, SandboxStatus::BackendUnavailable);
         assert!(!result.candidate_eligible);
+    }
+
+    #[test]
+    fn cargo_seed_is_copied_privately_without_sharing_writes() {
+        let roots = Roots::new();
+        let registry = roots.image.join("cargo/registry/cache");
+        create_private_directory(&roots.image.join("cargo/registry"));
+        create_private_directory(&registry);
+        fs::write(registry.join("fixture.crate"), b"immutable-seed").expect("writes seed");
+        let destination = roots.scratch.join("seeded-cargo");
+        create_private_directory(&destination);
+        seed_cargo_home(&roots.image, &destination).expect("seeds Cargo home");
+        fs::write(
+            destination.join("registry/cache/fixture.crate"),
+            b"operation-write",
+        )
+        .expect("private seed should be writable");
+        assert_eq!(
+            fs::read(registry.join("fixture.crate")).expect("source remains readable"),
+            b"immutable-seed"
+        );
     }
 
     #[test]

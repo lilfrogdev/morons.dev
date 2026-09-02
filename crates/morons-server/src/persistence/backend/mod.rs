@@ -1,5 +1,6 @@
 mod creation;
 mod credential_mutation;
+mod execution_image;
 mod queries;
 mod records;
 mod repository_import;
@@ -35,6 +36,7 @@ impl Backend {
             paths,
         };
         backend.recover_credential_mutations()?;
+        backend.recover_execution_images()?;
         backend.recover_incomplete_session_creations()?;
         backend.recover_repository_imports()?;
         backend.validate_ready_workspaces()?;

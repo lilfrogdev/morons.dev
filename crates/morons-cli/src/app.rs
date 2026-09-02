@@ -4,9 +4,9 @@ mod render;
 use std::{error::Error, fmt};
 
 use morons_protocol::{
-    ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
-    OpenCodeService, RunId, RunState, RunSummary, SessionId, SessionSummary, TranscriptEntry,
-    WorkspaceSummary,
+    ApplicationEvent, ExecutionImageSummary, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
+    OpenCodeModelSummary, OpenCodeService, RunId, RunState, RunSummary, SessionId, SessionSummary,
+    TranscriptEntry, WorkspaceSummary,
 };
 use ratatui::Frame;
 
@@ -29,6 +29,7 @@ pub(super) enum PendingOperation {
     SubmitInput,
     CancelRun,
     ImportRepository,
+    ProvisionExecutionImage,
     AcknowledgeToolUncertainty,
     UpdateCredential,
     StopServer,
@@ -37,6 +38,20 @@ pub(super) enum PendingOperation {
 pub(super) enum RepositoryDialog {
     Enter { input: RepositoryPathBuffer },
     Confirm { source_path: String },
+}
+
+pub(super) enum ExecutionImageDialog {
+    Toolchain {
+        input: RepositoryPathBuffer,
+    },
+    Cargo {
+        toolchain_source_path: String,
+        input: RepositoryPathBuffer,
+    },
+    Confirm {
+        toolchain_source_path: String,
+        cargo_source_path: String,
+    },
 }
 
 pub(super) enum CredentialDialog {
@@ -69,6 +84,10 @@ pub(super) enum AppAction {
     ImportRepository {
         session_id: SessionId,
         source_path: String,
+    },
+    ProvisionExecutionImage {
+        toolchain_source_path: String,
+        cargo_source_path: String,
     },
     AcknowledgeToolUncertainty {
         session_id: SessionId,
@@ -122,6 +141,14 @@ impl fmt::Debug for AppAction {
                 .debug_struct("ImportRepository")
                 .field("session_id", session_id)
                 .field("source_path_bytes", &source_path.len())
+                .finish(),
+            Self::ProvisionExecutionImage {
+                toolchain_source_path,
+                cargo_source_path,
+            } => formatter
+                .debug_struct("ProvisionExecutionImage")
+                .field("toolchain_source_path_bytes", &toolchain_source_path.len())
+                .field("cargo_source_path_bytes", &cargo_source_path.len())
                 .finish(),
             Self::AcknowledgeToolUncertainty { session_id, run_id } => formatter
                 .debug_struct("AcknowledgeToolUncertainty")
@@ -178,7 +205,9 @@ pub(super) struct AppState {
     pub(super) models: Vec<PresentedModel>,
     pub(super) selected_model: Option<usize>,
     pub(super) credential: Option<OpenCodeCredentialStatus>,
+    pub(super) execution_image: Option<ExecutionImageSummary>,
     pub(super) credential_dialog: Option<CredentialDialog>,
+    pub(super) execution_image_dialog: Option<ExecutionImageDialog>,
     pub(super) repository_dialog: Option<RepositoryDialog>,
     pub(super) view: View,
     pub(super) session: Option<SessionView>,
@@ -200,7 +229,9 @@ impl AppState {
             models: Vec::new(),
             selected_model: None,
             credential: None,
+            execution_image: None,
             credential_dialog: None,
+            execution_image_dialog: None,
             repository_dialog: None,
             view: View::Sessions,
             session: None,
@@ -225,12 +256,20 @@ impl AppState {
         self.credential = Some(credential);
     }
 
+    pub(super) fn set_execution_image(&mut self, image: ExecutionImageSummary) {
+        self.execution_image = Some(image);
+    }
+
     pub(super) fn clear_credential_interaction(&mut self) {
         self.credential_dialog = None;
     }
 
     pub(super) fn clear_repository_interaction(&mut self) {
         self.repository_dialog = None;
+    }
+
+    pub(super) fn clear_execution_image_interaction(&mut self) {
+        self.execution_image_dialog = None;
     }
 
     pub(super) fn mark_credential_status_unknown(&mut self) {
@@ -314,6 +353,7 @@ impl AppState {
         self.view = View::Session;
         self.prompt.clear();
         self.clear_repository_interaction();
+        self.clear_execution_image_interaction();
         self.transcript_scroll = 0;
         Ok(())
     }
@@ -323,6 +363,7 @@ impl AppState {
         self.session = None;
         self.prompt.clear();
         self.clear_repository_interaction();
+        self.clear_execution_image_interaction();
         self.pending = None;
         self.pending_unknown = false;
         self.transcript_scroll = 0;

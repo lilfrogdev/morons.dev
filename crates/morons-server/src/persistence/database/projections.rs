@@ -9,8 +9,9 @@ use crate::persistence::{
     types::{
         acknowledge_tool_uncertainty_fingerprint, cancel_run_fingerprint,
         create_session_fingerprint, import_repository_fingerprint_from_digest,
-        stop_server_fingerprint, submit_session_input_fingerprint, validate_display_name,
-        validate_model_selection, validate_user_text,
+        provision_execution_image_fingerprint, stop_server_fingerprint,
+        submit_session_input_fingerprint, validate_display_name, validate_model_selection,
+        validate_user_text,
     },
 };
 use crate::tools::{
@@ -24,6 +25,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_run_request_payloads(connection)?;
     validate_server_stop_facts(connection)?;
     validate_repository_import_facts(connection)?;
+    validate_execution_image_facts(connection)?;
     validate_run_canonical_facts(connection)?;
     validate_tool_facts(connection)?;
     validate_logical_sequences(connection)?;
@@ -156,6 +158,15 @@ fn validate_mutation_registry(connection: &Connection) -> Result<(), Persistence
                 OR mutation.accepted_at_milliseconds IS NOT acknowledgement.accepted_at_milliseconds
             )
             UNION ALL
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN execution_image_requests AS request
+              ON request.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 9 AND (
+                request.request_id IS NULL
+                OR mutation.accepted_sequence IS NOT request.accepted_sequence
+                OR mutation.accepted_at_milliseconds IS NOT request.accepted_at_milliseconds
+            )
+            UNION ALL
             SELECT 1 FROM session_creation_requests AS request
             LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
             WHERE mutation.operation_kind IS NOT 1
@@ -179,6 +190,10 @@ fn validate_mutation_registry(connection: &Connection) -> Result<(), Persistence
             SELECT 1 FROM tool_uncertainty_acknowledgements AS acknowledgement
             LEFT JOIN mutation_requests AS mutation ON mutation.request_id = acknowledgement.request_id
             WHERE mutation.operation_kind IS NOT 8
+            UNION ALL
+            SELECT 1 FROM execution_image_requests AS request
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
+            WHERE mutation.operation_kind IS NOT 9
         )",
         [],
         |row| row.get(0),
@@ -368,6 +383,118 @@ fn validate_repository_import_facts(connection: &Connection) -> Result<(), Persi
         {
             return Err(PersistenceError::InvalidState {
                 reason: "a repository import has an invalid canonical fingerprint",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_execution_image_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM execution_image_requests AS request
+            WHERE (SELECT COUNT(*) FROM execution_image_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 1) != 1
+               OR (SELECT COUNT(*) FROM execution_image_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id AND audit.audit_kind = 1) != 1
+               OR (request.state = 0 AND (SELECT COUNT(*) FROM execution_image_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 2) != 0)
+               OR (request.state IN (1, 2, 4) AND
+                   (SELECT COUNT(*) FROM execution_image_facts AS fact
+                    WHERE fact.request_id = request.request_id AND fact.fact_kind = 2) != 1)
+               OR (request.state = 3 AND (SELECT COUNT(*) FROM execution_image_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 2) > 1)
+               OR (SELECT COUNT(*) FROM execution_image_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 3)
+                  != CASE WHEN request.state = 2 THEN 1 ELSE 0 END
+               OR (SELECT COUNT(*) FROM execution_image_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 4)
+                  != CASE WHEN request.state = 3 THEN 1 ELSE 0 END
+               OR (SELECT COUNT(*) FROM execution_image_facts AS fact
+                   WHERE fact.request_id = request.request_id AND fact.fact_kind = 5)
+                  != CASE WHEN request.state = 4 THEN 1 ELSE 0 END
+               OR EXISTS (
+                    SELECT 1 FROM execution_image_facts AS fact
+                    WHERE fact.request_id = request.request_id AND (
+                        fact.generation_id IS NOT request.generation_id
+                        OR fact.operation_id IS NOT request.operation_id
+                        OR (fact.fact_kind = 3 AND (
+                            fact.file_count IS NOT request.file_count
+                            OR fact.directory_count IS NOT request.directory_count
+                            OR fact.logical_bytes IS NOT request.logical_bytes
+                            OR fact.manifest_digest IS NOT request.manifest_digest
+                        ))
+                    )
+               )
+               OR EXISTS (
+                    SELECT 1 FROM execution_image_audit_facts AS audit
+                    WHERE audit.request_id = request.request_id AND (
+                        audit.generation_id IS NOT request.generation_id
+                        OR audit.operation_id IS NOT request.operation_id
+                    )
+               )
+               OR (SELECT COUNT(*) FROM execution_image_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id AND audit.audit_kind = 2)
+                  != CASE WHEN request.state IN (1, 2, 4) THEN 1
+                          WHEN request.state = 3 THEN
+                            (SELECT COUNT(*) FROM execution_image_facts AS fact
+                             WHERE fact.request_id = request.request_id AND fact.fact_kind = 2)
+                          ELSE 0 END
+               OR (SELECT COUNT(*) FROM execution_image_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id AND audit.audit_kind = 3)
+                  != CASE WHEN request.state = 2 THEN 1 ELSE 0 END
+               OR (SELECT COUNT(*) FROM execution_image_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id AND audit.audit_kind = 4)
+                  != CASE WHEN request.state = 3 THEN 1 ELSE 0 END
+               OR (SELECT COUNT(*) FROM execution_image_audit_facts AS audit
+                   WHERE audit.request_id = request.request_id AND audit.audit_kind = 5)
+                  != CASE WHEN request.state = 4 THEN 1 ELSE 0 END
+            UNION ALL
+            SELECT 1 FROM current_execution_image AS current
+            JOIN execution_image_requests AS request ON request.request_id = current.request_id
+            WHERE current.singleton IS NOT 1
+               OR current.generation_id IS NOT request.generation_id
+               OR request.state IS NOT 2
+               OR current.updated_sequence IS NOT (
+                    SELECT fact_sequence FROM execution_image_facts
+                    WHERE request_id = request.request_id AND fact_kind = 3
+               )
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "execution image facts conflict with durable operation state",
+        });
+    }
+    let mut statement = connection.prepare(
+        "SELECT operation_fingerprint, toolchain_source_digest, cargo_source_digest,
+                target_os, target_arch, format_version, limits_version
+         FROM execution_image_requests",
+    )?;
+    let requests = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, [u8; 32]>(0)?,
+                row.get::<_, [u8; 32]>(1)?,
+                row.get::<_, [u8; 32]>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (fingerprint, toolchain, cargo, target_os, target_arch, format, limits) in requests {
+        if fingerprint != provision_execution_image_fingerprint(toolchain, cargo)
+            || crate::persistence::ExecutionTargetOs::from_record(target_os).is_none()
+            || crate::persistence::ExecutionTargetArch::from_record(target_arch).is_none()
+            || format != 1
+            || limits != 1
+        {
+            return Err(PersistenceError::InvalidState {
+                reason: "an execution image request has invalid canonical input",
             });
         }
     }

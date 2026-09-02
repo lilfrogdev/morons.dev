@@ -40,6 +40,7 @@ impl Fixture {
             scratch.as_path(),
             image.as_path(),
             image.join("bin").as_path(),
+            image.join("cargo").as_path(),
         ] {
             create_private_directory(path);
         }

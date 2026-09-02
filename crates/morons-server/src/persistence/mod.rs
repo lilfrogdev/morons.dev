@@ -1,6 +1,8 @@
 mod backend;
 mod credentials;
 mod database;
+mod execution_image;
+mod execution_image_operation;
 mod paths;
 mod repository;
 mod run_types;
@@ -31,6 +33,7 @@ pub use self::{
         TranscriptPage,
     },
     types::{
+        ExecutionImageState, ExecutionImageSummary, ExecutionTargetArch, ExecutionTargetOs,
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
         ServerStopResult, Session, SessionCatalogEvent, SessionCatalogEventCursor,
         SessionCatalogEventPage, SessionId, SessionListCursor, SessionPage,
@@ -38,7 +41,9 @@ pub use self::{
     },
 };
 
-pub(crate) use self::types::{RepositoryImportOutcome, RepositoryImportPlan};
+pub(crate) use self::types::{
+    ExecutionImageOutcome, ExecutionImagePlan, RepositoryImportOutcome, RepositoryImportPlan,
+};
 
 pub(crate) use self::run_types::{
     ActivationOutcome, AssistantMessagePhase, CommittedToolCall, CommittedToolTurn,
@@ -54,6 +59,7 @@ pub struct SessionStore {
     worker: Option<thread::JoinHandle<()>>,
     credential_dispatch_lock: Mutex<()>,
     repository_import_lock: Mutex<()>,
+    execution_image_lock: Mutex<()>,
     paths: paths::StoragePaths,
     event_notifications: watch::Sender<u64>,
 }
@@ -111,6 +117,7 @@ impl SessionStore {
             worker: Some(worker),
             credential_dispatch_lock: Mutex::new(()),
             repository_import_lock: Mutex::new(()),
+            execution_image_lock: Mutex::new(()),
             paths,
             event_notifications,
         })
@@ -379,6 +386,33 @@ enum WorkerRequest {
         response: oneshot::Sender<Result<Session, PersistenceError>>,
     },
     Run(RunWorkerRequest),
+    PrepareExecutionImage {
+        request_id: MutationRequestId,
+        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
+        toolchain_source_digest: [u8; REQUEST_FINGERPRINT_BYTES],
+        cargo_source_digest: [u8; REQUEST_FINGERPRINT_BYTES],
+        response: oneshot::Sender<Result<ExecutionImagePlan, PersistenceError>>,
+    },
+    DispatchExecutionImage {
+        plan: ExecutionImagePlan,
+        response: oneshot::Sender<Result<ExecutionImagePlan, PersistenceError>>,
+    },
+    CompleteExecutionImage {
+        plan: ExecutionImagePlan,
+        outcome: ExecutionImageOutcome,
+        response: oneshot::Sender<Result<ExecutionImageSummary, PersistenceError>>,
+    },
+    ExecutionImageNotApplied {
+        plan: ExecutionImagePlan,
+        response: oneshot::Sender<Result<ExecutionImageSummary, PersistenceError>>,
+    },
+    BlockExecutionImage {
+        plan: ExecutionImagePlan,
+        response: oneshot::Sender<Result<ExecutionImageSummary, PersistenceError>>,
+    },
+    GetExecutionImageSummary {
+        response: oneshot::Sender<Result<ExecutionImageSummary, PersistenceError>>,
+    },
     PrepareRepositoryImport {
         request_id: MutationRequestId,
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
@@ -469,6 +503,39 @@ fn run_worker(
                     response.send(backend.create_session(request_id, fingerprint, display_name));
             }
             WorkerRequest::Run(request) => request.execute(&mut backend),
+            WorkerRequest::PrepareExecutionImage {
+                request_id,
+                fingerprint,
+                toolchain_source_digest,
+                cargo_source_digest,
+                response,
+            } => {
+                let _ = response.send(backend.prepare_execution_image(
+                    request_id,
+                    fingerprint,
+                    toolchain_source_digest,
+                    cargo_source_digest,
+                ));
+            }
+            WorkerRequest::DispatchExecutionImage { plan, response } => {
+                let _ = response.send(backend.dispatch_execution_image(plan));
+            }
+            WorkerRequest::CompleteExecutionImage {
+                plan,
+                outcome,
+                response,
+            } => {
+                let _ = response.send(backend.complete_execution_image(plan, outcome));
+            }
+            WorkerRequest::ExecutionImageNotApplied { plan, response } => {
+                let _ = response.send(backend.mark_execution_image_not_applied(plan));
+            }
+            WorkerRequest::BlockExecutionImage { plan, response } => {
+                let _ = response.send(backend.block_execution_image(plan));
+            }
+            WorkerRequest::GetExecutionImageSummary { response } => {
+                let _ = response.send(backend.execution_image_summary());
+            }
             WorkerRequest::PrepareRepositoryImport {
                 request_id,
                 fingerprint,
@@ -592,6 +659,8 @@ fn run_worker(
 
 #[cfg(test)]
 mod credential_tests;
+#[cfg(test)]
+mod execution_image_tests;
 #[cfg(test)]
 mod repository_tests;
 #[cfg(test)]

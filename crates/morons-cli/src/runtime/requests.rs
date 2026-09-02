@@ -2,9 +2,10 @@ use std::time::Duration;
 
 use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
-    ApplicationError, FrameError, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelSummary, OpenCodeService, RunId, RunSummary, SessionCatalogEventCursor,
-    SessionEventCursor, SessionId, SessionSummary, TranscriptEntry, WorkspaceSummary,
+    ApplicationError, ExecutionImageSummary, FrameError, MutationRequestId, OpenCodeApiKey,
+    OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, RunId, RunSummary,
+    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, TranscriptEntry,
+    WorkspaceSummary,
 };
 use tokio::{sync::mpsc, time};
 
@@ -27,6 +28,7 @@ pub(super) enum RequestCommand {
     LoadSessions,
     LoadModels(OpenCodeService),
     LoadCredentialStatus,
+    LoadExecutionImageStatus,
     LoadSession(SessionId),
     CreateSession {
         mutation_request_id: MutationRequestId,
@@ -47,6 +49,11 @@ pub(super) enum RequestCommand {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
         source_path: String,
+    },
+    ProvisionExecutionImage {
+        mutation_request_id: MutationRequestId,
+        toolchain_source_path: String,
+        cargo_source_path: String,
     },
     AcknowledgeToolUncertainty {
         mutation_request_id: MutationRequestId,
@@ -73,6 +80,7 @@ impl RequestCommand {
             Self::LoadSessions
             | Self::LoadModels(_)
             | Self::LoadCredentialStatus
+            | Self::LoadExecutionImageStatus
             | Self::LoadSession(_) => None,
             Self::CreateSession {
                 mutation_request_id,
@@ -86,6 +94,10 @@ impl RequestCommand {
                 ..
             }
             | Self::ImportRepository {
+                mutation_request_id,
+                ..
+            }
+            | Self::ProvisionExecutionImage {
                 mutation_request_id,
                 ..
             }
@@ -112,11 +124,13 @@ impl RequestCommand {
             Self::LoadSessions => "session list",
             Self::LoadModels(_) => "model list",
             Self::LoadCredentialStatus => "credential status",
+            Self::LoadExecutionImageStatus => "execution image status",
             Self::LoadSession(_) => "session transcript",
             Self::CreateSession { .. } => "session creation",
             Self::SubmitInput { .. } => "message submission",
             Self::CancelRun { .. } => "run cancellation",
             Self::ImportRepository { .. } => "repository import",
+            Self::ProvisionExecutionImage { .. } => "execution image provisioning",
             Self::AcknowledgeToolUncertainty { .. } => "tool uncertainty acknowledgement",
             Self::SetCredential { .. } => "credential configuration",
             Self::RemoveCredential { .. } => "credential removal",
@@ -136,6 +150,7 @@ impl RequestCommand {
             Self::LoadSessions => Some(Self::LoadSessions),
             Self::LoadModels(service) => Some(Self::LoadModels(*service)),
             Self::LoadCredentialStatus => Some(Self::LoadCredentialStatus),
+            Self::LoadExecutionImageStatus => Some(Self::LoadExecutionImageStatus),
             Self::LoadSession(session_id) => Some(Self::LoadSession(*session_id)),
             Self::CreateSession {
                 mutation_request_id,
@@ -173,6 +188,15 @@ impl RequestCommand {
                 session_id: *session_id,
                 source_path: source_path.clone(),
             }),
+            Self::ProvisionExecutionImage {
+                mutation_request_id,
+                toolchain_source_path,
+                cargo_source_path,
+            } => Some(Self::ProvisionExecutionImage {
+                mutation_request_id: *mutation_request_id,
+                toolchain_source_path: toolchain_source_path.clone(),
+                cargo_source_path: cargo_source_path.clone(),
+            }),
             Self::AcknowledgeToolUncertainty {
                 mutation_request_id,
                 session_id,
@@ -205,6 +229,7 @@ pub(super) enum RequestEvent {
         models: Vec<OpenCodeModelSummary>,
     },
     CredentialStatusLoaded(OpenCodeCredentialStatus),
+    ExecutionImageStatusLoaded(ExecutionImageSummary),
     SessionLoaded(SessionSnapshot),
     SessionCreated {
         mutation_request_id: MutationRequestId,
@@ -222,6 +247,10 @@ pub(super) enum RequestEvent {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
         workspace: WorkspaceSummary,
+    },
+    ExecutionImageProvisioned {
+        mutation_request_id: MutationRequestId,
+        image: ExecutionImageSummary,
     },
     ToolUncertaintyAcknowledged {
         mutation_request_id: MutationRequestId,
@@ -419,11 +448,13 @@ async fn execute_credential(
         RequestCommand::LoadSessions
         | RequestCommand::LoadModels(_)
         | RequestCommand::LoadCredentialStatus
+        | RequestCommand::LoadExecutionImageStatus
         | RequestCommand::LoadSession(_)
         | RequestCommand::CreateSession { .. }
         | RequestCommand::SubmitInput { .. }
         | RequestCommand::CancelRun { .. }
         | RequestCommand::ImportRepository { .. }
+        | RequestCommand::ProvisionExecutionImage { .. }
         | RequestCommand::AcknowledgeToolUncertainty { .. }
         | RequestCommand::StopServer { .. } => {
             unreachable!("only credential mutations use credential execution")
@@ -450,6 +481,10 @@ async fn execute(
             .open_code_credential_status()
             .await
             .map(RequestResult::CredentialStatus),
+        RequestCommand::LoadExecutionImageStatus => client
+            .execution_image_status()
+            .await
+            .map(RequestResult::ExecutionImageStatus),
         RequestCommand::LoadSession(session_id) => load_session(client, *session_id)
             .await
             .map(RequestResult::Session),
@@ -503,6 +538,21 @@ async fn execute(
                 mutation_request_id: *mutation_request_id,
                 session_id: *session_id,
                 workspace,
+            }),
+        RequestCommand::ProvisionExecutionImage {
+            mutation_request_id,
+            toolchain_source_path,
+            cargo_source_path,
+        } => client
+            .provision_execution_image(
+                *mutation_request_id,
+                toolchain_source_path.clone(),
+                cargo_source_path.clone(),
+            )
+            .await
+            .map(|image| RequestResult::ExecutionImageProvisioned {
+                mutation_request_id: *mutation_request_id,
+                image,
             }),
         RequestCommand::AcknowledgeToolUncertainty {
             mutation_request_id,
@@ -630,6 +680,7 @@ enum RequestResult {
         models: Vec<OpenCodeModelSummary>,
     },
     CredentialStatus(OpenCodeCredentialStatus),
+    ExecutionImageStatus(ExecutionImageSummary),
     Session(SessionSnapshot),
     SessionCreated {
         mutation_request_id: MutationRequestId,
@@ -647,6 +698,10 @@ enum RequestResult {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
         workspace: WorkspaceSummary,
+    },
+    ExecutionImageProvisioned {
+        mutation_request_id: MutationRequestId,
+        image: ExecutionImageSummary,
     },
     ToolUncertaintyAcknowledged {
         mutation_request_id: MutationRequestId,
@@ -669,6 +724,7 @@ impl RequestResult {
             Self::Sessions((sessions, cursor)) => RequestEvent::SessionsLoaded { sessions, cursor },
             Self::Models { service, models } => RequestEvent::ModelsLoaded { service, models },
             Self::CredentialStatus(status) => RequestEvent::CredentialStatusLoaded(status),
+            Self::ExecutionImageStatus(image) => RequestEvent::ExecutionImageStatusLoaded(image),
             Self::Session(snapshot) => RequestEvent::SessionLoaded(snapshot),
             Self::SessionCreated {
                 mutation_request_id,
@@ -699,6 +755,13 @@ impl RequestResult {
                 mutation_request_id,
                 session_id,
                 workspace,
+            },
+            Self::ExecutionImageProvisioned {
+                mutation_request_id,
+                image,
+            } => RequestEvent::ExecutionImageProvisioned {
+                mutation_request_id,
+                image,
             },
             Self::ToolUncertaintyAcknowledged {
                 mutation_request_id,
@@ -745,11 +808,13 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 RequestCommand::LoadModels(service) => Some(*service),
                 RequestCommand::LoadSessions
                 | RequestCommand::LoadCredentialStatus
+                | RequestCommand::LoadExecutionImageStatus
                 | RequestCommand::LoadSession(_) => None,
                 RequestCommand::CreateSession { .. }
                 | RequestCommand::SubmitInput { .. }
                 | RequestCommand::CancelRun { .. }
                 | RequestCommand::ImportRepository { .. }
+                | RequestCommand::ProvisionExecutionImage { .. }
                 | RequestCommand::AcknowledgeToolUncertainty { .. }
                 | RequestCommand::SetCredential { .. }
                 | RequestCommand::RemoveCredential { .. }

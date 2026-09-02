@@ -54,6 +54,7 @@ impl Layout {
             for path in [&home, &temporary, &cargo_home] {
                 create_private_directory(path, false)?;
             }
+            crate::runner::seed_cargo_home(&request.image_root, &cargo_home)?;
             if ready.exists() || outcome.exists() || failure.exists() {
                 return Err(());
             }

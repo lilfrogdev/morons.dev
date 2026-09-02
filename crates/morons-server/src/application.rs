@@ -203,6 +203,42 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::GetExecutionImageStatus => {
+                let image = self
+                    .sessions
+                    .execution_image_summary()
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::ExecutionImageStatus {
+                        image: to_protocol_execution_image_summary(image),
+                    },
+                ))
+            }
+            ApplicationRequest::ProvisionExecutionImage {
+                mutation_request_id,
+                toolchain_source_path,
+                cargo_source_path,
+            } => {
+                let _lifecycle_guard = self.lifecycle_mutations.lock().await;
+                if self.stopping.load(Ordering::Acquire) || self.run_supervisor.is_stopping() {
+                    return Err(ApplicationError::ServiceUnavailable);
+                }
+                let image = self
+                    .sessions
+                    .provision_execution_image(
+                        to_persistence_mutation_id(mutation_request_id),
+                        toolchain_source_path,
+                        cargo_source_path,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::ExecutionImageProvisioned {
+                        image: to_protocol_execution_image_summary(image),
+                    },
+                ))
+            }
             ApplicationRequest::SetOpenCodeCredential {
                 mutation_request_id,
                 expected_generation,

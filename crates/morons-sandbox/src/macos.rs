@@ -39,6 +39,7 @@ pub(crate) fn execute(request: PreparedRequest, cancellation: &Cancellation) -> 
         .into_iter()
         .try_for_each(create_private_directory)
         .is_err()
+        || crate::runner::seed_cargo_home(&request.image_root, &cargo_home).is_err()
     {
         return SandboxResult::failure(request.operation_id, SandboxStatus::LaunchFailed);
     }
@@ -450,6 +451,7 @@ mod tests {
                 scratch.as_path(),
                 image.as_path(),
                 image.join("bin").as_path(),
+                image.join("cargo").as_path(),
             ] {
                 fs::create_dir(path).expect("creates fixture directory");
                 fs::set_permissions(path, fs::Permissions::from_mode(0o700))
