@@ -3,9 +3,10 @@
 use std::{
     fs,
     io::Write,
-    net::{TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Mutex, MutexGuard},
     thread,
     time::{Duration, Instant},
 };
@@ -14,6 +15,8 @@ use morons_sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxLimits, SandboxRequest, SandboxStatus, read_result,
     write_request,
 };
+
+static SANDBOX_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct Fixture {
     operation_id: [u8; 16],
@@ -90,6 +93,7 @@ impl Drop for Fixture {
 
 #[test]
 fn appcontainer_confines_files_environment_and_network() {
+    let _guard = sandbox_test_guard();
     let fixture = Fixture::new();
     fs::write(
         fixture.parent.join("host-sentinel"),
@@ -127,6 +131,7 @@ fn appcontainer_confines_files_environment_and_network() {
 
 #[test]
 fn appcontainer_enforces_timeout_output_and_background_tree_ownership() {
+    let _guard = sandbox_test_guard();
     let timeout = Fixture::new();
     let result = invoke_helper(timeout.request("sandbox_child_timeout", 100));
     assert_eq!(result.status, SandboxStatus::TimedOut, "{result:?}");
@@ -141,13 +146,20 @@ fn appcontainer_enforces_timeout_output_and_background_tree_ownership() {
 
     let background = Fixture::new();
     let result = invoke_helper(background.request("sandbox_child_background", 10_000));
-    assert_eq!(result.status, SandboxStatus::ResourceLimit, "{result:?}");
+    assert_eq!(
+        result.status,
+        SandboxStatus::ResourceLimit,
+        "{result:?}, stdout={}, stderr={}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
     thread::sleep(Duration::from_millis(500));
     assert!(!background.candidate.join("survived").exists());
 }
 
 #[test]
 fn appcontainer_job_closes_when_the_helper_is_lost() {
+    let _guard = sandbox_test_guard();
     let fixture = Fixture::new();
     let mut child = helper();
     let mut input = child.stdin.take().expect("helper stdin");
@@ -182,7 +194,8 @@ fn sandbox_child_confine() {
         .expect("network fixture")
         .parse::<u16>()
         .expect("network port");
-    assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    assert!(TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_err());
     println!("confined");
 }
 
@@ -240,6 +253,12 @@ fn sandbox_child_helper_loss() {
     fs::write("started", b"started").expect("candidate should be writable");
     thread::sleep(Duration::from_secs(10));
     fs::write("survived", b"escaped").expect("candidate remains writable");
+}
+
+fn sandbox_test_guard() -> MutexGuard<'static, ()> {
+    SANDBOX_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn inside_sandbox() -> bool {
