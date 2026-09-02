@@ -28,6 +28,12 @@ const MAX_PAGE_EXCERPT_BYTES: usize = 128 * 1_024;
 const MAX_PAGE_EXCERPT_LINES: usize = 8_000;
 const READ_BUFFER_BYTES: usize = 64 * 1_024;
 const REVIEW_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(windows)]
+const WINDOWS_DIRECTORY_ATTRIBUTE: u32 = 0x10;
+#[cfg(windows)]
+const WINDOWS_REPARSE_ATTRIBUTE: u32 = 0x400;
+#[cfg(windows)]
+const WINDOWS_STRUCTURAL_ATTRIBUTES: u32 = WINDOWS_DIRECTORY_ATTRIBUTE | WINDOWS_REPARSE_ATTRIBUTE;
 
 pub(crate) struct ReviewScan {
     pub changes: Vec<DiffChange>,
@@ -603,13 +609,16 @@ fn modified(metadata: &fs::Metadata) -> Option<std::time::SystemTime> {
 fn same_windows_entries(left: &[DirectoryEntry], right: &[DirectoryEntry]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
+            let left_structural = left.attributes & WINDOWS_STRUCTURAL_ATTRIBUTES;
+            let right_structural = right.attributes & WINDOWS_STRUCTURAL_ATTRIBUTES;
             left.name == right.name
                 && left.file_id == right.file_id
-                && left.attributes == right.attributes
                 && left.reparse_tag == right.reparse_tag
-                && left.size == right.size
-                && left.last_write_time == right.last_write_time
-                && left.change_time == right.change_time
+                && left_structural == right_structural
+                && (left_structural & WINDOWS_DIRECTORY_ATTRIBUTE != 0
+                    || (left.size == right.size
+                        && left.last_write_time == right.last_write_time
+                        && left.change_time == right.change_time))
         })
 }
 
@@ -626,5 +635,64 @@ fn invalid() -> PersistenceError {
 fn limit() -> PersistenceError {
     PersistenceError::ResourceLimit {
         resource: PersistenceResourceLimit::Workspace,
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use std::ffi::OsString;
+
+    use super::*;
+
+    fn entry() -> DirectoryEntry {
+        DirectoryEntry {
+            name: OsString::from("source.rs"),
+            file_id: [9; 16],
+            attributes: 0x20,
+            reparse_tag: None,
+            size: 17,
+            allocation_size: 4_096,
+            creation_time: 1,
+            last_write_time: 2,
+            change_time: 3,
+        }
+    }
+
+    #[test]
+    fn snapshot_ignores_incidental_allocation_and_archive_changes() {
+        let before = entry();
+        let mut after = before.clone();
+        after.allocation_size = 8_192;
+        after.attributes |= 0x800;
+        assert!(same_windows_entries(&[before], &[after]));
+    }
+
+    #[test]
+    fn snapshot_rejects_identity_structure_and_content_changes() {
+        let before = entry();
+        for after in [
+            DirectoryEntry {
+                file_id: [8; 16],
+                ..before.clone()
+            },
+            DirectoryEntry {
+                attributes: before.attributes | WINDOWS_REPARSE_ATTRIBUTE,
+                reparse_tag: Some(0xa000000c),
+                ..before.clone()
+            },
+            DirectoryEntry {
+                size: 18,
+                ..before.clone()
+            },
+            DirectoryEntry {
+                change_time: 4,
+                ..before.clone()
+            },
+        ] {
+            assert!(!same_windows_entries(
+                std::slice::from_ref(&before),
+                &[after]
+            ));
+        }
     }
 }
