@@ -140,7 +140,8 @@ impl WorktreeToolExecutor {
             }
             ToolInput::EditFile { .. }
             | ToolInput::CreateFile { .. }
-            | ToolInput::CreateDirectory { .. } => Err(ToolErrorKind::Filesystem),
+            | ToolInput::CreateDirectory { .. }
+            | ToolInput::RunCommand { .. } => Err(ToolErrorKind::Filesystem),
         };
         result
             .map(|output| ToolResult::Ok { output })

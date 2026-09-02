@@ -113,6 +113,27 @@ fn structured_tool_and_uncertainty_contracts_have_stable_json_shapes() {
         })
     );
 
+    let command = crate::TranscriptEntry::ToolCall {
+        id: MessageId::from_bytes([0x76; 16]),
+        run_id,
+        call_id: ToolCallId::from_bytes([0x77; 16]),
+        tool: ToolKind::RunCommand,
+        path: ".".to_owned(),
+        created_at_milliseconds: 43,
+    };
+    assert_eq!(
+        serde_json::to_value(command).expect("command call should encode"),
+        json!({
+            "entry": "tool_call",
+            "id": "msg_76767676767676767676767676767676",
+            "run_id": "run_72727272727272727272727272727272",
+            "call_id": "tool_77777777777777777777777777777777",
+            "tool": "run_command",
+            "path": ".",
+            "created_at_milliseconds": 43,
+        })
+    );
+
     let request = ApplicationRequest::AcknowledgeToolUncertainty {
         mutation_request_id: MutationRequestId::from_bytes([0x75; 16]),
         session_id,

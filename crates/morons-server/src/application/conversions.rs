@@ -380,6 +380,7 @@ const fn to_protocol_tool_kind(tool: crate::tools::ToolKind) -> ProtocolToolKind
         crate::tools::ToolKind::EditFile => ProtocolToolKind::EditFile,
         crate::tools::ToolKind::CreateFile => ProtocolToolKind::CreateFile,
         crate::tools::ToolKind::CreateDirectory => ProtocolToolKind::CreateDirectory,
+        crate::tools::ToolKind::RunCommand => ProtocolToolKind::RunCommand,
     }
 }
 

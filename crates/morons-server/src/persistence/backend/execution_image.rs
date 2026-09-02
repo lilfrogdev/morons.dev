@@ -99,7 +99,8 @@ impl Backend {
             });
         }
         let incomplete: bool = transaction.query_row(
-            "SELECT EXISTS (SELECT 1 FROM execution_image_requests WHERE state IN (0, 1))",
+            "SELECT EXISTS (SELECT 1 FROM execution_image_requests WHERE state IN (0, 1)
+                            UNION ALL SELECT 1 FROM runs WHERE state IN (1, 2))",
             [],
             |row| row.get(0),
         )?;

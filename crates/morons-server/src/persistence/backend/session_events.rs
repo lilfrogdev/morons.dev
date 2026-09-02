@@ -178,7 +178,8 @@ pub(super) fn load_run_at_sequence(
                 maximum_output_tokens,
                 accepted_at_milliseconds,
                 tool_catalog_version,
-                tool_limits_version
+                tool_limits_version,
+                execution_image_generation
              FROM run_accepted_facts
              WHERE run_id = ?1 AND fact_sequence <= ?2",
             params![&run_id.as_bytes()[..], sequence_to_sql(event_sequence)?],
@@ -195,6 +196,7 @@ pub(super) fn load_run_at_sequence(
                     context_policy_version: positive_u16_from_row(row, 6)?,
                     tool_catalog_version: super::run_records::nonnegative_u16_from_row(row, 12)?,
                     tool_limits_version: super::run_records::nonnegative_u16_from_row(row, 13)?,
+                    execution_image_generation: row.get(14)?,
                     source_entry_high_water: nonnegative_integer_from_row(row, 7)?,
                     estimated_input_tokens: positive_u32_from_row(row, 8)?,
                     maximum_input_tokens: positive_u32_from_row(row, 9)?,

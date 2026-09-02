@@ -1,3 +1,4 @@
+mod command;
 mod repository_import;
 
 pub(crate) use repository_import::{RepositoryRecovery, WorktreeLayoutRecovery};

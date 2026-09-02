@@ -47,8 +47,8 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
         "INSERT INTO runs (
             run_id, session_id, user_message_id, open_code_service, model_id,
             protocol_revision, credential_generation, context_policy_version,
-            tool_catalog_version, tool_limits_version, source_entry_high_water,
-            estimated_input_tokens,
+            tool_catalog_version, tool_limits_version, execution_image_generation,
+            source_entry_high_water, estimated_input_tokens,
             maximum_input_tokens, maximum_output_tokens, provider_turns, tool_calls,
             tool_mutations, tool_result_bytes, state, cancellation_requested, failure_kind,
             accepted_sequence, updated_sequence, accepted_at_milliseconds,
@@ -65,6 +65,7 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             accepted.context_policy_version,
             accepted.tool_catalog_version,
             accepted.tool_limits_version,
+            accepted.execution_image_generation,
             accepted.source_entry_high_water,
             accepted.estimated_input_tokens,
             accepted.maximum_input_tokens,
@@ -74,7 +75,7 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             (SELECT COUNT(*) FROM tool_calls AS call
              WHERE call.run_id = accepted.run_id),
             (SELECT COUNT(*) FROM tool_calls AS call
-             WHERE call.run_id = accepted.run_id AND call.tool_kind BETWEEN 4 AND 6),
+             WHERE call.run_id = accepted.run_id AND call.tool_kind BETWEEN 4 AND 7),
             COALESCE((SELECT SUM(length(result.result_payload))
                       FROM tool_operation_facts AS result
                       WHERE result.run_id = accepted.run_id

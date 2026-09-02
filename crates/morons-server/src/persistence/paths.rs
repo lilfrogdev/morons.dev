@@ -13,6 +13,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 const DATA_DIRECTORY_NAME: &str = "data";
 const WORKSPACE_DIRECTORY_NAME: &str = "workspaces";
 const EXECUTION_IMAGE_DIRECTORY_NAME: &str = "sandbox-images";
+const SANDBOX_OPERATION_DIRECTORY_NAME: &str = "sandbox-operations";
 const BACKUP_DIRECTORY_NAME: &str = "backups";
 const DATABASE_FILE_NAME: &str = "sessions.sqlite3";
 const DATABASE_INITIALIZATION_PREFIX: &str = ".sessions.sqlite3.initializing-";
@@ -69,6 +70,7 @@ pub(crate) struct StoragePaths {
     backup_directory: PathBuf,
     pub(super) workspace_directory: PathBuf,
     pub(super) execution_image_directory: PathBuf,
+    pub(super) sandbox_operation_directory: PathBuf,
     database_path: PathBuf,
 }
 
@@ -80,10 +82,12 @@ impl StoragePaths {
         let backup_directory = application_root.join(BACKUP_DIRECTORY_NAME);
         let workspace_directory = application_root.join(WORKSPACE_DIRECTORY_NAME);
         let execution_image_directory = application_root.join(EXECUTION_IMAGE_DIRECTORY_NAME);
+        let sandbox_operation_directory = application_root.join(SANDBOX_OPERATION_DIRECTORY_NAME);
         ensure_private_directory(&data_directory)?;
         ensure_private_directory(&backup_directory)?;
         ensure_private_directory(&workspace_directory)?;
         ensure_private_directory(&execution_image_directory)?;
+        ensure_private_directory(&sandbox_operation_directory)?;
 
         let paths = Self {
             application_directory: application_root.to_path_buf(),
@@ -92,6 +96,7 @@ impl StoragePaths {
             backup_directory,
             workspace_directory,
             execution_image_directory,
+            sandbox_operation_directory,
         };
         paths.cleanup_stale_database_initialization_files()?;
         paths.cleanup_and_validate_migration_backups()?;

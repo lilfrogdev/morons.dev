@@ -290,6 +290,7 @@ pub enum ToolKind {
     EditFile,
     CreateFile,
     CreateDirectory,
+    RunCommand,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

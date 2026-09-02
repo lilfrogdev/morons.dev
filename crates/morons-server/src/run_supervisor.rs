@@ -27,8 +27,9 @@ use crate::{
         ProviderToolCall, provider_cancellation,
     },
     tools::{
-        TOOL_CATALOG_VERSION, ToolCallValidationError, ToolExecution, ToolResult,
-        WorktreeToolExecutor, developer_instruction, parse_provider_calls, provider_tools,
+        STRUCTURED_TOOL_CATALOG_VERSION, TOOL_CATALOG_VERSION, ToolCallValidationError,
+        ToolExecution, ToolResult, WorktreeToolExecutor, developer_instruction,
+        parse_provider_calls, provider_tools,
     },
 };
 
@@ -367,8 +368,28 @@ impl RunSupervisor {
         calls: Vec<crate::persistence::CommittedToolCall>,
         cancellation: &ProviderCancellation,
     ) -> Result<bool, PersistenceError> {
-        let root = self.sessions.active_worktree_path(workspace_id).await?;
         for call in calls {
+            if call.input.kind() == crate::tools::ToolKind::RunCommand {
+                let entry = self
+                    .sessions
+                    .execute_command_call(run_id, workspace_id, &call, cancellation)
+                    .await?;
+                let cancelled = matches!(
+                    entry,
+                    TranscriptEntry::ToolResult {
+                        result: ToolResult::Error {
+                            error: crate::tools::ToolErrorKind::Cancelled
+                        },
+                        ..
+                    }
+                );
+                if cancelled {
+                    self.sessions.finish_run_stopped(run_id, None).await?;
+                    return Ok(true);
+                }
+                continue;
+            }
+            let root = self.sessions.active_worktree_path(workspace_id).await?;
             let prepare_root = root.clone();
             let prepare_input = call.input.clone();
             let prepare_cancellation = cancellation.clone();
@@ -500,8 +521,16 @@ fn build_provider_request(
     context: &crate::persistence::RunContext,
     reasoning_continuation: Option<&([u8; 16], Vec<ProviderInputItem>)>,
 ) -> Result<OpenCodeResponseRequest, ProviderError> {
-    let tools_enabled = context.run.tool_catalog_version == TOOL_CATALOG_VERSION
-        && context.run.tool_limits_version == crate::tools::TOOL_LIMITS_VERSION;
+    let tools_enabled = matches!(
+        (
+            context.run.tool_catalog_version,
+            context.run.tool_limits_version,
+        ),
+        (
+            STRUCTURED_TOOL_CATALOG_VERSION,
+            crate::tools::STRUCTURED_TOOL_LIMITS_VERSION
+        ) | (TOOL_CATALOG_VERSION, crate::tools::TOOL_LIMITS_VERSION)
+    );
     if (
         context.run.tool_catalog_version,
         context.run.tool_limits_version,
@@ -577,7 +606,7 @@ fn build_provider_request(
         context.run.maximum_output_tokens,
         input,
         if tools_enabled {
-            provider_tools()
+            provider_tools(context.run.tool_catalog_version)
         } else {
             Vec::new()
         },
@@ -614,7 +643,7 @@ fn normalize_provider_turn(
     if !has_tool_calls {
         return completed_assistant(outcome).map(NormalizedTurn::Final);
     }
-    if tool_catalog_version != TOOL_CATALOG_VERSION {
+    if !(STRUCTURED_TOOL_CATALOG_VERSION..=TOOL_CATALOG_VERSION).contains(&tool_catalog_version) {
         return Err(RunFailureKind::InvalidProviderOutput);
     }
     let mut commentary = None;
@@ -647,7 +676,7 @@ fn normalize_provider_turn(
             }
         }
     }
-    let calls = parse_provider_calls(calls).map_err(|error| match error {
+    let calls = parse_provider_calls(calls, tool_catalog_version).map_err(|error| match error {
         ToolCallValidationError::InvalidProviderOutput => RunFailureKind::InvalidProviderOutput,
         ToolCallValidationError::ResourceLimit => RunFailureKind::ResourceLimit,
     })?;

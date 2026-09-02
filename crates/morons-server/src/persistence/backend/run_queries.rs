@@ -296,9 +296,17 @@ impl Backend {
             .optional()?;
         let valid_tool_versions =
             matches!((run.tool_catalog_version, run.tool_limits_version), (0, 0))
-                || (run.tool_catalog_version == crate::tools::TOOL_CATALOG_VERSION
-                    && run.tool_limits_version == crate::tools::TOOL_LIMITS_VERSION
-                    && workspace_id.is_some());
+                || (workspace_id.is_some()
+                    && matches!(
+                        (run.tool_catalog_version, run.tool_limits_version),
+                        (
+                            crate::tools::STRUCTURED_TOOL_CATALOG_VERSION,
+                            crate::tools::STRUCTURED_TOOL_LIMITS_VERSION
+                        ) | (
+                            crate::tools::TOOL_CATALOG_VERSION,
+                            crate::tools::TOOL_LIMITS_VERSION
+                        )
+                    ));
         if !valid_tool_versions {
             return Err(PersistenceError::InvalidState {
                 reason: "the run tool catalog conflicts with its ready workspace",

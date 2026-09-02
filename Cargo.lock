@@ -806,6 +806,7 @@ dependencies = [
  "interprocess",
  "morons-cli",
  "morons-protocol",
+ "morons-sandbox",
  "rusqlite",
  "rustix",
  "serde",

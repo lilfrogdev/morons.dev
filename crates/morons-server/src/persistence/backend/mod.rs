@@ -1,3 +1,4 @@
+pub(super) mod command_execution;
 mod creation;
 mod credential_mutation;
 mod execution_image;
