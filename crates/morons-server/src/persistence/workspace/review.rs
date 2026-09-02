@@ -4,7 +4,7 @@ use morons_protocol::{DiffChange, DiffChangeKind, DiffNodeKind};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, File},
+    fs::File,
     io::Read,
     path::Path,
     time::{Duration, Instant},
@@ -13,7 +13,7 @@ use std::{
 #[cfg(windows)]
 use fence_windows::{DirectoryEntry, DirectoryHandle, NodeHandle, NodeKind, RootHandle};
 #[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
+use std::{fs, os::unix::fs::MetadataExt};
 
 const CONTENT_MANIFEST_CONTEXT: &[u8] = b"morons.dev/repository-manifest/v1\0";
 const REVIEW_MANIFEST_CONTEXT: &[u8] = b"morons.dev/review-manifest/v1\0";
