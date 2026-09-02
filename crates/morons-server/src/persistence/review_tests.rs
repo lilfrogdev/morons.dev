@@ -258,6 +258,23 @@ async fn review_fails_closed_when_baseline_mode_provenance_is_unavailable() {
     assert!(matches!(error, PersistenceError::ReviewUnavailable));
 }
 
+#[cfg(windows)]
+#[tokio::test(flavor = "current_thread")]
+async fn review_rejects_alternate_data_streams() {
+    let (_application, _source, store, session) = imported_store("review-stream").await;
+    let active = store
+        .active_worktree_path(session.workspace_id)
+        .await
+        .expect("active worktree should resolve");
+    fs::write(active.join("modified.txt:alternate"), b"hidden")
+        .expect("alternate stream should be created");
+    let error = store
+        .review_diff(session.id, None, 10)
+        .await
+        .expect_err("alternate streams should fail closed");
+    assert!(matches!(error, PersistenceError::InvalidState { .. }));
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn review_rejects_links_without_disclosing_the_target() {
