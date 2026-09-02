@@ -360,58 +360,6 @@ async fn client_acknowledges_only_the_exact_uncertain_run() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn client_imports_repository_with_exact_session_scope() {
-    let (client_connection, mut server) = tokio::io::duplex(4096);
-    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
-    let mutation_request_id = MutationRequestId::from_bytes([0x61; 16]);
-    let session_id = SessionId::from_bytes([0x62; 16]);
-    let workspace = WorkspaceSummary {
-        state: WorkspaceState::Ready,
-        file_count: 2,
-        logical_bytes: 20,
-        block_reason: None,
-        blocked_run_id: None,
-        blocked_tool: None,
-    };
-    let client_exchange = async {
-        assert_eq!(
-            client
-                .import_repository(
-                    mutation_request_id,
-                    session_id,
-                    "/safe/repository".to_owned(),
-                )
-                .await
-                .expect("repository import should resolve"),
-            workspace
-        );
-    };
-    let server_exchange = async {
-        assert_eq!(
-            read_request(&mut server, 1).await,
-            ApplicationRequest::ImportRepository {
-                mutation_request_id,
-                session_id,
-                source_path: "/safe/repository".to_owned(),
-            }
-        );
-        write_server_message(
-            &mut server,
-            &ServerMessage::response(
-                1,
-                ApplicationResponse::RepositoryImported {
-                    session_id,
-                    workspace,
-                },
-            ),
-        )
-        .await
-        .expect("repository response should be written");
-    };
-    tokio::join!(client_exchange, server_exchange);
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn client_stops_the_server_with_one_stable_mutation() {
     let (client_connection, mut server) = tokio::io::duplex(2048);
     let mut client = ApplicationClient::from_negotiated_connection(client_connection);

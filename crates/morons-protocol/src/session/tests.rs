@@ -239,54 +239,6 @@ fn model_catalog_contract_has_stable_json_shape() {
 }
 
 #[test]
-fn repository_import_contract_is_stable_and_path_debug_is_redacted() {
-    let request = ApplicationRequest::ImportRepository {
-        mutation_request_id: MutationRequestId::from_bytes([0x31; 16]),
-        session_id: SessionId::from_bytes([0x32; 16]),
-        source_path: "/private/sensitive/repository".to_owned(),
-    };
-    let debug = format!("{request:?}");
-    assert!(!debug.contains("/private/sensitive/repository"));
-    assert!(debug.contains("source_path_bytes"));
-    assert_eq!(
-        serde_json::to_value(request).expect("repository import should encode"),
-        json!({
-            "operation": "import_repository",
-            "mutation_request_id": "mut_31313131313131313131313131313131",
-            "session_id": "ses_32323232323232323232323232323232",
-            "source_path": "/private/sensitive/repository",
-        })
-    );
-
-    let response = ApplicationResponse::RepositoryImported {
-        session_id: SessionId::from_bytes([0x32; 16]),
-        workspace: WorkspaceSummary {
-            state: WorkspaceState::Ready,
-            file_count: 3,
-            logical_bytes: 99,
-            block_reason: None,
-            blocked_run_id: None,
-            blocked_tool: None,
-        },
-    };
-    assert_eq!(
-        serde_json::to_value(response).expect("repository response should encode"),
-        json!({
-            "result": "repository_imported",
-            "session_id": "ses_32323232323232323232323232323232",
-            "workspace": {
-                "state": "ready",
-                "file_count": 3,
-                "logical_bytes": 99,
-                "block_reason": null,
-                "blocked_run_id": null,
-                "blocked_tool": null,
-            },
-        })
-    );
-}
-
-#[test]
 fn credential_status_has_stable_json_shape() {
     let response = ApplicationResponse::OpenCodeCredentialStatus {
         credential: OpenCodeCredentialStatus {
@@ -602,6 +554,18 @@ fn application_request_rejects_unknown_fields() {
         "cursor": null,
         "limit": 10,
         "extra": true,
+    });
+
+    assert!(serde_json::from_value::<ApplicationRequest>(encoded).is_err());
+}
+
+#[test]
+fn removed_repository_import_operation_is_rejected() {
+    let encoded = json!({
+        "operation": "import_repository",
+        "mutation_request_id": "mut_31313131313131313131313131313131",
+        "session_id": "ses_32323232323232323232323232323232",
+        "source_path": "/private/repository",
     });
 
     assert!(serde_json::from_value::<ApplicationRequest>(encoded).is_err());

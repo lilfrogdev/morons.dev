@@ -29,9 +29,9 @@ pub use run::{
 };
 pub use session::{
     APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
-    ApplicationResponse, MAX_REPOSITORY_SOURCE_PATH_BYTES, MAX_WORKING_DIRECTORY_PATH_BYTES,
-    MutationRequestId, ResourceLimit, SessionCatalogEventCursor, SessionEventCursor, SessionId,
-    SessionListCursor, SessionSummary, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
+    ApplicationResponse, MAX_WORKING_DIRECTORY_PATH_BYTES, MutationRequestId, ResourceLimit,
+    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
+    WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;

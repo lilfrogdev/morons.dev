@@ -24,7 +24,8 @@ use crate::{
 use super::{
     MutationRequestId, PersistenceError, RunModelSelection, RunOpenCodeService,
     SessionCatalogEventCursor, SessionId, SessionListCursor, SessionStore, database,
-    paths::StoragePaths, types::create_session_fingerprint,
+    paths::{StoragePaths, encode_hex},
+    types::create_session_fingerprint,
 };
 
 #[cfg(unix)]
@@ -323,6 +324,34 @@ async fn sessions_are_idempotent_queryable_paginated_and_durable() {
         .expect("durable events should replay after restart");
     assert_eq!(replay_after_restart.events.len(), 1);
     assert_eq!(replay_after_restart.events[0].session, fourth);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_does_not_inspect_obsolete_private_workspace_contents() {
+    let root = TestRoot::new("obsolete-workspace-ignored");
+    let session = {
+        let store = SessionStore::open_at(root.path()).expect("session store should open");
+        store
+            .create_session(MutationRequestId::from_bytes([0x34; 16]), None)
+            .await
+            .expect("session should be created")
+    };
+    fs::remove_dir_all(
+        root.path()
+            .join("workspaces")
+            .join(encode_hex(&session.workspace_id)),
+    )
+    .expect("obsolete private workspace should be removable");
+
+    let reopened = SessionStore::open_at(root.path())
+        .expect("direct session startup must not inspect obsolete workspace contents");
+    assert_eq!(
+        reopened
+            .get_session(session.id)
+            .await
+            .expect("session query should succeed"),
+        Some(session)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1583,11 +1612,6 @@ fn assert_mode(path: &Path, expected: u32) {
     let metadata = fs::symlink_metadata(path).expect("path metadata should be readable");
     assert_eq!(metadata.mode() & 0o777, expected);
     assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
-}
-
-#[cfg(unix)]
-fn encode_hex(bytes: &[u8; 16]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn protocol_session_event_cursor(

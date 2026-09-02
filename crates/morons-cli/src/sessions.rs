@@ -151,6 +151,9 @@ fn write_application_error(
         ApplicationError::SessionBusy { active_run_id } => {
             write!(formatter, "session is busy with {active_run_id:?}")
         }
+        ApplicationError::WorkingDirectoryUnavailable => {
+            formatter.write_str("the session working directory is unavailable")
+        }
         ApplicationError::UnsupportedModel => {
             formatter.write_str("selected OpenCode model is unsupported")
         }
@@ -163,16 +166,7 @@ fn write_application_error(
         ApplicationError::CredentialMutationNotApplied => {
             formatter.write_str("OpenCode credential update was not applied")
         }
-        ApplicationError::WorkspaceNotPristine => {
-            formatter.write_str("repository import requires a pristine session")
-        }
         ApplicationError::WorkspaceBusy => formatter.write_str("session workspace is busy"),
-        ApplicationError::RepositoryAlreadyImported => {
-            formatter.write_str("session already has an imported repository")
-        }
-        ApplicationError::RepositoryImportNotApplied => {
-            formatter.write_str("repository import was not applied")
-        }
         ApplicationError::WorkspaceBlocked => formatter.write_str("session workspace is blocked"),
         ApplicationError::ResourceLimit {
             resource: ResourceLimit::Sessions,
@@ -628,33 +622,6 @@ where
             return Err(self.unexpected_application_response());
         };
         Ok(credential)
-    }
-
-    pub async fn import_repository(
-        &mut self,
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        source_path: String,
-    ) -> Result<WorkspaceSummary, ApplicationClientError> {
-        let response = self
-            .request(ApplicationRequest::ImportRepository {
-                mutation_request_id,
-                session_id,
-                source_path,
-            })
-            .await?;
-        let ApplicationResponse::RepositoryImported {
-            session_id: response_session_id,
-            workspace,
-        } = response
-        else {
-            return Err(self.unexpected_application_response());
-        };
-        if response_session_id != session_id || !valid_workspace_summary(workspace) {
-            self.usable = false;
-            return Err(ApplicationClientError::EventScopeMismatch);
-        }
-        Ok(workspace)
     }
 
     pub async fn remove_open_code_credential(

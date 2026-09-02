@@ -105,7 +105,6 @@ impl ServerApplication {
     pub async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
         self.run_supervisor.shutdown().await;
-        self.sessions.drain_workspace_operations().await;
     }
 
     pub(crate) async fn execute_for_local_owner(
@@ -240,31 +239,6 @@ impl ServerApplication {
                 Ok(ApplicationOutcome::Response(
                     ApplicationResponse::OpenCodeCredentialUpdated {
                         credential: to_protocol_credential_status(credential),
-                    },
-                ))
-            }
-            ApplicationRequest::ImportRepository {
-                mutation_request_id,
-                session_id,
-                source_path,
-            } => {
-                let _lifecycle_guard = self.lifecycle_mutations.lock().await;
-                if self.stopping.load(Ordering::Acquire) || self.run_supervisor.is_stopping() {
-                    return Err(ApplicationError::ServiceUnavailable);
-                }
-                let workspace = self
-                    .sessions
-                    .import_repository(
-                        to_persistence_mutation_id(mutation_request_id),
-                        to_persistence_session_id(session_id),
-                        source_path,
-                    )
-                    .await
-                    .map_err(to_application_error)?;
-                Ok(ApplicationOutcome::Response(
-                    ApplicationResponse::RepositoryImported {
-                        session_id,
-                        workspace: to_protocol_workspace_summary(workspace),
                     },
                 ))
             }

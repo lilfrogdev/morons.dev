@@ -3,7 +3,6 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 pub const APPLICATION_IDENTIFIER_BYTES: usize = 16;
-pub const MAX_REPOSITORY_SOURCE_PATH_BYTES: usize = 4096;
 pub const MAX_WORKING_DIRECTORY_PATH_BYTES: usize = 4096;
 const SESSION_LIST_CURSOR_BYTES: usize = 16;
 const SESSION_CATALOG_CURSOR_BYTES: usize = 8;
@@ -260,11 +259,6 @@ pub enum ApplicationRequest {
         mutation_request_id: MutationRequestId,
         expected_generation: u64,
     },
-    ImportRepository {
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        source_path: String,
-    },
     SubmitSessionInput {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
@@ -348,16 +342,6 @@ impl fmt::Debug for ApplicationRequest {
                 .debug_struct("RemoveOpenCodeCredential")
                 .field("mutation_request_id", mutation_request_id)
                 .field("expected_generation", expected_generation)
-                .finish(),
-            Self::ImportRepository {
-                mutation_request_id,
-                session_id,
-                source_path,
-            } => formatter
-                .debug_struct("ImportRepository")
-                .field("mutation_request_id", mutation_request_id)
-                .field("session_id", session_id)
-                .field("source_path_bytes", &source_path.len())
                 .finish(),
             Self::SubmitSessionInput {
                 mutation_request_id,
@@ -449,10 +433,6 @@ pub enum ApplicationResponse {
     },
     OpenCodeCredentialUpdated {
         credential: crate::OpenCodeCredentialStatus,
-    },
-    RepositoryImported {
-        session_id: SessionId,
-        workspace: WorkspaceSummary,
     },
     SessionInputAccepted {
         user_message_id: crate::MessageId,
@@ -637,14 +617,12 @@ pub enum ApplicationError {
     SessionNotFound,
     RunNotFound,
     SessionBusy { active_run_id: crate::RunId },
+    WorkingDirectoryUnavailable,
     UnsupportedModel,
     OpenCodeCredentialNotConfigured,
     CredentialGenerationConflict,
     CredentialMutationNotApplied,
-    WorkspaceNotPristine,
     WorkspaceBusy,
-    RepositoryAlreadyImported,
-    RepositoryImportNotApplied,
     WorkspaceBlocked,
     ResourceLimit { resource: ResourceLimit },
     ServiceUnavailable,

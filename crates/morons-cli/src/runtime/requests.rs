@@ -43,11 +43,6 @@ pub(super) enum RequestCommand {
         session_id: SessionId,
         run_id: RunId,
     },
-    ImportRepository {
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        source_path: String,
-    },
     AcknowledgeToolUncertainty {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
@@ -85,10 +80,6 @@ impl RequestCommand {
                 mutation_request_id,
                 ..
             }
-            | Self::ImportRepository {
-                mutation_request_id,
-                ..
-            }
             | Self::AcknowledgeToolUncertainty {
                 mutation_request_id,
                 ..
@@ -116,7 +107,6 @@ impl RequestCommand {
             Self::CreateSession { .. } => "session creation",
             Self::SubmitInput { .. } => "message submission",
             Self::CancelRun { .. } => "run cancellation",
-            Self::ImportRepository { .. } => "repository import",
             Self::AcknowledgeToolUncertainty { .. } => "tool uncertainty acknowledgement",
             Self::SetCredential { .. } => "credential configuration",
             Self::RemoveCredential { .. } => "credential removal",
@@ -164,15 +154,6 @@ impl RequestCommand {
                 session_id: *session_id,
                 run_id: *run_id,
             }),
-            Self::ImportRepository {
-                mutation_request_id,
-                session_id,
-                source_path,
-            } => Some(Self::ImportRepository {
-                mutation_request_id: *mutation_request_id,
-                session_id: *session_id,
-                source_path: source_path.clone(),
-            }),
             Self::AcknowledgeToolUncertainty {
                 mutation_request_id,
                 session_id,
@@ -217,11 +198,6 @@ pub(super) enum RequestEvent {
     CancellationResolved {
         mutation_request_id: MutationRequestId,
         result: RunCancellationResult,
-    },
-    RepositoryImported {
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        workspace: WorkspaceSummary,
     },
     ToolUncertaintyAcknowledged {
         mutation_request_id: MutationRequestId,
@@ -423,7 +399,6 @@ async fn execute_credential(
         | RequestCommand::CreateSession { .. }
         | RequestCommand::SubmitInput { .. }
         | RequestCommand::CancelRun { .. }
-        | RequestCommand::ImportRepository { .. }
         | RequestCommand::AcknowledgeToolUncertainty { .. }
         | RequestCommand::StopServer { .. } => {
             unreachable!("only credential mutations use credential execution")
@@ -491,18 +466,6 @@ async fn execute(
             .map(|result| RequestResult::CancellationResolved {
                 mutation_request_id: *mutation_request_id,
                 result,
-            }),
-        RequestCommand::ImportRepository {
-            mutation_request_id,
-            session_id,
-            source_path,
-        } => client
-            .import_repository(*mutation_request_id, *session_id, source_path.clone())
-            .await
-            .map(|workspace| RequestResult::RepositoryImported {
-                mutation_request_id: *mutation_request_id,
-                session_id: *session_id,
-                workspace,
             }),
         RequestCommand::AcknowledgeToolUncertainty {
             mutation_request_id,
@@ -643,11 +606,6 @@ enum RequestResult {
         mutation_request_id: MutationRequestId,
         result: RunCancellationResult,
     },
-    RepositoryImported {
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        workspace: WorkspaceSummary,
-    },
     ToolUncertaintyAcknowledged {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
@@ -690,15 +648,6 @@ impl RequestResult {
             } => RequestEvent::CancellationResolved {
                 mutation_request_id,
                 result,
-            },
-            Self::RepositoryImported {
-                mutation_request_id,
-                session_id,
-                workspace,
-            } => RequestEvent::RepositoryImported {
-                mutation_request_id,
-                session_id,
-                workspace,
             },
             Self::ToolUncertaintyAcknowledged {
                 mutation_request_id,
@@ -749,7 +698,6 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 RequestCommand::CreateSession { .. }
                 | RequestCommand::SubmitInput { .. }
                 | RequestCommand::CancelRun { .. }
-                | RequestCommand::ImportRepository { .. }
                 | RequestCommand::AcknowledgeToolUncertainty { .. }
                 | RequestCommand::SetCredential { .. }
                 | RequestCommand::RemoveCredential { .. }

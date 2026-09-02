@@ -262,19 +262,6 @@ impl RuntimeState {
                 self.start_mutation(command, PendingOperation::CancelRun, commands)?;
                 self.app.set_status("Requesting exact-run cancellation");
             }
-            AppAction::ImportRepository {
-                session_id,
-                source_path,
-            } => {
-                let command = RequestCommand::ImportRepository {
-                    mutation_request_id: generate_mutation_request_id()?,
-                    session_id,
-                    source_path,
-                };
-                self.start_mutation(command, PendingOperation::ImportRepository, commands)?;
-                self.app
-                    .set_status("Importing repository into isolated workspace");
-            }
             AppAction::AcknowledgeToolUncertainty { session_id, run_id } => {
                 let command = RequestCommand::AcknowledgeToolUncertainty {
                     mutation_request_id: generate_mutation_request_id()?,
@@ -353,7 +340,6 @@ impl RuntimeState {
         match event {
             RequestEvent::ConnectionRestored { server_version } => {
                 self.app.clear_credential_interaction();
-                self.app.clear_repository_interaction();
                 self.app.server_version = SafeText::from_untrusted(&server_version);
                 self.app.replace_models(OpenCodeService::Zen, Vec::new())?;
                 self.app.replace_models(OpenCodeService::Go, Vec::new())?;
@@ -426,25 +412,13 @@ impl RuntimeState {
                     "Run was already terminal"
                 });
             }
-            RequestEvent::RepositoryImported {
-                mutation_request_id,
-                session_id,
-                workspace,
-            } => {
-                self.finish_mutation(mutation_request_id)?;
-                self.app.repository_imported(session_id, workspace)?;
-                self.app.set_status(format!(
-                    "Repository imported: {} files, {} logical bytes",
-                    workspace.file_count, workspace.logical_bytes
-                ));
-            }
             RequestEvent::ToolUncertaintyAcknowledged {
                 mutation_request_id,
                 session_id,
                 workspace,
             } => {
                 self.finish_mutation(mutation_request_id)?;
-                self.app.repository_imported(session_id, workspace)?;
+                self.app.workspace_updated(session_id, workspace)?;
                 self.app.set_status(
                     "Uncertain effect acknowledged and parked; no effect was retried or resolved",
                 );
@@ -543,7 +517,6 @@ impl RuntimeState {
             SubscriptionEvent::Session { .. } => {}
             SubscriptionEvent::CatalogConnectionLost => {
                 self.app.clear_credential_interaction();
-                self.app.clear_repository_interaction();
                 self.app.set_status(
                     "Session catalog connection lost; reconnecting and clearing transient input",
                 );
@@ -553,7 +526,6 @@ impl RuntimeState {
             {
                 self.app.clear_transient_assistant();
                 self.app.clear_credential_interaction();
-                self.app.clear_repository_interaction();
                 self.app.set_status(
                     "Session connection lost; transient output and credential input were discarded",
                 );
@@ -580,7 +552,6 @@ impl RuntimeState {
                     self.app.clear_transient_assistant();
                 }
                 self.app.clear_credential_interaction();
-                self.app.clear_repository_interaction();
                 self.app.set_status(format!("{scope} stopped: {error}"));
             }
         }

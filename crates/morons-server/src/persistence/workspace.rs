@@ -1,7 +1,4 @@
 mod command;
-mod repository_import;
-
-pub(crate) use repository_import::{RepositoryRecovery, WorktreeLayoutRecovery};
 
 use std::{
     ffi::OsStr,
@@ -13,7 +10,7 @@ use std::{
 use super::{
     paths::{
         PathError, StoragePaths, create_private_file, encode_hex, ensure_private_directory,
-        path_entry_exists, sync_directory, validate_private_directory, validate_private_file,
+        path_entry_exists, sync_directory, validate_private_file,
     },
     types::IDENTIFIER_BYTES,
 };
@@ -63,46 +60,6 @@ impl StoragePaths {
         sync_directory(&workspace_path)?;
         validate_workspace_identity(&identity_path, workspace_id)
     }
-
-    pub(crate) fn validate_workspace(
-        &self,
-        workspace_id: &[u8; IDENTIFIER_BYTES],
-        repository_expected: bool,
-        repository_blocked: bool,
-    ) -> Result<(), PathError> {
-        let workspace_path = self.workspace_directory.join(encode_hex(workspace_id));
-        validate_private_directory(&workspace_path)?;
-        validate_workspace_identity(
-            &workspace_path.join(WORKSPACE_IDENTITY_FILE_NAME),
-            workspace_id,
-        )?;
-        for entry in fs::read_dir(&workspace_path)? {
-            let name = entry?.file_name();
-            if name == OsStr::new(WORKSPACE_IDENTITY_FILE_NAME)
-                || repository_expected && name == OsStr::new("repository")
-                || repository_blocked && is_repository_staging_name(&name)
-            {
-                continue;
-            }
-            return Err(PathError::InvalidState {
-                reason: "a workspace contains unexpected state",
-            });
-        }
-        Ok(())
-    }
-}
-
-fn is_repository_staging_name(name: &OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return false;
-    };
-    let Some(identifier) = name.strip_prefix(".repository-importing-") else {
-        return false;
-    };
-    identifier.len() == 32
-        && identifier
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub(super) fn validate_workspace_identity(

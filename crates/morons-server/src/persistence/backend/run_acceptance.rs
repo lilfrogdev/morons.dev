@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
 use super::{
@@ -49,6 +51,20 @@ impl Backend {
         if let Some(existing) = resolve_existing_input(&self.connection, request_id, &fingerprint)?
         {
             return Ok(existing);
+        }
+
+        let working_directory = self
+            .connection
+            .query_row(
+                "SELECT working_directory FROM sessions WHERE session_id = ?1",
+                [&session_id.as_bytes()[..]],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .ok_or(PersistenceError::SessionNotFound)?
+            .ok_or(PersistenceError::WorkingDirectoryUnavailable)?;
+        if !Path::new(&working_directory).is_dir() {
+            return Err(PersistenceError::WorkingDirectoryUnavailable);
         }
 
         self.credentials.ensure_consistent()?;
