@@ -784,6 +784,7 @@ dependencies = [
  "getrandom 0.4.3",
  "landlock",
  "libc",
+ "morons-windows-native",
  "rustix",
  "seccompiler",
  "serde",

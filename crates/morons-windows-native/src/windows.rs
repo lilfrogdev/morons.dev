@@ -4,14 +4,13 @@ mod profile;
 
 use std::fmt;
 
-pub use launch::{BootstrapLaunch, BootstrapLimits, BootstrapProcess};
+pub use launch::{CommandCompletion, CommandLaunch, CommandLimits, CommandProcess};
 pub use profile::OperationProfile;
 
 pub struct OperationPaths<'a> {
     pub candidate: &'a std::path::Path,
     pub runtime: &'a std::path::Path,
     pub image: &'a std::path::Path,
-    pub bootstrap: &'a std::path::Path,
 }
 
 #[derive(Clone, Copy)]

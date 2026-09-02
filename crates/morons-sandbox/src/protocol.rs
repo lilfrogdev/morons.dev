@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const SANDBOX_PROTOCOL_VERSION: u16 = 2;
+pub const SANDBOX_PROTOCOL_VERSION: u16 = 3;
 const FRAME_MAGIC: &[u8; 4] = b"MSBX";
 const HEADER_BYTES: usize = 10;
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
@@ -62,6 +62,7 @@ pub struct SandboxExit {
 pub enum SandboxStatus {
     Exited,
     Signalled,
+    Crashed,
     Cancelled,
     TimedOut,
     OutputLimit,
@@ -101,11 +102,12 @@ impl SandboxResult {
     fn is_valid(&self) -> bool {
         let exited = self.status == SandboxStatus::Exited;
         let signalled = self.status == SandboxStatus::Signalled;
+        let crashed = self.status == SandboxStatus::Crashed;
         let exit_valid = self.exit.is_some_and(|exit| {
-            (exited && exit.code.is_some() && exit.signal.is_none())
+            ((exited || crashed) && exit.code.is_some() && exit.signal.is_none())
                 || (signalled && exit.code.is_none() && exit.signal.is_some())
         });
-        let completed = exited || signalled;
+        let completed = exited || signalled || crashed;
         let identifier_valid = self.operation_id.iter().any(|byte| *byte != 0)
             || self.status == SandboxStatus::RequestRejected;
         self.protocol_version == SANDBOX_PROTOCOL_VERSION
@@ -310,6 +312,20 @@ mod tests {
         let mut invalid = signalled;
         invalid.candidate_eligible = true;
         assert!(write_result(&mut Vec::new(), &invalid).is_err());
+
+        let crashed = SandboxResult {
+            protocol_version: SANDBOX_PROTOCOL_VERSION,
+            operation_id: [7; 16],
+            status: SandboxStatus::Crashed,
+            exit: Some(SandboxExit {
+                code: Some(-1_073_741_819),
+                signal: None,
+            }),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            candidate_eligible: false,
+        };
+        assert!(write_result(&mut Vec::new(), &crashed).is_ok());
     }
 
     #[test]

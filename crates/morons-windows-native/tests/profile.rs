@@ -1,8 +1,10 @@
 #![cfg(windows)]
 
-use std::{fs, path::PathBuf, time::Duration};
+use std::{fs, io::Read, path::PathBuf, time::Duration};
 
-use morons_windows_native::{BootstrapLaunch, BootstrapLimits, OperationPaths, OperationProfile};
+use morons_windows_native::{
+    CommandCompletion, CommandLaunch, CommandLimits, OperationPaths, OperationProfile,
+};
 
 #[test]
 fn operation_profile_grants_only_typed_private_paths() {
@@ -12,29 +14,24 @@ fn operation_profile_grants_only_typed_private_paths() {
     let candidate = root.join("candidate");
     let runtime = root.join("runtime");
     let image = root.join("image");
-    let bootstrap = image.join("bootstrap.exe");
+    let image_bin = image.join("bin");
+    let executable = image_bin.join("fixture.exe");
     let temporary = runtime.join("tmp");
     let home = runtime.join("home");
     let local = runtime.join("local-app-data");
     let roaming = runtime.join("app-data");
     let public = runtime.join("public");
-    let control = runtime.join("control");
+    let cargo = runtime.join("cargo-home");
     for directory in [
-        &candidate, &temporary, &home, &local, &roaming, &public, &control, &image,
+        &candidate, &temporary, &home, &local, &roaming, &public, &cargo, &image, &image_bin,
     ] {
         fs::create_dir_all(directory).expect("private test directory should be created");
     }
     fs::copy(
         std::env::current_exe().expect("test executable path should be available"),
-        &bootstrap,
+        &executable,
     )
-    .expect("private bootstrap copy should be created");
-    let input = control.join("input");
-    let output = control.join("output");
-    let gate = control.join("gate");
-    let done = control.join("done");
-    fs::write(&input, b"test").expect("input fixture should be created");
-    fs::write(&output, b"").expect("output fixture should be created");
+    .expect("private executable copy should be created");
 
     let profile = OperationProfile::create(operation_id)
         .expect("operation AppContainer profile should be created");
@@ -43,31 +40,42 @@ fn operation_profile_grants_only_typed_private_paths() {
             candidate: &candidate,
             runtime: &runtime,
             image: &image,
-            bootstrap: &bootstrap,
         })
         .expect("operation-private ACL grants should be installed");
-    let process = profile
-        .launch_bootstrap(BootstrapLaunch {
-            executable: &bootstrap,
+    let arguments = vec!["--morons-native-child".to_owned()];
+    let mut process = profile
+        .launch_command(CommandLaunch {
+            executable: &executable,
+            arguments: &arguments,
+            candidate: &candidate,
             working_directory: &candidate,
             runtime: &runtime,
-            input: &input,
-            output: &output,
-            gate: &gate,
-            done: &done,
-            limits: BootstrapLimits {
+            image: &image,
+            limits: CommandLimits {
                 memory_bytes: 512 * 1024 * 1024,
                 process_count: 8,
             },
         })
-        .expect("bootstrap should launch suspended, join its Job, and resume");
-    assert_ne!(process.id(), 0);
-    let _ = process
-        .wait_root(Duration::from_secs(10))
-        .expect("bootstrap wait should remain observable");
-    process
-        .terminate_and_verify(Duration::from_secs(2))
-        .expect("bootstrap Job should terminate with no active members");
+        .expect("command should launch suspended, join its Job, and resume");
+    let mut stdout = process
+        .take_stdout()
+        .expect("stdout endpoint should be available exactly once");
+    let mut stderr = process
+        .take_stderr()
+        .expect("stderr endpoint should be available exactly once");
+    assert!(matches!(
+        process
+            .complete_and_verify(Duration::from_secs(10))
+            .expect("command tree completion should be verified"),
+        CommandCompletion::Clean { .. }
+    ));
+    let mut output = Vec::new();
+    stdout
+        .read_to_end(&mut output)
+        .expect("stdout should close after command completion");
+    stderr
+        .read_to_end(&mut output)
+        .expect("stderr should close after command completion");
     profile
         .delete()
         .expect("operation AppContainer profile should be deleted");

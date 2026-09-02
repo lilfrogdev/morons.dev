@@ -5,6 +5,6 @@ mod windows;
 
 #[cfg(windows)]
 pub use windows::{
-    BootstrapLaunch, BootstrapLimits, BootstrapProcess, NativeError, OperationPaths,
+    CommandCompletion, CommandLaunch, CommandLimits, CommandProcess, NativeError, OperationPaths,
     OperationProfile,
 };
