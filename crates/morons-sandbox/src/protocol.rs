@@ -5,7 +5,7 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const SANDBOX_PROTOCOL_VERSION: u16 = 2;
+pub const SANDBOX_PROTOCOL_VERSION: u16 = 3;
 const FRAME_MAGIC: &[u8; 4] = b"MSBX";
 const HEADER_BYTES: usize = 10;
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
