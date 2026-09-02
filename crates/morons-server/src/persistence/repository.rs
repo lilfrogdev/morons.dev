@@ -104,7 +104,6 @@ impl SessionStore {
 
     pub(crate) async fn drain_workspace_operations(&self) {
         let _repository_guard = self.repository_import_lock.lock().await;
-        let _image_guard = self.execution_image_lock.lock().await;
     }
 
     async fn prepare_repository_import(

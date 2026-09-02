@@ -189,7 +189,7 @@ impl RuntimeState {
             credential_reconciliation_unknown: None,
             requested_session: None,
             session_generation: 0,
-            refresh_remaining: 5,
+            refresh_remaining: 4,
             request_worker,
             catalog_subscription: None,
             session_subscription: None,
@@ -207,7 +207,7 @@ impl RuntimeState {
             AppAction::Refresh => {
                 if self.refresh_remaining == 0 {
                     enqueue_initial_queries(commands)?;
-                    self.refresh_remaining = 5;
+                    self.refresh_remaining = 4;
                     if let Some(session_id) = self.requested_session {
                         send_command(commands, RequestCommand::LoadSession(session_id))?;
                     }
@@ -274,19 +274,6 @@ impl RuntimeState {
                 self.start_mutation(command, PendingOperation::ImportRepository, commands)?;
                 self.app
                     .set_status("Importing repository into isolated workspace");
-            }
-            AppAction::ProvisionExecutionImage {
-                toolchain_source_path,
-                cargo_source_path,
-            } => {
-                let command = RequestCommand::ProvisionExecutionImage {
-                    mutation_request_id: generate_mutation_request_id()?,
-                    toolchain_source_path,
-                    cargo_source_path,
-                };
-                self.start_mutation(command, PendingOperation::ProvisionExecutionImage, commands)?;
-                self.app
-                    .set_status("Provisioning immutable offline Rust image");
             }
             AppAction::AcknowledgeToolUncertainty { session_id, run_id } => {
                 let command = RequestCommand::AcknowledgeToolUncertainty {
@@ -367,7 +354,6 @@ impl RuntimeState {
             RequestEvent::ConnectionRestored { server_version } => {
                 self.app.clear_credential_interaction();
                 self.app.clear_repository_interaction();
-                self.app.clear_execution_image_interaction();
                 self.app.server_version = SafeText::from_untrusted(&server_version);
                 self.app.replace_models(OpenCodeService::Zen, Vec::new())?;
                 self.app.replace_models(OpenCodeService::Go, Vec::new())?;
@@ -400,11 +386,6 @@ impl RuntimeState {
                         "Credential state reloaded after the rejected mutation"
                     });
                 }
-            }
-            RequestEvent::ExecutionImageStatusLoaded(image) => {
-                self.complete_refresh_query();
-                self.app.set_execution_image(image);
-                self.app.set_status("Execution image status updated");
             }
             RequestEvent::SessionLoaded(snapshot) => {
                 self.install_session_snapshot(snapshot, subscription_events)?;
@@ -455,17 +436,6 @@ impl RuntimeState {
                 self.app.set_status(format!(
                     "Repository imported: {} files, {} logical bytes",
                     workspace.file_count, workspace.logical_bytes
-                ));
-            }
-            RequestEvent::ExecutionImageProvisioned {
-                mutation_request_id,
-                image,
-            } => {
-                self.finish_mutation(mutation_request_id)?;
-                self.app.set_execution_image(image);
-                self.app.set_status(format!(
-                    "Execution image ready: {} files, {} logical bytes",
-                    image.file_count, image.logical_bytes
                 ));
             }
             RequestEvent::ToolUncertaintyAcknowledged {
@@ -525,10 +495,7 @@ impl RuntimeState {
                 model_service,
                 error,
             } => {
-                if matches!(
-                    context,
-                    "session list" | "model list" | "credential status" | "execution image status"
-                ) {
+                if matches!(context, "session list" | "model list" | "credential status") {
                     self.complete_refresh_query();
                 }
                 if let Some(service) = model_service {
@@ -577,7 +544,6 @@ impl RuntimeState {
             SubscriptionEvent::CatalogConnectionLost => {
                 self.app.clear_credential_interaction();
                 self.app.clear_repository_interaction();
-                self.app.clear_execution_image_interaction();
                 self.app.set_status(
                     "Session catalog connection lost; reconnecting and clearing transient input",
                 );
@@ -588,7 +554,6 @@ impl RuntimeState {
                 self.app.clear_transient_assistant();
                 self.app.clear_credential_interaction();
                 self.app.clear_repository_interaction();
-                self.app.clear_execution_image_interaction();
                 self.app.set_status(
                     "Session connection lost; transient output and credential input were discarded",
                 );
@@ -616,7 +581,6 @@ impl RuntimeState {
                 }
                 self.app.clear_credential_interaction();
                 self.app.clear_repository_interaction();
-                self.app.clear_execution_image_interaction();
                 self.app.set_status(format!("{scope} stopped: {error}"));
             }
         }
@@ -744,7 +708,6 @@ fn enqueue_initial_queries(
     for command in [
         RequestCommand::LoadSessions,
         RequestCommand::LoadCredentialStatus,
-        RequestCommand::LoadExecutionImageStatus,
         RequestCommand::LoadModels(OpenCodeService::Zen),
         RequestCommand::LoadModels(OpenCodeService::Go),
     ] {

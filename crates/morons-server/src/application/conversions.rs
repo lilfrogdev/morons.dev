@@ -1,8 +1,5 @@
 use morons_protocol::{
-    ApplicationError, ApplicationResponse, ExecutionImageState as ProtocolExecutionImageState,
-    ExecutionImageSummary as ProtocolExecutionImageSummary,
-    ExecutionTargetArch as ProtocolExecutionTargetArch,
-    ExecutionTargetOs as ProtocolExecutionTargetOs, MessageId as ProtocolMessageId,
+    ApplicationError, ApplicationResponse, MessageId as ProtocolMessageId,
     MutationRequestId as ProtocolMutationRequestId,
     OpenCodeCredentialStatus as ProtocolOpenCodeCredentialStatus, OpenCodeModelCapabilities,
     OpenCodeModelRetention, OpenCodeModelSummary, OpenCodeModelTrainingUse,
@@ -21,8 +18,7 @@ use morons_protocol::{
 use super::ApplicationOutcome;
 use crate::{
     persistence::{
-        AcceptedRun, ExecutionImageState, ExecutionImageSummary, ExecutionTargetArch,
-        ExecutionTargetOs, MutationRequestId, OpenCodeCredentialStatus, PersistenceError,
+        AcceptedRun, MutationRequestId, OpenCodeCredentialStatus, PersistenceError,
         PersistenceResourceLimit, Run, RunFailureKind, RunId, RunOpenCodeService, RunState,
         Session, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
         TranscriptCursor, TranscriptEntry, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
@@ -200,32 +196,6 @@ pub(super) const fn to_protocol_credential_status(
     ProtocolOpenCodeCredentialStatus {
         configured: credential.configured,
         generation: credential.generation,
-    }
-}
-
-pub(super) const fn to_protocol_execution_image_summary(
-    image: ExecutionImageSummary,
-) -> ProtocolExecutionImageSummary {
-    ProtocolExecutionImageSummary {
-        state: match image.state {
-            ExecutionImageState::Unconfigured => ProtocolExecutionImageState::Unconfigured,
-            ExecutionImageState::Provisioning => ProtocolExecutionImageState::Provisioning,
-            ExecutionImageState::Ready => ProtocolExecutionImageState::Ready,
-            ExecutionImageState::Blocked => ProtocolExecutionImageState::Blocked,
-        },
-        target_os: match image.target_os {
-            ExecutionTargetOs::Macos => ProtocolExecutionTargetOs::Macos,
-            ExecutionTargetOs::Linux => ProtocolExecutionTargetOs::Linux,
-            ExecutionTargetOs::Windows => ProtocolExecutionTargetOs::Windows,
-        },
-        target_arch: match image.target_arch {
-            ExecutionTargetArch::X86_64 => ProtocolExecutionTargetArch::X86_64,
-            ExecutionTargetArch::Aarch64 => ProtocolExecutionTargetArch::Aarch64,
-        },
-        format_version: image.format_version,
-        limits_version: image.limits_version,
-        file_count: image.file_count,
-        logical_bytes: image.logical_bytes,
     }
 }
 
@@ -440,10 +410,6 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::CredentialMutationNotApplied => {
             ApplicationError::CredentialMutationNotApplied
         }
-        PersistenceError::ExecutionImageProvisionNotApplied => {
-            ApplicationError::ExecutionImageProvisionNotApplied
-        }
-        PersistenceError::ExecutionImageBlocked => ApplicationError::ExecutionImageBlocked,
         PersistenceError::WorkspaceNotPristine => ApplicationError::WorkspaceNotPristine,
         PersistenceError::WorkspaceBusy => ApplicationError::WorkspaceBusy,
         PersistenceError::RepositoryAlreadyImported => ApplicationError::RepositoryAlreadyImported,
@@ -474,8 +440,7 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
                 | PersistenceResourceLimit::LogicalSequence
                 | PersistenceResourceLimit::CredentialGeneration
                 | PersistenceResourceLimit::CredentialMutations
-                | PersistenceResourceLimit::Workspace
-                | PersistenceResourceLimit::ExecutionImage,
+                | PersistenceResourceLimit::Workspace,
         } => ApplicationError::ResourceLimit {
             resource: ResourceLimit::Storage,
         },

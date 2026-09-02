@@ -1428,7 +1428,6 @@ async fn database_and_workspace_state_are_owner_only() {
 
     assert_mode(&root.path().join("data"), 0o700);
     assert_mode(&root.path().join("workspaces"), 0o700);
-    assert_mode(&root.path().join("sandbox-images"), 0o700);
     assert_mode(&root.path().join("sandbox-operations"), 0o700);
     assert_mode(&root.path().join("backups"), 0o700);
     assert_mode(&root.path().join("credentials"), 0o700);

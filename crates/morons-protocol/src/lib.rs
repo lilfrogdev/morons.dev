@@ -2,7 +2,6 @@ mod authentication;
 mod control;
 mod credential;
 mod endpoint;
-mod execution;
 mod framing;
 mod messages;
 mod run;
@@ -18,10 +17,6 @@ pub use credential::{
     MAX_OPENCODE_API_KEY_BYTES, OpenCodeApiKey, OpenCodeApiKeyError, OpenCodeCredentialStatus,
 };
 pub use endpoint::{authorize_accepted_peer, verify_connected_server_peer};
-pub use execution::{
-    ExecutionImageState, ExecutionImageSummary, ExecutionTargetArch, ExecutionTargetOs,
-    MAX_EXECUTION_IMAGE_SOURCE_PATH_BYTES,
-};
 pub use framing::{
     FrameError, MAX_FRAME_PAYLOAD_BYTES, read_client_message, read_server_message,
     write_client_message, write_server_message,
@@ -39,4 +34,4 @@ pub use session::{
     WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
