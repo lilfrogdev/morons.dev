@@ -292,6 +292,9 @@ pub enum ToolKind {
     CreateDirectory,
     // Retained for historical transcript compatibility; it is not an offered MVP tool.
     RunCommand,
+    Read,
+    Write,
+    Edit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

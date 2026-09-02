@@ -1017,12 +1017,22 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                      WHERE image.generation_id = accepted.execution_image_generation
                        AND image.state = 2
                  ))
+                OR
+                (accepted.tool_catalog_version = 3 AND accepted.tool_limits_version = 3
+                 AND accepted.execution_image_generation IS NULL
+                 AND EXISTS (
+                     SELECT 1 FROM session_created_facts AS session
+                     WHERE session.session_id = accepted.session_id
+                       AND session.working_directory IS NOT NULL
+                 ))
             )
             UNION ALL
             SELECT 1 FROM tool_calls AS call
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
                OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
+               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version != 3)
+               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version = 3)
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id
@@ -1167,7 +1177,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             })?;
         if !validate_canonical_input(&input)
             || input.kind().to_record() != tool_kind
-            || tool_path_digest(input.path().as_str()) != path_digest
+            || tool_path_digest(input.path_text()) != path_digest
         {
             return Err(PersistenceError::InvalidState {
                 reason: "a canonical tool call has invalid typed input",
@@ -1200,6 +1210,8 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             plan.as_deref().is_some_and(
                 crate::persistence::backend::command_execution::command_binding_is_valid,
             )
+        } else if matches!(tool_kind, ToolKind::Write | ToolKind::Edit) {
+            plan.is_none()
         } else if tool_kind.is_mutation() {
             plan.as_deref().is_some_and(recovery_plan_is_valid) || !dispatched && plan.is_none()
         } else {

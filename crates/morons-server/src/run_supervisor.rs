@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -27,8 +28,8 @@ use crate::{
         ProviderToolCall, provider_cancellation,
     },
     tools::{
-        TOOL_CATALOG_VERSION, ToolCallValidationError, ToolExecution, ToolResult,
-        WorktreeToolExecutor, developer_instruction, parse_provider_calls, provider_tools,
+        DirectToolExecutor, TOOL_CATALOG_VERSION, ToolCallValidationError, ToolResult,
+        developer_instruction, parse_provider_calls, provider_tools,
     },
 };
 
@@ -330,12 +331,16 @@ impl RunSupervisor {
                     };
                     reasoning_continuation =
                         (!reasoning.is_empty()).then_some((*operation_id.as_bytes(), reasoning));
-                    let workspace_id =
-                        context.workspace_id.ok_or(PersistenceError::InvalidState {
-                            reason: "a tool turn is missing its ready workspace",
-                        })?;
+                    let working_directory = context
+                        .working_directory
+                        .ok_or(PersistenceError::WorkingDirectoryUnavailable)?;
                     let terminal = self
-                        .execute_tool_calls(run_id, workspace_id, committed.calls, &cancellation)
+                        .execute_tool_calls(
+                            run_id,
+                            PathBuf::from(working_directory),
+                            committed.calls,
+                            &cancellation,
+                        )
                         .await?;
                     if terminal {
                         return Ok(());
@@ -363,129 +368,61 @@ impl RunSupervisor {
     async fn execute_tool_calls(
         &self,
         run_id: RunId,
-        workspace_id: [u8; 16],
+        working_directory: PathBuf,
         calls: Vec<crate::persistence::CommittedToolCall>,
         cancellation: &ProviderCancellation,
     ) -> Result<bool, PersistenceError> {
         for call in calls {
-            let root = self.sessions.active_worktree_path(workspace_id).await?;
-            let prepare_root = root.clone();
-            let prepare_input = call.input.clone();
-            let prepare_cancellation = cancellation.clone();
-            let operation_bytes = *call.operation_id.as_bytes();
-            let execution = tokio::task::spawn_blocking(move || {
-                WorktreeToolExecutor::new(prepare_root).prepare(
-                    prepare_input,
-                    operation_bytes,
-                    &|| prepare_cancellation.is_cancelled(),
-                )
+            self.sessions
+                .prepare_tool_operation(run_id, call.call_id, call.operation_id, None)
+                .await?;
+            if cancellation.is_cancelled() {
+                self.sessions
+                    .complete_tool_result(
+                        run_id,
+                        call.call_id,
+                        call.operation_id,
+                        ToolResult::error(crate::tools::ToolErrorKind::Cancelled),
+                    )
+                    .await?;
+                self.sessions.finish_run_stopped(run_id, None).await?;
+                return Ok(true);
+            }
+            self.sessions
+                .mark_tool_dispatched(run_id, call.call_id, call.operation_id)
+                .await?;
+            let execution_directory = working_directory.clone();
+            let execution_input = call.input.clone();
+            let execution_cancellation = cancellation.clone();
+            let mutation = call.input.kind().is_mutation();
+            let result = tokio::task::spawn_blocking(move || {
+                DirectToolExecutor::new(execution_directory)
+                    .execute(&execution_input, &|| execution_cancellation.is_cancelled())
             })
             .await
-            .map_err(|_| PersistenceError::InvalidState {
-                reason: "a worktree tool preparation task failed",
-            })?;
-            match execution {
-                ToolExecution::Complete(result) => {
-                    self.sessions
-                        .prepare_tool_operation(run_id, call.call_id, call.operation_id, None)
-                        .await?;
-                    self.sessions
-                        .complete_tool_result(run_id, call.call_id, call.operation_id, result)
-                        .await?;
+            .unwrap_or_else(|_| {
+                ToolResult::error(if mutation {
+                    crate::tools::ToolErrorKind::Uncertain
+                } else {
+                    crate::tools::ToolErrorKind::Interrupted
+                })
+            });
+            let cancelled = matches!(
+                result,
+                ToolResult::Error {
+                    error: crate::tools::ToolErrorKind::Cancelled
                 }
-                ToolExecution::Observation(input) => {
-                    self.sessions
-                        .prepare_tool_operation(run_id, call.call_id, call.operation_id, None)
-                        .await?;
-                    if cancellation.is_cancelled() {
-                        self.sessions
-                            .complete_tool_result(
-                                run_id,
-                                call.call_id,
-                                call.operation_id,
-                                ToolResult::error(crate::tools::ToolErrorKind::Cancelled),
-                            )
-                            .await?;
-                        self.sessions.finish_run_stopped(run_id, None).await?;
-                        return Ok(true);
-                    }
-                    self.sessions
-                        .mark_tool_dispatched(run_id, call.call_id, call.operation_id)
-                        .await?;
-                    let observation_root = root.clone();
-                    let observation_cancellation = cancellation.clone();
-                    let result = tokio::task::spawn_blocking(move || {
-                        WorktreeToolExecutor::new(observation_root)
-                            .execute_observation(&input, &|| {
-                                observation_cancellation.is_cancelled()
-                            })
-                    })
-                    .await
-                    .map_err(|_| PersistenceError::InvalidState {
-                        reason: "a worktree observation task failed",
-                    })?;
-                    let cancelled = matches!(
-                        result,
-                        ToolResult::Error {
-                            error: crate::tools::ToolErrorKind::Cancelled
-                        }
-                    );
-                    self.sessions
-                        .complete_tool_result(run_id, call.call_id, call.operation_id, result)
-                        .await?;
-                    if cancelled {
-                        self.sessions.finish_run_stopped(run_id, None).await?;
-                        return Ok(true);
-                    }
-                }
-                ToolExecution::Mutation(prepared) => {
-                    let recovery_plan =
-                        prepared
-                            .encoded_plan()
-                            .map_err(|_| PersistenceError::InvalidState {
-                                reason: "a prepared worktree mutation plan could not be encoded",
-                            })?;
-                    self.sessions
-                        .prepare_tool_operation(
-                            run_id,
-                            call.call_id,
-                            call.operation_id,
-                            Some(recovery_plan),
-                        )
-                        .await?;
-                    if cancellation.is_cancelled() {
-                        drop(prepared);
-                        self.sessions
-                            .complete_tool_result(
-                                run_id,
-                                call.call_id,
-                                call.operation_id,
-                                ToolResult::error(crate::tools::ToolErrorKind::Cancelled),
-                            )
-                            .await?;
-                        self.sessions.finish_run_stopped(run_id, None).await?;
-                        return Ok(true);
-                    }
-                    self.sessions
-                        .mark_tool_dispatched(run_id, call.call_id, call.operation_id)
-                        .await?;
-                    let publish_root = root.clone();
-                    let result = tokio::task::spawn_blocking(move || {
-                        WorktreeToolExecutor::new(publish_root).publish_mutation(prepared)
-                    })
-                    .await
-                    .map_err(|_| PersistenceError::InvalidState {
-                        reason: "a worktree mutation task failed",
-                    })?
-                    .unwrap_or_else(|_| ToolResult::error(crate::tools::ToolErrorKind::Uncertain));
-                    let uncertain = result.is_uncertain();
-                    self.sessions
-                        .complete_tool_result(run_id, call.call_id, call.operation_id, result)
-                        .await?;
-                    if uncertain {
-                        return Ok(true);
-                    }
-                }
+            );
+            let uncertain = result.is_uncertain();
+            self.sessions
+                .complete_tool_result(run_id, call.call_id, call.operation_id, result)
+                .await?;
+            if cancelled {
+                self.sessions.finish_run_stopped(run_id, None).await?;
+                return Ok(true);
+            }
+            if uncertain {
+                return Ok(true);
             }
         }
         Ok(false)
@@ -514,9 +451,16 @@ fn build_provider_request(
     }
     let mut input = Vec::with_capacity(context.entries.len() + usize::from(tools_enabled));
     if tools_enabled {
+        let working_directory = context
+            .working_directory
+            .as_deref()
+            .ok_or(ProviderError::InvalidRequest)?;
         input.push(ProviderInputItem::Message {
             role: ProviderMessageRole::Developer,
-            text: developer_instruction().to_owned(),
+            text: format!(
+                "{}\nSelected working directory: {working_directory}",
+                developer_instruction()
+            ),
             phase: None,
         });
     }

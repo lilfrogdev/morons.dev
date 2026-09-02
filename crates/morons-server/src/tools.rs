@@ -1,4 +1,5 @@
 mod catalog;
+mod direct;
 mod path;
 mod worktree;
 
@@ -11,10 +12,13 @@ pub(crate) use catalog::{
     LEGACY_SANDBOX_TOOL_CATALOG_VERSION, TOOL_CATALOG_VERSION, ToolCallValidationError,
     developer_instruction, parse_provider_calls, provider_tools, validate_canonical_input,
 };
-pub(crate) use path::WorktreePath;
-pub(crate) use worktree::{ToolExecution, WorktreeToolExecutor, recovery_plan_is_valid};
+pub(crate) use direct::DirectToolExecutor;
+pub(crate) use path::{ToolPath, WorktreePath};
+pub(crate) use worktree::recovery_plan_is_valid;
 
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 1;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 3;
+pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
+pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
 pub(crate) const MAX_COMMAND_ARGUMENTS: usize = 128;
 pub(crate) const MAX_COMMAND_ARGUMENT_BYTES: usize = 4096;
@@ -31,8 +35,6 @@ pub(crate) const MAX_READ_OUTPUT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_READ_LINES: u16 = 200;
 pub(crate) const MAX_DIRECTORY_ENTRIES: usize = 200;
 pub(crate) const MAX_SEARCH_QUERY_BYTES: usize = 512;
-pub(crate) const MAX_SEARCH_FILES: u32 = 4_096;
-pub(crate) const MAX_SEARCH_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_SEARCH_MATCHES: usize = 200;
 pub(crate) const MAX_SEARCH_OUTPUT_BYTES: usize = 128 * 1024;
 pub(crate) const MAX_REPLACEMENTS: usize = 32;
@@ -58,6 +60,9 @@ pub(crate) enum ToolKind {
     CreateDirectory,
     // Retained only to decode durable transcripts created before ADR 0012.
     RunCommand,
+    Read,
+    Write,
+    Edit,
 }
 
 impl ToolKind {
@@ -70,6 +75,9 @@ impl ToolKind {
             Self::CreateFile => "create_file",
             Self::CreateDirectory => "create_directory",
             Self::RunCommand => "run_command",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Edit => "edit",
         }
     }
 
@@ -82,6 +90,9 @@ impl ToolKind {
             Self::CreateFile => 5,
             Self::CreateDirectory => 6,
             Self::RunCommand => 7,
+            Self::Read => 8,
+            Self::Write => 9,
+            Self::Edit => 10,
         }
     }
 
@@ -94,6 +105,9 @@ impl ToolKind {
             5 => Some(Self::CreateFile),
             6 => Some(Self::CreateDirectory),
             7 => Some(Self::RunCommand),
+            8 => Some(Self::Read),
+            9 => Some(Self::Write),
+            10 => Some(Self::Edit),
             _ => None,
         }
     }
@@ -101,7 +115,12 @@ impl ToolKind {
     pub(crate) const fn is_mutation(self) -> bool {
         matches!(
             self,
-            Self::EditFile | Self::CreateFile | Self::CreateDirectory | Self::RunCommand
+            Self::EditFile
+                | Self::CreateFile
+                | Self::CreateDirectory
+                | Self::RunCommand
+                | Self::Write
+                | Self::Edit
         )
     }
 }
@@ -139,6 +158,19 @@ pub(crate) enum ToolInput {
         arguments: Vec<String>,
         working_directory: WorktreePath,
     },
+    Read {
+        path: ToolPath,
+        offset: u32,
+        limit: u16,
+    },
+    Write {
+        path: ToolPath,
+        content: String,
+    },
+    Edit {
+        path: ToolPath,
+        replacements: Vec<TextReplacement>,
+    },
 }
 
 impl ToolInput {
@@ -151,10 +183,13 @@ impl ToolInput {
             Self::CreateFile { .. } => ToolKind::CreateFile,
             Self::CreateDirectory { .. } => ToolKind::CreateDirectory,
             Self::RunCommand { .. } => ToolKind::RunCommand,
+            Self::Read { .. } => ToolKind::Read,
+            Self::Write { .. } => ToolKind::Write,
+            Self::Edit { .. } => ToolKind::Edit,
         }
     }
 
-    pub(crate) const fn path(&self) -> &WorktreePath {
+    pub(crate) const fn path_text(&self) -> &str {
         match self {
             Self::ListDirectory { path, .. }
             | Self::ReadFile { path, .. }
@@ -165,7 +200,10 @@ impl ToolInput {
             | Self::RunCommand {
                 working_directory: path,
                 ..
-            } => path,
+            } => path.as_str(),
+            Self::Read { path, .. } | Self::Write { path, .. } | Self::Edit { path, .. } => {
+                path.as_str()
+            }
         }
     }
 
@@ -213,6 +251,23 @@ impl ToolInput {
                 arguments,
                 working_directory: working_directory.as_str(),
             }),
+            Self::Read {
+                path,
+                offset,
+                limit,
+            } => serde_json::to_string(&ReadArguments {
+                path: path.as_str(),
+                offset: *offset,
+                limit: *limit,
+            }),
+            Self::Write { path, content } => serde_json::to_string(&WriteArguments {
+                path: path.as_str(),
+                content,
+            }),
+            Self::Edit { path, replacements } => serde_json::to_string(&EditArguments {
+                path: path.as_str(),
+                replacements,
+            }),
         }
     }
 }
@@ -228,6 +283,25 @@ struct RunCommandArguments<'a> {
     executable: &'a str,
     arguments: &'a [String],
     working_directory: &'a str,
+}
+
+#[derive(Serialize)]
+struct ReadArguments<'a> {
+    path: &'a str,
+    offset: u32,
+    limit: u16,
+}
+
+#[derive(Serialize)]
+struct WriteArguments<'a> {
+    path: &'a str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+struct EditArguments<'a> {
+    path: &'a str,
+    replacements: &'a [TextReplacement],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,6 +444,22 @@ pub(crate) enum ToolOutput {
         stderr: String,
         published: bool,
     },
+    Read {
+        path: ToolPath,
+        offset: u32,
+        next_offset: u32,
+        end_of_file: bool,
+        text: String,
+    },
+    Written {
+        path: ToolPath,
+        bytes: u64,
+    },
+    Edited {
+        path: ToolPath,
+        replacements: u16,
+        bytes: u64,
+    },
 }
 
 impl ToolOutput {
@@ -382,6 +472,9 @@ impl ToolOutput {
             Self::FileCreated { .. } => ToolKind::CreateFile,
             Self::DirectoryCreated { .. } => ToolKind::CreateDirectory,
             Self::CommandCompleted { .. } => ToolKind::RunCommand,
+            Self::Read { .. } => ToolKind::Read,
+            Self::Written { .. } => ToolKind::Write,
+            Self::Edited { .. } => ToolKind::Edit,
         }
     }
 
@@ -420,6 +513,22 @@ impl ToolOutput {
             Self::FileEdited { bytes, .. } => format!("edited file ({bytes} bytes)"),
             Self::FileCreated { bytes, .. } => format!("created file ({bytes} bytes)"),
             Self::DirectoryCreated { .. } => "created directory".to_owned(),
+            Self::Read {
+                offset,
+                next_offset,
+                end_of_file,
+                ..
+            } => format!(
+                "read lines {offset}-{}{}",
+                next_offset.saturating_sub(1),
+                if *end_of_file { " (end of file)" } else { "" }
+            ),
+            Self::Written { bytes, .. } => format!("wrote file ({bytes} bytes)"),
+            Self::Edited {
+                replacements,
+                bytes,
+                ..
+            } => format!("applied {replacements} replacement(s) ({bytes} bytes)"),
             Self::CommandCompleted {
                 executable,
                 exit_code,
@@ -535,6 +644,38 @@ pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> 
         ToolResult::Ok {
             output: ToolOutput::DirectoryCreated { path },
         } => WorktreePath::parse(path.as_str(), false).is_ok(),
+        ToolResult::Ok {
+            output:
+                ToolOutput::Read {
+                    path,
+                    offset,
+                    next_offset,
+                    text,
+                    ..
+                },
+        } => {
+            ToolPath::parse(path.as_str()).is_ok()
+                && *offset > 0
+                && *next_offset >= *offset
+                && next_offset.saturating_sub(*offset) <= u32::from(MAX_READ_LINES)
+                && text.len() <= MAX_READ_OUTPUT_BYTES
+        }
+        ToolResult::Ok {
+            output: ToolOutput::Written { path, bytes },
+        } => ToolPath::parse(path.as_str()).is_ok() && *bytes <= MAX_FILE_BYTES,
+        ToolResult::Ok {
+            output:
+                ToolOutput::Edited {
+                    path,
+                    replacements,
+                    bytes,
+                },
+        } => {
+            ToolPath::parse(path.as_str()).is_ok()
+                && *replacements > 0
+                && usize::from(*replacements) <= MAX_REPLACEMENTS
+                && *bytes <= MAX_FILE_BYTES
+        }
         ToolResult::Ok {
             output:
                 ToolOutput::CommandCompleted {

@@ -98,55 +98,12 @@ impl Backend {
         if let Some(active_run_id) = active_run_id {
             return Err(PersistenceError::SessionBusy { active_run_id });
         }
-        let workspace_state = transaction
-            .query_row(
-                "SELECT state FROM repository_import_requests
-                 WHERE session_id = ?1 AND state IN (0, 1, 4)
-                 ORDER BY accepted_sequence DESC LIMIT 1",
-                [&session_id.as_bytes()[..]],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-        match workspace_state {
-            Some(0 | 1) => return Err(PersistenceError::WorkspaceBusy),
-            Some(4) => return Err(PersistenceError::WorkspaceBlocked),
-            Some(_) => {
-                return Err(PersistenceError::InvalidState {
-                    reason: "a session workspace has an invalid blocking state",
-                });
-            }
-            None => {}
-        }
-        let uncertain_tool_effect: bool = transaction.query_row(
-            "SELECT EXISTS (
-                SELECT 1 FROM tool_operation_facts AS uncertain
-                WHERE uncertain.session_id = ?1 AND uncertain.fact_kind = 6
-                  AND NOT EXISTS (
-                      SELECT 1 FROM tool_uncertainty_acknowledgements AS acknowledgement
-                      WHERE acknowledgement.run_id = uncertain.run_id
-                  )
-             )",
-            [&session_id.as_bytes()[..]],
-            |row| row.get(0),
-        )?;
-        if uncertain_tool_effect {
-            return Err(PersistenceError::WorkspaceBlocked);
-        }
-        let workspace_ready: bool = transaction.query_row(
-            "SELECT EXISTS (
-                SELECT 1 FROM repository_import_requests
-                WHERE session_id = ?1 AND state = 2
-             )",
-            [&session_id.as_bytes()[..]],
-            |row| row.get(0),
-        )?;
         let execution_image_generation: Option<[u8; 16]> = None;
-        let (tool_catalog_version, tool_limits_version) =
-            if workspace_ready && selection.supports_tool_calls {
-                (TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION)
-            } else {
-                (0, 0)
-            };
+        let (tool_catalog_version, tool_limits_version) = if selection.supports_tool_calls {
+            (TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION)
+        } else {
+            (0, 0)
+        };
         if entry_high_water
             .checked_add(2)
             .is_none_or(|reserved_high_water| reserved_high_water > MAX_TRANSCRIPT_ENTRIES)

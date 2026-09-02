@@ -622,7 +622,6 @@ pub enum ApplicationError {
     OpenCodeCredentialNotConfigured,
     CredentialGenerationConflict,
     CredentialMutationNotApplied,
-    WorkspaceBusy,
     WorkspaceBlocked,
     ResourceLimit { resource: ResourceLimit },
     ServiceUnavailable,

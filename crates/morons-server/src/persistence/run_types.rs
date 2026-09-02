@@ -431,7 +431,7 @@ impl fmt::Debug for TranscriptEntry {
                 .field("run_id", run_id)
                 .field("call_id", call_id)
                 .field("tool", &input.kind())
-                .field("path_bytes", &input.path().as_str().len())
+                .field("path_bytes", &input.path_text().len())
                 .field("created_at_milliseconds", created_at_milliseconds)
                 .finish(),
             Self::ToolResult {
@@ -529,7 +529,7 @@ pub(crate) struct RunContext {
     pub entries: Vec<TranscriptEntry>,
     pub current_entry_high_water: u64,
     pub estimated_input_tokens: u32,
-    pub workspace_id: Option<[u8; IDENTIFIER_BYTES]>,
+    pub working_directory: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -643,7 +643,6 @@ pub(crate) struct ToolOperationRecovery {
     pub prepared: bool,
     pub dispatched: bool,
     pub recovery_plan: Option<Vec<u8>>,
-    pub workspace_id: [u8; IDENTIFIER_BYTES],
 }
 
 fn write_hex(formatter: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {

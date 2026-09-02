@@ -97,6 +97,14 @@ async fn run_input_is_atomic_idempotent_and_session_serialized() {
     assert!(accepted.newly_accepted);
     assert_eq!(accepted.run.state, RunState::Accepted);
     assert_eq!(accepted.run.credential_generation, 1);
+    assert_eq!(
+        accepted.run.tool_catalog_version,
+        crate::tools::TOOL_CATALOG_VERSION
+    );
+    assert_eq!(
+        accepted.run.tool_limits_version,
+        crate::tools::TOOL_LIMITS_VERSION
+    );
     let retry = store
         .find_session_input_retry(
             request_id,

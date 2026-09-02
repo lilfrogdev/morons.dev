@@ -7,6 +7,54 @@ use super::ToolErrorKind;
 pub(crate) const MAX_WORKTREE_PATH_BYTES: usize = 1_024;
 pub(crate) const MAX_WORKTREE_COMPONENT_BYTES: usize = 255;
 pub(crate) const MAX_WORKTREE_PATH_DEPTH: usize = 64;
+pub(crate) const MAX_TOOL_PATH_BYTES: usize = 4_096;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ToolPath(String);
+
+impl ToolPath {
+    pub(crate) fn parse(value: &str) -> Result<Self, ToolErrorKind> {
+        if value.is_empty()
+            || value.len() > MAX_TOOL_PATH_BYTES
+            || value.chars().any(char::is_control)
+        {
+            return Err(ToolErrorKind::InvalidPath);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub(crate) const fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for ToolPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ToolPath")
+            .field("path_bytes", &self.0.len())
+            .finish()
+    }
+}
+
+impl Serialize for ToolPath {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolPath {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(|_| de::Error::custom("invalid tool path"))
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WorktreePath(String);
@@ -62,15 +110,6 @@ impl WorktreePath {
             None => Ok((Self(".".to_owned()), self.0.as_str())),
         }
     }
-
-    pub(crate) fn join_component(&self, name: &str) -> Result<Self, ToolErrorKind> {
-        let value = if self.0 == "." {
-            name.to_owned()
-        } else {
-            format!("{}/{name}", self.0)
-        };
-        Self::parse(&value, false)
-    }
 }
 
 impl fmt::Debug for WorktreePath {
@@ -109,6 +148,24 @@ fn native_component_is_exact(component: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_tool_paths_allow_normal_relative_and_absolute_semantics() {
+        for valid in [
+            "file.txt",
+            "../sibling.txt",
+            "/tmp/file.txt",
+            "C:\\project\\file.txt",
+        ] {
+            assert!(ToolPath::parse(valid).is_ok(), "{valid}");
+        }
+        for invalid in ["", "line\nfeed", "nul\0path"] {
+            assert!(ToolPath::parse(invalid).is_err(), "{invalid:?}");
+        }
+        assert!(
+            !format!("{:?}", ToolPath::parse("/private/path").unwrap()).contains("/private/path")
+        );
+    }
 
     #[test]
     fn worktree_paths_are_strict_and_slash_separated() {
