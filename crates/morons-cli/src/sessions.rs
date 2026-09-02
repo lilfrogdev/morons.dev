@@ -10,12 +10,12 @@ const MAX_MODEL_TOKEN_LIMIT: u32 = 1_000_000;
 const MAX_SESSION_DISPLAY_NAME_BYTES: usize = 256;
 
 use morons_protocol::{
-    ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
-    MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
-    OpenCodeService, ResourceLimit, RunId, RunState, RunSummary, ServerMessage,
-    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
-    TranscriptCursor, TranscriptEntry, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
-    read_server_message, write_client_message,
+    ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, ExecutionImageState,
+    ExecutionImageSummary, FrameError, MessageId, MutationRequestId, OpenCodeApiKey,
+    OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId,
+    RunState, RunSummary, ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId,
+    SessionListCursor, SessionSummary, TranscriptCursor, TranscriptEntry, WorkspaceBlockReason,
+    WorkspaceState, WorkspaceSummary, read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -158,6 +158,12 @@ fn write_application_error(
         ApplicationError::CredentialMutationNotApplied => {
             formatter.write_str("OpenCode credential update was not applied")
         }
+        ApplicationError::ExecutionImageProvisionNotApplied => {
+            formatter.write_str("execution image provisioning was not applied")
+        }
+        ApplicationError::ExecutionImageBlocked => {
+            formatter.write_str("execution image state is blocked")
+        }
         ApplicationError::WorkspaceNotPristine => {
             formatter.write_str("repository import requires a pristine session")
         }
@@ -222,6 +228,17 @@ fn valid_workspace_summary(workspace: WorkspaceSummary) -> bool {
             None => false,
         },
     }
+}
+
+fn valid_execution_image_summary(image: ExecutionImageSummary) -> bool {
+    image.format_version == 1
+        && image.limits_version == 1
+        && match image.state {
+            ExecutionImageState::Ready => image.file_count >= 2 && image.logical_bytes > 0,
+            ExecutionImageState::Unconfigured
+            | ExecutionImageState::Provisioning
+            | ExecutionImageState::Blocked => image.file_count == 0 && image.logical_bytes == 0,
+        }
 }
 
 fn valid_model_summaries(service: OpenCodeService, models: &[OpenCodeModelSummary]) -> bool {
@@ -565,6 +582,45 @@ where
             return Err(self.unexpected_application_response());
         };
         Ok(credential)
+    }
+
+    pub async fn execution_image_status(
+        &mut self,
+    ) -> Result<ExecutionImageSummary, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::GetExecutionImageStatus)
+            .await?;
+        let ApplicationResponse::ExecutionImageStatus { image } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        if !valid_execution_image_summary(image) {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(image)
+    }
+
+    pub async fn provision_execution_image(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        toolchain_source_path: String,
+        cargo_source_path: String,
+    ) -> Result<ExecutionImageSummary, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::ProvisionExecutionImage {
+                mutation_request_id,
+                toolchain_source_path,
+                cargo_source_path,
+            })
+            .await?;
+        let ApplicationResponse::ExecutionImageProvisioned { image } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        if image.state != ExecutionImageState::Ready || !valid_execution_image_summary(image) {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(image)
     }
 
     pub async fn set_open_code_credential(

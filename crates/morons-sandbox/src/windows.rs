@@ -51,6 +51,8 @@ pub(crate) fn execute(
         })
         .is_err()
         || layout.populate_image(&prepared).is_err()
+        || crate::runner::seed_cargo_home(&layout.image, &layout.runtime.join("cargo-home"))
+            .is_err()
     {
         return cleanup_failure(
             operation_id,

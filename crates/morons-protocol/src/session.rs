@@ -249,6 +249,12 @@ pub enum ApplicationRequest {
         service: crate::OpenCodeService,
     },
     GetOpenCodeCredentialStatus,
+    GetExecutionImageStatus,
+    ProvisionExecutionImage {
+        mutation_request_id: MutationRequestId,
+        toolchain_source_path: String,
+        cargo_source_path: String,
+    },
     SetOpenCodeCredential {
         mutation_request_id: MutationRequestId,
         expected_generation: u64,
@@ -327,6 +333,17 @@ impl fmt::Debug for ApplicationRequest {
                 .field("service", service)
                 .finish(),
             Self::GetOpenCodeCredentialStatus => formatter.write_str("GetOpenCodeCredentialStatus"),
+            Self::GetExecutionImageStatus => formatter.write_str("GetExecutionImageStatus"),
+            Self::ProvisionExecutionImage {
+                mutation_request_id,
+                toolchain_source_path,
+                cargo_source_path,
+            } => formatter
+                .debug_struct("ProvisionExecutionImage")
+                .field("mutation_request_id", mutation_request_id)
+                .field("toolchain_source_path_bytes", &toolchain_source_path.len())
+                .field("cargo_source_path_bytes", &cargo_source_path.len())
+                .finish(),
             Self::SetOpenCodeCredential {
                 mutation_request_id,
                 expected_generation,
@@ -445,6 +462,12 @@ pub enum ApplicationResponse {
     },
     OpenCodeCredentialUpdated {
         credential: crate::OpenCodeCredentialStatus,
+    },
+    ExecutionImageStatus {
+        image: crate::ExecutionImageSummary,
+    },
+    ExecutionImageProvisioned {
+        image: crate::ExecutionImageSummary,
     },
     RepositoryImported {
         session_id: SessionId,
@@ -636,6 +659,8 @@ pub enum ApplicationError {
     OpenCodeCredentialNotConfigured,
     CredentialGenerationConflict,
     CredentialMutationNotApplied,
+    ExecutionImageProvisionNotApplied,
+    ExecutionImageBlocked,
     WorkspaceNotPristine,
     WorkspaceBusy,
     RepositoryAlreadyImported,

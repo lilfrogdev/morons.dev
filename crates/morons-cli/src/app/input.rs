@@ -1,7 +1,7 @@
 use morons_protocol::{MAX_OPENCODE_API_KEY_BYTES, WorkspaceBlockReason, WorkspaceState};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::{AppAction, AppState, CredentialDialog, RepositoryDialog, View};
+use super::{AppAction, AppState, CredentialDialog, ExecutionImageDialog, RepositoryDialog, View};
 use crate::terminal::{CredentialBuffer, RepositoryPathBuffer};
 
 impl AppState {
@@ -56,6 +56,9 @@ impl AppState {
         if self.credential_dialog.is_some() {
             return self.handle_credential_key(key.code, key.modifiers);
         }
+        if self.execution_image_dialog.is_some() {
+            return self.handle_execution_image_key(key.code, key.modifiers);
+        }
         if self.repository_dialog.is_some() {
             return self.handle_repository_key(key.code, key.modifiers);
         }
@@ -69,6 +72,17 @@ impl AppState {
     }
 
     pub(crate) fn handle_paste(&mut self, paste: &str) {
+        if let Some(dialog) = self.execution_image_dialog.as_mut() {
+            let input = match dialog {
+                ExecutionImageDialog::Toolchain { input }
+                | ExecutionImageDialog::Cargo { input, .. } => Some(input),
+                ExecutionImageDialog::Confirm { .. } => None,
+            };
+            if input.is_some_and(|input| !input.push_paste(paste)) {
+                self.set_status("Execution image paths must be bounded single-line text");
+            }
+            return;
+        }
         if let Some(RepositoryDialog::Enter { input }) = self.repository_dialog.as_mut() {
             if !input.push_paste(paste) {
                 self.set_status("Repository paths must be bounded single-line text");
@@ -83,6 +97,7 @@ impl AppState {
         }
         if self.credential_dialog.is_none()
             && self.repository_dialog.is_none()
+            && self.execution_image_dialog.is_none()
             && self.view == View::Session
             && self.pending.is_none()
             && !self.confirm_stop
@@ -96,6 +111,10 @@ impl AppState {
         match code {
             KeyCode::Char('k') if self.pending.is_none() => {
                 self.open_credential_dialog();
+                AppAction::None
+            }
+            KeyCode::Char('i') if self.pending.is_none() => {
+                self.open_execution_image_dialog();
                 AppAction::None
             }
             KeyCode::Char('l') => AppAction::Refresh,
@@ -252,6 +271,116 @@ impl AppState {
         };
         AppAction::RemoveCredential {
             expected_generation: status.generation,
+        }
+    }
+
+    fn open_execution_image_dialog(&mut self) {
+        self.execution_image_dialog = Some(ExecutionImageDialog::Toolchain {
+            input: RepositoryPathBuffer::default(),
+        });
+        self.set_status(
+            "Enter the absolute Rust toolchain root containing bin/cargo and bin/rustc",
+        );
+    }
+
+    fn handle_execution_image_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> AppAction {
+        if matches!(
+            self.execution_image_dialog,
+            Some(ExecutionImageDialog::Confirm { .. })
+        ) {
+            return match code {
+                KeyCode::Char('y') => {
+                    let Some(ExecutionImageDialog::Confirm {
+                        toolchain_source_path,
+                        cargo_source_path,
+                    }) = self.execution_image_dialog.take()
+                    else {
+                        return AppAction::None;
+                    };
+                    AppAction::ProvisionExecutionImage {
+                        toolchain_source_path,
+                        cargo_source_path,
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.clear_execution_image_interaction();
+                    self.set_status("Execution image provisioning cancelled");
+                    AppAction::None
+                }
+                _ => AppAction::None,
+            };
+        }
+        match code {
+            KeyCode::Esc => {
+                self.clear_execution_image_interaction();
+                self.set_status("Execution image provisioning cancelled");
+                AppAction::None
+            }
+            KeyCode::Backspace => {
+                match self.execution_image_dialog.as_mut() {
+                    Some(ExecutionImageDialog::Toolchain { input })
+                    | Some(ExecutionImageDialog::Cargo { input, .. }) => input.backspace(),
+                    Some(ExecutionImageDialog::Confirm { .. }) | None => {}
+                }
+                AppAction::None
+            }
+            KeyCode::Enter => {
+                let Some(dialog) = self.execution_image_dialog.take() else {
+                    return AppAction::None;
+                };
+                match dialog {
+                    ExecutionImageDialog::Toolchain { mut input } => {
+                        if input.is_empty() {
+                            self.execution_image_dialog =
+                                Some(ExecutionImageDialog::Toolchain { input });
+                            self.set_status("Enter an absolute toolchain root before continuing");
+                        } else {
+                            self.execution_image_dialog = Some(ExecutionImageDialog::Cargo {
+                                toolchain_source_path: input.take(),
+                                input: RepositoryPathBuffer::default(),
+                            });
+                            self.set_status(
+                                "Enter the absolute Cargo home whose registry seed will be copied",
+                            );
+                        }
+                    }
+                    ExecutionImageDialog::Cargo {
+                        toolchain_source_path,
+                        mut input,
+                    } => {
+                        if input.is_empty() {
+                            self.execution_image_dialog = Some(ExecutionImageDialog::Cargo {
+                                toolchain_source_path,
+                                input,
+                            });
+                            self.set_status("Enter an absolute Cargo home before continuing");
+                        } else {
+                            self.execution_image_dialog = Some(ExecutionImageDialog::Confirm {
+                                toolchain_source_path,
+                                cargo_source_path: input.take(),
+                            });
+                        }
+                    }
+                    ExecutionImageDialog::Confirm { .. } => unreachable!(),
+                }
+                AppAction::None
+            }
+            KeyCode::Char(character)
+                if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let accepted = match self.execution_image_dialog.as_mut() {
+                    Some(ExecutionImageDialog::Toolchain { input })
+                    | Some(ExecutionImageDialog::Cargo { input, .. }) => {
+                        input.push_character(character)
+                    }
+                    Some(ExecutionImageDialog::Confirm { .. }) | None => false,
+                };
+                if !accepted {
+                    self.set_status("Execution image paths must be bounded single-line text");
+                }
+                AppAction::None
+            }
+            _ => AppAction::None,
         }
     }
 
