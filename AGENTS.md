@@ -27,8 +27,9 @@ The application consists of a long-running local server and a separate terminal 
 - Canonical transcripts contain complete attributed entries; assistant text deltas are ephemeral presentation events.
 - Session snapshots and durable event subscriptions compose through one gap-free cursor boundary.
 - Each session owns an isolated mutable workspace and execution context.
-- A pristine session may import one local repository into a server-owned immutable baseline and separate mutable worktree.
-- Ready imported worktrees expose only the fixed `list_directory`, `read_file`, `search_text`, `edit_file`, `create_file`, and `create_directory` tools.
+- A pristine session may import one local repository into a server-owned immutable baseline and an active mutable worktree generation.
+- Ready imported worktrees expose fixed structured file tools and model-only `run_command` when a compatible immutable Rust execution image is bound.
+- Commands run offline in native sandboxes against discardable candidates and publish only validated clean generations atomically with durable results.
 - Provider turns, typed tool calls, typed results, and workspace uncertainty are durably ordered and recovered without replaying effects.
 - The terminal client owns input and presentation.
 - Client-server communication uses an authenticated, typed, versioned protocol over local IPC.
@@ -40,7 +41,7 @@ The application consists of a long-running local server and a separate terminal 
 - Protocol DTOs must remain independent of persistence records, provider wire objects, and presentation code.
 - Provider requests can target only fixed reviewed HTTPS routes.
 - Application logic must remain independent of Ratatui.
-- Python execution and PTY command execution are separate subsystems.
+- Python execution is separate from noninteractive sandboxed command execution; Morons exposes no PTY.
 - Persistent Python execution uses the standard Jupyter protocol.
 - Kernel memory is temporary working state, not authoritative session storage.
 - Restart recovery terminates interrupted runs durably and never retries uncertain external effects automatically.

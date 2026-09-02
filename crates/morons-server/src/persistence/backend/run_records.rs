@@ -100,7 +100,8 @@ pub(super) fn accepted_run_from_request(
                 maximum_output_tokens,
                 accepted_at_milliseconds,
                 tool_catalog_version,
-                tool_limits_version
+                tool_limits_version,
+                execution_image_generation
              FROM run_accepted_facts
              WHERE run_id = ?1",
             [&request.run_id.as_bytes()[..]],
@@ -117,6 +118,7 @@ pub(super) fn accepted_run_from_request(
                     context_policy_version: positive_u16_from_row(row, 6)?,
                     tool_catalog_version: nonnegative_u16_from_row(row, 12)?,
                     tool_limits_version: nonnegative_u16_from_row(row, 13)?,
+                    execution_image_generation: row.get(14)?,
                     source_entry_high_water: nonnegative_integer_from_row(row, 7)?,
                     estimated_input_tokens: positive_u32_from_row(row, 8)?,
                     maximum_input_tokens: positive_u32_from_row(row, 9)?,
@@ -178,7 +180,8 @@ pub(super) fn load_run(
                 cancellation_requested,
                 failure_kind,
                 accepted_at_milliseconds,
-                updated_at_milliseconds
+                updated_at_milliseconds,
+                execution_image_generation
              FROM runs
              WHERE run_id = ?1",
             [&run_id.as_bytes()[..]],
@@ -237,6 +240,7 @@ pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         context_policy_version,
         tool_catalog_version,
         tool_limits_version,
+        execution_image_generation: row.get(23)?,
         source_entry_high_water: nonnegative_integer_from_row(row, 10)?,
         estimated_input_tokens,
         maximum_input_tokens,

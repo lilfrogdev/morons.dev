@@ -4,13 +4,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    MAX_FILE_BYTES, MAX_READ_LINES, MAX_REPLACEMENT_BYTES, MAX_REPLACEMENTS,
+    MAX_COMMAND_ARGUMENTS, MAX_FILE_BYTES, MAX_READ_LINES, MAX_REPLACEMENT_BYTES, MAX_REPLACEMENTS,
     MAX_SEARCH_QUERY_BYTES, MAX_TOOL_CALLS_PER_TURN, TextReplacement, ToolInput, ToolKind,
     ValidatedProviderCall, WorktreePath,
 };
 use crate::provider::{ProviderTool, ProviderToolCall, json::parse_strict_value};
 
-pub(crate) const TOOL_CATALOG_VERSION: u16 = 1;
+pub(crate) const STRUCTURED_TOOL_CATALOG_VERSION: u16 = 1;
+pub(crate) const TOOL_CATALOG_VERSION: u16 = 2;
 
 const DEVELOPER_INSTRUCTION: &str = "You are operating in an isolated mutable repository worktree. Use only the offered structured tools. Every path is slash-separated and relative to the worktree; use `.` only for read-only directory-scoped tools. Read a complete file digest before editing it. Never assume that a tool succeeded until its committed result says so.";
 
@@ -24,8 +25,8 @@ pub(crate) fn developer_instruction() -> &'static str {
     DEVELOPER_INSTRUCTION
 }
 
-pub(crate) fn provider_tools() -> Vec<ProviderTool> {
-    vec![
+pub(crate) fn provider_tools(version: u16) -> Vec<ProviderTool> {
+    let mut tools = vec![
         ProviderTool {
             name: ToolKind::ListDirectory.name().to_owned(),
             description: "List one bounded, byte-sorted page of ordinary children in a worktree directory.".to_owned(),
@@ -104,7 +105,26 @@ pub(crate) fn provider_tools() -> Vec<ProviderTool> {
                 &["path"],
             ),
         },
-    ]
+    ];
+    if version >= 2 {
+        tools.push(ProviderTool {
+            name: ToolKind::RunCommand.name().to_owned(),
+            description: "Run one structured offline command from the bound Rust image in a discardable candidate worktree.".to_owned(),
+            parameters: object_schema(
+                json!({
+                    "executable": {"type": "string", "minLength": 1, "maxLength": 64},
+                    "arguments": {
+                        "type": "array",
+                        "maxItems": MAX_COMMAND_ARGUMENTS,
+                        "items": {"type": "string", "maxLength": 4096}
+                    },
+                    "working_directory": {"type": "string", "maxLength": 1024}
+                }),
+                &["executable", "arguments", "working_directory"],
+            ),
+        });
+    }
+    tools
 }
 
 pub(crate) fn validate_canonical_input(input: &ToolInput) -> bool {
@@ -119,6 +139,7 @@ pub(crate) fn validate_canonical_input(input: &ToolInput) -> bool {
 
 pub(crate) fn parse_provider_calls(
     calls: Vec<ProviderToolCall>,
+    catalog_version: u16,
 ) -> Result<Vec<ValidatedProviderCall>, ToolCallValidationError> {
     if calls.is_empty() {
         return Err(ToolCallValidationError::InvalidProviderOutput);
@@ -136,6 +157,9 @@ pub(crate) fn parse_provider_calls(
             let value = parse_strict_value(call.arguments.as_bytes())
                 .map_err(|_| ToolCallValidationError::InvalidProviderOutput)?;
             let input = parse_input(&call.name, value)?;
+            if input.kind() == ToolKind::RunCommand && catalog_version < 2 {
+                return Err(ToolCallValidationError::InvalidProviderOutput);
+            }
             Ok(ValidatedProviderCall {
                 provider_call_id: call.provider_call_id,
                 input,
@@ -232,6 +256,32 @@ fn parse_input(name: &str, value: Value) -> Result<ToolInput, ToolCallValidation
                 path: WorktreePath::parse(&arguments.path, false).map_err(invalid)?,
             })
         }
+        "run_command" => {
+            require_fields(&value, &["executable", "arguments", "working_directory"])?;
+            let arguments: RunCommand = decode(value)?;
+            let total = arguments
+                .arguments
+                .iter()
+                .try_fold(0_usize, |total, argument| {
+                    if argument.len() > super::MAX_COMMAND_ARGUMENT_BYTES || argument.contains('\0')
+                    {
+                        return None;
+                    }
+                    total.checked_add(argument.len())
+                });
+            if !super::valid_command_executable(&arguments.executable)
+                || arguments.arguments.len() > MAX_COMMAND_ARGUMENTS
+                || total.is_none_or(|bytes| bytes > super::MAX_COMMAND_ARGUMENT_TOTAL_BYTES)
+            {
+                return Err(ToolCallValidationError::ResourceLimit);
+            }
+            Ok(ToolInput::RunCommand {
+                executable: arguments.executable,
+                arguments: arguments.arguments,
+                working_directory: WorktreePath::parse(&arguments.working_directory, true)
+                    .map_err(invalid)?,
+            })
+        }
         _ => Err(ToolCallValidationError::InvalidProviderOutput),
     }
 }
@@ -321,6 +371,14 @@ struct CreateDirectory {
     path: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunCommand {
+    executable: String,
+    arguments: Vec<String>,
+    working_directory: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,8 +394,8 @@ mod tests {
 
     #[test]
     fn catalog_is_fixed_strict_and_complete() {
-        let tools = provider_tools();
-        assert_eq!(tools.len(), 6);
+        let tools = provider_tools(TOOL_CATALOG_VERSION);
+        assert_eq!(tools.len(), 7);
         assert_eq!(
             tools
                 .iter()
@@ -349,7 +407,8 @@ mod tests {
                 "search_text",
                 "edit_file",
                 "create_file",
-                "create_directory"
+                "create_directory",
+                "run_command"
             ]
         );
         assert!(
@@ -357,14 +416,18 @@ mod tests {
                 .iter()
                 .all(|tool| tool.parameters["additionalProperties"] == false)
         );
+        assert_eq!(provider_tools(STRUCTURED_TOOL_CATALOG_VERSION).len(), 6);
     }
 
     #[test]
     fn provider_calls_decode_into_closed_typed_inputs() {
-        let parsed = parse_provider_calls(vec![call(
-            "edit_file",
-            r#"{"path":"src/lib.rs","expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","replacements":[{"old_text":"before","new_text":"after"}]}"#,
-        )])
+        let parsed = parse_provider_calls(
+            vec![call(
+                "edit_file",
+                r#"{"path":"src/lib.rs","expected_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","replacements":[{"old_text":"before","new_text":"after"}]}"#,
+            )],
+            TOOL_CATALOG_VERSION,
+        )
         .expect("valid call should decode");
         assert!(matches!(parsed[0].input, ToolInput::EditFile { .. }));
 
@@ -373,8 +436,25 @@ mod tests {
             r#"{"path":"src/lib.rs","start_line":1}"#,
             r#"{"path":"src/lib.rs","path":"other","start_line":1,"line_count":10}"#,
         ] {
-            assert!(parse_provider_calls(vec![call("read_file", arguments)]).is_err());
+            assert!(
+                parse_provider_calls(vec![call("read_file", arguments)], TOOL_CATALOG_VERSION,)
+                    .is_err()
+            );
         }
-        assert!(parse_provider_calls(vec![call("unknown", r#"{"path":"."}"#)]).is_err());
+        assert!(
+            parse_provider_calls(
+                vec![call("unknown", r#"{"path":"."}"#)],
+                TOOL_CATALOG_VERSION,
+            )
+            .is_err()
+        );
+        let command = call(
+            "run_command",
+            r#"{"executable":"cargo","arguments":["check","--locked"],"working_directory":"."}"#,
+        );
+        assert!(
+            parse_provider_calls(vec![command.clone()], STRUCTURED_TOOL_CATALOG_VERSION).is_err()
+        );
+        assert!(parse_provider_calls(vec![command], TOOL_CATALOG_VERSION).is_ok());
     }
 }

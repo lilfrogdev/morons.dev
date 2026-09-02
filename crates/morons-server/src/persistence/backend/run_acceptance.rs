@@ -21,7 +21,10 @@ use crate::{
         },
         types::{REQUEST_FINGERPRINT_BYTES, validate_model_selection, validate_user_text},
     },
-    tools::{TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION},
+    tools::{
+        STRUCTURED_TOOL_CATALOG_VERSION, STRUCTURED_TOOL_LIMITS_VERSION, TOOL_CATALOG_VERSION,
+        TOOL_LIMITS_VERSION,
+    },
 };
 
 const MAX_RUNS: i64 = 100_000;
@@ -124,12 +127,27 @@ impl Backend {
             [&session_id.as_bytes()[..]],
             |row| row.get(0),
         )?;
-        let (tool_catalog_version, tool_limits_version) =
-            if workspace_ready && selection.supports_tool_calls {
-                (TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION)
-            } else {
-                (0, 0)
-            };
+        let execution_image_generation = if workspace_ready && selection.supports_tool_calls {
+            transaction
+                .query_row(
+                    "SELECT generation_id FROM current_execution_image WHERE singleton = 1",
+                    [],
+                    |row| row.get::<_, [u8; 16]>(0),
+                )
+                .optional()?
+        } else {
+            None
+        };
+        let (tool_catalog_version, tool_limits_version) = if execution_image_generation.is_some() {
+            (TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION)
+        } else if workspace_ready && selection.supports_tool_calls {
+            (
+                STRUCTURED_TOOL_CATALOG_VERSION,
+                STRUCTURED_TOOL_LIMITS_VERSION,
+            )
+        } else {
+            (0, 0)
+        };
         if entry_high_water
             .checked_add(2)
             .is_none_or(|reserved_high_water| reserved_high_water > MAX_TRANSCRIPT_ENTRIES)
@@ -205,10 +223,11 @@ impl Backend {
                 accepted_at_milliseconds,
                 delivery_event_id,
                 tool_catalog_version,
-                tool_limits_version
+                tool_limits_version,
+                execution_image_generation
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
-                ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
+                ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
              )",
             params![
                 &run_fact_id[..],
@@ -230,6 +249,7 @@ impl Backend {
                 &run_delivery_event_id[..],
                 i64::from(tool_catalog_version),
                 i64::from(tool_limits_version),
+                execution_image_generation.as_ref().map(|id| &id[..]),
             ],
         )?;
         transaction.execute(
@@ -273,6 +293,7 @@ impl Backend {
                 context_policy_version,
                 tool_catalog_version,
                 tool_limits_version,
+                execution_image_generation,
                 source_entry_high_water,
                 estimated_input_tokens,
                 maximum_input_tokens,
@@ -290,7 +311,7 @@ impl Backend {
                 updated_at_milliseconds
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                ?11, ?12, ?13, ?14, 0, 0, 0, 0, 1, 0, NULL, ?15, ?15, ?16, ?16
+                ?11, ?12, ?13, ?14, ?15, 0, 0, 0, 0, 1, 0, NULL, ?16, ?16, ?17, ?17
              )",
             params![
                 &run_id.as_bytes()[..],
@@ -303,6 +324,7 @@ impl Backend {
                 i64::from(CONTEXT_POLICY_VERSION),
                 i64::from(tool_catalog_version),
                 i64::from(tool_limits_version),
+                execution_image_generation.as_ref().map(|id| &id[..]),
                 sequence_to_sql(source_entry_high_water)?,
                 i64::from(estimated_input_tokens),
                 i64::from(selection.maximum_input_tokens),

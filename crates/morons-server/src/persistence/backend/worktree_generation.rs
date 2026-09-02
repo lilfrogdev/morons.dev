@@ -7,7 +7,8 @@ use super::{
     },
 };
 use crate::persistence::{
-    PersistenceError, RepositoryImportOutcome, SessionId, WorktreeLayoutPlan,
+    CommandResources, PersistenceError, RepositoryImportOutcome, RunId, SessionId,
+    WorktreeLayoutPlan,
 };
 
 const LAYOUT_PREPARED: u8 = 0;
@@ -30,9 +31,10 @@ impl Backend {
             }
         }
         for (plan, outcome) in self.ready_worktree_layouts()? {
+            let active_generation = self.active_worktree_generation(&plan.workspace_id)?;
             let path = self
                 .paths
-                .worktree_generation_path(&plan.workspace_id, &plan.generation_id);
+                .worktree_generation_path(&plan.workspace_id, &active_generation);
             if !path.is_dir() {
                 return Err(PersistenceError::InvalidState {
                     reason: "an active worktree generation is missing",
@@ -42,6 +44,32 @@ impl Backend {
             paths.cleanup_legacy_worktree(&plan.workspace_id)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn command_resources(
+        &self,
+        run_id: RunId,
+        workspace_id: &[u8; 16],
+    ) -> Result<CommandResources, PersistenceError> {
+        let run = super::run_records::load_required_run(&self.connection, run_id)?;
+        let image_generation_id =
+            run.execution_image_generation
+                .ok_or(PersistenceError::InvalidState {
+                    reason: "a command-capable run is missing its image generation",
+                })?;
+        let active_generation_id = self.active_worktree_generation(workspace_id)?;
+        let image_manifest_digest = self.connection.query_row(
+            "SELECT manifest_digest FROM execution_image_requests
+             WHERE generation_id = ?1 AND state = 2",
+            [&image_generation_id[..]],
+            |row| row.get(0),
+        )?;
+        Ok(CommandResources {
+            workspace_id: *workspace_id,
+            active_generation_id,
+            image_generation_id,
+            image_manifest_digest,
+        })
     }
 
     pub(crate) fn active_worktree_generation(

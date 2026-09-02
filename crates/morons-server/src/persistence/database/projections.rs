@@ -522,10 +522,11 @@ fn validate_worktree_generation_facts(connection: &Connection) -> Result<(), Per
                        AND fact.directory_count = layout.directory_count
                        AND fact.logical_bytes = layout.logical_bytes
                        AND fact.manifest_digest IS layout.manifest_digest) != 1
-                    OR (SELECT COUNT(*) FROM active_worktree_generations AS active
-                        WHERE active.workspace_id = layout.workspace_id
-                          AND active.session_id = layout.session_id
-                          AND active.generation_id = layout.generation_id) != 1
+               ))
+               OR (layout.state = 2 AND NOT EXISTS (
+                    SELECT 1 FROM active_worktree_generations AS active
+                    WHERE active.workspace_id = layout.workspace_id
+                      AND active.session_id = layout.session_id
                ))
                OR (layout.state != 2 AND EXISTS (
                     SELECT 1 FROM active_worktree_generations AS active
@@ -972,20 +973,37 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
         "SELECT EXISTS (
             SELECT 1 FROM run_accepted_facts AS accepted
             WHERE NOT (
-                (accepted.tool_catalog_version = 0 AND accepted.tool_limits_version = 0)
+                (accepted.tool_catalog_version = 0 AND accepted.tool_limits_version = 0
+                 AND accepted.execution_image_generation IS NULL)
                 OR
                 (accepted.tool_catalog_version = 1 AND accepted.tool_limits_version = 1
+                 AND accepted.execution_image_generation IS NULL
                  AND EXISTS (
                      SELECT 1 FROM repository_import_facts AS repository
                      WHERE repository.session_id = accepted.session_id
                        AND repository.fact_kind = 3
                        AND repository.fact_sequence < accepted.fact_sequence
                  ))
+                OR
+                (accepted.tool_catalog_version = 2 AND accepted.tool_limits_version = 2
+                 AND accepted.execution_image_generation IS NOT NULL
+                 AND EXISTS (
+                     SELECT 1 FROM repository_import_facts AS repository
+                     WHERE repository.session_id = accepted.session_id
+                       AND repository.fact_kind = 3
+                       AND repository.fact_sequence < accepted.fact_sequence
+                 )
+                 AND EXISTS (
+                     SELECT 1 FROM execution_image_requests AS image
+                     WHERE image.generation_id = accepted.execution_image_generation
+                       AND image.state = 2
+                 ))
             )
             UNION ALL
             SELECT 1 FROM tool_calls AS call
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
+               OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id
@@ -1159,7 +1177,11 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
         let tool_kind = ToolKind::from_record(tool_kind).ok_or(PersistenceError::InvalidState {
             reason: "a prepared tool operation has an invalid tool kind",
         })?;
-        let valid = if tool_kind.is_mutation() {
+        let valid = if tool_kind == ToolKind::RunCommand {
+            plan.as_deref().is_some_and(
+                crate::persistence::backend::command_execution::command_binding_is_valid,
+            )
+        } else if tool_kind.is_mutation() {
             plan.as_deref().is_some_and(recovery_plan_is_valid) || !dispatched && plan.is_none()
         } else {
             plan.is_none()

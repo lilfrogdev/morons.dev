@@ -231,6 +231,7 @@ pub struct Run {
     pub context_policy_version: u16,
     pub tool_catalog_version: u16,
     pub tool_limits_version: u16,
+    pub execution_image_generation: Option<[u8; 16]>,
     pub state: RunState,
     pub cancellation_requested: bool,
     pub failure: Option<RunFailureKind>,

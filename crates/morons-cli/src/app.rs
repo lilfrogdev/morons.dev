@@ -816,6 +816,7 @@ const fn tool_label(tool: morons_protocol::ToolKind) -> &'static str {
         morons_protocol::ToolKind::EditFile => "edit_file",
         morons_protocol::ToolKind::CreateFile => "create_file",
         morons_protocol::ToolKind::CreateDirectory => "create_directory",
+        morons_protocol::ToolKind::RunCommand => "run_command",
     }
 }
 

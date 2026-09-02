@@ -8,13 +8,18 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub(crate) use catalog::{
-    TOOL_CATALOG_VERSION, ToolCallValidationError, developer_instruction, parse_provider_calls,
-    provider_tools, validate_canonical_input,
+    STRUCTURED_TOOL_CATALOG_VERSION, TOOL_CATALOG_VERSION, ToolCallValidationError,
+    developer_instruction, parse_provider_calls, provider_tools, validate_canonical_input,
 };
 pub(crate) use path::WorktreePath;
 pub(crate) use worktree::{ToolExecution, WorktreeToolExecutor, recovery_plan_is_valid};
 
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 1;
+pub(crate) const STRUCTURED_TOOL_LIMITS_VERSION: u16 = 1;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 2;
+pub(crate) const MAX_COMMAND_ARGUMENTS: usize = 128;
+pub(crate) const MAX_COMMAND_ARGUMENT_BYTES: usize = 4096;
+pub(crate) const MAX_COMMAND_ARGUMENT_TOTAL_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_COMMAND_OUTPUT_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_TOOL_CALLS_PER_TURN: usize = 8;
 pub(crate) const MAX_TOOL_CALLS_PER_RUN: u32 = 64;
 pub(crate) const MAX_TOOL_MUTATIONS_PER_RUN: u32 = 16;
@@ -51,6 +56,7 @@ pub(crate) enum ToolKind {
     EditFile,
     CreateFile,
     CreateDirectory,
+    RunCommand,
 }
 
 impl ToolKind {
@@ -62,6 +68,7 @@ impl ToolKind {
             Self::EditFile => "edit_file",
             Self::CreateFile => "create_file",
             Self::CreateDirectory => "create_directory",
+            Self::RunCommand => "run_command",
         }
     }
 
@@ -73,6 +80,7 @@ impl ToolKind {
             Self::EditFile => 4,
             Self::CreateFile => 5,
             Self::CreateDirectory => 6,
+            Self::RunCommand => 7,
         }
     }
 
@@ -84,6 +92,7 @@ impl ToolKind {
             4 => Some(Self::EditFile),
             5 => Some(Self::CreateFile),
             6 => Some(Self::CreateDirectory),
+            7 => Some(Self::RunCommand),
             _ => None,
         }
     }
@@ -91,7 +100,7 @@ impl ToolKind {
     pub(crate) const fn is_mutation(self) -> bool {
         matches!(
             self,
-            Self::EditFile | Self::CreateFile | Self::CreateDirectory
+            Self::EditFile | Self::CreateFile | Self::CreateDirectory | Self::RunCommand
         )
     }
 }
@@ -124,6 +133,11 @@ pub(crate) enum ToolInput {
     CreateDirectory {
         path: WorktreePath,
     },
+    RunCommand {
+        executable: String,
+        arguments: Vec<String>,
+        working_directory: WorktreePath,
+    },
 }
 
 impl ToolInput {
@@ -135,6 +149,7 @@ impl ToolInput {
             Self::EditFile { .. } => ToolKind::EditFile,
             Self::CreateFile { .. } => ToolKind::CreateFile,
             Self::CreateDirectory { .. } => ToolKind::CreateDirectory,
+            Self::RunCommand { .. } => ToolKind::RunCommand,
         }
     }
 
@@ -145,7 +160,11 @@ impl ToolInput {
             | Self::SearchText { path, .. }
             | Self::EditFile { path, .. }
             | Self::CreateFile { path, .. }
-            | Self::CreateDirectory { path } => path,
+            | Self::CreateDirectory { path }
+            | Self::RunCommand {
+                working_directory: path,
+                ..
+            } => path,
         }
     }
 
@@ -184,6 +203,15 @@ impl ToolInput {
             Self::CreateDirectory { path } => serde_json::to_string(&CreateDirectoryArguments {
                 path: path.as_str(),
             }),
+            Self::RunCommand {
+                executable,
+                arguments,
+                working_directory,
+            } => serde_json::to_string(&RunCommandArguments {
+                executable,
+                arguments,
+                working_directory: working_directory.as_str(),
+            }),
         }
     }
 }
@@ -192,6 +220,13 @@ impl fmt::Display for ToolKind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.name())
     }
+}
+
+#[derive(Serialize)]
+struct RunCommandArguments<'a> {
+    executable: &'a str,
+    arguments: &'a [String],
+    working_directory: &'a str,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,6 +362,13 @@ pub(crate) enum ToolOutput {
     DirectoryCreated {
         path: WorktreePath,
     },
+    CommandCompleted {
+        executable: String,
+        exit_code: i32,
+        stdout: String,
+        stderr: String,
+        published: bool,
+    },
 }
 
 impl ToolOutput {
@@ -338,6 +380,7 @@ impl ToolOutput {
             Self::FileEdited { .. } => ToolKind::EditFile,
             Self::FileCreated { .. } => ToolKind::CreateFile,
             Self::DirectoryCreated { .. } => ToolKind::CreateDirectory,
+            Self::CommandCompleted { .. } => ToolKind::RunCommand,
         }
     }
 
@@ -376,8 +419,44 @@ impl ToolOutput {
             Self::FileEdited { bytes, .. } => format!("edited file ({bytes} bytes)"),
             Self::FileCreated { bytes, .. } => format!("created file ({bytes} bytes)"),
             Self::DirectoryCreated { .. } => "created directory".to_owned(),
+            Self::CommandCompleted {
+                executable,
+                exit_code,
+                stdout,
+                stderr,
+                published,
+            } => {
+                let mut summary = format!(
+                    "ran {executable} with exit code {exit_code}{}",
+                    if *published {
+                        " and published changes"
+                    } else {
+                        ""
+                    }
+                );
+                for (label, output) in [("stdout", stdout), ("stderr", stderr)] {
+                    if !output.is_empty() {
+                        summary.push('\n');
+                        summary.push_str(label);
+                        summary.push_str(":\n");
+                        summary.push_str(bounded_text(output, 4_096));
+                    }
+                }
+                summary
+            }
         }
     }
+}
+
+fn bounded_text(value: &str, maximum: usize) -> &str {
+    if value.len() <= maximum {
+        return value;
+    }
+    let mut boundary = maximum;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &value[..boundary]
 }
 
 pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> bool {
@@ -455,7 +534,28 @@ pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> 
         ToolResult::Ok {
             output: ToolOutput::DirectoryCreated { path },
         } => WorktreePath::parse(path.as_str(), false).is_ok(),
+        ToolResult::Ok {
+            output:
+                ToolOutput::CommandCompleted {
+                    executable,
+                    stdout,
+                    stderr,
+                    ..
+                },
+        } => {
+            valid_command_executable(executable)
+                && stdout.len() <= MAX_COMMAND_OUTPUT_BYTES
+                && stderr.len() <= MAX_COMMAND_OUTPUT_BYTES
+        }
     }
+}
+
+pub(crate) fn valid_command_executable(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
 }
 
 fn valid_digest(value: &str) -> bool {

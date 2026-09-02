@@ -51,6 +51,13 @@ const TOOL_AUDIT_DISPATCHED: i64 = 3;
 const TOOL_AUDIT_COMPLETED: i64 = 4;
 const TOOL_AUDIT_UNCERTAIN: i64 = 5;
 
+pub(super) struct GenerationPublication {
+    pub workspace_id: [u8; 16],
+    pub predecessor_generation_id: [u8; 16],
+    pub generation_id: [u8; 16],
+    pub outcome: crate::persistence::RepositoryImportOutcome,
+}
+
 impl Backend {
     pub(crate) fn complete_provider_tool_turn(
         &mut self,
@@ -373,7 +380,18 @@ impl Backend {
         run_id: RunId,
         call_id: ToolCallId,
         operation_id: ToolOperationId,
+        result: ToolResult,
+    ) -> Result<TranscriptEntry, PersistenceError> {
+        self.complete_tool_result_with_publication(run_id, call_id, operation_id, result, None)
+    }
+
+    pub(super) fn complete_tool_result_with_publication(
+        &mut self,
+        run_id: RunId,
+        call_id: ToolCallId,
+        operation_id: ToolOperationId,
         mut result: ToolResult,
+        publication: Option<GenerationPublication>,
     ) -> Result<TranscriptEntry, PersistenceError> {
         let mut result_payload = encode_payload(&result)?;
         let mut result_bytes = u64::try_from(result_payload.len()).map_err(|_| limit())?;
@@ -509,6 +527,74 @@ impl Backend {
             ],
         )?;
         update_entry_high_water(&transaction, &run, entry_sequence, entry_fact_sequence)?;
+        if let Some(publication) = publication {
+            if !matches!(
+                result,
+                ToolResult::Ok {
+                    output: crate::tools::ToolOutput::CommandCompleted {
+                        published: true,
+                        ..
+                    }
+                }
+            ) {
+                return Err(PersistenceError::InvalidState {
+                    reason: "a command generation publication lacks a successful result",
+                });
+            }
+            let current: [u8; 16] = transaction.query_row(
+                "SELECT generation_id FROM active_worktree_generations
+                 WHERE workspace_id = ?1 AND session_id = ?2",
+                params![
+                    &publication.workspace_id[..],
+                    &run.session_id.as_bytes()[..],
+                ],
+                |row| row.get(0),
+            )?;
+            if current != publication.predecessor_generation_id {
+                return Err(PersistenceError::InvalidState {
+                    reason: "the active worktree generation changed before command publication",
+                });
+            }
+            let generation_fact_id = random_identifier()?;
+            transaction.execute(
+                "INSERT INTO worktree_generation_facts (
+                    fact_id, fact_sequence, session_id, workspace_id, generation_id,
+                    predecessor_generation_id, publication_kind, operation_id,
+                    file_count, directory_count, logical_bytes, manifest_digest,
+                    created_at_milliseconds
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 2, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    &generation_fact_id[..],
+                    sequence_to_sql(fact_sequence)?,
+                    &run.session_id.as_bytes()[..],
+                    &publication.workspace_id[..],
+                    &publication.generation_id[..],
+                    &publication.predecessor_generation_id[..],
+                    &operation_id.as_bytes()[..],
+                    sequence_to_sql(publication.outcome.file_count)?,
+                    sequence_to_sql(publication.outcome.directory_count)?,
+                    sequence_to_sql(publication.outcome.logical_bytes)?,
+                    &publication.outcome.manifest_digest[..],
+                    time_to_sql(now)?,
+                ],
+            )?;
+            let updated = transaction.execute(
+                "UPDATE active_worktree_generations
+                 SET generation_id = ?2, updated_sequence = ?3
+                 WHERE workspace_id = ?1 AND generation_id = ?4",
+                params![
+                    &publication.workspace_id[..],
+                    &publication.generation_id[..],
+                    sequence_to_sql(fact_sequence)?,
+                    &publication.predecessor_generation_id[..],
+                ],
+            )?;
+            if updated != 1 {
+                return Err(PersistenceError::InvalidState {
+                    reason: "the command generation pointer was not published",
+                });
+            }
+        }
         if result.is_uncertain() {
             append_run_transition(
                 &transaction,
@@ -551,7 +637,32 @@ impl Backend {
                 )?;
                 continue;
             }
-            let result = if operation.input.kind().is_mutation() {
+            let result = if operation.input.kind() == ToolKind::RunCommand {
+                let payload =
+                    operation
+                        .recovery_plan
+                        .as_deref()
+                        .ok_or(PersistenceError::InvalidState {
+                            reason: "an incomplete command is missing its durable binding",
+                        })?;
+                let binding: super::command_execution::CommandBinding =
+                    serde_json::from_slice(payload).map_err(|_| {
+                        PersistenceError::InvalidState {
+                            reason: "an incomplete command has an invalid durable binding",
+                        }
+                    })?;
+                self.paths
+                    .remove_command_operation(operation.operation_id.as_bytes())?;
+                self.paths.remove_unreferenced_generation(
+                    &binding.workspace_id,
+                    &binding.generation_id,
+                )?;
+                ToolResult::error(if operation.dispatched {
+                    ToolErrorKind::Interrupted
+                } else {
+                    ToolErrorKind::NotDispatched
+                })
+            } else if operation.input.kind().is_mutation() {
                 let plan = operation.recovery_plan.as_deref().ok_or(
                     PersistenceError::InvalidState {
                         reason: "an incomplete mutating tool operation is missing its recovery plan",
@@ -575,7 +686,39 @@ impl Backend {
                 result,
             )?;
         }
-        Ok(())
+        self.cleanup_command_artifacts()
+    }
+
+    fn cleanup_command_artifacts(&self) -> Result<(), PersistenceError> {
+        let bindings = {
+            let mut statement = self.connection.prepare(
+                "SELECT call.operation_id, prepared.recovery_payload
+                 FROM tool_calls AS call
+                 JOIN tool_operation_facts AS prepared
+                   ON prepared.call_id = call.call_id AND prepared.fact_kind = 1
+                 WHERE call.tool_kind = 7",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, [u8; 16]>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (operation_id, payload) in bindings {
+            let binding: super::command_execution::CommandBinding =
+                serde_json::from_slice(&payload).map_err(|_| PersistenceError::InvalidState {
+                    reason: "a command artifact binding is invalid",
+                })?;
+            self.paths.remove_command_operation(&operation_id)?;
+            let active = self.active_worktree_generation(&binding.workspace_id)?;
+            for generation in [binding.active_generation_id, binding.generation_id] {
+                if generation != active {
+                    self.paths
+                        .remove_unreferenced_generation(&binding.workspace_id, &generation)?;
+                }
+            }
+        }
+        self.paths.validate_sandbox_operations_empty()
     }
 
     fn incomplete_tool_operations(
