@@ -69,9 +69,13 @@ impl Backend {
             });
         }
         let snapshot_entry_high_water = self.connection.query_row(
-            "SELECT COALESCE(MAX(entry_sequence), 0)
-             FROM session_entries
-             WHERE session_id = ?1 AND fact_sequence <= ?2",
+            "SELECT COALESCE(MAX(entry_sequence), 0) FROM (
+                 SELECT entry_sequence FROM session_entries
+                 WHERE session_id = ?1 AND fact_sequence <= ?2
+                 UNION ALL
+                 SELECT entry_sequence FROM local_commands
+                 WHERE session_id = ?1 AND updated_sequence <= ?2 AND state BETWEEN 3 AND 5
+             )",
             params![
                 &session_id.as_bytes()[..],
                 sequence_to_sql(snapshot_event_sequence)?
@@ -133,7 +137,7 @@ impl Backend {
              ORDER BY entry.entry_sequence
              LIMIT ?5",
         )?;
-        let mut entries = statement
+        let entries = statement
             .query_map(
                 params![
                     &session_id.as_bytes()[..],
@@ -145,6 +149,16 @@ impl Backend {
                 transcript_entry_from_row,
             )?
             .collect::<Result<Vec<_>, _>>()?;
+        let mut entries = entries;
+        entries.extend(self.list_local_command_entries(
+            session_id,
+            after_entry_sequence,
+            snapshot_entry_sequence,
+            snapshot_event_sequence,
+            limit.saturating_add(1),
+        )?);
+        entries.sort_by_key(TranscriptEntry::entry_sequence);
+        entries.truncate(usize::from(limit) + 1);
         let has_more = entries.len() > usize::from(limit);
         if has_more {
             entries.pop();
@@ -169,7 +183,7 @@ impl Backend {
             active_run_id_at_sequence(&self.connection, session_id, snapshot_event_sequence)?;
         let mut run_ids = entries
             .iter()
-            .map(|entry| entry.run_id())
+            .filter_map(TranscriptEntry::run_id)
             .collect::<Vec<_>>();
         if let Some(active_run_id) = active_run_id
             && !run_ids.contains(&active_run_id)
@@ -182,12 +196,14 @@ impl Backend {
             .collect::<Result<Vec<_>, _>>()?;
         let workspace =
             workspace_summary_at_sequence(&self.connection, session_id, snapshot_event_sequence)?;
+        let active_command_id = self.active_local_command(session_id)?;
         Ok(TranscriptPage {
             session,
             workspace,
             entries,
             runs,
             active_run_id,
+            active_command_id,
             next_cursor,
             event_cursor: SessionEventCursor::new(session_id, snapshot_event_sequence),
         })
@@ -248,9 +264,31 @@ impl Backend {
                 transcript_entry_from_row,
             )?
             .collect::<Result<Vec<_>, _>>()?;
-        if entries.is_empty()
-            || entries.last().map(TranscriptEntry::entry_sequence) != Some(current_entry_high_water)
-        {
+        let mut entries = entries;
+        entries.extend(self.list_local_command_entries(
+            run.session_id,
+            0,
+            current_entry_high_water,
+            session_event_high_water(&self.connection, run.session_id)?,
+            u16::try_from(crate::persistence::run_types::MAX_CONTEXT_ENTRIES).map_err(|_| {
+                PersistenceError::InvalidState {
+                    reason: "the context entry limit is invalid",
+                }
+            })?,
+        )?);
+        entries.sort_by_key(TranscriptEntry::entry_sequence);
+        let all_entries_reach_high_water =
+            entries.last().map(TranscriptEntry::entry_sequence) == Some(current_entry_high_water);
+        entries.retain(|entry| {
+            !matches!(
+                entry,
+                TranscriptEntry::LocalCommand {
+                    context_visible: false,
+                    ..
+                }
+            )
+        });
+        if entries.is_empty() || !all_entries_reach_high_water {
             return Err(PersistenceError::InvalidState {
                 reason: "a run context high water is not present",
             });
@@ -267,6 +305,15 @@ impl Backend {
                     TranscriptEntry::ToolResult { result, .. } => {
                         result.provider_output().ok()?.len()
                     }
+                    TranscriptEntry::LocalCommand {
+                        command,
+                        stdout,
+                        stderr,
+                        ..
+                    } => command
+                        .len()
+                        .checked_add(stdout.len())?
+                        .checked_add(stderr.len())?,
                 };
                 total.checked_add(bytes as u64)
             })

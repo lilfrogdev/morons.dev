@@ -1,6 +1,7 @@
 mod backend;
 mod credentials;
 mod database;
+mod local_commands;
 mod paths;
 mod run_types;
 mod runs;
@@ -25,7 +26,8 @@ use self::{
 
 pub use self::{
     run_types::{
-        AcceptedRun, MessageId, Run, RunCancellationResult, RunFailureKind, RunId,
+        AcceptedLocalCommand, AcceptedRun, LocalCommandCancellationResult, LocalCommandId,
+        LocalCommandStatus, MessageId, Run, RunCancellationResult, RunFailureKind, RunId,
         RunModelSelection, RunOpenCodeService, RunState, SessionEvent, SessionEventCursor,
         SessionEventPage, SessionEventPayload, ToolCallId, TranscriptCursor, TranscriptEntry,
         TranscriptPage,
@@ -383,6 +385,7 @@ impl Drop for SessionStore {
 }
 
 enum WorkerRequest {
+    LocalCommand(local_commands::LocalCommandWorkerRequest),
     CreateSession {
         request_id: MutationRequestId,
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
@@ -443,6 +446,7 @@ fn run_worker(
 ) {
     while let Some(request) = receiver.blocking_recv() {
         match request {
+            WorkerRequest::LocalCommand(request) => request.execute(&mut backend),
             WorkerRequest::CreateSession {
                 request_id,
                 fingerprint,
@@ -545,6 +549,8 @@ fn run_worker(
 
 #[cfg(test)]
 mod credential_tests;
+#[cfg(test)]
+mod local_command_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]

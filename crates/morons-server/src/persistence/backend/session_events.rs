@@ -26,6 +26,8 @@ const EVENT_TOOL_CALL: i64 = 12;
 const EVENT_TOOL_RESULT: i64 = 13;
 const EVENT_RUN_UNCERTAIN: i64 = 14;
 const EVENT_TOOL_UNCERTAINTY_CHANGED: i64 = 15;
+const EVENT_LOCAL_COMMAND_CHANGED: i64 = 16;
+const EVENT_LOCAL_COMMAND_ENTRY: i64 = 17;
 
 impl Backend {
     pub(crate) fn delivery_event_high_water(&self) -> Result<u64, PersistenceError> {
@@ -66,7 +68,7 @@ impl Backend {
              WHERE session_id = ?1
                AND event_sequence > ?2
                AND event_sequence <= ?3
-               AND event_kind BETWEEN 2 AND 15
+               AND event_kind BETWEEN 2 AND 17
                AND payload_version = 1
              ORDER BY event_sequence
              LIMIT ?4",
@@ -99,6 +101,27 @@ impl Backend {
                     | EVENT_TOOL_CALL
                     | EVENT_TOOL_RESULT => SessionEventPayload::TranscriptEntry(
                         load_entry_for_event(&self.connection, session_id, &event_id, event_kind)?,
+                    ),
+                    EVENT_LOCAL_COMMAND_CHANGED => {
+                        let command_id = self
+                            .connection
+                            .query_row(
+                                "SELECT command_id FROM local_commands
+                                 WHERE session_id = ?1 AND accepted_event_id = ?2",
+                                params![&session_id.as_bytes()[..], &event_id[..]],
+                                |row| row.get::<_, [u8; 16]>(0),
+                            )
+                            .optional()?
+                            .ok_or(PersistenceError::InvalidState {
+                                reason: "a local command event is missing its accepted command",
+                            })?;
+                        SessionEventPayload::LocalCommandChanged {
+                            command_id: crate::persistence::LocalCommandId::from_bytes(command_id),
+                            active: true,
+                        }
+                    }
+                    EVENT_LOCAL_COMMAND_ENTRY => SessionEventPayload::TranscriptEntry(
+                        self.load_local_command_entry_for_event(session_id, &event_id)?,
                     ),
                     EVENT_RUN_ACCEPTED
                     | EVENT_RUN_ACTIVE

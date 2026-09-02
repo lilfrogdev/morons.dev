@@ -98,6 +98,20 @@ impl Backend {
         if let Some(active_run_id) = active_run_id {
             return Err(PersistenceError::SessionBusy { active_run_id });
         }
+        if let Some(active_command_id) = transaction
+            .query_row(
+                "SELECT command_id FROM local_commands WHERE session_id = ?1 AND state IN (1, 2)",
+                [&session_id.as_bytes()[..]],
+                |row| row.get::<_, [u8; 16]>(0),
+            )
+            .optional()?
+        {
+            return Err(PersistenceError::SessionCommandBusy {
+                active_command_id: crate::persistence::LocalCommandId::from_bytes(
+                    active_command_id,
+                ),
+            });
+        }
         let execution_image_generation: Option<[u8; 16]> = None;
         let (tool_catalog_version, tool_limits_version) = if selection.supports_tool_calls {
             (TOOL_CATALOG_VERSION, TOOL_LIMITS_VERSION)
@@ -416,16 +430,21 @@ fn estimate_context_tokens(
     maximum_input_tokens: u32,
 ) -> Result<u32, PersistenceError> {
     let (entry_count, text_bytes) = transaction.query_row(
-        "SELECT COUNT(*), COALESCE(SUM(
-             COALESCE(length(CAST(entry.text AS BLOB)),
-                      length(call.input_payload),
-                      length(result.result_payload), 0)
-         ), 0)
-         FROM session_entries AS entry
-         LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
-         LEFT JOIN tool_operation_facts AS result
-           ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
-         WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2",
+        "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM (
+             SELECT COALESCE(length(CAST(entry.text AS BLOB)),
+                             length(call.input_payload),
+                             length(result.result_payload), 0) AS bytes
+             FROM session_entries AS entry
+             LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
+             LEFT JOIN tool_operation_facts AS result
+               ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
+             WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2
+             UNION ALL
+             SELECT length(CAST(command.command_text AS BLOB)) + length(command.result_payload)
+             FROM local_commands AS command
+             WHERE command.session_id = ?1 AND command.entry_sequence <= ?2
+               AND command.context_visible = 1 AND command.state BETWEEN 3 AND 5
+         )",
         params![
             &session_id.as_bytes()[..],
             sequence_to_sql(entry_high_water)?

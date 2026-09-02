@@ -1,4 +1,5 @@
 mod application;
+mod command_supervisor;
 mod connection;
 mod persistence;
 pub mod provider;

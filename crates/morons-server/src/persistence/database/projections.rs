@@ -22,6 +22,7 @@ use crate::tools::{
 pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError> {
     validate_session_creation_facts(connection)?;
     validate_mutation_registry(connection)?;
+    validate_local_command_facts(connection)?;
     validate_run_request_payloads(connection)?;
     validate_server_stop_facts(connection)?;
     validate_repository_import_facts(connection)?;
@@ -224,6 +225,132 @@ fn validate_mutation_registry(connection: &Connection) -> Result<(), Persistence
         });
     }
     Ok(())
+}
+
+fn validate_local_command_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN local_commands AS command ON command.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 10 AND (
+                command.request_id IS NULL
+                OR mutation.accepted_sequence IS NOT command.accepted_sequence
+                OR mutation.accepted_at_milliseconds IS NOT command.accepted_at_milliseconds
+            )
+            UNION ALL
+            SELECT 1 FROM local_commands AS command
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = command.request_id
+            WHERE mutation.operation_kind IS NOT 10
+            UNION ALL
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN local_command_cancellations AS cancellation
+              ON cancellation.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 11 AND (
+                cancellation.request_id IS NULL
+                OR mutation.accepted_sequence IS NOT cancellation.accepted_sequence
+                OR mutation.accepted_at_milliseconds IS NOT cancellation.accepted_at_milliseconds
+            )
+            UNION ALL
+            SELECT 1 FROM local_command_cancellations AS cancellation
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = cancellation.request_id
+            WHERE mutation.operation_kind IS NOT 11
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "local command mutations conflict with the mutation registry",
+        });
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT session_id, command_id, command_text, context_visible, operation_fingerprint,
+                state, result_payload
+         FROM local_commands",
+    )?;
+    let commands = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, [u8; 16]>(0)?,
+                row.get::<_, [u8; 16]>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+                row.get::<_, [u8; 32]>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<Vec<u8>>>(6)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (session, command_id, command, context_visible, fingerprint, state, payload) in commands {
+        let session_id = SessionId::from_bytes(session);
+        if crate::persistence::backend::local_command::validate_local_command(&command).is_err()
+            || fingerprint
+                != crate::persistence::backend::local_command::local_command_fingerprint(
+                    session_id,
+                    &command,
+                    context_visible,
+                )
+        {
+            return Err(invalid_local_command());
+        }
+        if let Some(payload) = payload {
+            let result: ToolResult =
+                serde_json::from_slice(&payload).map_err(|_| invalid_local_command())?;
+            if state < 3 || !validate_canonical_result(ToolKind::Bash, &result) {
+                return Err(invalid_local_command());
+            }
+            let expected_state = match result.error_kind() {
+                Some(ToolErrorKind::Uncertain) => 5,
+                Some(
+                    ToolErrorKind::NotDispatched
+                    | ToolErrorKind::Interrupted
+                    | ToolErrorKind::Cancelled
+                    | ToolErrorKind::OutputLimit
+                    | ToolErrorKind::TimedOut
+                    | ToolErrorKind::InactivityTimeout,
+                ) => 4,
+                Some(_) | None => 3,
+            };
+            if state != expected_state {
+                return Err(invalid_local_command());
+            }
+        } else if !matches!(state, 1 | 2) {
+            return Err(invalid_local_command());
+        }
+        let _ = command_id;
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT session_id, command_id, operation_fingerprint
+         FROM local_command_cancellations",
+    )?;
+    let cancellations = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, [u8; 16]>(0)?,
+                row.get::<_, [u8; 16]>(1)?,
+                row.get::<_, [u8; 32]>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (session, command, fingerprint) in cancellations {
+        if fingerprint
+            != crate::persistence::backend::local_command::cancel_local_command_fingerprint(
+                SessionId::from_bytes(session),
+                crate::persistence::LocalCommandId::from_bytes(command),
+            )
+        {
+            return Err(invalid_local_command());
+        }
+    }
+    Ok(())
+}
+
+const fn invalid_local_command() -> PersistenceError {
+    PersistenceError::InvalidState {
+        reason: "a canonical local command is invalid",
+    }
 }
 
 fn validate_server_stop_facts(connection: &Connection) -> Result<(), PersistenceError> {
@@ -679,16 +806,21 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
             });
         }
         let (entry_count, text_bytes) = connection.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(
-                 COALESCE(length(CAST(entry.text AS BLOB)),
-                          length(call.input_payload),
-                          length(result.result_payload), 0)
-             ), 0)
-             FROM session_entries AS entry
-             LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
-             LEFT JOIN tool_operation_facts AS result
-               ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
-             WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2",
+            "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM (
+                 SELECT COALESCE(length(CAST(entry.text AS BLOB)),
+                                 length(call.input_payload),
+                                 length(result.result_payload), 0) AS bytes
+                 FROM session_entries AS entry
+                 LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
+                 LEFT JOIN tool_operation_facts AS result
+                   ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
+                 WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2
+                 UNION ALL
+                 SELECT length(CAST(command.command_text AS BLOB)) + length(command.result_payload)
+                 FROM local_commands AS command
+                 WHERE command.session_id = ?1 AND command.entry_sequence <= ?2
+                   AND command.context_visible = 1 AND command.state BETWEEN 3 AND 5
+             )",
             params![&request_session[..], source_high_water],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )?;
@@ -826,10 +958,19 @@ fn validate_run_canonical_facts(connection: &Connection) -> Result<(), Persisten
                          WHERE terminal.run_id = accepted.run_id
                            AND terminal.state BETWEEN 3 AND 7
                      )) > 1
-               OR (SELECT COUNT(*) FROM session_entries AS entry
-                   WHERE entry.session_id = session.session_id)
-                  != COALESCE((SELECT MAX(entry_sequence) FROM session_entries AS entry
-                               WHERE entry.session_id = session.session_id), 0)
+               OR (SELECT COUNT(*) FROM (
+                       SELECT entry.entry_sequence FROM session_entries AS entry
+                       WHERE entry.session_id = session.session_id
+                       UNION ALL
+                       SELECT command.entry_sequence FROM local_commands AS command
+                       WHERE command.session_id = session.session_id AND command.state BETWEEN 3 AND 5
+                   ))
+                  != MAX(
+                       COALESCE((SELECT MAX(entry_sequence) FROM session_entries AS entry
+                                 WHERE entry.session_id = session.session_id), 0),
+                       COALESCE((SELECT MAX(entry_sequence) FROM local_commands AS command
+                                 WHERE command.session_id = session.session_id), 0)
+                     )
             UNION ALL
             SELECT 1
             FROM run_cancellation_requests AS cancellation
@@ -1375,7 +1516,10 @@ fn validate_repository_logical_sequences(connection: &Connection) -> Result<(), 
              OR EXISTS (SELECT 1 FROM tool_calls WHERE fact_sequence = ?1)
              OR EXISTS (SELECT 1 FROM tool_operation_facts WHERE fact_sequence = ?1)
              OR EXISTS (SELECT 1 FROM tool_uncertainty_acknowledgements WHERE fact_sequence = ?1)
-             OR EXISTS (SELECT 1 FROM tool_audit_facts WHERE audit_sequence = ?1)",
+             OR EXISTS (SELECT 1 FROM tool_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM local_commands WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM local_command_cancellations WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM local_command_audit_facts WHERE audit_sequence = ?1)",
             [sequence],
             |row| row.get(0),
         )?;
@@ -1432,7 +1576,10 @@ fn validate_tool_logical_sequences(connection: &Connection) -> Result<(), Persis
              OR EXISTS (SELECT 1 FROM run_audit_facts WHERE audit_sequence = ?1)
              OR EXISTS (SELECT 1 FROM repository_import_requests WHERE accepted_sequence = ?1)
              OR EXISTS (SELECT 1 FROM repository_import_facts WHERE fact_sequence = ?1)
-             OR EXISTS (SELECT 1 FROM repository_import_audit_facts WHERE audit_sequence = ?1)",
+             OR EXISTS (SELECT 1 FROM repository_import_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM local_commands WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM local_command_cancellations WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM local_command_audit_facts WHERE audit_sequence = ?1)",
             [sequence],
             |row| row.get(0),
         )?;

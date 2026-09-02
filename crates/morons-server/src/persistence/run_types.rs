@@ -43,6 +43,53 @@ impl fmt::Debug for RunId {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalCommandId([u8; IDENTIFIER_BYTES]);
+
+impl LocalCommandId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for LocalCommandId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("LocalCommandId(")?;
+        write_hex(formatter, &self.0)?;
+        formatter.write_str(")")
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalCommandStatus {
+    Succeeded,
+    Failed,
+    Interrupted,
+    Uncertain,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AcceptedLocalCommand {
+    pub id: LocalCommandId,
+    pub session_id: SessionId,
+    pub command: String,
+    pub context_visible: bool,
+    pub(crate) newly_accepted: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalCommandCancellationResult {
+    pub command_id: LocalCommandId,
+    pub cancellation_requested: bool,
+    pub(crate) intent_applied: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MessageId([u8; IDENTIFIER_BYTES]);
 
 impl MessageId {
@@ -353,6 +400,19 @@ pub enum TranscriptEntry {
         result: ToolResult,
         created_at_milliseconds: u64,
     },
+    LocalCommand {
+        entry_sequence: u64,
+        id: MessageId,
+        command_id: LocalCommandId,
+        command: String,
+        context_visible: bool,
+        status: LocalCommandStatus,
+        exit_code: Option<i32>,
+        signal: Option<u16>,
+        stdout: String,
+        stderr: String,
+        created_at_milliseconds: u64,
+    },
 }
 
 impl TranscriptEntry {
@@ -362,17 +422,19 @@ impl TranscriptEntry {
             Self::UserMessage { entry_sequence, .. }
             | Self::AssistantMessage { entry_sequence, .. }
             | Self::ToolCall { entry_sequence, .. }
-            | Self::ToolResult { entry_sequence, .. } => *entry_sequence,
+            | Self::ToolResult { entry_sequence, .. }
+            | Self::LocalCommand { entry_sequence, .. } => *entry_sequence,
         }
     }
 
     #[must_use]
-    pub const fn run_id(&self) -> RunId {
+    pub const fn run_id(&self) -> Option<RunId> {
         match self {
             Self::UserMessage { run_id, .. }
             | Self::AssistantMessage { run_id, .. }
             | Self::ToolCall { run_id, .. }
-            | Self::ToolResult { run_id, .. } => *run_id,
+            | Self::ToolResult { run_id, .. } => Some(*run_id),
+            Self::LocalCommand { .. } => None,
         }
     }
 }
@@ -453,6 +515,32 @@ impl fmt::Debug for TranscriptEntry {
                 .field("uncertain", &result.is_uncertain())
                 .field("created_at_milliseconds", created_at_milliseconds)
                 .finish(),
+            Self::LocalCommand {
+                entry_sequence,
+                id,
+                command_id,
+                command,
+                context_visible,
+                status,
+                exit_code,
+                signal,
+                stdout,
+                stderr,
+                created_at_milliseconds,
+            } => formatter
+                .debug_struct("LocalCommand")
+                .field("entry_sequence", entry_sequence)
+                .field("id", id)
+                .field("command_id", command_id)
+                .field("command_bytes", &command.len())
+                .field("context_visible", context_visible)
+                .field("status", status)
+                .field("exit_code", exit_code)
+                .field("signal", signal)
+                .field("stdout_bytes", &stdout.len())
+                .field("stderr_bytes", &stderr.len())
+                .field("created_at_milliseconds", created_at_milliseconds)
+                .finish(),
         }
     }
 }
@@ -487,6 +575,10 @@ impl SessionEventCursor {
 pub enum SessionEventPayload {
     TranscriptEntry(TranscriptEntry),
     RunChanged(Run),
+    LocalCommandChanged {
+        command_id: LocalCommandId,
+        active: bool,
+    },
     WorkspaceChanged(super::types::WorkspaceSummary),
 }
 
@@ -509,6 +601,7 @@ pub struct TranscriptPage {
     pub entries: Vec<TranscriptEntry>,
     pub runs: Vec<Run>,
     pub active_run_id: Option<RunId>,
+    pub active_command_id: Option<LocalCommandId>,
     pub next_cursor: Option<TranscriptCursor>,
     pub event_cursor: SessionEventCursor,
 }

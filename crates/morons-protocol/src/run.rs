@@ -7,6 +7,7 @@ use crate::{APPLICATION_IDENTIFIER_BYTES, SessionId};
 const RUN_ID_PREFIX: &str = "run_";
 const MESSAGE_ID_PREFIX: &str = "msg_";
 const TOOL_CALL_ID_PREFIX: &str = "tool_";
+const LOCAL_COMMAND_ID_PREFIX: &str = "cmd_";
 const TRANSCRIPT_CURSOR_PREFIX: &str = "tc2_";
 const TRANSCRIPT_CURSOR_BYTES: usize = 40;
 
@@ -131,6 +132,48 @@ impl<'de> Deserialize<'de> for ToolCallId {
     {
         let encoded = String::deserialize(deserializer)?;
         decode_prefixed_hex(&encoded, TOOL_CALL_ID_PREFIX)
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalCommandId([u8; APPLICATION_IDENTIFIER_BYTES]);
+
+impl LocalCommandId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; APPLICATION_IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; APPLICATION_IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for LocalCommandId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_prefixed_hex(formatter, LOCAL_COMMAND_ID_PREFIX, &self.0)
+    }
+}
+
+impl Serialize for LocalCommandId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&encode_prefixed_hex(LOCAL_COMMAND_ID_PREFIX, &self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for LocalCommandId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        decode_prefixed_hex(&encoded, LOCAL_COMMAND_ID_PREFIX)
             .map(Self)
             .map_err(de::Error::custom)
     }
@@ -300,6 +343,15 @@ pub enum ToolKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum LocalCommandStatus {
+    Succeeded,
+    Failed,
+    Interrupted,
+    Uncertain,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolResultStatus {
     Succeeded,
     Failed,
@@ -340,6 +392,18 @@ pub enum TranscriptEntry {
         tool: ToolKind,
         status: ToolResultStatus,
         summary: String,
+        created_at_milliseconds: u64,
+    },
+    LocalCommand {
+        id: MessageId,
+        command_id: LocalCommandId,
+        command: String,
+        context_visible: bool,
+        status: LocalCommandStatus,
+        exit_code: Option<i32>,
+        signal: Option<u16>,
+        stdout: String,
+        stderr: String,
         created_at_milliseconds: u64,
     },
 }
@@ -409,6 +473,30 @@ impl fmt::Debug for TranscriptEntry {
                 .field("tool", tool)
                 .field("status", status)
                 .field("summary_bytes", &summary.len())
+                .field("created_at_milliseconds", created_at_milliseconds)
+                .finish(),
+            Self::LocalCommand {
+                id,
+                command_id,
+                command,
+                context_visible,
+                status,
+                exit_code,
+                signal,
+                stdout,
+                stderr,
+                created_at_milliseconds,
+            } => formatter
+                .debug_struct("LocalCommand")
+                .field("id", id)
+                .field("command_id", command_id)
+                .field("command_bytes", &command.len())
+                .field("context_visible", context_visible)
+                .field("status", status)
+                .field("exit_code", exit_code)
+                .field("signal", signal)
+                .field("stdout_bytes", &stdout.len())
+                .field("stderr_bytes", &stderr.len())
                 .field("created_at_milliseconds", created_at_milliseconds)
                 .finish(),
         }

@@ -230,7 +230,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
     let maximum_scroll =
         u16::try_from(lines.len().saturating_sub(visible_height)).unwrap_or(u16::MAX);
     let scroll = maximum_scroll.saturating_sub(scroll.min(maximum_scroll));
-    let run_status = active_run_label(session);
+    let run_status = active_work_label(session);
     let workspace = workspace_label(session.workspace.state);
     let title = format!(
         " {} · {run_status} · {workspace} ",
@@ -270,7 +270,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         View::Sessions => {
             "↑↓ select · Enter open · n new · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
         }
-        View::Session => "Esc sessions · Ctrl+A acknowledge · Ctrl+X cancel",
+        View::Session => "Enter send · !/!! command · Esc sessions · Ctrl+X cancel",
     };
     let status = Line::from(vec![
         Span::styled(" ", Style::default()),
@@ -386,9 +386,13 @@ fn extend_safe_lines<'a>(lines: &mut Vec<Line<'a>>, text: &'a SafeText) {
     }
 }
 
-fn active_run_label(session: &SessionView) -> &'static str {
+fn active_work_label(session: &SessionView) -> &'static str {
     let Some(active_run_id) = session.active_run_id else {
-        return "idle";
+        return if session.active_command_id.is_some() {
+            "command active"
+        } else {
+            "idle"
+        };
     };
     session
         .runs

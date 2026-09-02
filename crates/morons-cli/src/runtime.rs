@@ -253,6 +253,20 @@ impl RuntimeState {
                 self.start_mutation(command, PendingOperation::SubmitInput, commands)?;
                 self.app.set_status("Submitting message");
             }
+            AppAction::ExecuteLocalCommand {
+                session_id,
+                command,
+                context_visible,
+            } => {
+                let command = RequestCommand::ExecuteLocalCommand {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    session_id,
+                    command,
+                    context_visible,
+                };
+                self.start_mutation(command, PendingOperation::ExecuteLocalCommand, commands)?;
+                self.app.set_status("Starting local command");
+            }
             AppAction::CancelRun { session_id, run_id } => {
                 let command = RequestCommand::CancelRun {
                     mutation_request_id: generate_mutation_request_id()?,
@@ -261,6 +275,18 @@ impl RuntimeState {
                 };
                 self.start_mutation(command, PendingOperation::CancelRun, commands)?;
                 self.app.set_status("Requesting exact-run cancellation");
+            }
+            AppAction::CancelLocalCommand {
+                session_id,
+                command_id,
+            } => {
+                let command = RequestCommand::CancelLocalCommand {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    session_id,
+                    command_id,
+                };
+                self.start_mutation(command, PendingOperation::CancelLocalCommand, commands)?;
+                self.app.set_status("Requesting local command cancellation");
             }
             AppAction::AcknowledgeToolUncertainty { session_id, run_id } => {
                 let command = RequestCommand::AcknowledgeToolUncertainty {
@@ -396,6 +422,15 @@ impl RuntimeState {
                 self.app
                     .set_status("Message accepted durably; run is server-owned");
             }
+            RequestEvent::LocalCommandAccepted {
+                mutation_request_id,
+                session_id,
+                command_id,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                self.app.local_command_accepted(session_id, command_id)?;
+                self.app.set_status("Local command accepted and running");
+            }
             RequestEvent::CancellationResolved {
                 mutation_request_id,
                 result,
@@ -410,6 +445,19 @@ impl RuntimeState {
                     "Cancellation intent committed; waiting for controlled execution to stop"
                 } else {
                     "Run was already terminal"
+                });
+            }
+            RequestEvent::LocalCommandCancellationResolved {
+                mutation_request_id,
+                command_id,
+                cancellation_requested,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                self.app.local_command_cancellation_resolved(command_id)?;
+                self.app.set_status(if cancellation_requested {
+                    "Cancellation requested; waiting for the local command tree to stop"
+                } else {
+                    "The local command was already terminal"
                 });
             }
             RequestEvent::ToolUncertaintyAcknowledged {
@@ -654,6 +702,7 @@ impl RuntimeState {
             snapshot.entries,
             snapshot.runs,
             snapshot.active_run_id,
+            snapshot.active_command_id,
         )?;
         self.session_generation = self.session_generation.wrapping_add(1);
         abort_task(&mut self.session_subscription);

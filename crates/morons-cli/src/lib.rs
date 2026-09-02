@@ -11,7 +11,8 @@ pub use lifecycle::{ConnectOrStartError, ConnectedServer, connect_or_start};
 pub use mutation::{MutationRequestIdError, generate_mutation_request_id};
 pub use runtime::{TerminalApplicationError, run_terminal_application};
 pub use sessions::{
-    ApplicationClient, ApplicationClientError, RunCancellationResult, ServerStopAcceptance,
+    ApplicationClient, ApplicationClientError, LocalCommandAcceptance,
+    LocalCommandCancellationResult, RunCancellationResult, ServerStopAcceptance,
     SessionCatalogSubscription, SessionInputAcceptance, SessionPage, SessionSubscription,
     TranscriptPage,
 };

@@ -254,19 +254,31 @@ pub enum PersistenceError {
     Sqlite(rusqlite::Error),
     Control(ControlError),
     Randomness(getrandom::Error),
-    InvalidInput { reason: &'static str },
-    InvalidState { reason: &'static str },
+    InvalidInput {
+        reason: &'static str,
+    },
+    InvalidState {
+        reason: &'static str,
+    },
     RequestConflict,
     SessionNotFound,
     RunNotFound,
-    SessionBusy { active_run_id: RunId },
+    LocalCommandNotFound,
+    SessionBusy {
+        active_run_id: RunId,
+    },
+    SessionCommandBusy {
+        active_command_id: super::LocalCommandId,
+    },
     WorkingDirectoryUnavailable,
     CredentialGenerationConflict,
     CredentialNotConfigured,
     CredentialMutationNotApplied,
     WorkspaceBlocked,
     ToolUncertaintyNotFound,
-    ResourceLimit { resource: PersistenceResourceLimit },
+    ResourceLimit {
+        resource: PersistenceResourceLimit,
+    },
     WorkerStopped,
 }
 
@@ -290,8 +302,12 @@ impl fmt::Display for PersistenceError {
             }
             Self::SessionNotFound => formatter.write_str("the session was not found"),
             Self::RunNotFound => formatter.write_str("the run was not found"),
+            Self::LocalCommandNotFound => formatter.write_str("the local command was not found"),
             Self::SessionBusy { active_run_id } => {
                 write!(formatter, "the session is busy with {active_run_id:?}")
+            }
+            Self::SessionCommandBusy { active_command_id } => {
+                write!(formatter, "the session is busy with {active_command_id:?}")
             }
             Self::WorkingDirectoryUnavailable => {
                 formatter.write_str("the session working directory is unavailable")
@@ -349,7 +365,9 @@ impl Error for PersistenceError {
             | Self::RequestConflict
             | Self::SessionNotFound
             | Self::RunNotFound
+            | Self::LocalCommandNotFound
             | Self::SessionBusy { .. }
+            | Self::SessionCommandBusy { .. }
             | Self::WorkingDirectoryUnavailable
             | Self::CredentialGenerationConflict
             | Self::CredentialNotConfigured

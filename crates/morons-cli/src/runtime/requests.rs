@@ -2,15 +2,16 @@ use std::time::Duration;
 
 use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
-    ApplicationError, FrameError, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelSummary, OpenCodeService, RunId, RunSummary, SessionCatalogEventCursor,
-    SessionEventCursor, SessionId, SessionSummary, TranscriptEntry, WorkspaceSummary,
+    ApplicationError, FrameError, LocalCommandId, MutationRequestId, OpenCodeApiKey,
+    OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, RunId, RunSummary,
+    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, TranscriptEntry,
+    WorkspaceSummary,
 };
 use tokio::{sync::mpsc, time};
 
 use crate::{
-    ApplicationClient, ApplicationClientError, RunCancellationResult, ServerStopAcceptance,
-    SessionInputAcceptance, connect_or_start,
+    ApplicationClient, ApplicationClientError, LocalCommandCancellationResult,
+    RunCancellationResult, ServerStopAcceptance, SessionInputAcceptance, connect_or_start,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(35);
@@ -38,10 +39,21 @@ pub(super) enum RequestCommand {
         service: OpenCodeService,
         model_id: String,
     },
+    ExecuteLocalCommand {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        command: String,
+        context_visible: bool,
+    },
     CancelRun {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
         run_id: RunId,
+    },
+    CancelLocalCommand {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        command_id: LocalCommandId,
     },
     AcknowledgeToolUncertainty {
         mutation_request_id: MutationRequestId,
@@ -76,7 +88,15 @@ impl RequestCommand {
                 mutation_request_id,
                 ..
             }
+            | Self::ExecuteLocalCommand {
+                mutation_request_id,
+                ..
+            }
             | Self::CancelRun {
+                mutation_request_id,
+                ..
+            }
+            | Self::CancelLocalCommand {
                 mutation_request_id,
                 ..
             }
@@ -106,7 +126,9 @@ impl RequestCommand {
             Self::LoadSession(_) => "session transcript",
             Self::CreateSession { .. } => "session creation",
             Self::SubmitInput { .. } => "message submission",
+            Self::ExecuteLocalCommand { .. } => "local command",
             Self::CancelRun { .. } => "run cancellation",
+            Self::CancelLocalCommand { .. } => "local command cancellation",
             Self::AcknowledgeToolUncertainty { .. } => "tool uncertainty acknowledgement",
             Self::SetCredential { .. } => "credential configuration",
             Self::RemoveCredential { .. } => "credential removal",
@@ -145,6 +167,17 @@ impl RequestCommand {
                 service: *service,
                 model_id: model_id.clone(),
             }),
+            Self::ExecuteLocalCommand {
+                mutation_request_id,
+                session_id,
+                command,
+                context_visible,
+            } => Some(Self::ExecuteLocalCommand {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
+                command: command.clone(),
+                context_visible: *context_visible,
+            }),
             Self::CancelRun {
                 mutation_request_id,
                 session_id,
@@ -153,6 +186,15 @@ impl RequestCommand {
                 mutation_request_id: *mutation_request_id,
                 session_id: *session_id,
                 run_id: *run_id,
+            }),
+            Self::CancelLocalCommand {
+                mutation_request_id,
+                session_id,
+                command_id,
+            } => Some(Self::CancelLocalCommand {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
+                command_id: *command_id,
             }),
             Self::AcknowledgeToolUncertainty {
                 mutation_request_id,
@@ -195,9 +237,19 @@ pub(super) enum RequestEvent {
         mutation_request_id: MutationRequestId,
         accepted: SessionInputAcceptance,
     },
+    LocalCommandAccepted {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        command_id: LocalCommandId,
+    },
     CancellationResolved {
         mutation_request_id: MutationRequestId,
         result: RunCancellationResult,
+    },
+    LocalCommandCancellationResolved {
+        mutation_request_id: MutationRequestId,
+        command_id: LocalCommandId,
+        cancellation_requested: bool,
     },
     ToolUncertaintyAcknowledged {
         mutation_request_id: MutationRequestId,
@@ -241,6 +293,7 @@ pub(super) struct SessionSnapshot {
     pub(super) entries: Vec<TranscriptEntry>,
     pub(super) runs: Vec<RunSummary>,
     pub(super) active_run_id: Option<RunId>,
+    pub(super) active_command_id: Option<LocalCommandId>,
     pub(super) event_cursor: SessionEventCursor,
 }
 
@@ -398,7 +451,9 @@ async fn execute_credential(
         | RequestCommand::LoadSession(_)
         | RequestCommand::CreateSession { .. }
         | RequestCommand::SubmitInput { .. }
+        | RequestCommand::ExecuteLocalCommand { .. }
         | RequestCommand::CancelRun { .. }
+        | RequestCommand::CancelLocalCommand { .. }
         | RequestCommand::AcknowledgeToolUncertainty { .. }
         | RequestCommand::StopServer { .. } => {
             unreachable!("only credential mutations use credential execution")
@@ -456,6 +511,24 @@ async fn execute(
                 mutation_request_id: *mutation_request_id,
                 accepted,
             }),
+        RequestCommand::ExecuteLocalCommand {
+            mutation_request_id,
+            session_id,
+            command,
+            context_visible,
+        } => client
+            .execute_local_command(
+                *mutation_request_id,
+                *session_id,
+                command.clone(),
+                *context_visible,
+            )
+            .await
+            .map(|accepted| RequestResult::LocalCommandAccepted {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
+                command_id: accepted.command_id,
+            }),
         RequestCommand::CancelRun {
             mutation_request_id,
             session_id,
@@ -464,6 +537,17 @@ async fn execute(
             .cancel_run(*mutation_request_id, *session_id, *run_id)
             .await
             .map(|result| RequestResult::CancellationResolved {
+                mutation_request_id: *mutation_request_id,
+                result,
+            }),
+        RequestCommand::CancelLocalCommand {
+            mutation_request_id,
+            session_id,
+            command_id,
+        } => client
+            .cancel_local_command(*mutation_request_id, *session_id, *command_id)
+            .await
+            .map(|result| RequestResult::LocalCommandCancellationResolved {
                 mutation_request_id: *mutation_request_id,
                 result,
             }),
@@ -533,6 +617,7 @@ async fn load_session(
     let mut workspace = None;
     let mut event_cursor = None;
     let mut active_run_id = None;
+    let mut active_command_id = None;
     let mut snapshot_metadata_loaded = false;
     for _ in 0..MAX_TRANSCRIPT_PAGES {
         let page = client
@@ -543,7 +628,9 @@ async fn load_session(
             .is_some_and(|session: &SessionSummary| session != &page.session)
             || workspace.is_some_and(|workspace| workspace != page.workspace)
             || event_cursor.is_some_and(|event_cursor| event_cursor != page.event_cursor)
-            || snapshot_metadata_loaded && active_run_id != page.active_run_id
+            || snapshot_metadata_loaded
+                && (active_run_id != page.active_run_id
+                    || active_command_id != page.active_command_id)
         {
             return Err(ApplicationClientError::EventScopeMismatch);
         }
@@ -552,6 +639,7 @@ async fn load_session(
         event_cursor = Some(page.event_cursor);
         if !snapshot_metadata_loaded {
             active_run_id = page.active_run_id;
+            active_command_id = page.active_command_id;
             snapshot_metadata_loaded = true;
         }
         entries.extend(page.entries);
@@ -575,6 +663,7 @@ async fn load_session(
                 entries,
                 runs,
                 active_run_id,
+                active_command_id,
                 event_cursor: event_cursor.ok_or(ApplicationClientError::EventScopeMismatch)?,
             });
         }
@@ -602,9 +691,18 @@ enum RequestResult {
         mutation_request_id: MutationRequestId,
         accepted: SessionInputAcceptance,
     },
+    LocalCommandAccepted {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        command_id: LocalCommandId,
+    },
     CancellationResolved {
         mutation_request_id: MutationRequestId,
         result: RunCancellationResult,
+    },
+    LocalCommandCancellationResolved {
+        mutation_request_id: MutationRequestId,
+        result: LocalCommandCancellationResult,
     },
     ToolUncertaintyAcknowledged {
         mutation_request_id: MutationRequestId,
@@ -642,12 +740,29 @@ impl RequestResult {
                 mutation_request_id,
                 accepted,
             },
+            Self::LocalCommandAccepted {
+                mutation_request_id,
+                session_id,
+                command_id,
+            } => RequestEvent::LocalCommandAccepted {
+                mutation_request_id,
+                session_id,
+                command_id,
+            },
             Self::CancellationResolved {
                 mutation_request_id,
                 result,
             } => RequestEvent::CancellationResolved {
                 mutation_request_id,
                 result,
+            },
+            Self::LocalCommandCancellationResolved {
+                mutation_request_id,
+                result,
+            } => RequestEvent::LocalCommandCancellationResolved {
+                mutation_request_id,
+                command_id: result.command_id,
+                cancellation_requested: result.cancellation_requested,
             },
             Self::ToolUncertaintyAcknowledged {
                 mutation_request_id,
@@ -697,7 +812,9 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 | RequestCommand::LoadSession(_) => None,
                 RequestCommand::CreateSession { .. }
                 | RequestCommand::SubmitInput { .. }
+                | RequestCommand::ExecuteLocalCommand { .. }
                 | RequestCommand::CancelRun { .. }
+                | RequestCommand::CancelLocalCommand { .. }
                 | RequestCommand::AcknowledgeToolUncertainty { .. }
                 | RequestCommand::SetCredential { .. }
                 | RequestCommand::RemoveCredential { .. }

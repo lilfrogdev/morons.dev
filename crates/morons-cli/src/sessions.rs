@@ -11,11 +11,11 @@ const MAX_SESSION_DISPLAY_NAME_BYTES: usize = 256;
 
 use morons_protocol::{
     ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
-    MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
-    OpenCodeService, ResourceLimit, RunId, RunState, RunSummary, ServerMessage,
-    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
-    TranscriptCursor, TranscriptEntry, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
-    read_server_message, write_client_message,
+    LocalCommandId, MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
+    OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId, RunState, RunSummary,
+    ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
+    SessionSummary, TranscriptCursor, TranscriptEntry, WorkspaceBlockReason, WorkspaceState,
+    WorkspaceSummary, read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -39,6 +39,7 @@ pub struct TranscriptPage {
     pub entries: Vec<TranscriptEntry>,
     pub runs: Vec<RunSummary>,
     pub active_run_id: Option<RunId>,
+    pub active_command_id: Option<LocalCommandId>,
     pub next_cursor: Option<TranscriptCursor>,
     pub event_cursor: SessionEventCursor,
 }
@@ -46,6 +47,17 @@ pub struct TranscriptPage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerStopAcceptance {
     pub current_server_stopping: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalCommandAcceptance {
+    pub command_id: LocalCommandId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalCommandCancellationResult {
+    pub command_id: LocalCommandId,
+    pub cancellation_requested: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,8 +160,14 @@ fn write_application_error(
         }
         ApplicationError::SessionNotFound => formatter.write_str("session was not found"),
         ApplicationError::RunNotFound => formatter.write_str("run was not found"),
+        ApplicationError::LocalCommandNotFound => {
+            formatter.write_str("local command was not found")
+        }
         ApplicationError::SessionBusy { active_run_id } => {
             write!(formatter, "session is busy with {active_run_id:?}")
+        }
+        ApplicationError::SessionCommandBusy { active_command_id } => {
+            write!(formatter, "session is busy with {active_command_id:?}")
         }
         ApplicationError::WorkingDirectoryUnavailable => {
             formatter.write_str("the session working directory is unavailable")
@@ -372,6 +390,27 @@ where
         })
     }
 
+    pub async fn execute_local_command(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        command: String,
+        context_visible: bool,
+    ) -> Result<LocalCommandAcceptance, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::ExecuteLocalCommand {
+                mutation_request_id,
+                session_id,
+                command,
+                context_visible,
+            })
+            .await?;
+        let ApplicationResponse::LocalCommandAccepted { command_id } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        Ok(LocalCommandAcceptance { command_id })
+    }
+
     pub async fn get_run(
         &mut self,
         session_id: SessionId,
@@ -416,6 +455,7 @@ where
             entries,
             runs,
             active_run_id,
+            active_command_id,
             next_cursor,
             event_cursor,
         } = response
@@ -455,6 +495,7 @@ where
             | TranscriptEntry::ToolResult { run_id, .. } => {
                 runs.iter().any(|run| run.id == *run_id)
             }
+            TranscriptEntry::LocalCommand { .. } => true,
         });
         let active_run_is_valid = active_run_id.is_none_or(|active_run_id| {
             runs.iter()
@@ -481,6 +522,7 @@ where
             entries,
             runs,
             active_run_id,
+            active_command_id,
             next_cursor,
             event_cursor,
         })
@@ -535,6 +577,36 @@ where
         Ok(RunCancellationResult {
             run_id: resolved_run_id,
             state,
+            cancellation_requested,
+        })
+    }
+
+    pub async fn cancel_local_command(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        command_id: LocalCommandId,
+    ) -> Result<LocalCommandCancellationResult, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::CancelLocalCommand {
+                mutation_request_id,
+                session_id,
+                command_id,
+            })
+            .await?;
+        let ApplicationResponse::LocalCommandCancellationResolved {
+            command_id: resolved,
+            cancellation_requested,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        if resolved != command_id {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(LocalCommandCancellationResult {
+            command_id,
             cancellation_requested,
         })
     }
