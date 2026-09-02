@@ -7,7 +7,7 @@
 - Agent and session state
 - Authoritative database, migration backups, and durable event history
 - Tool and execution capabilities
-- Original repository, immutable workspace baseline, active worktree generation, and nonauthoritative command candidates
+- Original repository, immutable workspace baseline, active worktree generation, nonauthoritative command candidates, reviewed diffs, and exported trees
 - Sandbox execution images, private caches, process-tree ownership, and confinement policy
 - Provider and kernel connections
 - Terminal presentation integrity and non-echoing credential input
@@ -23,7 +23,7 @@
 - Repository source paths, names, metadata, links, reparse points, special files, content, and concurrent changes
 - Model-selected tool names, call identifiers, worktree-relative paths, arguments, replacement text, and tool-result content
 - Model-selected command programs, arguments, working directories, descendants, output, exit state, generated files, and resource use
-- Mutable worktree entries, links, reparse points, identity changes, stale digests, command candidates, generation state, operation staging state, and concurrent changes
+- Mutable worktree entries, links, reparse points, identity changes, stale digests, command candidates, generation state, operation staging state, review cursors, export destinations, and concurrent changes
 - Model output
 - Commands and subprocesses
 - External content
@@ -139,6 +139,9 @@
 - A crash after tool dispatch but before result commit causes an edit to be repeated, an unapplied staged edit to be published, a successful mutation to be forgotten, or an unmatched call to enter later provider context.
 - A command runs against the authoritative worktree, an interrupted candidate becomes active, a generation pointer commits without its command result, or stale generation cleanup removes the current worktree.
 - A command candidate creates links, reparse points, alternate streams, special files, invalid names, collisions, oversized artifacts, hostile controls, or auxiliary metadata that trusted promotion accepts.
+- Diff review compares a stale or attacker-selected generation, follows an invalid node, exposes host paths or unbounded content, or omits changes across pagination.
+- Export overwrites or merges an existing tree, overlaps protected state, writes to the original repository implicitly, copies links or auxiliary metadata, or publishes a partial tree.
+- A crash after export dispatch causes automatic replay, deletion, or a false success claim for an external destination that startup cannot inspect without its transient path.
 - A read or search result is unbounded, recreated from changed bytes after restart, contains binary or terminal-control content treated as trusted, or exhausts memory, context, storage, or provider limits.
 - A mutating tool outcome remains ambiguous but the run is marked failed or cancelled without an uncertainty blocker and a successor run modifies the same workspace.
 - A live database file is copied inconsistently, a backup is disclosed, or a database-only backup is mistaken for complete workspace recovery.
@@ -239,6 +242,9 @@
 - Execute commands only against nonauthoritative candidates, copy admissible normal-exit output into a clean synchronized generation, and atomically commit its active pointer with the terminal command result.
 - Discard candidates after cancellation, timeout, resource termination, sandbox failure, helper loss, shutdown, or restart, and never promote command staging during recovery.
 - Provision the Rust execution image through an authenticated non-executing copy operation that excludes credentials and package-manager configuration, and give each command private writable Cargo state seeded from immutable public cache data.
+- Bind review cursors to the session and exact active generation, compare only server-resolved baseline and generation trees, and return bounded relative metadata and plain UTF-8 excerpts.
+- Require export to target one absent non-protected destination, copy through operation-named sibling staging, synchronize and validate the full tree, and publish by atomic rename without Git or overwrite semantics.
+- Persist only export destination digests, never inspect destinations automatically on startup, and preserve dispatched outcomes as uncertain unless an exact deliberate retry proves them.
 - Normalize command streams into bounded plain UTF-8, strip terminal and bidirectional controls, map known host roots to synthetic names, and publish no raw or live sandbox output.
 - Give every committed call a durable result, terminate known interrupted tool loops without continuation, and preserve an unprovable mutation as an acknowledged-only uncertainty blocker.
 - Enforce path, depth, count, per-file, total-byte, manifest, staging-growth, and concurrency limits before and during import.
@@ -282,4 +288,5 @@
 - Native CI and release hardware reduce but cannot eliminate processor, firmware, emulator, compiler, runner-image, sandbox-policy, or operating-system isolation defects.
 - The macOS command boundary depends on a deprecated Seatbelt interface that Apple may remove or change; command execution must then remain unavailable until another reviewed backend exists.
 - Network-denied offline execution cannot build dependencies absent from the provisioned image, and candidate copying and validation consume bounded but potentially substantial time and disk.
+- An export can remain externally present but durably uncertain after a crash because Morons intentionally does not retain or automatically revisit its destination path.
 - A sandboxed command can still exhaust its allowed resources, corrupt its discardable candidate, or exploit a kernel or sandbox defect; successful confinement does not make repository code or build output trustworthy.
