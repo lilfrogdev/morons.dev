@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -32,6 +32,7 @@ const SCHEMA_V6: &str = include_str!("../schema_v6.sql");
 const SCHEMA_V7: &str = include_str!("../schema_v7.sql");
 const SCHEMA_V8: &str = include_str!("../schema_v8.sql");
 const SCHEMA_V9: &str = include_str!("../schema_v9.sql");
+const SCHEMA_V10: &str = include_str!("../schema_v10.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -48,6 +49,8 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("execution_image_requests", "table"),
     ("execution_image_requests_by_state", "index"),
     ("execution_image_single_incomplete", "index"),
+    ("export_requests", "table"),
+    ("export_requests_by_state", "index"),
     ("logical_sequences", "table"),
     ("mutation_requests", "table"),
     ("provider_operation_facts", "table"),
@@ -145,6 +148,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V7)?;
     connection.execute_batch(SCHEMA_V8)?;
     connection.execute_batch(SCHEMA_V9)?;
+    connection.execute_batch(SCHEMA_V10)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -280,6 +284,10 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
             ensure_migration_backup(connection, paths, schema_version)?;
             migrate_schema(connection, SCHEMA_V9)
         }
+        9 => {
+            ensure_migration_backup(connection, paths, schema_version)?;
+            Ok(())
+        }
         SCHEMA_VERSION => Ok(()),
         version if version > SCHEMA_VERSION => Err(PersistenceError::InvalidState {
             reason: "the authoritative database schema is newer than this server",
@@ -287,6 +295,11 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         _ => Err(PersistenceError::InvalidState {
             reason: "the authoritative database schema version is unsupported",
         }),
+    }?;
+    if schema_version < SCHEMA_VERSION {
+        migrate_schema(connection, SCHEMA_V10)
+    } else {
+        Ok(())
     }
 }
 

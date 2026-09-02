@@ -277,6 +277,51 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::ReviewDiff {
+                session_id,
+                cursor,
+                limit,
+            } => {
+                let (changes, next_cursor, generation) = self
+                    .sessions
+                    .review_diff(to_persistence_session_id(session_id), cursor, limit)
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::DiffReviewed {
+                        changes,
+                        next_cursor,
+                        generation,
+                    },
+                ))
+            }
+            ApplicationRequest::ExportWorktree {
+                mutation_request_id,
+                session_id,
+                generation,
+                destination_path,
+            } => {
+                let _lifecycle_guard = self.lifecycle_mutations.lock().await;
+                if self.stopping.load(Ordering::Acquire) {
+                    return Err(ApplicationError::ServiceUnavailable);
+                }
+                let summary = self
+                    .sessions
+                    .export_worktree(
+                        to_persistence_mutation_id(mutation_request_id),
+                        to_persistence_session_id(session_id),
+                        generation,
+                        destination_path,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::WorktreeExported {
+                        session_id,
+                        summary,
+                    },
+                ))
+            }
             ApplicationRequest::ImportRepository {
                 mutation_request_id,
                 session_id,

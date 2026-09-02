@@ -5,6 +5,7 @@ mod endpoint;
 mod execution;
 mod framing;
 mod messages;
+mod review;
 mod run;
 mod session;
 
@@ -27,6 +28,10 @@ pub use framing::{
     write_client_message, write_server_message,
 };
 pub use messages::{ClientMessage, ServerMessage};
+pub use review::{
+    DiffChange, DiffChangeKind, DiffCursor, ExportSummary, MAX_EXPORT_DESTINATION_PATH_BYTES,
+    ReviewGeneration,
+};
 pub use run::{
     MessageId, OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
     OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary,
@@ -39,4 +44,4 @@ pub use session::{
     WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;

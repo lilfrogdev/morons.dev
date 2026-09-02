@@ -6,6 +6,7 @@ mod execution_image;
 mod execution_image_operation;
 mod paths;
 mod repository;
+mod review;
 mod run_types;
 mod runs;
 mod types;
@@ -43,8 +44,8 @@ pub use self::{
 };
 
 pub(crate) use self::types::{
-    CommandResources, ExecutionImageOutcome, ExecutionImagePlan, RepositoryImportOutcome,
-    RepositoryImportPlan, WorktreeLayoutPlan,
+    CommandResources, ExecutionImageOutcome, ExecutionImagePlan, ExportPlan,
+    RepositoryImportOutcome, RepositoryImportPlan, ReviewResources, WorktreeLayoutPlan,
 };
 
 pub(crate) use self::run_types::{
@@ -461,6 +462,30 @@ enum WorkerRequest {
         )>,
         response: oneshot::Sender<Result<TranscriptEntry, PersistenceError>>,
     },
+    PrepareExport {
+        request_id: MutationRequestId,
+        session_id: SessionId,
+        generation_id: [u8; 16],
+        destination_digest: [u8; 32],
+        response: oneshot::Sender<Result<ExportPlan, PersistenceError>>,
+    },
+    DispatchExport {
+        plan: ExportPlan,
+        response: oneshot::Sender<Result<ExportPlan, PersistenceError>>,
+    },
+    CompleteExport {
+        plan: ExportPlan,
+        outcome: RepositoryImportOutcome,
+        response: oneshot::Sender<Result<morons_protocol::ExportSummary, PersistenceError>>,
+    },
+    GetExportSummary {
+        request_id: MutationRequestId,
+        response: oneshot::Sender<Result<morons_protocol::ExportSummary, PersistenceError>>,
+    },
+    GetReviewResources {
+        session_id: SessionId,
+        response: oneshot::Sender<Result<ReviewResources, PersistenceError>>,
+    },
     PrepareRepositoryImport {
         request_id: MutationRequestId,
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
@@ -631,6 +656,52 @@ fn run_worker(
                     publication,
                 ));
             }
+            WorkerRequest::PrepareExport {
+                request_id,
+                session_id,
+                generation_id,
+                destination_digest,
+                response,
+            } => {
+                let _ = response.send(backend.prepare_export(
+                    request_id,
+                    session_id,
+                    generation_id,
+                    destination_digest,
+                ));
+            }
+            WorkerRequest::DispatchExport { plan, response } => {
+                let _ = response.send(backend.dispatch_export(plan));
+            }
+            WorkerRequest::CompleteExport {
+                plan,
+                outcome,
+                response,
+            } => {
+                let _ = response.send(backend.complete_export(plan, outcome));
+            }
+            WorkerRequest::GetExportSummary {
+                request_id,
+                response,
+            } => {
+                let _ = response.send(backend.export_summary(request_id));
+            }
+            WorkerRequest::GetReviewResources {
+                session_id,
+                response,
+            } => {
+                let result = (|| {
+                    let session = backend
+                        .get_session(session_id)?
+                        .ok_or(PersistenceError::SessionNotFound)?;
+                    let generation = backend.active_worktree_generation(&session.workspace_id)?;
+                    Ok(ReviewResources {
+                        workspace_id: session.workspace_id,
+                        generation_id: generation,
+                    })
+                })();
+                let _ = response.send(result);
+            }
             WorkerRequest::PrepareRepositoryImport {
                 request_id,
                 fingerprint,
@@ -758,6 +829,8 @@ mod credential_tests;
 mod execution_image_tests;
 #[cfg(test)]
 mod repository_tests;
+#[cfg(test)]
+mod review_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]

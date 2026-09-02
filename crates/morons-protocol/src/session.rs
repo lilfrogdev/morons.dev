@@ -264,6 +264,17 @@ pub enum ApplicationRequest {
         mutation_request_id: MutationRequestId,
         expected_generation: u64,
     },
+    ReviewDiff {
+        session_id: SessionId,
+        cursor: Option<crate::DiffCursor>,
+        limit: u16,
+    },
+    ExportWorktree {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        generation: crate::ReviewGeneration,
+        destination_path: String,
+    },
     ImportRepository {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
@@ -361,6 +372,28 @@ impl fmt::Debug for ApplicationRequest {
                 .debug_struct("RemoveOpenCodeCredential")
                 .field("mutation_request_id", mutation_request_id)
                 .field("expected_generation", expected_generation)
+                .finish(),
+            Self::ReviewDiff {
+                session_id,
+                cursor,
+                limit,
+            } => formatter
+                .debug_struct("ReviewDiff")
+                .field("session_id", session_id)
+                .field("cursor", cursor)
+                .field("limit", limit)
+                .finish(),
+            Self::ExportWorktree {
+                mutation_request_id,
+                session_id,
+                generation,
+                destination_path,
+            } => formatter
+                .debug_struct("ExportWorktree")
+                .field("mutation_request_id", mutation_request_id)
+                .field("session_id", session_id)
+                .field("generation", generation)
+                .field("destination_path_bytes", &destination_path.len())
                 .finish(),
             Self::ImportRepository {
                 mutation_request_id,
@@ -468,6 +501,15 @@ pub enum ApplicationResponse {
     },
     ExecutionImageProvisioned {
         image: crate::ExecutionImageSummary,
+    },
+    DiffReviewed {
+        changes: Vec<crate::DiffChange>,
+        next_cursor: Option<crate::DiffCursor>,
+        generation: crate::ReviewGeneration,
+    },
+    WorktreeExported {
+        session_id: SessionId,
+        summary: crate::ExportSummary,
     },
     RepositoryImported {
         session_id: SessionId,
@@ -661,6 +703,9 @@ pub enum ApplicationError {
     CredentialMutationNotApplied,
     ExecutionImageProvisionNotApplied,
     ExecutionImageBlocked,
+    ReviewCursorStale,
+    ExportNotApplied,
+    ExportUncertain,
     WorkspaceNotPristine,
     WorkspaceBusy,
     RepositoryAlreadyImported,

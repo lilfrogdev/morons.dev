@@ -219,6 +219,22 @@ pub(crate) struct RepositoryImportOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReviewResources {
+    pub workspace_id: [u8; IDENTIFIER_BYTES],
+    pub generation_id: [u8; IDENTIFIER_BYTES],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExportPlan {
+    pub request_id: MutationRequestId,
+    pub session_id: SessionId,
+    pub workspace_id: [u8; IDENTIFIER_BYTES],
+    pub generation_id: [u8; IDENTIFIER_BYTES],
+    pub operation_id: [u8; IDENTIFIER_BYTES],
+    pub state: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CommandResources {
     pub workspace_id: [u8; IDENTIFIER_BYTES],
     pub active_generation_id: [u8; IDENTIFIER_BYTES],
@@ -352,6 +368,9 @@ pub enum PersistenceError {
     CredentialMutationNotApplied,
     ExecutionImageProvisionNotApplied,
     ExecutionImageBlocked,
+    ReviewCursorStale,
+    ExportNotApplied,
+    ExportUncertain,
     WorkspaceNotPristine,
     WorkspaceBusy,
     RepositoryAlreadyImported,
@@ -400,6 +419,9 @@ impl fmt::Display for PersistenceError {
             Self::ExecutionImageBlocked => {
                 formatter.write_str("the execution image state is blocked")
             }
+            Self::ReviewCursorStale => formatter.write_str("the reviewed generation is stale"),
+            Self::ExportNotApplied => formatter.write_str("the export was not applied"),
+            Self::ExportUncertain => formatter.write_str("the export outcome is uncertain"),
             Self::WorkspaceNotPristine => {
                 formatter.write_str("the session is not pristine for repository import")
             }
@@ -466,6 +488,9 @@ impl Error for PersistenceError {
             | Self::CredentialMutationNotApplied
             | Self::ExecutionImageProvisionNotApplied
             | Self::ExecutionImageBlocked
+            | Self::ReviewCursorStale
+            | Self::ExportNotApplied
+            | Self::ExportUncertain
             | Self::WorkspaceNotPristine
             | Self::WorkspaceBusy
             | Self::RepositoryAlreadyImported
