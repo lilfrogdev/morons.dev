@@ -30,10 +30,10 @@ use windows_sys::Win32::{
         Threading::{
             CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW,
             DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess,
-            InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, PROCESS_INFORMATION, ResumeThread,
-            STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-            WaitForSingleObject,
+            InitializeProcThreadAttributeList, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+            PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+            TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
         },
     },
 };
@@ -49,6 +49,7 @@ const MAX_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const TERMINATION_EXIT_CODE: u32 = 0xffff_fffe;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const JOB_ACCOUNTING_SETTLE_TIME: Duration = Duration::from_millis(100);
+const CHILD_PROCESS_OVERRIDE: u32 = 0x0000_0002;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommandLimits {
@@ -185,7 +186,7 @@ pub(super) fn launch(
     let environment = environment_block(request.runtime, request.image)?;
     let io = ChildIo::new()?;
     let job = create_job(request.limits)?;
-    let mut attributes = AttributeList::new(2)?;
+    let mut attributes = AttributeList::new(3)?;
     let capabilities = SECURITY_CAPABILITIES {
         AppContainerSid: sid,
         Capabilities: std::ptr::null_mut(),
@@ -197,6 +198,13 @@ pub(super) fn launch(
         (&raw const capabilities).cast(),
         std::mem::size_of::<SECURITY_CAPABILITIES>(),
         "attribute-capabilities",
+    )?;
+    let child_process_policy = CHILD_PROCESS_OVERRIDE;
+    attributes.update(
+        PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY as usize,
+        (&raw const child_process_policy).cast(),
+        std::mem::size_of::<u32>(),
+        "attribute-child-process",
     )?;
     let inherited = io.raw_handles();
     attributes.update(
