@@ -140,7 +140,7 @@
 - A command runs against the authoritative worktree, an interrupted candidate becomes active, a generation pointer commits without its command result, or stale generation cleanup removes the current worktree.
 - A command candidate creates links, reparse points, alternate streams, special files, invalid names, collisions, oversized artifacts, hostile controls, or auxiliary metadata that trusted promotion accepts.
 - Diff review compares a stale or attacker-selected generation, follows an invalid node, exposes host paths or unbounded content, or omits changes across pagination.
-- Export overwrites or merges an existing tree, overlaps protected state, writes to the original repository implicitly, copies links or auxiliary metadata, or publishes a partial tree.
+- Export overwrites or merges an existing tree, overlaps protected state, targets a descendant of the original source through an alias, writes to the original repository implicitly, copies links or auxiliary metadata, or publishes a partial tree.
 - A crash after export dispatch causes automatic replay, deletion, or a false success claim for an external destination that startup cannot inspect without its transient path.
 - A read or search result is unbounded, recreated from changed bytes after restart, contains binary or terminal-control content treated as trusted, or exhausts memory, context, storage, or provider limits.
 - A mutating tool outcome remains ambiguous but the run is marked failed or cancelled without an uncertainty blocker and a successor run modifies the same workspace.
@@ -243,8 +243,9 @@
 - Discard candidates after cancellation, timeout, resource termination, sandbox failure, helper loss, shutdown, or restart, and never promote command staging during recovery.
 - Provision the Rust execution image through an authenticated non-executing copy operation that excludes credentials and package-manager configuration, and give each command private writable Cargo state seeded from immutable public cache data.
 - Bind review cursors to the session and exact active generation, compare only server-resolved baseline and generation trees, and return bounded relative metadata and plain UTF-8 excerpts.
-- Require export to target one absent non-protected destination, copy through operation-named sibling staging, synchronize and validate the full tree, and publish by atomic rename without Git or overwrite semantics.
-- Persist only export destination digests, never inspect destinations automatically on startup, and preserve dispatched outcomes as uncertain unless an exact deliberate retry proves them.
+- Retain only a role-separated canonical source-root digest from repository import and reject export when any pinned destination ancestor matches it.
+- Require export to target one absent non-protected destination, validate a synchronized private snapshot before dispatch, copy after dispatch through handle-relative operation-named sibling staging, and publish by no-replace atomic rename without Git or overwrite semantics.
+- Persist only export destination digests, never inspect private or external dispatched export artifacts automatically on startup, and preserve dispatched outcomes as uncertain unless an exact deliberate retry proves them.
 - Normalize command streams into bounded plain UTF-8, strip terminal and bidirectional controls, map known host roots to synthetic names, and publish no raw or live sandbox output.
 - Give every committed call a durable result, terminate known interrupted tool loops without continuation, and preserve an unprovable mutation as an acknowledged-only uncertainty blocker.
 - Enforce path, depth, count, per-file, total-byte, manifest, staging-growth, and concurrency limits before and during import.
