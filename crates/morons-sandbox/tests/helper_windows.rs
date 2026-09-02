@@ -224,7 +224,9 @@ fn sandbox_child_background() {
     if !inside_sandbox() {
         return;
     }
-    let descendant = PathBuf::from("descendant.exe");
+    let descendant = std::env::current_dir()
+        .expect("candidate working directory")
+        .join("descendant.exe");
     fs::copy(
         std::env::current_exe().expect("private executable"),
         &descendant,
