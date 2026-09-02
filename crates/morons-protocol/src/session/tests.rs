@@ -7,11 +7,11 @@ use super::{
     SessionSummary, WorkspaceState, WorkspaceSummary,
 };
 use crate::{
-    ClientMessage, DiffChange, DiffChangeKind, DiffNodeKind, ExecutionImageState,
-    ExecutionImageSummary, ExecutionTargetArch, ExecutionTargetOs, MessageId, OpenCodeApiKey,
-    OpenCodeCredentialStatus, OpenCodeModelCapabilities, OpenCodeModelRetention,
-    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, ReviewGeneration,
-    RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
+    ClientMessage, ExecutionImageState, ExecutionImageSummary, ExecutionTargetArch,
+    ExecutionTargetOs, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
+    OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
+    OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary,
+    ToolCallId, ToolKind, ToolResultStatus,
 };
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
@@ -279,65 +279,6 @@ fn repository_import_contract_is_stable_and_path_debug_is_redacted() {
                 "blocked_run_id": null,
                 "blocked_tool": null,
             },
-        })
-    );
-}
-
-#[test]
-fn diff_review_contract_is_stable_and_tokens_are_redacted() {
-    let session_id = SessionId::from_bytes([0x51; 16]);
-    let request = ApplicationRequest::ReviewDiff {
-        session_id,
-        cursor: None,
-        limit: 50,
-    };
-    assert_eq!(
-        serde_json::to_value(request).expect("review request should encode"),
-        json!({
-            "operation": "review_diff",
-            "session_id": "ses_51515151515151515151515151515151",
-            "cursor": null,
-            "limit": 50,
-        })
-    );
-    let generation = ReviewGeneration::from_bytes([0x52; 98]);
-    assert!(!format!("{generation:?}").contains("5252"));
-    let response = ApplicationResponse::DiffReviewed {
-        session_id,
-        changes: vec![DiffChange {
-            path: "src/lib.rs".to_owned(),
-            kind: DiffChangeKind::Modified,
-            old_kind: Some(DiffNodeKind::File),
-            new_kind: Some(DiffNodeKind::File),
-            old_sha256: Some("00".repeat(32)),
-            new_sha256: Some("11".repeat(32)),
-            old_bytes: Some(4),
-            new_bytes: Some(5),
-            binary: false,
-            excerpt: Some("-old\n+new\n".to_owned()),
-        }],
-        next_cursor: None,
-        generation,
-    };
-    assert_eq!(
-        serde_json::to_value(response).expect("review response should encode"),
-        json!({
-            "result": "diff_reviewed",
-            "session_id": "ses_51515151515151515151515151515151",
-            "changes": [{
-                "path": "src/lib.rs",
-                "kind": "modified",
-                "old_kind": "file",
-                "new_kind": "file",
-                "old_sha256": "00".repeat(32),
-                "new_sha256": "11".repeat(32),
-                "old_bytes": 4,
-                "new_bytes": 5,
-                "binary": false,
-                "excerpt": "-old\n+new\n",
-            }],
-            "next_cursor": null,
-            "generation": format!("rev1_{}", "52".repeat(98)),
         })
     );
 }

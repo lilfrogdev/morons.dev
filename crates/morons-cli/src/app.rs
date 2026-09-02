@@ -4,9 +4,9 @@ mod render;
 use std::{error::Error, fmt};
 
 use morons_protocol::{
-    ApplicationEvent, DiffChange, DiffCursor, ExecutionImageSummary, MessageId, OpenCodeApiKey,
-    OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, ReviewGeneration, RunId,
-    RunState, RunSummary, SessionId, SessionSummary, TranscriptEntry, WorkspaceSummary,
+    ApplicationEvent, ExecutionImageSummary, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
+    OpenCodeModelSummary, OpenCodeService, RunId, RunState, RunSummary, SessionId, SessionSummary,
+    TranscriptEntry, WorkspaceSummary,
 };
 use ratatui::Frame;
 
@@ -85,10 +85,6 @@ pub(super) enum AppAction {
         session_id: SessionId,
         source_path: String,
     },
-    ReviewDiff {
-        session_id: SessionId,
-        cursor: Option<DiffCursor>,
-    },
     ProvisionExecutionImage {
         toolchain_source_path: String,
         cargo_source_path: String,
@@ -137,11 +133,6 @@ impl fmt::Debug for AppAction {
                 .debug_struct("CancelRun")
                 .field("session_id", session_id)
                 .field("run_id", run_id)
-                .finish(),
-            Self::ReviewDiff { session_id, cursor } => formatter
-                .debug_struct("ReviewDiff")
-                .field("session_id", session_id)
-                .field("cursor", cursor)
                 .finish(),
             Self::ImportRepository {
                 session_id,
@@ -206,18 +197,6 @@ impl fmt::Display for UiStateError {
 
 impl Error for UiStateError {}
 
-pub(super) struct ReviewView {
-    pub(super) changes: Vec<PresentedDiffChange>,
-    pub(super) next_cursor: Option<DiffCursor>,
-    pub(super) generation: ReviewGeneration,
-    pub(super) page: u32,
-}
-
-pub(super) struct PresentedDiffChange {
-    pub(super) heading: SafeText,
-    pub(super) excerpt: Option<SafeText>,
-}
-
 pub(super) struct AppState {
     pub(super) server_version: SafeText,
     pub(super) status: SafeText,
@@ -230,8 +209,6 @@ pub(super) struct AppState {
     pub(super) credential_dialog: Option<CredentialDialog>,
     pub(super) execution_image_dialog: Option<ExecutionImageDialog>,
     pub(super) repository_dialog: Option<RepositoryDialog>,
-    pub(super) review: Option<ReviewView>,
-    pub(super) review_loading: bool,
     pub(super) view: View,
     pub(super) session: Option<SessionView>,
     pub(super) prompt: PromptBuffer,
@@ -256,8 +233,6 @@ impl AppState {
             credential_dialog: None,
             execution_image_dialog: None,
             repository_dialog: None,
-            review: None,
-            review_loading: false,
             view: View::Sessions,
             session: None,
             prompt: PromptBuffer::default(),
@@ -295,60 +270,6 @@ impl AppState {
 
     pub(super) fn clear_execution_image_interaction(&mut self) {
         self.execution_image_dialog = None;
-    }
-
-    pub(super) fn set_review(
-        &mut self,
-        changes: Vec<DiffChange>,
-        next_cursor: Option<DiffCursor>,
-        generation: ReviewGeneration,
-        continued: bool,
-    ) -> Result<(), UiStateError> {
-        if changes.len() > 50 {
-            return Err(UiStateError::ResourceLimitExceeded);
-        }
-        let page = if continued {
-            self.review.as_ref().map_or(1, |review| {
-                if review.generation == generation {
-                    review.page.saturating_add(1)
-                } else {
-                    1
-                }
-            })
-        } else {
-            1
-        };
-        let changes = changes
-            .into_iter()
-            .map(|change| {
-                let old = change
-                    .old_bytes
-                    .map_or("-".to_owned(), |bytes| bytes.to_string());
-                let new = change
-                    .new_bytes
-                    .map_or("-".to_owned(), |bytes| bytes.to_string());
-                PresentedDiffChange {
-                    heading: SafeText::from_untrusted(&format!(
-                        "{:?} · {} · {old} → {new} bytes",
-                        change.kind, change.path
-                    )),
-                    excerpt: change.excerpt.as_deref().map(SafeText::from_untrusted),
-                }
-            })
-            .collect();
-        self.review = Some(ReviewView {
-            changes,
-            next_cursor,
-            generation,
-            page,
-        });
-        self.review_loading = false;
-        Ok(())
-    }
-
-    pub(super) fn clear_review(&mut self) {
-        self.review = None;
-        self.review_loading = false;
     }
 
     pub(super) fn mark_credential_status_unknown(&mut self) {
@@ -433,7 +354,6 @@ impl AppState {
         self.prompt.clear();
         self.clear_repository_interaction();
         self.clear_execution_image_interaction();
-        self.clear_review();
         self.transcript_scroll = 0;
         Ok(())
     }
@@ -444,7 +364,6 @@ impl AppState {
         self.prompt.clear();
         self.clear_repository_interaction();
         self.clear_execution_image_interaction();
-        self.clear_review();
         self.pending = None;
         self.pending_unknown = false;
         self.transcript_scroll = 0;
@@ -455,22 +374,15 @@ impl AppState {
             ApplicationEvent::SessionCreated { session, .. } => self.add_session(session),
             ApplicationEvent::SessionTranscriptEntryCommitted {
                 session_id, entry, ..
-            } => {
-                self.clear_review();
-                self.session_mut(session_id)?.append_transcript_entry(entry)
-            }
+            } => self.session_mut(session_id)?.append_transcript_entry(entry),
             ApplicationEvent::SessionRunChanged { run, .. } => {
-                self.clear_review();
                 self.session_mut(run.session_id)?.apply_run(run)
             }
             ApplicationEvent::SessionWorkspaceChanged {
                 session_id,
                 workspace,
                 ..
-            } => {
-                self.clear_review();
-                self.session_mut(session_id)?.apply_workspace(workspace)
-            }
+            } => self.session_mut(session_id)?.apply_workspace(workspace),
             ApplicationEvent::SessionAssistantDelta {
                 session_id,
                 run_id,
@@ -501,7 +413,6 @@ impl AppState {
 
     pub(super) fn session_input_accepted(&mut self, run: RunSummary) -> Result<(), UiStateError> {
         self.prompt.clear();
-        self.clear_review();
         self.clear_pending();
         self.session_mut(run.session_id)?.apply_run(run)
     }
@@ -512,7 +423,6 @@ impl AppState {
         workspace: WorkspaceSummary,
     ) -> Result<(), UiStateError> {
         self.clear_pending();
-        self.clear_review();
         self.session_mut(session_id)?.apply_workspace(workspace)
     }
 

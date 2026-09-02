@@ -10,13 +10,12 @@ const MAX_MODEL_TOKEN_LIMIT: u32 = 1_000_000;
 const MAX_SESSION_DISPLAY_NAME_BYTES: usize = 256;
 
 use morons_protocol::{
-    ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, DiffChange,
-    DiffCursor, ExecutionImageState, ExecutionImageSummary, FrameError, MessageId,
-    MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSummary,
-    OpenCodeService, ResourceLimit, ReviewGeneration, RunId, RunState, RunSummary, ServerMessage,
-    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
-    TranscriptCursor, TranscriptEntry, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
-    read_server_message, write_client_message,
+    ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, ExecutionImageState,
+    ExecutionImageSummary, FrameError, MessageId, MutationRequestId, OpenCodeApiKey,
+    OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId,
+    RunState, RunSummary, ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId,
+    SessionListCursor, SessionSummary, TranscriptCursor, TranscriptEntry, WorkspaceBlockReason,
+    WorkspaceState, WorkspaceSummary, read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -165,9 +164,6 @@ fn write_application_error(
         ApplicationError::ExecutionImageBlocked => {
             formatter.write_str("execution image state is blocked")
         }
-        ApplicationError::ReviewCursorStale => formatter.write_str("review cursor is stale"),
-        ApplicationError::ReviewUnavailable => formatter
-            .write_str("repository must be re-imported in a new session for mode-safe review"),
         ApplicationError::WorkspaceNotPristine => {
             formatter.write_str("repository import requires a pristine session")
         }
@@ -644,36 +640,6 @@ where
             return Err(self.unexpected_application_response());
         };
         Ok(credential)
-    }
-
-    pub async fn review_diff(
-        &mut self,
-        session_id: SessionId,
-        cursor: Option<DiffCursor>,
-        limit: u16,
-    ) -> Result<(Vec<DiffChange>, Option<DiffCursor>, ReviewGeneration), ApplicationClientError>
-    {
-        let response = self
-            .request(ApplicationRequest::ReviewDiff {
-                session_id,
-                cursor,
-                limit,
-            })
-            .await?;
-        let ApplicationResponse::DiffReviewed {
-            session_id: returned_session_id,
-            changes,
-            next_cursor,
-            generation,
-        } = response
-        else {
-            return Err(self.unexpected_application_response());
-        };
-        if returned_session_id != session_id {
-            self.usable = false;
-            return Err(ApplicationClientError::EventScopeMismatch);
-        }
-        Ok((changes, next_cursor, generation))
     }
 
     pub async fn import_repository(

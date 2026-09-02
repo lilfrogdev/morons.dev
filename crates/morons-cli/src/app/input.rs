@@ -118,28 +118,6 @@ impl AppState {
                 AppAction::None
             }
             KeyCode::Char('l') => AppAction::Refresh,
-            KeyCode::Char('d')
-                if self.pending.is_none() && !self.review_loading && self.view == View::Session =>
-            {
-                let Some(session) = self.session.as_ref() else {
-                    return AppAction::None;
-                };
-                if session.active_run_id.is_some()
-                    || session.workspace.state != WorkspaceState::Ready
-                    || session.workspace.block_reason.is_some()
-                {
-                    self.set_status("Diff review requires a ready, idle, unblocked workspace");
-                    return AppAction::None;
-                }
-                self.review_loading = true;
-                AppAction::ReviewDiff {
-                    session_id: session.summary.id,
-                    cursor: self
-                        .review
-                        .as_ref()
-                        .and_then(|review| review.next_cursor.clone()),
-                }
-            }
             KeyCode::Char('o') if self.pending.is_none() && self.view == View::Session => {
                 self.open_repository_dialog();
                 AppAction::None
