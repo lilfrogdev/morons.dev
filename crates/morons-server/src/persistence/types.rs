@@ -21,6 +21,7 @@ pub(super) const MAX_SESSION_CATALOG_EVENT_PAGE_SIZE: u16 = 100;
 pub(super) const MAX_SESSION_EVENT_PAGE_SIZE: u16 = 100;
 const MAX_SESSION_NAME_BYTES: usize = 256;
 const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1\0";
+const CREATE_SESSION_WITH_DIRECTORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v2\0";
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
 const CANCEL_RUN_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/cancel-run/v1\0";
 const STOP_SERVER_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/stop-server/v1\0";
@@ -131,6 +132,7 @@ impl SessionCatalogEventCursor {
 pub struct Session {
     pub id: SessionId,
     pub display_name: Option<String>,
+    pub working_directory: Option<String>,
     pub created_sequence: u64,
     pub updated_sequence: u64,
     pub created_at_milliseconds: u64,
@@ -455,6 +457,28 @@ pub(super) fn validate_display_name(display_name: Option<&str>) -> Result<(), Pe
     Ok(())
 }
 
+pub(super) fn validate_working_directory_path(path: &str) -> Result<(), PersistenceError> {
+    if path.is_empty()
+        || path.len() > morons_protocol::MAX_WORKING_DIRECTORY_PATH_BYTES
+        || path.chars().any(char::is_control)
+    {
+        return Err(PersistenceError::InvalidInput {
+            reason: "a session working directory path is invalid",
+        });
+    }
+    let path = Path::new(path);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(PersistenceError::InvalidInput {
+            reason: "a session working directory must be a normalized absolute path",
+        });
+    }
+    Ok(())
+}
+
 pub(super) fn validate_repository_source_path(path: &str) -> Result<(), PersistenceError> {
     if path.is_empty()
         || path.len() > morons_protocol::MAX_REPOSITORY_SOURCE_PATH_BYTES
@@ -606,6 +630,23 @@ pub(super) fn create_session_fingerprint(
 ) -> [u8; REQUEST_FINGERPRINT_BYTES] {
     let mut digest = Sha256::new();
     digest.update(CREATE_SESSION_FINGERPRINT_CONTEXT);
+    update_optional_name(&mut digest, display_name);
+    digest.finalize().into()
+}
+
+pub(super) fn create_session_with_directory_fingerprint(
+    display_name: Option<&str>,
+    working_directory: &str,
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(CREATE_SESSION_WITH_DIRECTORY_FINGERPRINT_CONTEXT);
+    update_optional_name(&mut digest, display_name);
+    digest.update((working_directory.len() as u32).to_be_bytes());
+    digest.update(working_directory.as_bytes());
+    digest.finalize().into()
+}
+
+fn update_optional_name(digest: &mut Sha256, display_name: Option<&str>) {
     match display_name {
         Some(name) => {
             digest.update([1]);
@@ -614,7 +655,6 @@ pub(super) fn create_session_fingerprint(
         }
         None => digest.update([0]),
     }
-    digest.finalize().into()
 }
 
 fn write_hex(formatter: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {

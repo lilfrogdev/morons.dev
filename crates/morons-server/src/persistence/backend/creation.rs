@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use rusqlite::{Transaction, TransactionBehavior, params};
 
 use super::{
@@ -23,6 +25,7 @@ impl Backend {
         request_id: MutationRequestId,
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
         display_name: Option<String>,
+        working_directory: String,
     ) -> Result<Session, PersistenceError> {
         let mutation_operation = load_mutation_operation(&self.connection, request_id)?;
         let creation = match (
@@ -30,7 +33,12 @@ impl Backend {
             mutation_operation,
         ) {
             (Some(existing), Some(MUTATION_OPERATION_SESSION_CREATE)) => {
-                validate_request_retry(&existing, &fingerprint, display_name.as_deref())?;
+                validate_request_retry(
+                    &existing,
+                    &fingerprint,
+                    display_name.as_deref(),
+                    Some(&working_directory),
+                )?;
                 existing
             }
             (Some(_), _) => {
@@ -39,7 +47,19 @@ impl Backend {
                 });
             }
             (None, Some(_)) => return Err(PersistenceError::RequestConflict),
-            (None, None) => self.prepare_session_creation(request_id, fingerprint, display_name)?,
+            (None, None) => {
+                if !Path::new(&working_directory).is_dir() {
+                    return Err(PersistenceError::InvalidInput {
+                        reason: "the session working directory is unavailable",
+                    });
+                }
+                self.prepare_session_creation(
+                    request_id,
+                    fingerprint,
+                    display_name,
+                    working_directory,
+                )?
+            }
         };
 
         if creation.state == CREATION_STATE_READY {
@@ -58,6 +78,7 @@ impl Backend {
         request_id: MutationRequestId,
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
         display_name: Option<String>,
+        working_directory: String,
     ) -> Result<CreationRequest, PersistenceError> {
         let session_id = SessionId::from_bytes(random_identifier()?);
         let workspace_id = random_identifier()?;
@@ -95,16 +116,18 @@ impl Backend {
                 session_id,
                 workspace_id,
                 display_name,
+                working_directory,
                 accepted_sequence,
                 accepted_at_milliseconds,
                 state
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 &request_id.as_bytes()[..],
                 &fingerprint[..],
                 &session_id.as_bytes()[..],
                 &workspace_id[..],
                 display_name.as_deref(),
+                &working_directory,
                 sequence_to_sql(accepted_sequence)?,
                 time_to_sql(accepted_at_milliseconds)?,
                 CREATION_STATE_PREPARED,
@@ -136,6 +159,7 @@ impl Backend {
             session_id,
             workspace_id,
             display_name,
+            working_directory: Some(working_directory),
             accepted_sequence,
             accepted_at_milliseconds,
             state: CREATION_STATE_PREPARED,
@@ -151,6 +175,7 @@ impl Backend {
                     session_id,
                     workspace_id,
                     display_name,
+                    working_directory,
                     accepted_sequence,
                     accepted_at_milliseconds,
                     state

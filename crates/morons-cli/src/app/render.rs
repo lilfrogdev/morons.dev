@@ -75,7 +75,15 @@ fn render_sessions(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let items: Vec<ListItem<'_>> = app
         .sessions
         .iter()
-        .map(|session| ListItem::new(Line::from(session.display_name.first_line())))
+        .map(|session| {
+            ListItem::new(vec![
+                Line::from(session.display_name.first_line()),
+                Line::from(Span::styled(
+                    session.working_directory.first_line(),
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ])
+        })
         .collect();
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(" Sessions "))

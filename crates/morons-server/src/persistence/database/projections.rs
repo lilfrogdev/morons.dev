@@ -8,10 +8,10 @@ use crate::persistence::{
     run_types::{CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES, conservative_input_token_estimate},
     types::{
         acknowledge_tool_uncertainty_fingerprint, cancel_run_fingerprint,
-        create_session_fingerprint, import_repository_fingerprint_from_digest,
-        provision_execution_image_fingerprint, stop_server_fingerprint,
-        submit_session_input_fingerprint, validate_display_name, validate_model_selection,
-        validate_user_text,
+        create_session_fingerprint, create_session_with_directory_fingerprint,
+        import_repository_fingerprint_from_digest, provision_execution_image_fingerprint,
+        stop_server_fingerprint, submit_session_input_fingerprint, validate_display_name,
+        validate_model_selection, validate_user_text,
     },
 };
 use crate::tools::{
@@ -45,6 +45,7 @@ fn validate_session_creation_facts(connection: &Connection) -> Result<(), Persis
                     fact.session_id IS NOT request.session_id
                     OR fact.workspace_id IS NOT request.workspace_id
                     OR fact.display_name IS NOT request.display_name
+                    OR fact.working_directory IS NOT request.working_directory
                     OR fact.accepted_sequence IS NOT request.accepted_sequence
                     OR fact.created_at_milliseconds IS NOT request.accepted_at_milliseconds
                ))
@@ -83,16 +84,34 @@ fn validate_session_creation_facts(connection: &Connection) -> Result<(), Persis
         });
     }
 
-    let mut statement = connection
-        .prepare("SELECT operation_fingerprint, display_name FROM session_creation_requests")?;
+    let mut statement = connection.prepare(
+        "SELECT operation_fingerprint, display_name, working_directory
+         FROM session_creation_requests",
+    )?;
     let requests = statement
         .query_map([], |row| {
-            Ok((row.get::<_, [u8; 32]>(0)?, row.get::<_, Option<String>>(1)?))
+            Ok((
+                row.get::<_, [u8; 32]>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    for (fingerprint, display_name) in requests {
+    for (fingerprint, display_name, working_directory) in requests {
+        let expected = working_directory.as_deref().map_or_else(
+            || create_session_fingerprint(display_name.as_deref()),
+            |working_directory| {
+                create_session_with_directory_fingerprint(
+                    display_name.as_deref(),
+                    working_directory,
+                )
+            },
+        );
         if validate_display_name(display_name.as_deref()).is_err()
-            || fingerprint != create_session_fingerprint(display_name.as_deref())
+            || working_directory.as_deref().is_some_and(|path| {
+                crate::persistence::types::validate_working_directory_path(path).is_err()
+            })
+            || fingerprint != expected
         {
             return Err(PersistenceError::InvalidState {
                 reason: "a persisted session creation request has invalid canonical input",

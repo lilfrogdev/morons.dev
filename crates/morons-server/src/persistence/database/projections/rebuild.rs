@@ -27,13 +27,14 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             FROM canonical_updates GROUP BY session_id
          )
          INSERT INTO sessions (
-            session_id, workspace_id, display_name, created_sequence,
+            session_id, workspace_id, display_name, working_directory, created_sequence,
             updated_sequence, created_at_milliseconds, lifecycle
          )
          SELECT
             fact.session_id,
             fact.workspace_id,
             fact.display_name,
+            fact.working_directory,
             fact.accepted_sequence,
             updates.updated_sequence,
             fact.created_at_milliseconds,
