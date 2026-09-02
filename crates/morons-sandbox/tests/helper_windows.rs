@@ -224,7 +224,13 @@ fn sandbox_child_background() {
     if !inside_sandbox() {
         return;
     }
-    let mut child = Command::new(std::env::current_exe().expect("private executable"))
+    let descendant = PathBuf::from("descendant.exe");
+    fs::copy(
+        std::env::current_exe().expect("private executable"),
+        &descendant,
+    )
+    .expect("candidate descendant copy should be created");
+    let mut child = Command::new(descendant)
         .args(["--exact", "sandbox_child_descendant", "--nocapture"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
