@@ -545,6 +545,7 @@ async fn structured_tool_loop_reads_edits_and_finishes_from_durable_results() {
         fs::read_to_string(workspace.join("note.txt")).expect("worktree file should exist"),
         "after\n"
     );
+    #[cfg(unix)]
     assert!(workspace.join("command.txt").exists());
     assert_eq!(
         fs::read_dir(
@@ -916,7 +917,7 @@ async fn spawn_tool_loop_provider(
             "{{\"path\":\"note.txt\",\"expected_sha256\":\"{expected_digest}\",\"replacements\":[{{\"old_text\":\"before\",\"new_text\":\"after\"}}]}}"
         );
         let command_arguments = if cfg!(windows) {
-            r#"{"executable":"fixture","arguments":["/D","/C","echo command>command.txt & exit /b 7"],"working_directory":"."}"#
+            r#"{"executable":"fixture","arguments":["/D","/C","exit /b 7"],"working_directory":"."}"#
         } else {
             r#"{"executable":"fixture","arguments":[],"working_directory":"."}"#
         };
