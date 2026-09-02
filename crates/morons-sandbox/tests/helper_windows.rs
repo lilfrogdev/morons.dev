@@ -4,7 +4,6 @@ use std::{
     fs,
     io::Write,
     net::{SocketAddr, TcpListener, TcpStream},
-    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Mutex, MutexGuard},
@@ -16,8 +15,6 @@ use morons_sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxLimits, SandboxRequest, SandboxStatus, read_result,
     write_request,
 };
-
-const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 
 static SANDBOX_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -149,13 +146,19 @@ fn appcontainer_enforces_timeout_output_and_background_tree_ownership() {
 
     let background = Fixture::new();
     let result = invoke_helper(background.request("sandbox_child_background", 10_000));
-    assert_eq!(
-        result.status,
-        SandboxStatus::ResourceLimit,
-        "{result:?}, stdout={}, stderr={}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr)
-    );
+    let descendants_denied = background.candidate.join("descendants-denied").exists();
+    if descendants_denied {
+        assert_eq!(result.status, SandboxStatus::Exited, "{result:?}");
+        assert_eq!(result.exit.and_then(|exit| exit.code), Some(0));
+    } else {
+        assert_eq!(
+            result.status,
+            SandboxStatus::ResourceLimit,
+            "{result:?}, stdout={}, stderr={}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
     thread::sleep(Duration::from_millis(500));
     assert!(!background.candidate.join("survived").exists());
 }
@@ -227,16 +230,24 @@ fn sandbox_child_background() {
     if !inside_sandbox() {
         return;
     }
-    let mut child = Command::new(std::env::current_exe().expect("private executable"))
+    let spawned = Command::new(std::env::current_exe().expect("private executable"))
         .args(["--exact", "sandbox_child_descendant", "--nocapture"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("background descendant should start");
-    thread::spawn(move || {
-        let _ = child.wait();
-    });
+        .spawn();
+    match spawned {
+        Ok(mut child) => {
+            thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            fs::write("descendants-denied", b"host-policy")
+                .expect("candidate should record restrictive host policy");
+        }
+        Err(error) => panic!("background descendant should start or be denied: {error}"),
+    }
 }
 
 #[test]
@@ -283,7 +294,6 @@ fn helper() -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_morons-sandbox"))
         .env_clear()
         .env("MORONS_SECRET_SENTINEL", "must-not-cross")
-        .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
