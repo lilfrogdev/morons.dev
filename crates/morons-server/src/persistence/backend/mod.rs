@@ -2,6 +2,7 @@ pub(super) mod command_execution;
 mod compaction;
 mod creation;
 mod credential_mutation;
+mod default_model;
 pub(super) mod image_attachment;
 pub(super) mod local_command;
 mod queries;

@@ -9,8 +9,8 @@ use super::{
 use crate::{
     ClientMessage, LocalCommandId, LocalCommandStatus, MessageId, OpenCodeApiKey,
     OpenCodeCredentialStatus, OpenCodeModelCapabilities, OpenCodeModelRetention,
-    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId,
-    RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
+    OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
+    RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
 };
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
@@ -492,6 +492,51 @@ fn model_catalog_contract_has_stable_json_shape() {
                 "training_use": "not_used",
                 "retention": "up_to_thirty_days",
             }],
+        })
+    );
+}
+
+#[test]
+fn default_model_contract_has_stable_json_shapes() {
+    assert_eq!(
+        serde_json::to_value(ApplicationRequest::GetDefaultOpenCodeModel)
+            .expect("default model query should encode"),
+        json!({ "operation": "get_default_open_code_model" })
+    );
+    let request = ApplicationRequest::SetDefaultOpenCodeModel {
+        mutation_request_id: MutationRequestId::from_bytes([0x29; 16]),
+        service: OpenCodeService::Go,
+        model_id: "grok-4.6".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_value(request).expect("default model mutation should encode"),
+        json!({
+            "operation": "set_default_open_code_model",
+            "mutation_request_id": "mut_29292929292929292929292929292929",
+            "service": "go",
+            "model_id": "grok-4.6",
+        })
+    );
+    let selection = OpenCodeModelSelection {
+        service: OpenCodeService::Go,
+        model_id: "grok-4.6".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_value(ApplicationResponse::DefaultOpenCodeModel {
+            selection: Some(selection.clone()),
+        })
+        .expect("default model response should encode"),
+        json!({
+            "result": "default_open_code_model",
+            "selection": { "service": "go", "model_id": "grok-4.6" },
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ApplicationResponse::DefaultOpenCodeModelUpdated { selection })
+            .expect("default model update should encode"),
+        json!({
+            "result": "default_open_code_model_updated",
+            "selection": { "service": "go", "model_id": "grok-4.6" },
         })
     );
 }

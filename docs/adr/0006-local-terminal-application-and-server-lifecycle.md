@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as amended by ADR 0012
+Accepted as amended by ADRs 0012 and 0014
 
 ## Context
 
@@ -29,7 +29,7 @@ The first implementation renders bounded plain text and preserves line structure
 
 The `morons-server` executable is an internal companion process, not a user-facing command surface. Distribution artifacts contain `morons` and the matching `morons-server` for one operating-system and processor target. Public command names for automation, raw server administration, repository execution, and future workflows remain undefined.
 
-The terminal client owns presentation and temporary interaction state only. It cannot author assistant messages, run transitions, provider outcomes, tool facts, credential status, model availability, or session ownership. The model selector reads a sanitized server application query over authenticated IPC; the client does not fetch or interpret the remote provider catalog itself. The selected service and model remain explicit fields on every submitted run and are never inferred from client-local attachment state.
+The terminal client owns presentation and temporary interaction state only. It cannot author assistant messages, run transitions, provider outcomes, tool facts, credential status, model availability, or session ownership. The model selector reads a sanitized server application query over authenticated IPC; the client does not fetch or interpret the remote provider catalog itself. ADR 0014 adds one server-owned durable global default-model preference selected through `/model [search]`; it is convenience state rather than authorization or run attribution. The selected service and model remain explicit fields on every submitted run and are never inferred from client-local attachment state.
 
 ### Connect or start
 

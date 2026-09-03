@@ -3,9 +3,9 @@ use std::time::Duration;
 use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
     ApplicationError, FrameError, LocalCommandId, MutationRequestId, OpenCodeApiKey,
-    OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, RunId, RunSummary,
-    SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId, SessionSummary,
-    SkillSummary, TranscriptEntry,
+    OpenCodeCredentialStatus, OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService, RunId,
+    RunSummary, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId,
+    SessionSummary, SkillSummary, TranscriptEntry,
 };
 use tokio::{sync::mpsc, time};
 
@@ -27,10 +27,16 @@ type Client = ApplicationClient<Stream>;
 pub(super) enum RequestCommand {
     LoadSessions,
     LoadModels(OpenCodeService),
+    LoadDefaultModel,
     LoadCredentialStatus,
     LoadSession(SessionId),
     LoadContext {
         session_id: SessionId,
+        service: OpenCodeService,
+        model_id: String,
+    },
+    SetDefaultModel {
+        mutation_request_id: MutationRequestId,
         service: OpenCodeService,
         model_id: String,
     },
@@ -94,10 +100,15 @@ impl RequestCommand {
         match self {
             Self::LoadSessions
             | Self::LoadModels(_)
+            | Self::LoadDefaultModel
             | Self::LoadCredentialStatus
             | Self::LoadSession(_)
             | Self::LoadContext { .. } => None,
-            Self::CreateSession {
+            Self::SetDefaultModel {
+                mutation_request_id,
+                ..
+            }
+            | Self::CreateSession {
                 mutation_request_id,
             }
             | Self::RenameSession {
@@ -146,9 +157,11 @@ impl RequestCommand {
         match self {
             Self::LoadSessions => "session list",
             Self::LoadModels(_) => "model list",
+            Self::LoadDefaultModel => "default model",
             Self::LoadCredentialStatus => "credential status",
             Self::LoadSession(_) => "session transcript and skills",
             Self::LoadContext { .. } => "session context status",
+            Self::SetDefaultModel { .. } => "default model selection",
             Self::CreateSession { .. } => "session creation",
             Self::RenameSession { .. } => "session rename",
             Self::SetSessionArchived { .. } => "session archive change",
@@ -174,6 +187,7 @@ impl RequestCommand {
         match self {
             Self::LoadSessions => Some(Self::LoadSessions),
             Self::LoadModels(service) => Some(Self::LoadModels(*service)),
+            Self::LoadDefaultModel => Some(Self::LoadDefaultModel),
             Self::LoadCredentialStatus => Some(Self::LoadCredentialStatus),
             Self::LoadSession(session_id) => Some(Self::LoadSession(*session_id)),
             Self::LoadContext {
@@ -182,6 +196,15 @@ impl RequestCommand {
                 model_id,
             } => Some(Self::LoadContext {
                 session_id: *session_id,
+                service: *service,
+                model_id: model_id.clone(),
+            }),
+            Self::SetDefaultModel {
+                mutation_request_id,
+                service,
+                model_id,
+            } => Some(Self::SetDefaultModel {
+                mutation_request_id: *mutation_request_id,
                 service: *service,
                 model_id: model_id.clone(),
             }),
@@ -280,6 +303,11 @@ pub(super) enum RequestEvent {
     ModelsLoaded {
         service: OpenCodeService,
         models: Vec<OpenCodeModelSummary>,
+    },
+    DefaultModelLoaded(Option<OpenCodeModelSelection>),
+    DefaultModelUpdated {
+        mutation_request_id: MutationRequestId,
+        selection: OpenCodeModelSelection,
     },
     CredentialStatusLoaded(OpenCodeCredentialStatus),
     SessionLoaded(SessionSnapshot),
@@ -510,9 +538,11 @@ async fn execute_credential(
             }),
         RequestCommand::LoadSessions
         | RequestCommand::LoadModels(_)
+        | RequestCommand::LoadDefaultModel
         | RequestCommand::LoadCredentialStatus
         | RequestCommand::LoadSession(_)
         | RequestCommand::LoadContext { .. }
+        | RequestCommand::SetDefaultModel { .. }
         | RequestCommand::CreateSession { .. }
         | RequestCommand::RenameSession { .. }
         | RequestCommand::SetSessionArchived { .. }
@@ -542,6 +572,10 @@ async fn execute(
                     models,
                 })
         }
+        RequestCommand::LoadDefaultModel => client
+            .default_open_code_model()
+            .await
+            .map(RequestResult::DefaultModel),
         RequestCommand::LoadCredentialStatus => client
             .open_code_credential_status()
             .await
@@ -557,6 +591,17 @@ async fn execute(
             .session_context_status(*session_id, *service, model_id.clone())
             .await
             .map(RequestResult::Context),
+        RequestCommand::SetDefaultModel {
+            mutation_request_id,
+            service,
+            model_id,
+        } => client
+            .set_default_open_code_model(*mutation_request_id, *service, model_id.clone())
+            .await
+            .map(|selection| RequestResult::DefaultModelUpdated {
+                mutation_request_id: *mutation_request_id,
+                selection,
+            }),
         RequestCommand::CreateSession {
             mutation_request_id,
         } => client
@@ -776,6 +821,11 @@ enum RequestResult {
         service: OpenCodeService,
         models: Vec<OpenCodeModelSummary>,
     },
+    DefaultModel(Option<OpenCodeModelSelection>),
+    DefaultModelUpdated {
+        mutation_request_id: MutationRequestId,
+        selection: OpenCodeModelSelection,
+    },
     CredentialStatus(OpenCodeCredentialStatus),
     Session(SessionSnapshot),
     Context(SessionContextStatus),
@@ -827,6 +877,14 @@ impl RequestResult {
         match self {
             Self::Sessions((sessions, cursor)) => RequestEvent::SessionsLoaded { sessions, cursor },
             Self::Models { service, models } => RequestEvent::ModelsLoaded { service, models },
+            Self::DefaultModel(selection) => RequestEvent::DefaultModelLoaded(selection),
+            Self::DefaultModelUpdated {
+                mutation_request_id,
+                selection,
+            } => RequestEvent::DefaultModelUpdated {
+                mutation_request_id,
+                selection,
+            },
             Self::CredentialStatus(status) => RequestEvent::CredentialStatusLoaded(status),
             Self::Session(snapshot) => RequestEvent::SessionLoaded(snapshot),
             Self::Context(context) => RequestEvent::ContextLoaded(context),
@@ -924,10 +982,12 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
             model_service: match command {
                 RequestCommand::LoadModels(service) => Some(*service),
                 RequestCommand::LoadSessions
+                | RequestCommand::LoadDefaultModel
                 | RequestCommand::LoadCredentialStatus
                 | RequestCommand::LoadSession(_)
                 | RequestCommand::LoadContext { .. } => None,
-                RequestCommand::CreateSession { .. }
+                RequestCommand::SetDefaultModel { .. }
+                | RequestCommand::CreateSession { .. }
                 | RequestCommand::RenameSession { .. }
                 | RequestCommand::SetSessionArchived { .. }
                 | RequestCommand::DeleteSession { .. }
@@ -976,6 +1036,22 @@ mod tests {
         assert_eq!(command.mutation_request_id(), Some(mutation_request_id));
         assert_eq!(command.context(), "message submission");
         assert!(command.clone_for_retry().is_some());
+
+        let model = RequestCommand::SetDefaultModel {
+            mutation_request_id,
+            service: OpenCodeService::Go,
+            model_id: "grok-4.6".to_owned(),
+        };
+        assert_eq!(model.mutation_request_id(), Some(mutation_request_id));
+        assert_eq!(model.context(), "default model selection");
+        assert!(matches!(
+            model.clone_for_retry(),
+            Some(RequestCommand::SetDefaultModel {
+                mutation_request_id: retried,
+                service: OpenCodeService::Go,
+                ref model_id,
+            }) if retried == mutation_request_id && model_id == "grok-4.6"
+        ));
     }
 
     #[test]

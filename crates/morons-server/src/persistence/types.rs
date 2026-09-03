@@ -25,6 +25,7 @@ const CREATE_SESSION_WITH_DIRECTORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/cr
 const RENAME_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/rename-session/v1\0";
 const ARCHIVE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/archive-session/v1\0";
 const DELETE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/delete-session/v1\0";
+const DEFAULT_MODEL_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/default-model/v1\0";
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
 const SUBMIT_SESSION_INPUT_WITH_IMAGES_FINGERPRINT_CONTEXT: &[u8] =
     b"morons.dev/submit-session-input/v2\0";
@@ -262,6 +263,7 @@ pub enum PersistenceResourceLimit {
     LogicalSequence,
     CredentialGeneration,
     CredentialMutations,
+    ModelSelections,
 }
 
 #[derive(Debug)]
@@ -369,6 +371,9 @@ impl fmt::Display for PersistenceError {
                 }
                 PersistenceResourceLimit::CredentialMutations => {
                     formatter.write_str("the credential mutation limit was reached")
+                }
+                PersistenceResourceLimit::ModelSelections => {
+                    formatter.write_str("the default model selection limit was reached")
                 }
             },
             Self::WorkerStopped => formatter.write_str("the persistence worker stopped"),
@@ -513,6 +518,21 @@ pub(super) fn validate_model_selection(
         });
     }
     Ok(())
+}
+
+pub(super) fn default_model_fingerprint(
+    service: RunOpenCodeService,
+    model_id: &str,
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(DEFAULT_MODEL_FINGERPRINT_CONTEXT);
+    digest.update([match service {
+        RunOpenCodeService::Zen => 1,
+        RunOpenCodeService::Go => 2,
+    }]);
+    digest.update((model_id.len() as u16).to_be_bytes());
+    digest.update(model_id.as_bytes());
+    digest.finalize().into()
 }
 
 pub(super) fn submit_session_input_fingerprint(

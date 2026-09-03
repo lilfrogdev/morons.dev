@@ -297,6 +297,13 @@ pub struct OpenCodeModelCapabilities {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct OpenCodeModelSelection {
+    pub service: OpenCodeService,
+    pub model_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpenCodeModelSummary {
     pub service: OpenCodeService,
     pub id: String,

@@ -279,6 +279,12 @@ pub enum ApplicationRequest {
     ListOpenCodeModels {
         service: crate::OpenCodeService,
     },
+    GetDefaultOpenCodeModel,
+    SetDefaultOpenCodeModel {
+        mutation_request_id: MutationRequestId,
+        service: crate::OpenCodeService,
+        model_id: String,
+    },
     ListSessionSkills {
         session_id: SessionId,
     },
@@ -396,6 +402,17 @@ impl fmt::Debug for ApplicationRequest {
             Self::ListOpenCodeModels { service } => formatter
                 .debug_struct("ListOpenCodeModels")
                 .field("service", service)
+                .finish(),
+            Self::GetDefaultOpenCodeModel => formatter.write_str("GetDefaultOpenCodeModel"),
+            Self::SetDefaultOpenCodeModel {
+                mutation_request_id,
+                service,
+                model_id,
+            } => formatter
+                .debug_struct("SetDefaultOpenCodeModel")
+                .field("mutation_request_id", mutation_request_id)
+                .field("service", service)
+                .field("model_id", model_id)
                 .finish(),
             Self::ListSessionSkills { session_id } => formatter
                 .debug_struct("ListSessionSkills")
@@ -537,6 +554,12 @@ pub enum ApplicationResponse {
     OpenCodeModelsListed {
         service: crate::OpenCodeService,
         models: Vec<crate::OpenCodeModelSummary>,
+    },
+    DefaultOpenCodeModel {
+        selection: Option<crate::OpenCodeModelSelection>,
+    },
+    DefaultOpenCodeModelUpdated {
+        selection: crate::OpenCodeModelSelection,
     },
     SessionSkillsListed {
         session_id: SessionId,

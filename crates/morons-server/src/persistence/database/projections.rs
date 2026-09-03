@@ -13,10 +13,11 @@ use crate::persistence::{
     types::{
         acknowledge_tool_uncertainty_fingerprint, cancel_run_fingerprint,
         create_session_fingerprint, create_session_with_directory_fingerprint,
-        import_repository_fingerprint_from_digest, provision_execution_image_fingerprint,
-        stop_server_fingerprint, submit_session_input_fingerprint,
-        submit_session_input_with_images_fingerprint, validate_display_name,
-        validate_model_selection, validate_user_text,
+        default_model_fingerprint, import_repository_fingerprint_from_digest,
+        provision_execution_image_fingerprint, stop_server_fingerprint,
+        submit_session_input_fingerprint, submit_session_input_with_images_fingerprint,
+        validate_display_name, validate_model_identifier, validate_model_selection,
+        validate_user_text,
     },
 };
 use crate::tools::{
@@ -29,6 +30,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_session_rename_facts(connection)?;
     validate_session_archive_facts(connection)?;
     validate_session_delete_facts(connection)?;
+    validate_default_model_facts(connection)?;
     validate_mutation_registry(connection)?;
     validate_local_command_facts(connection)?;
     validate_image_attachment_facts(connection)?;
@@ -294,6 +296,31 @@ fn validate_session_delete_facts(connection: &Connection) -> Result<(), Persiste
     Ok(())
 }
 
+fn validate_default_model_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let mut statement = connection.prepare(
+        "SELECT operation_fingerprint, open_code_service, model_id
+         FROM default_model_selections",
+    )?;
+    let selections = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, [u8; 32]>(0)?,
+                RunOpenCodeService::from_record(row.get(1)?)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (fingerprint, service, model_id) in selections {
+        validate_model_identifier(&model_id)?;
+        if fingerprint != default_model_fingerprint(service, &model_id) {
+            return Err(PersistenceError::InvalidState {
+                reason: "a persisted default model has invalid canonical input",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_mutation_registry(connection: &Connection) -> Result<(), PersistenceError> {
     let invalid: bool = connection.query_row(
         "SELECT EXISTS (
@@ -360,6 +387,15 @@ fn validate_mutation_registry(connection: &Connection) -> Result<(), Persistence
                 OR mutation.accepted_at_milliseconds IS NOT request.accepted_at_milliseconds
             )
             UNION ALL
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN default_model_selections AS selection
+              ON selection.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 15 AND (
+                selection.request_id IS NULL
+                OR mutation.accepted_sequence IS NOT selection.accepted_sequence
+                OR mutation.accepted_at_milliseconds IS NOT selection.accepted_at_milliseconds
+            )
+            UNION ALL
             SELECT 1 FROM session_creation_requests AS request
             LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
             WHERE mutation.operation_kind IS NOT 1
@@ -387,6 +423,10 @@ fn validate_mutation_registry(connection: &Connection) -> Result<(), Persistence
             SELECT 1 FROM execution_image_requests AS request
             LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
             WHERE mutation.operation_kind IS NOT 9
+            UNION ALL
+            SELECT 1 FROM default_model_selections AS selection
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = selection.request_id
+            WHERE mutation.operation_kind IS NOT 15
         )",
         [],
         |row| row.get(0),

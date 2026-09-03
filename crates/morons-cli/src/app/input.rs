@@ -30,6 +30,9 @@ impl AppState {
                 _ => AppAction::None,
             };
         }
+        if self.model_dialog.is_some() {
+            return self.handle_model_key(key.code, key.modifiers);
+        }
         if key.code == KeyCode::Char('?') {
             self.information_dialog = Some(InformationDialog::Help);
             return AppAction::None;
@@ -84,6 +87,10 @@ impl AppState {
     }
 
     pub(crate) fn handle_paste(&mut self, paste: &str) {
+        if self.model_dialog.is_some() {
+            self.append_model_search(paste);
+            return;
+        }
         if let Some(input) = self.rename_dialog.as_mut() {
             input.push_paste(paste);
             if input.len_bytes() > MAX_SESSION_NAME_BYTES {
@@ -105,6 +112,89 @@ impl AppState {
         {
             self.prompt.push_paste(paste);
             self.reset_skill_completion();
+        }
+    }
+
+    fn handle_model_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> AppAction {
+        if code == KeyCode::Esc
+            || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
+        {
+            self.model_dialog = None;
+            self.set_status("Model selection cancelled");
+            return AppAction::None;
+        }
+        match code {
+            KeyCode::Up => {
+                self.move_model_dialog_selection(true);
+                AppAction::None
+            }
+            KeyCode::Down => {
+                self.move_model_dialog_selection(false);
+                AppAction::None
+            }
+            KeyCode::Backspace => {
+                if let Some(dialog) = self.model_dialog.as_mut() {
+                    dialog.query.backspace();
+                    dialog.selected = 0;
+                }
+                AppAction::None
+            }
+            KeyCode::Enter => {
+                let matches = self.model_dialog_matches();
+                let selected = self
+                    .model_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.selected)
+                    .unwrap_or_default();
+                let selection = matches
+                    .get(selected)
+                    .and_then(|index| self.models.get(*index))
+                    .map(|model| (model.model.service, model.model.id.clone()));
+                let Some((service, model_id)) = selection else {
+                    self.set_status("No available reviewed model is selected");
+                    return AppAction::None;
+                };
+                self.model_dialog = None;
+                AppAction::SetDefaultModel { service, model_id }
+            }
+            KeyCode::Char(character)
+                if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.append_model_search(&character.to_string());
+                AppAction::None
+            }
+            _ => AppAction::None,
+        }
+    }
+
+    fn append_model_search(&mut self, value: &str) {
+        let Some(dialog) = self.model_dialog.as_mut() else {
+            return;
+        };
+        dialog.query.push_paste(value);
+        let mut maximum = dialog.query.len_bytes().min(super::MAX_MODEL_SEARCH_BYTES);
+        while !dialog.query.as_str().is_char_boundary(maximum) {
+            maximum = maximum.saturating_sub(1);
+        }
+        let truncated = maximum < dialog.query.len_bytes();
+        let _ = dialog.query.truncate(maximum);
+        dialog.selected = 0;
+        if truncated {
+            self.set_status("Model search accepts at most 128 UTF-8 bytes");
+        }
+    }
+
+    fn move_model_dialog_selection(&mut self, reverse: bool) {
+        let count = self.model_dialog_matches().len();
+        let Some(dialog) = self.model_dialog.as_mut() else {
+            return;
+        };
+        if count == 0 {
+            dialog.selected = 0;
+        } else if reverse {
+            dialog.selected = dialog.selected.checked_sub(1).unwrap_or(count - 1);
+        } else {
+            dialog.selected = (dialog.selected + 1) % count;
         }
     }
 
@@ -357,14 +447,6 @@ impl AppState {
             KeyCode::Enter => self
                 .selected_session_id()
                 .map_or(AppAction::None, AppAction::OpenSession),
-            KeyCode::Tab => {
-                self.select_next_model(false);
-                AppAction::None
-            }
-            KeyCode::BackTab => {
-                self.select_next_model(true);
-                AppAction::None
-            }
             _ => AppAction::None,
         }
     }
@@ -373,15 +455,11 @@ impl AppState {
         match code {
             KeyCode::Esc if self.pending.is_none() => AppAction::CloseSession,
             KeyCode::Tab => {
-                if !self.complete_selected_skill() {
-                    self.select_next_model(false);
-                }
+                let _ = self.complete_selected_skill();
                 AppAction::None
             }
             KeyCode::BackTab => {
-                if !self.cycle_skill_completion(true) {
-                    self.select_next_model(true);
-                }
+                let _ = self.cycle_skill_completion(true);
                 AppAction::None
             }
             KeyCode::Up if self.cycle_skill_completion(true) => AppAction::None,
@@ -428,6 +506,11 @@ impl AppState {
         if prompt == "/help" {
             self.prompt.clear();
             self.information_dialog = Some(InformationDialog::Help);
+            return AppAction::None;
+        }
+        if let Some(search) = model_search(prompt).map(str::to_owned) {
+            self.prompt.clear();
+            self.open_model_dialog(&search);
             return AppAction::None;
         }
         if prompt == "/context" {
@@ -501,29 +584,13 @@ impl AppState {
             model_id: model.model.id.clone(),
         }
     }
+}
 
-    fn select_next_model(&mut self, reverse: bool) {
-        let available: Vec<usize> = self
-            .models
-            .iter()
-            .enumerate()
-            .filter_map(|(index, model)| model.model.available.then_some(index))
-            .collect();
-        if available.is_empty() {
-            self.selected_model = None;
-            return;
-        }
-        let position = self
-            .selected_model
-            .and_then(|selected| available.iter().position(|index| *index == selected))
-            .unwrap_or(0);
-        let next = if reverse {
-            position.checked_sub(1).unwrap_or(available.len() - 1)
-        } else {
-            (position + 1) % available.len()
-        };
-        self.selected_model = Some(available[next]);
+fn model_search(prompt: &str) -> Option<&str> {
+    if prompt == "/model" {
+        return Some("");
     }
+    prompt.strip_prefix("/model ").map(str::trim)
 }
 
 fn manual_compaction_guidance(prompt: &str) -> Option<Option<&str>> {

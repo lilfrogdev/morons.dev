@@ -7,10 +7,10 @@ use rusqlite::Connection;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    ActivationOutcome, CompletedAssistant, DispatchOutcome, MutationRequestId,
-    OpenCodeCredentialStatus, PersistenceError, PrepareOperationOutcome, ProviderUsage,
-    RunModelSelection, RunOpenCodeService, RunState, SessionEventCursor, SessionEventPayload,
-    SessionStore, TranscriptCursor, TranscriptEntry,
+    ActivationOutcome, CompletedAssistant, DefaultModelSelection, DispatchOutcome,
+    MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PrepareOperationOutcome,
+    ProviderUsage, RunModelSelection, RunOpenCodeService, RunState, SessionEventCursor,
+    SessionEventPayload, SessionStore, TranscriptCursor, TranscriptEntry,
 };
 const TEST_MODEL: &str = "muse-spark-1.2";
 
@@ -188,6 +188,109 @@ async fn deleting_an_archived_session_removes_file_backed_images_only_from_moron
             .is_none()
     );
     assert_eq!(fs::read_to_string(&sentinel).unwrap(), "keep");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_and_used_models_determine_the_durable_global_default() {
+    let root = TestRoot::new("default-model");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    assert!(
+        store
+            .default_model()
+            .await
+            .expect("empty default should be readable")
+            .is_none()
+    );
+
+    let request_id = MutationRequestId::from_bytes([0x40; 16]);
+    let explicit = DefaultModelSelection {
+        service: RunOpenCodeService::Go,
+        model_id: "grok-4.6".to_owned(),
+    };
+    assert_eq!(
+        store
+            .set_default_model(request_id, explicit.clone())
+            .await
+            .expect("default should be selected"),
+        explicit
+    );
+    assert_eq!(
+        store
+            .set_default_model(request_id, explicit.clone())
+            .await
+            .expect("an exact selection retry should resolve"),
+        explicit
+    );
+    let conflict = store
+        .set_default_model(
+            request_id,
+            DefaultModelSelection {
+                service: RunOpenCodeService::Zen,
+                model_id: TEST_MODEL.to_owned(),
+            },
+        )
+        .await
+        .expect_err("a conflicting selection retry should fail");
+    assert!(matches!(conflict, PersistenceError::RequestConflict));
+    assert_eq!(
+        store
+            .default_model()
+            .await
+            .expect("selected default should be readable"),
+        Some(explicit)
+    );
+
+    configure_credential(&store).await;
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x41; 16]), None)
+        .await
+        .expect("session should be created");
+    store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0x42; 16]),
+            session.id,
+            "use the newer model".to_owned(),
+            model_selection(),
+        )
+        .await
+        .expect("run should be accepted");
+    let used = DefaultModelSelection {
+        service: RunOpenCodeService::Zen,
+        model_id: TEST_MODEL.to_owned(),
+    };
+    assert_eq!(
+        store
+            .default_model()
+            .await
+            .expect("last used model should be readable"),
+        Some(used.clone())
+    );
+
+    drop(store);
+    let reopened = SessionStore::open_at(root.path()).expect("session store should reopen");
+    assert_eq!(
+        reopened
+            .default_model()
+            .await
+            .expect("default should survive restart"),
+        Some(used)
+    );
+    drop(reopened);
+
+    let database_path = root.path().join("data").join("sessions.sqlite3");
+    let connection = Connection::open(database_path).expect("database should open for corruption");
+    connection
+        .execute(
+            "UPDATE default_model_selections SET operation_fingerprint = zeroblob(32)",
+            [],
+        )
+        .expect("default fingerprint should be corruptible for test");
+    drop(connection);
+    let corrupted = SessionStore::open_at(root.path());
+    assert!(matches!(
+        corrupted,
+        Err(PersistenceError::InvalidState { .. })
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]

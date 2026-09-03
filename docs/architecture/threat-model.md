@@ -115,6 +115,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Repository, model, configuration, catalog, proxy, certificate override, or redirect input selects an attacker-controlled inference origin or credential scope.
 - A malicious provider sends malformed, oversized, endless, contradictory, or terminally inconsistent streams.
 - A remote catalog adds an unreviewed model, capability, protocol, limit, route, or data-use policy.
+- Malformed or tampered default-model state selects an unreviewed model, bypasses current availability, or becomes mistaken for provider authorization.
 - A dispatched inference request is retried and incurs duplicate usage.
 - Provider response identifiers become authoritative conversation state and make local recovery depend on external retention.
 - A context-bearing command, tool, skill, or image unintentionally sends sensitive local content to a provider.
@@ -190,6 +191,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Authorize operating-system peers before application exchange and require randomized endpoints, owner-only control state, a lifetime host lock, and role-separated HMAC proofs.
 - Start only the exact packaged companion without a shell or untrusted executable-path selection.
 - Keep provider and web-search routes fixed in reviewed code, disable redirects, scope authorization headers exactly, strictly decode bounded remote responses, and never retry dispatched inference or web search automatically.
+- Store global default-model changes as bounded idempotent facts, validate them against the reviewed manifest, use them only when the current sanitized catalog marks the pair available, and validate every run's explicit model independently.
 - Derive one opaque `x-opencode-session` value per Morons conversation: preserve a root value across its durable session, derive a distinct stable value for each canonical task child, rotate values across unrelated conversations, omit them from catalog requests, and never log or persist a derived header.
 - Store Morons-managed credentials outside SQLite and never intentionally include them in child environments, prompts, provider payload bodies, errors, logs, or audit facts.
 - Use one bounded storage worker, transactional canonical-entry and projection commits, ordered migrations, online SQLite backup, quotas, and startup recovery that performs no external effect.
