@@ -39,8 +39,7 @@ pub use self::{
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
         ServerStopResult, Session, SessionCatalogEvent, SessionCatalogEventCursor,
         SessionCatalogEventKind, SessionCatalogEventPage, SessionId, SessionListCursor,
-        SessionPage, ToolUncertaintyAcknowledgement, WorkspaceBlockReason, WorkspaceState,
-        WorkspaceSummary,
+        SessionPage, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
     },
 };
 

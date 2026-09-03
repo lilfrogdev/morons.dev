@@ -4,9 +4,7 @@ use morons_protocol::{
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::{
-    ApplicationClientError, valid_image_attachments, valid_session_summary, valid_workspace_summary,
-};
+use super::{ApplicationClientError, valid_image_attachments, valid_session_summary};
 
 pub struct SessionCatalogSubscription<S> {
     pub(super) connection: S,
@@ -189,16 +187,6 @@ where
                 cursor, session_id, ..
             } => {
                 if *session_id != self.session_id {
-                    return Err(self.event_scope_mismatch());
-                }
-                self.advance_cursor(*cursor)
-            }
-            ApplicationEvent::SessionWorkspaceChanged {
-                cursor,
-                session_id,
-                workspace,
-            } => {
-                if *session_id != self.session_id || !valid_workspace_summary(*workspace) {
                     return Err(self.event_scope_mismatch());
                 }
                 self.advance_cursor(*cursor)

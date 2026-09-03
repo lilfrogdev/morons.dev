@@ -12,8 +12,6 @@ use morons_protocol::{
     ToolCallId as ProtocolToolCallId, ToolKind as ProtocolToolKind,
     ToolResultStatus as ProtocolToolResultStatus, TranscriptCursor as ProtocolTranscriptCursor,
     TranscriptEntry as ProtocolTranscriptEntry,
-    WorkspaceBlockReason as ProtocolWorkspaceBlockReason, WorkspaceState as ProtocolWorkspaceState,
-    WorkspaceSummary as ProtocolWorkspaceSummary,
 };
 
 use super::ApplicationOutcome;
@@ -22,7 +20,7 @@ use crate::{
         AcceptedRun, MutationRequestId, OpenCodeCredentialStatus, PersistenceError,
         PersistenceResourceLimit, Run, RunFailureKind, RunId, RunOpenCodeService, RunState,
         Session, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
-        TranscriptCursor, TranscriptEntry, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
+        TranscriptCursor, TranscriptEntry,
     },
     provider::{ModelRetention, ModelTrainingUse, OpenCodeModelAvailability, OpenCodeService},
 };
@@ -212,32 +210,6 @@ pub(super) const fn to_protocol_credential_status(
     ProtocolOpenCodeCredentialStatus {
         configured: credential.configured,
         generation: credential.generation,
-    }
-}
-
-pub(super) fn to_protocol_workspace_summary(
-    workspace: WorkspaceSummary,
-) -> ProtocolWorkspaceSummary {
-    ProtocolWorkspaceSummary {
-        state: match workspace.state {
-            WorkspaceState::Empty => ProtocolWorkspaceState::Empty,
-            WorkspaceState::Importing => ProtocolWorkspaceState::Importing,
-            WorkspaceState::Ready => ProtocolWorkspaceState::Ready,
-            WorkspaceState::Blocked => ProtocolWorkspaceState::Blocked,
-        },
-        file_count: workspace.file_count,
-        logical_bytes: workspace.logical_bytes,
-        block_reason: match workspace.block_reason {
-            Some(WorkspaceBlockReason::InconsistentImportState) => {
-                Some(ProtocolWorkspaceBlockReason::InconsistentImportState)
-            }
-            Some(WorkspaceBlockReason::UncertainToolEffect) => {
-                Some(ProtocolWorkspaceBlockReason::UncertainToolEffect)
-            }
-            None => None,
-        },
-        blocked_run_id: workspace.blocked_run_id.map(to_protocol_run_id),
-        blocked_tool: workspace.blocked_tool.map(to_protocol_tool_kind),
     }
 }
 
@@ -464,6 +436,7 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
             | PersistenceError::Control(_)
             | PersistenceError::Randomness(_)
             | PersistenceError::InvalidState { .. }
+            | PersistenceError::WorkspaceBlocked
             | PersistenceError::WorkerStopped
     ) {
         eprintln!("session application operation failed: {error}");
@@ -500,9 +473,6 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
             ApplicationError::CredentialMutationNotApplied
         }
         PersistenceError::ImageInputUnsupported => ApplicationError::UnsupportedModel,
-        PersistenceError::WorkspaceBlocked | PersistenceError::ToolUncertaintyNotFound => {
-            ApplicationError::WorkspaceBlocked
-        }
         PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Sessions,
         } => ApplicationError::ResourceLimit {
@@ -532,6 +502,7 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         | PersistenceError::Sqlite(_)
         | PersistenceError::Control(_)
         | PersistenceError::Randomness(_)
-        | PersistenceError::InvalidState { .. } => ApplicationError::Internal,
+        | PersistenceError::InvalidState { .. }
+        | PersistenceError::WorkspaceBlocked => ApplicationError::Internal,
     }
 }

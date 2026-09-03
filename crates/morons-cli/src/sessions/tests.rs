@@ -3,8 +3,7 @@ use morons_protocol::{
     MessageId, MutationRequestId, OpenCodeModelCapabilities, OpenCodeModelRetention,
     OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary,
     ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary,
-    SkillSource, SkillSummary, WorkspaceState, WorkspaceSummary, read_client_message,
-    write_server_message,
+    SkillSource, SkillSummary, read_client_message, write_server_message,
 };
 
 use super::{ApplicationClient, ApplicationClientError};
@@ -356,56 +355,6 @@ async fn client_submits_inspects_and_cancels_exact_run() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn client_acknowledges_only_the_exact_uncertain_run() {
-    let (client_connection, mut server) = tokio::io::duplex(4096);
-    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
-    let mutation_request_id = MutationRequestId::from_bytes([0x69; 16]);
-    let session_id = SessionId::from_bytes([0x6a; 16]);
-    let run_id = RunId::from_bytes([0x6b; 16]);
-    let workspace = WorkspaceSummary {
-        state: WorkspaceState::Ready,
-        file_count: 2,
-        logical_bytes: 20,
-        block_reason: None,
-        blocked_run_id: None,
-        blocked_tool: None,
-    };
-    let client_exchange = async {
-        assert_eq!(
-            client
-                .acknowledge_tool_uncertainty(mutation_request_id, session_id, run_id)
-                .await
-                .expect("acknowledgement should succeed"),
-            workspace
-        );
-    };
-    let server_exchange = async {
-        assert_eq!(
-            read_request(&mut server, 1).await,
-            ApplicationRequest::AcknowledgeToolUncertainty {
-                mutation_request_id,
-                session_id,
-                run_id,
-            }
-        );
-        write_server_message(
-            &mut server,
-            &ServerMessage::response(
-                1,
-                ApplicationResponse::ToolUncertaintyAcknowledged {
-                    session_id,
-                    run_id,
-                    workspace,
-                },
-            ),
-        )
-        .await
-        .expect("acknowledgement response should write");
-    };
-    tokio::join!(client_exchange, server_exchange);
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn client_stops_the_server_with_one_stable_mutation() {
     let (client_connection, mut server) = tokio::io::duplex(2048);
     let mut client = ApplicationClient::from_negotiated_connection(client_connection);
@@ -533,7 +482,6 @@ async fn session_subscription_tracks_durable_and_ephemeral_run_events() {
     let session_id = SessionId::from_bytes([0x41; 16]);
     let run_id = RunId::from_bytes([0x42; 16]);
     let initial_cursor = session_event_cursor(session_id, 9);
-    let workspace_cursor = session_event_cursor(session_id, 10);
     let active_cursor = session_event_cursor(session_id, 11);
     let terminal_cursor = session_event_cursor(session_id, 12);
     let mut run = RunSummary {
@@ -560,24 +508,6 @@ async fn session_subscription_tracks_durable_and_ephemeral_run_events() {
             .subscribe_to_session(session_id, initial_cursor)
             .await
             .expect("client should start a session subscription");
-        assert_eq!(
-            subscription
-                .next_event()
-                .await
-                .expect("workspace event should arrive"),
-            ApplicationEvent::SessionWorkspaceChanged {
-                cursor: workspace_cursor,
-                session_id,
-                workspace: WorkspaceSummary {
-                    state: WorkspaceState::Importing,
-                    file_count: 0,
-                    logical_bytes: 0,
-                    block_reason: None,
-                    blocked_run_id: None,
-                    blocked_tool: None,
-                },
-            }
-        );
         assert_eq!(
             subscription
                 .next_event()
@@ -645,23 +575,6 @@ async fn session_subscription_tracks_durable_and_ephemeral_run_events() {
         )
         .await
         .expect("subscription response should be written");
-        write_server_message(
-            &mut server,
-            &ServerMessage::event(ApplicationEvent::SessionWorkspaceChanged {
-                cursor: workspace_cursor,
-                session_id,
-                workspace: WorkspaceSummary {
-                    state: WorkspaceState::Importing,
-                    file_count: 0,
-                    logical_bytes: 0,
-                    block_reason: None,
-                    blocked_run_id: None,
-                    blocked_tool: None,
-                },
-            }),
-        )
-        .await
-        .expect("workspace event should be written");
         write_server_message(
             &mut server,
             &ServerMessage::event(ApplicationEvent::SessionRunChanged {

@@ -334,11 +334,6 @@ pub enum ApplicationRequest {
         session_id: SessionId,
         command_id: crate::LocalCommandId,
     },
-    AcknowledgeToolUncertainty {
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        run_id: crate::RunId,
-    },
     StopServer {
         mutation_request_id: MutationRequestId,
     },
@@ -503,16 +498,6 @@ impl fmt::Debug for ApplicationRequest {
                 .field("session_id", session_id)
                 .field("command_id", command_id)
                 .finish(),
-            Self::AcknowledgeToolUncertainty {
-                mutation_request_id,
-                session_id,
-                run_id,
-            } => formatter
-                .debug_struct("AcknowledgeToolUncertainty")
-                .field("mutation_request_id", mutation_request_id)
-                .field("session_id", session_id)
-                .field("run_id", run_id)
-                .finish(),
             Self::StopServer {
                 mutation_request_id,
             } => formatter
@@ -579,7 +564,6 @@ pub enum ApplicationResponse {
     },
     SessionTranscriptListed {
         session: SessionSummary,
-        workspace: WorkspaceSummary,
         entries: Vec<crate::TranscriptEntry>,
         runs: Vec<crate::RunSummary>,
         active_run_id: Option<crate::RunId>,
@@ -599,11 +583,6 @@ pub enum ApplicationResponse {
     LocalCommandCancellationResolved {
         command_id: crate::LocalCommandId,
         cancellation_requested: bool,
-    },
-    ToolUncertaintyAcknowledged {
-        session_id: SessionId,
-        run_id: crate::RunId,
-        workspace: WorkspaceSummary,
     },
     ServerStopAccepted {
         current_server_stopping: bool,
@@ -640,11 +619,6 @@ pub enum ApplicationEvent {
         command_id: crate::LocalCommandId,
         active: bool,
     },
-    SessionWorkspaceChanged {
-        cursor: SessionEventCursor,
-        session_id: SessionId,
-        workspace: WorkspaceSummary,
-    },
     SessionAssistantDelta {
         session_id: SessionId,
         run_id: crate::RunId,
@@ -664,7 +638,6 @@ impl ApplicationEvent {
             Self::SessionTranscriptEntryCommitted { .. }
             | Self::SessionRunChanged { .. }
             | Self::SessionLocalCommandChanged { .. }
-            | Self::SessionWorkspaceChanged { .. }
             | Self::SessionAssistantDelta { .. } => None,
         }
     }
@@ -674,8 +647,7 @@ impl ApplicationEvent {
         match self {
             Self::SessionTranscriptEntryCommitted { cursor, .. }
             | Self::SessionRunChanged { cursor, .. }
-            | Self::SessionLocalCommandChanged { cursor, .. }
-            | Self::SessionWorkspaceChanged { cursor, .. } => Some(*cursor),
+            | Self::SessionLocalCommandChanged { cursor, .. } => Some(*cursor),
             Self::SessionCreated { .. }
             | Self::SessionChanged { .. }
             | Self::SessionRemoved { .. }
@@ -729,16 +701,6 @@ impl fmt::Debug for ApplicationEvent {
                 .field("command_id", command_id)
                 .field("active", active)
                 .finish(),
-            Self::SessionWorkspaceChanged {
-                cursor,
-                session_id,
-                workspace,
-            } => formatter
-                .debug_struct("SessionWorkspaceChanged")
-                .field("cursor", cursor)
-                .field("session_id", session_id)
-                .field("workspace", workspace)
-                .finish(),
             Self::SessionAssistantDelta {
                 session_id,
                 run_id,
@@ -783,33 +745,6 @@ pub struct SessionSummary {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceState {
-    Empty,
-    Importing,
-    Ready,
-    Blocked,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceBlockReason {
-    InconsistentImportState,
-    UncertainToolEffect,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WorkspaceSummary {
-    pub state: WorkspaceState,
-    pub file_count: u64,
-    pub logical_bytes: u64,
-    pub block_reason: Option<WorkspaceBlockReason>,
-    pub blocked_run_id: Option<crate::RunId>,
-    pub blocked_tool: Option<crate::ToolKind>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "code", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApplicationError {
     InvalidRequest,
@@ -830,7 +765,6 @@ pub enum ApplicationError {
     OpenCodeCredentialNotConfigured,
     CredentialGenerationConflict,
     CredentialMutationNotApplied,
-    WorkspaceBlocked,
     ResourceLimit {
         resource: ResourceLimit,
     },

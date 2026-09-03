@@ -22,8 +22,7 @@ use morons_protocol::{
     OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId, RunState, RunSummary,
     ServerMessage, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId,
     SessionListCursor, SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry,
-    WorkspaceBlockReason, WorkspaceState, WorkspaceSummary, read_server_message,
-    write_client_message,
+    read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -49,7 +48,6 @@ pub struct SessionInputAcceptance {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptPage {
     pub session: SessionSummary,
-    pub workspace: WorkspaceSummary,
     pub entries: Vec<TranscriptEntry>,
     pub runs: Vec<RunSummary>,
     pub active_run_id: Option<RunId>,
@@ -202,7 +200,6 @@ fn write_application_error(
         ApplicationError::CredentialMutationNotApplied => {
             formatter.write_str("OpenCode credential update was not applied")
         }
-        ApplicationError::WorkspaceBlocked => formatter.write_str("session workspace is blocked"),
         ApplicationError::ResourceLimit {
             resource: ResourceLimit::Sessions,
         } => formatter.write_str("session limit was reached"),
@@ -244,35 +241,6 @@ fn valid_working_directory(path: &str) -> bool {
                 std::path::Component::CurDir | std::path::Component::ParentDir
             )
         })
-}
-
-fn valid_workspace_summary(workspace: WorkspaceSummary) -> bool {
-    match workspace.state {
-        WorkspaceState::Empty | WorkspaceState::Importing => {
-            workspace.file_count == 0
-                && workspace.logical_bytes == 0
-                && workspace.block_reason.is_none()
-                && workspace.blocked_run_id.is_none()
-                && workspace.blocked_tool.is_none()
-        }
-        WorkspaceState::Ready => {
-            workspace.block_reason.is_none()
-                && workspace.blocked_run_id.is_none()
-                && workspace.blocked_tool.is_none()
-        }
-        WorkspaceState::Blocked => match workspace.block_reason {
-            Some(WorkspaceBlockReason::InconsistentImportState) => {
-                workspace.file_count == 0
-                    && workspace.logical_bytes == 0
-                    && workspace.blocked_run_id.is_none()
-                    && workspace.blocked_tool.is_none()
-            }
-            Some(WorkspaceBlockReason::UncertainToolEffect) => {
-                workspace.blocked_run_id.is_some() && workspace.blocked_tool.is_some()
-            }
-            None => false,
-        },
-    }
 }
 
 pub(super) fn valid_image_attachments(
@@ -646,7 +614,6 @@ where
             .await?;
         let ApplicationResponse::SessionTranscriptListed {
             session,
-            workspace,
             entries,
             runs,
             active_run_id,
@@ -707,7 +674,6 @@ where
         });
         if session.id != session_id
             || !valid_session_summary(&session)
-            || !valid_workspace_summary(workspace)
             || !cursor_in_scope
             || !snapshot_is_consistent
             || entries.len() > usize::from(limit)
@@ -722,7 +688,6 @@ where
         }
         Ok(TranscriptPage {
             session,
-            workspace,
             entries,
             runs,
             active_run_id,
@@ -813,38 +778,6 @@ where
             command_id,
             cancellation_requested,
         })
-    }
-
-    pub async fn acknowledge_tool_uncertainty(
-        &mut self,
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        run_id: RunId,
-    ) -> Result<WorkspaceSummary, ApplicationClientError> {
-        let response = self
-            .request(ApplicationRequest::AcknowledgeToolUncertainty {
-                mutation_request_id,
-                session_id,
-                run_id,
-            })
-            .await?;
-        let ApplicationResponse::ToolUncertaintyAcknowledged {
-            session_id: response_session_id,
-            run_id: response_run_id,
-            workspace,
-        } = response
-        else {
-            return Err(self.unexpected_application_response());
-        };
-        if response_session_id != session_id
-            || response_run_id != run_id
-            || !valid_workspace_summary(workspace)
-            || workspace.state != WorkspaceState::Ready
-        {
-            self.usable = false;
-            return Err(ApplicationClientError::EventScopeMismatch);
-        }
-        Ok(workspace)
     }
 
     pub async fn list_open_code_models(

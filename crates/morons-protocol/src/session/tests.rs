@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use super::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, MutationRequestId,
     ResourceLimit, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
-    SessionSummary, SkillSource, SkillSummary, WorkspaceState, WorkspaceSummary,
+    SessionSummary, SkillSource, SkillSummary,
 };
 use crate::{
     ClientMessage, LocalCommandId, LocalCommandStatus, MessageId, OpenCodeApiKey,
@@ -361,8 +361,7 @@ fn credential_request_has_stable_json_shape_and_redacted_debug() {
 }
 
 #[test]
-fn structured_tool_and_uncertainty_contracts_have_stable_json_shapes() {
-    let session_id = SessionId::from_bytes([0x71; 16]);
+fn structured_tool_contracts_have_stable_json_shapes() {
     let run_id = RunId::from_bytes([0x72; 16]);
     let call_id = ToolCallId::from_bytes([0x73; 16]);
     let entry = crate::TranscriptEntry::ToolResult {
@@ -371,7 +370,7 @@ fn structured_tool_and_uncertainty_contracts_have_stable_json_shapes() {
         call_id,
         tool: ToolKind::EditFile,
         status: ToolResultStatus::Uncertain,
-        summary: "tool failed: workspace effect is uncertain".to_owned(),
+        summary: "tool failed: local effect is uncertain".to_owned(),
         created_at_milliseconds: 42,
     };
     assert_eq!(
@@ -383,7 +382,7 @@ fn structured_tool_and_uncertainty_contracts_have_stable_json_shapes() {
             "call_id": "tool_73737373737373737373737373737373",
             "tool": "edit_file",
             "status": "uncertain",
-            "summary": "tool failed: workspace effect is uncertain",
+            "summary": "tool failed: local effect is uncertain",
             "created_at_milliseconds": 42,
         })
     );
@@ -406,21 +405,6 @@ fn structured_tool_and_uncertainty_contracts_have_stable_json_shapes() {
             "tool": "run_command",
             "path": ".",
             "created_at_milliseconds": 43,
-        })
-    );
-
-    let request = ApplicationRequest::AcknowledgeToolUncertainty {
-        mutation_request_id: MutationRequestId::from_bytes([0x75; 16]),
-        session_id,
-        run_id,
-    };
-    assert_eq!(
-        serde_json::to_value(request).expect("acknowledgement should encode"),
-        json!({
-            "operation": "acknowledge_tool_uncertainty",
-            "mutation_request_id": "mut_75757575757575757575757575757575",
-            "session_id": "ses_71717171717171717171717171717171",
-            "run_id": "run_72727272727272727272727272727272",
         })
     );
 }
@@ -578,14 +562,6 @@ fn transcript_snapshot_response_has_stable_json_shape() {
             archived: false,
             created_at_milliseconds: 42,
         },
-        workspace: WorkspaceSummary {
-            state: WorkspaceState::Ready,
-            file_count: 7,
-            logical_bytes: 42,
-            block_reason: None,
-            blocked_run_id: None,
-            blocked_tool: None,
-        },
         entries: Vec::new(),
         runs: Vec::new(),
         active_run_id: None,
@@ -604,53 +580,12 @@ fn transcript_snapshot_response_has_stable_json_shape() {
                 "archived": false,
                 "created_at_milliseconds": 42,
             },
-            "workspace": {
-                "state": "ready",
-                "file_count": 7,
-                "logical_bytes": 42,
-                "block_reason": null,
-                "blocked_run_id": null,
-                "blocked_tool": null,
-            },
             "entries": [],
             "runs": [],
             "active_run_id": null,
             "active_command_id": null,
             "next_cursor": null,
             "event_cursor": "sec1_232323232323232323232323232323230000000000000009",
-        })
-    );
-}
-
-#[test]
-fn workspace_event_has_stable_json_shape() {
-    let session_id = SessionId::from_bytes([0x35; 16]);
-    let event = ApplicationEvent::SessionWorkspaceChanged {
-        cursor: session_event_cursor(session_id, 7),
-        session_id,
-        workspace: WorkspaceSummary {
-            state: WorkspaceState::Importing,
-            file_count: 0,
-            logical_bytes: 0,
-            block_reason: None,
-            blocked_run_id: None,
-            blocked_tool: None,
-        },
-    };
-    assert_eq!(
-        serde_json::to_value(event).expect("workspace event should encode"),
-        json!({
-            "event": "session_workspace_changed",
-            "cursor": "sec1_353535353535353535353535353535350000000000000007",
-            "session_id": "ses_35353535353535353535353535353535",
-            "workspace": {
-                "state": "importing",
-                "file_count": 0,
-                "logical_bytes": 0,
-                "block_reason": null,
-                "blocked_run_id": null,
-                "blocked_tool": null,
-            },
         })
     );
 }
@@ -851,6 +786,25 @@ fn removed_repository_import_operation_is_rejected() {
     });
 
     assert!(serde_json::from_value::<ApplicationRequest>(encoded).is_err());
+}
+
+#[test]
+fn removed_workspace_control_surface_is_rejected() {
+    let acknowledgement = json!({
+        "operation": "acknowledge_tool_uncertainty",
+        "mutation_request_id": "mut_31313131313131313131313131313131",
+        "session_id": "ses_32323232323232323232323232323232",
+        "run_id": "run_33333333333333333333333333333333",
+    });
+    assert!(serde_json::from_value::<ApplicationRequest>(acknowledgement).is_err());
+
+    let workspace_event = json!({
+        "event": "session_workspace_changed",
+        "cursor": "sec1_323232323232323232323232323232320000000000000001",
+        "session_id": "ses_32323232323232323232323232323232",
+        "workspace": { "state": "ready" },
+    });
+    assert!(serde_json::from_value::<ApplicationEvent>(workspace_event).is_err());
 }
 
 fn session_event_cursor(session_id: SessionId, sequence: u64) -> SessionEventCursor {

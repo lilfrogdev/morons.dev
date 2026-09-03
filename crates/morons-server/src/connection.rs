@@ -249,7 +249,9 @@ where
         if !events.is_empty() {
             for event in events {
                 subscription.advance(&event);
-                write_subscription_message(&mut writer, &ServerMessage::event(event.event)).await?;
+                if let Some(event) = event.event {
+                    write_subscription_message(&mut writer, &ServerMessage::event(event)).await?;
+                }
             }
             continue;
         }
