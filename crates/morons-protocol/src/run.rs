@@ -340,6 +340,7 @@ pub enum ToolKind {
     Edit,
     Bash,
     WebSearch,
+    Ipython,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -176,9 +176,9 @@ impl BashToolExecutor {
 }
 
 #[cfg(windows)]
-type PlatformJob = Option<fence_windows::KillOnCloseJob>;
+pub(super) type PlatformJob = Option<fence_windows::KillOnCloseJob>;
 #[cfg(not(windows))]
-type PlatformJob = ();
+pub(super) type PlatformJob = ();
 
 fn configured_bash() -> std::ffi::OsString {
     if let Some(configured) = std::env::var_os("MORONS_BASH").filter(|value| !value.is_empty()) {
@@ -280,29 +280,32 @@ fn exit_signal(_status: Option<&ExitStatus>) -> Option<u16> {
 }
 
 #[cfg(unix)]
-fn terminate_tree(
+pub(super) fn terminate_tree(
     child: &mut Child,
     process_group: u32,
     already_reaped: bool,
     _job: PlatformJob,
 ) -> bool {
+    let stopped = terminate_process_group(process_group);
+    let reaped = already_reaped || child.wait().is_ok();
+    stopped && reaped
+}
+
+#[cfg(unix)]
+pub(super) fn terminate_process_group(process_group: u32) -> bool {
     use rustix::{
         io::Errno,
         process::{Pid, Signal, kill_process_group},
     };
 
     let Some(group) = i32::try_from(process_group).ok().and_then(Pid::from_raw) else {
-        let _ = child.kill();
-        return child.wait().is_ok();
+        return false;
     };
     let group_missing = match kill_process_group(group, Signal::KILL) {
         Ok(()) => false,
         Err(Errno::SRCH) => true,
         Err(_) => return false,
     };
-    if !already_reaped && child.wait().is_err() {
-        return false;
-    }
     if group_missing {
         return true;
     }
@@ -388,7 +391,9 @@ fn process_group_has_live_members(group: rustix::process::Pid) -> Result<bool, (
         if fields.next().is_some() || process_group != group || state.is_empty() {
             return Err(());
         }
-        if !state.starts_with('Z') {
+        // Darwin reports both zombies (`Z`) and processes irreversibly exiting (`E`)
+        // while their kernel records are still visible.
+        if !state.starts_with('Z') && !state.contains('E') {
             return Ok(true);
         }
     }
@@ -401,7 +406,7 @@ fn process_group_has_live_members(_group: rustix::process::Pid) -> Result<bool, 
 }
 
 #[cfg(windows)]
-fn terminate_tree(
+pub(super) fn terminate_tree(
     child: &mut Child,
     _process_group: u32,
     already_reaped: bool,

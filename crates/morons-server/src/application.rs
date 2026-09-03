@@ -693,6 +693,31 @@ impl ServerApplication {
     }
 
     #[cfg(test)]
+    pub(crate) fn from_session_store_with_ipython_for_test(
+        sessions: SessionStore,
+        provider_base: &str,
+    ) -> Self {
+        let sessions = Arc::new(sessions);
+        let open_code = Arc::new(OpenCodeProvider::for_test(
+            Arc::clone(&sessions),
+            provider_base,
+        ));
+        let session_event_hub = SessionEventHub::new();
+        let run_supervisor = RunSupervisor::with_ipython_for_test(
+            Arc::clone(&sessions),
+            Arc::clone(&open_code),
+            Arc::clone(&session_event_hub),
+        );
+        Self::from_supervised_parts(
+            sessions,
+            open_code,
+            run_supervisor,
+            session_event_hub,
+            [0x7f; 16],
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_session_store_with_search_for_test(
         sessions: SessionStore,
         provider_base: &str,

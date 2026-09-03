@@ -1,6 +1,7 @@
 mod bash;
 mod catalog;
 mod direct;
+mod ipython;
 mod path;
 mod web_search;
 mod worktree;
@@ -16,16 +17,19 @@ pub(crate) use catalog::{
     developer_instruction, parse_provider_calls, provider_tools, validate_canonical_input,
 };
 pub(crate) use direct::DirectToolExecutor;
+pub(crate) use ipython::{IpythonSupervisor, validate_ipython_cell};
 pub(crate) use path::{ToolPath, WorktreePath};
 pub(crate) use web_search::WebSearchToolExecutor;
 pub(crate) use worktree::recovery_plan_is_valid;
 
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 5;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 6;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
 pub(crate) const MAX_BASH_COMMAND_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_BASH_OUTPUT_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_IPYTHON_CELL_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_IPYTHON_OUTPUT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_COMMAND_ARGUMENTS: usize = 128;
 pub(crate) const MAX_COMMAND_ARGUMENT_BYTES: usize = 4096;
 pub(crate) const MAX_COMMAND_ARGUMENT_TOTAL_BYTES: usize = 64 * 1024;
@@ -77,6 +81,7 @@ pub(crate) enum ToolKind {
     Edit,
     Bash,
     WebSearch,
+    Ipython,
 }
 
 impl ToolKind {
@@ -94,6 +99,7 @@ impl ToolKind {
             Self::Edit => "edit",
             Self::Bash => "bash",
             Self::WebSearch => "web_search",
+            Self::Ipython => "ipython",
         }
     }
 
@@ -111,6 +117,7 @@ impl ToolKind {
             Self::Edit => 10,
             Self::Bash => 11,
             Self::WebSearch => 12,
+            Self::Ipython => 13,
         }
     }
 
@@ -128,6 +135,7 @@ impl ToolKind {
             10 => Some(Self::Edit),
             11 => Some(Self::Bash),
             12 => Some(Self::WebSearch),
+            13 => Some(Self::Ipython),
             _ => None,
         }
     }
@@ -142,6 +150,7 @@ impl ToolKind {
                 | Self::Write
                 | Self::Edit
                 | Self::Bash
+                | Self::Ipython
         )
     }
 }
@@ -198,6 +207,9 @@ pub(crate) enum ToolInput {
     WebSearch {
         query: String,
     },
+    Ipython {
+        cell: String,
+    },
 }
 
 impl ToolInput {
@@ -215,6 +227,7 @@ impl ToolInput {
             Self::Edit { .. } => ToolKind::Edit,
             Self::Bash { .. } => ToolKind::Bash,
             Self::WebSearch { .. } => ToolKind::WebSearch,
+            Self::Ipython { .. } => ToolKind::Ipython,
         }
     }
 
@@ -235,6 +248,7 @@ impl ToolInput {
             }
             Self::Bash { command } => command,
             Self::WebSearch { query } => query,
+            Self::Ipython { cell } => cell,
         }
     }
 
@@ -301,6 +315,7 @@ impl ToolInput {
             }),
             Self::Bash { command } => serde_json::to_string(&BashArguments { command }),
             Self::WebSearch { query } => serde_json::to_string(&WebSearchArguments { query }),
+            Self::Ipython { cell } => serde_json::to_string(&IpythonArguments { cell }),
         }
     }
 }
@@ -347,6 +362,11 @@ struct WebSearchArguments<'a> {
     query: &'a str,
 }
 
+#[derive(Serialize)]
+struct IpythonArguments<'a> {
+    cell: &'a str,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TextReplacement {
@@ -387,6 +407,8 @@ pub(crate) enum ToolErrorKind {
     Network,
     InvalidResponse,
     CredentialNotConfigured,
+    KernelUnavailable,
+    ExecutionFailed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -478,6 +500,8 @@ impl ToolErrorKind {
             Self::Network => "network request failed",
             Self::InvalidResponse => "search service returned an invalid response",
             Self::CredentialNotConfigured => "search credential is not configured",
+            Self::KernelUnavailable => "IPython kernel is unavailable",
+            Self::ExecutionFailed => "IPython cell failed",
         }
     }
 }
@@ -551,6 +575,12 @@ pub(crate) enum ToolOutput {
         results: Vec<WebSearchResult>,
         truncated: bool,
     },
+    Ipython {
+        execution_count: Option<u32>,
+        stdout: String,
+        stderr: String,
+        display: String,
+    },
 }
 
 impl ToolOutput {
@@ -568,6 +598,7 @@ impl ToolOutput {
             Self::Edited { .. } => ToolKind::Edit,
             Self::Bash { .. } => ToolKind::Bash,
             Self::WebSearch { .. } => ToolKind::WebSearch,
+            Self::Ipython { .. } => ToolKind::Ipython,
         }
     }
 
@@ -622,6 +653,27 @@ impl ToolOutput {
                 bytes,
                 ..
             } => format!("applied {replacements} replacement(s) ({bytes} bytes)"),
+            Self::Ipython {
+                execution_count,
+                stdout,
+                stderr,
+                display,
+            } => {
+                let mut summary = execution_count.map_or_else(
+                    || "IPython cell completed".to_owned(),
+                    |count| format!("IPython cell {count} completed"),
+                );
+                for (label, output) in [("stdout", stdout), ("stderr", stderr), ("result", display)]
+                {
+                    if !output.is_empty() {
+                        summary.push('\n');
+                        summary.push_str(label);
+                        summary.push_str(":\n");
+                        summary.push_str(output);
+                    }
+                }
+                summary
+            }
             Self::WebSearch {
                 results, truncated, ..
             } => format!(
@@ -693,18 +745,32 @@ fn bounded_text(value: &str, maximum: usize) -> &str {
 
 pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> bool {
     match result {
-        ToolResult::Error { error, output } => output.as_ref().is_none_or(|output| {
-            tool == ToolKind::Bash
-                && matches!(
+        ToolResult::Error { error, output } => output.as_ref().is_none_or(|output| match tool {
+            ToolKind::Bash => {
+                matches!(
                     error,
                     ToolErrorKind::OutputLimit
                         | ToolErrorKind::TimedOut
                         | ToolErrorKind::InactivityTimeout
                         | ToolErrorKind::Cancelled
                         | ToolErrorKind::Uncertain
-                )
-                && output.kind() == ToolKind::Bash
-                && validate_bash_output(output, false)
+                ) && output.kind() == ToolKind::Bash
+                    && validate_bash_output(output, false)
+            }
+            ToolKind::Ipython => {
+                matches!(
+                    error,
+                    ToolErrorKind::ExecutionFailed
+                        | ToolErrorKind::OutputLimit
+                        | ToolErrorKind::TimedOut
+                        | ToolErrorKind::InactivityTimeout
+                        | ToolErrorKind::Cancelled
+                        | ToolErrorKind::Interrupted
+                        | ToolErrorKind::Uncertain
+                ) && output.kind() == ToolKind::Ipython
+                    && validate_ipython_output(output)
+            }
+            _ => false,
         }),
         ToolResult::Ok { output } if output.kind() != tool => false,
         ToolResult::Ok {
@@ -830,7 +896,26 @@ pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> 
                 && results.len() <= MAX_WEB_SEARCH_RESULTS
                 && results.iter().all(WebSearchResult::is_valid)
         }
+        ToolResult::Ok {
+            output: output @ ToolOutput::Ipython { .. },
+        } => validate_ipython_output(output),
         ToolResult::Ok { output } => validate_bash_output(output, true),
+    }
+}
+
+fn validate_ipython_output(output: &ToolOutput) -> bool {
+    match output {
+        ToolOutput::Ipython {
+            stdout,
+            stderr,
+            display,
+            ..
+        } => stdout
+            .len()
+            .checked_add(stderr.len())
+            .and_then(|bytes| bytes.checked_add(display.len()))
+            .is_some_and(|bytes| bytes <= MAX_IPYTHON_OUTPUT_BYTES),
+        _ => false,
     }
 }
 
