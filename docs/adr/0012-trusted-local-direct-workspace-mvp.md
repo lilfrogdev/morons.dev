@@ -32,9 +32,9 @@ ADR 0013 adds bounded batched subagents to the MVP. They use independently bound
 
 ### Direct working directories
 
-Every session binds one user-selected working directory. Running `morons` in a directory proposes the process working directory by default, and the user may select another directory when creating a session.
+Every new session binds the client process's current working directory at creation. To use another directory, the user launches a client from that directory and creates another session; the MVP has no separate directory picker.
 
-The server stores the absolute working-directory path as session metadata because it is required to resume direct work. The path is a locator, not authorization evidence. Before each run or local command, Morons verifies that it still resolves to a directory and reports a clear unavailable-directory state when it does not. The MVP does not silently retarget a session; selecting another directory creates another session.
+The server stores the absolute working-directory path as session metadata because it is required to resume direct work. The path is a locator, not authorization evidence. Before each run or local command, Morons verifies that it still resolves to a directory and reports a clear unavailable-directory state when it does not. The MVP does not silently retarget an existing session.
 
 Tools and child processes operate directly on the selected directory. There is no repository import, copied baseline, private worktree, generation pointer, candidate promotion, custom diff authority, or export operation. Changes are visible immediately to the user and ordinary development tools. The directory need not be a Git repository and may contain any language or toolchain supported by the user's environment.
 
@@ -44,7 +44,7 @@ Several durable sessions may bind the same directory. Session history and contex
 
 ### Multiple durable sessions
 
-The Ratatui client retains a session browser for creating, listing, viewing, resuming, renaming, archiving, deleting, and switching sessions. Each session has independent transcript history, context checkpoints, attachments, model selections, run state, and temporary IPython runtime.
+The Ratatui client retains a session browser for creating, listing, viewing, resuming, renaming, archiving, deleting, and switching sessions. Each session has independent transcript history, context checkpoints, attachments, run history, and temporary IPython runtime. ADR 0014 replaces per-session model preference with one durable global default, while every accepted run still records its exact reviewed service and model.
 
 Switching or closing a client detaches presentation only. It does not cancel an active run, terminate another session, or stop the server. The browser shows bounded status for active, idle, interrupted, failed, and unavailable-directory sessions. One session permits at most one nonterminal top-level run, while different sessions may run concurrently within global limits.
 
@@ -82,7 +82,7 @@ Each active session may start one IPython kernel on demand through the standard 
 
 Kernel variables persist across cells and top-level runs while that kernel remains alive. Kernel memory is temporary and is never authoritative session state; server restart, cancellation, limit exhaustion, least-recently-used idle-kernel eviction, or unrecoverable kernel failure loses it. Morons keeps at most four session kernels alive, terminates the complete kernel process tree when an operation cannot finish safely, and starts a fresh kernel on the next cell. The durable transcript retains only bounded submitted cells and displayed results.
 
-Morons exposes a small Python helper surface that can invoke the same built-in tools programmatically. Those calls retain their ordinary typed inputs, limits, cancellation, transcript ordering, and provider-context behavior. The helper is not a generic privileged server proxy.
+Morons injects no helper API or generic privileged server proxy into the kernel. Python cells use the local user's ordinary filesystem, process, environment, and network authority; model-facing Morons tools remain separate typed tool calls.
 
 ### Skills and `@` invocation
 

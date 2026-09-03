@@ -40,7 +40,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Process-tree control and bounded pipes are lifecycle controls, not containment. Effects completed before termination remain applied.
 - Standard input remains closed for model-selected and command-mode subprocesses. Morons exposes no user-facing subprocess PTY, interactive terminal, terminal emulator, or SSH surface.
 - The persistent IPython kernel is one temporary runtime per active session, launched through the configured Python runtime's `jupyter_client` and `ipykernel`. At most four kernels remain live; least-recently-used idle kernels are evicted. Kernel memory is never authoritative and may be lost on cancellation, limit exhaustion, eviction, failure, or restart.
-- Python helper calls into Morons must map to the same concrete bounded built-in tools; the helper must not expose a generic privileged server API.
+- Morons injects no helper API or generic privileged server proxy into IPython kernels. Model-facing Morons tools remain separate bounded typed tool calls.
 
 ## Subagents
 
