@@ -35,6 +35,8 @@ pub(super) struct TextDeltaEvent {
     pub(super) logprobs: Vec<Value>,
     pub(super) output_index: u32,
     pub(super) sequence_number: u64,
+    #[serde(rename = "obfuscation")]
+    pub(super) _obfuscation: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +49,8 @@ pub(super) struct RefusalDeltaEvent {
     pub(super) item_id: String,
     pub(super) output_index: u32,
     pub(super) sequence_number: u64,
+    #[serde(rename = "obfuscation")]
+    pub(super) _obfuscation: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +63,8 @@ pub(super) struct FunctionArgumentsDeltaEvent {
     pub(super) output_index: u32,
     #[serde(rename = "sequence_number")]
     pub(super) _sequence_number: u64,
+    #[serde(rename = "obfuscation")]
+    pub(super) _obfuscation: Option<String>,
 }
 
 #[derive(Deserialize)]

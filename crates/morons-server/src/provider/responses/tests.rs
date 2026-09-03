@@ -18,7 +18,7 @@ fn complete_text_and_tool_stream_is_normalized() {
         ),
         record(
             "response.output_text.delta",
-            r#"{"type":"response.output_text.delta","sequence_number":1,"output_index":0,"content_index":0,"item_id":"msg_1","delta":"hel","logprobs":[]}"#,
+            r#"{"type":"response.output_text.delta","sequence_number":1,"output_index":0,"content_index":0,"item_id":"msg_1","delta":"hel","logprobs":[],"obfuscation":"padding"}"#,
         ),
         record(
             "response.output_text.delta",
@@ -26,7 +26,7 @@ fn complete_text_and_tool_stream_is_normalized() {
         ),
         record(
             "response.function_call_arguments.delta",
-            r#"{"type":"response.function_call_arguments.delta","sequence_number":3,"output_index":1,"item_id":"fc_1","delta":"{\"path\":\"a\"}"}"#,
+            r#"{"type":"response.function_call_arguments.delta","sequence_number":3,"output_index":1,"item_id":"fc_1","delta":"{\"path\":\"a\"}","obfuscation":"padding"}"#,
         ),
         record(
             "response.completed",
@@ -58,6 +58,34 @@ fn complete_text_and_tool_stream_is_normalized() {
 }
 
 #[test]
+fn refusal_delta_accepts_stream_obfuscation() {
+    let mut decoder = ResponsesDecoder::new("gpt-5.6-luna", 96_000, 32_000);
+    decoder
+        .push(&record(
+            "response.created",
+            r#"{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","status":"in_progress","model":"gpt-5.6-luna"}}"#,
+        ))
+        .expect("created event should decode");
+    let deltas = decoder
+        .push(&record(
+            "response.refusal.delta",
+            r#"{"type":"response.refusal.delta","sequence_number":1,"output_index":0,"content_index":0,"item_id":"msg_1","delta":"no","obfuscation":"padding"}"#,
+        ))
+        .expect("refusal delta should decode");
+    assert!(matches!(
+        deltas.as_slice(),
+        [crate::provider::ProviderStreamEvent::TextDelta { refusal: true, .. }]
+    ));
+    decoder
+        .push(&record(
+            "response.completed",
+            r#"{"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","object":"response","model":"gpt-5.6-luna","status":"completed","output":[{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"refusal","refusal":"no"}]}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":2}}}"#,
+        ))
+        .expect("completed refusal should decode");
+    decoder.finish().expect("refusal stream should complete");
+}
+
+#[test]
 fn completed_reasoning_is_bounded_and_redacted() {
     let mut decoder = ResponsesDecoder::new("gpt-5.6-sol", 96_000, 32_000);
     decoder
@@ -69,7 +97,7 @@ fn completed_reasoning_is_bounded_and_redacted() {
     decoder
         .push(&record(
             "response.completed",
-            r#"{"type":"response.completed","sequence_number":1,"response":{"id":"resp_1","object":"response","model":"gpt-5.6-sol","status":"completed","output":[{"id":"rs_1","type":"reasoning","status":"completed","summary":[{"type":"summary_text","text":"bounded summary"}],"content":[],"encrypted_content":"opaque-continuation"}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":2}}}"#,
+            r#"{"type":"response.completed","sequence_number":1,"response":{"id":"resp_1","object":"response","model":"gpt-5.6-sol","status":"completed","output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"bounded summary"}],"content":[],"encrypted_content":"opaque-continuation"}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":2}}}"#,
         ))
         .expect("completed event should decode");
     let outcome = decoder.finish().expect("reasoning stream should complete");
@@ -80,6 +108,26 @@ fn completed_reasoning_is_bounded_and_redacted() {
     let debug = format!("{outcome:?}");
     assert!(!debug.contains("bounded summary"));
     assert!(!debug.contains("opaque-continuation"));
+}
+
+#[test]
+fn nonterminal_reasoning_status_in_a_completed_response_is_rejected() {
+    let mut decoder = ResponsesDecoder::new("gpt-5.6-luna", 96_000, 32_000);
+    decoder
+        .push(&record(
+            "response.created",
+            r#"{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","status":"in_progress","model":"gpt-5.6-luna"}}"#,
+        ))
+        .expect("created event should decode");
+    assert_eq!(
+        decoder
+            .push(&record(
+                "response.completed",
+                r#"{"type":"response.completed","sequence_number":1,"response":{"id":"resp_1","object":"response","model":"gpt-5.6-luna","status":"completed","output":[{"id":"rs_1","type":"reasoning","status":"in_progress","summary":[],"content":[],"encrypted_content":"opaque-continuation"}],"usage":{"input_tokens":1,"input_tokens_details":{"cached_tokens":0},"output_tokens":1,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":2}}}"#,
+            ))
+            .err(),
+        Some(ProviderError::MalformedResponse)
+    );
 }
 
 #[test]
