@@ -538,7 +538,10 @@ impl ResponsesDecoder {
                         .map_err(|_| ProviderError::MalformedResponse)?;
                     validate_response_identifier(&reasoning.id, MAX_PROVIDER_IDENTIFIER_BYTES)?;
                     if !item_ids.insert(reasoning.id.clone())
-                        || reasoning.status.as_deref() != Some("completed")
+                        || reasoning
+                            .status
+                            .as_deref()
+                            .is_some_and(|status| status != "completed")
                         || reasoning.summary.len() > MAX_REASONING_SUMMARIES
                         || reasoning.content.is_some_and(|content| !content.is_empty())
                         || reasoning.encrypted_content.as_ref().is_some_and(|content| {

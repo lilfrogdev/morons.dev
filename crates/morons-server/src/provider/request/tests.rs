@@ -27,7 +27,10 @@ fn request_for_conversation(conversation_id: [u8; 16]) -> OpenCodeResponseReques
             description: "Read one file".to_owned(),
             parameters: json!({
                 "type": "object",
-                "properties": {"path": {"type": "string"}},
+                "properties": {
+                    "path": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1}
+                },
                 "required": ["path"],
                 "additionalProperties": false
             }),
@@ -53,7 +56,7 @@ fn request_has_a_bounded_stable_responses_shape() {
     assert_eq!(body["input"][0]["role"], "user");
     assert_eq!(body["input"][0]["content"], "hello");
     assert_eq!(body["tools"][0]["type"], "function");
-    assert_eq!(body["tools"][0]["strict"], true);
+    assert_eq!(body["tools"][0]["strict"], false);
     assert_eq!(
         request.opencode_session_header(),
         "ses_0864e3c421a7b17178b819f48925103e"

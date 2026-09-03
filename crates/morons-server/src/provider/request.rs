@@ -673,7 +673,8 @@ impl<'a> From<&'a ProviderTool> for WireTool<'a> {
             name: &tool.name,
             description: &tool.description,
             parameters: &tool.parameters,
-            strict: true,
+            // Reviewed schemas contain optional fields; Morons validates returned arguments.
+            strict: false,
         }
     }
 }
