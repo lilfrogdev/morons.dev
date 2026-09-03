@@ -36,4 +36,4 @@ pub use session::{
     WorkspaceState, WorkspaceSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 26;
+pub const PROTOCOL_VERSION: u32 = 27;

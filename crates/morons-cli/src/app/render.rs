@@ -80,7 +80,17 @@ fn render_sessions(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .iter()
         .map(|session| {
             ListItem::new(vec![
-                Line::from(session.display_name.first_line()),
+                Line::from(vec![
+                    Span::raw(session.display_name.first_line()),
+                    Span::styled(
+                        if session.summary.archived {
+                            " · archived"
+                        } else {
+                            ""
+                        },
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]),
                 Line::from(vec![
                     Span::styled(
                         session.working_directory.first_line(),
@@ -312,8 +322,13 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
     } else {
         ""
     };
+    let archived = if session.summary.archived {
+        " · archived · history only"
+    } else {
+        ""
+    };
     let title = format!(
-        " {} · {run_status} · {workspace}{shared} ",
+        " {} · {run_status} · {workspace}{archived}{shared} ",
         session.display_name.first_line()
     );
     frame.render_widget(
@@ -368,7 +383,7 @@ fn render_model_disclosure(
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let help = match app.view {
         View::Sessions => {
-            "↑↓ select · Enter open · n new · r rename · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
+            "↑↓ select · Enter open · n new · r rename · a archive/unarchive · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
             "Enter send · @ skill · !/!! command · /context · /compact · Esc sessions · Ctrl+X cancel"
@@ -416,7 +431,7 @@ fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: Informat
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · r rename in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · r rename · a archive/unarchive in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             15,
         ),

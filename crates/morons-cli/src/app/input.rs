@@ -344,6 +344,14 @@ impl AppState {
                 self.set_status("Enter a new name for the selected session");
                 AppAction::None
             }
+            KeyCode::Char('a') if self.pending.is_none() => self
+                .sessions
+                .get(self.selected_session)
+                .map(|session| AppAction::SetSessionArchived {
+                    session_id: session.summary.id,
+                    archived: !session.summary.archived,
+                })
+                .unwrap_or(AppAction::None),
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_session = self.selected_session.saturating_sub(1);
                 AppAction::None
@@ -439,6 +447,10 @@ impl AppState {
                 service: model.model.service,
                 model_id: model.model.id.clone(),
             };
+        }
+        if session.summary.archived {
+            self.set_status("Unarchive this session before starting new work");
+            return AppAction::None;
         }
         if session.active_run_id.is_some() || session.active_command_id.is_some() {
             self.set_status("The selected session already has active work");

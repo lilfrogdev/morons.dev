@@ -370,6 +370,24 @@ impl IpythonSupervisor {
         }
     }
 
+    pub(crate) async fn terminate_session(&self, session_id: SessionId) -> bool {
+        let slot = self
+            .kernels
+            .lock()
+            .await
+            .entries
+            .remove(&session_id)
+            .map(|entry| entry.slot);
+        let Some(kernel) = slot.and_then(|slot| slot.get().cloned()) else {
+            return true;
+        };
+        tokio::task::spawn_blocking(move || {
+            kernel.lock().is_ok_and(|mut kernel| kernel.stop(false))
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     pub(crate) async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
         let slots = self
@@ -976,6 +994,24 @@ mod tests {
             .await;
         assert!(matches!(
             other,
+            ToolResult::Error {
+                error: ToolErrorKind::ExecutionFailed,
+                output: Some(ToolOutput::Ipython { ref stderr, .. }),
+            } if stderr.contains("NameError")
+        ));
+        assert!(supervisor.terminate_session(session).await);
+        let after_termination = supervisor
+            .execute(
+                session,
+                root.clone(),
+                &ToolInput::Ipython {
+                    cell: "value + 1".to_owned(),
+                },
+                &cancellation,
+            )
+            .await;
+        assert!(matches!(
+            after_termination,
             ToolResult::Error {
                 error: ToolErrorKind::ExecutionFailed,
                 output: Some(ToolOutput::Ipython { ref stderr, .. }),

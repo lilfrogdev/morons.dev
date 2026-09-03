@@ -76,6 +76,38 @@ async fn unavailable_working_directory_rejects_run_before_transcript_commit() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn archived_sessions_reject_new_runs_before_transcript_commit() {
+    let root = TestRoot::new("archived-run-input");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    configure_credential(&store).await;
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x0b; 16]), None)
+        .await
+        .expect("session should be created");
+    store
+        .set_session_archived(MutationRequestId::from_bytes([0x0c; 16]), session.id, true)
+        .await
+        .expect("session should archive");
+    assert!(matches!(
+        store
+            .accept_session_input(
+                MutationRequestId::from_bytes([0x0d; 16]),
+                session.id,
+                "must not commit".to_owned(),
+                model_selection(),
+            )
+            .await,
+        Err(PersistenceError::SessionArchived)
+    ));
+    let page = store
+        .list_session_transcript(session.id, None, 1)
+        .await
+        .expect("transcript should remain readable");
+    assert!(page.entries.is_empty());
+    assert!(page.runs.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_input_is_atomic_idempotent_and_session_serialized() {
     let root = TestRoot::new("run-acceptance");
     let store = SessionStore::open_at(root.path()).expect("session store should open");

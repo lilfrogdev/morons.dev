@@ -26,6 +26,7 @@ async fn session_client_correlates_create_get_and_list_requests() {
         id: SessionId::from_bytes([0x22; 16]),
         display_name: Some("Client session".to_owned()),
         working_directory: Some(fixture_working_directory()),
+        archived: false,
         created_at_milliseconds: 42,
     };
     let catalog_cursor = SessionCatalogEventCursor::from_bytes(9_u64.to_be_bytes());
@@ -454,6 +455,7 @@ async fn session_subscription_tracks_durable_catalog_cursor() {
         id: SessionId::from_bytes([0x24; 16]),
         display_name: Some("Subscribed session".to_owned()),
         working_directory: Some(fixture_working_directory()),
+        archived: false,
         created_at_milliseconds: 43,
     };
 

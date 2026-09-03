@@ -23,6 +23,7 @@ const MAX_SESSION_NAME_BYTES: usize = 256;
 const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1\0";
 const CREATE_SESSION_WITH_DIRECTORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v2\0";
 const RENAME_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/rename-session/v1\0";
+const ARCHIVE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/archive-session/v1\0";
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
 const SUBMIT_SESSION_INPUT_WITH_IMAGES_FINGERPRINT_CONTEXT: &[u8] =
     b"morons.dev/submit-session-input/v2\0";
@@ -135,6 +136,7 @@ pub struct Session {
     pub id: SessionId,
     pub display_name: Option<String>,
     pub working_directory: Option<String>,
+    pub archived: bool,
     pub created_sequence: u64,
     pub updated_sequence: u64,
     pub created_at_milliseconds: u64,
@@ -266,6 +268,7 @@ pub enum PersistenceError {
     },
     RequestConflict,
     SessionNotFound,
+    SessionArchived,
     RunNotFound,
     LocalCommandNotFound,
     SessionBusy {
@@ -306,6 +309,7 @@ impl fmt::Display for PersistenceError {
                 formatter.write_str("the mutation request identifier conflicts with prior input")
             }
             Self::SessionNotFound => formatter.write_str("the session was not found"),
+            Self::SessionArchived => formatter.write_str("the session is archived"),
             Self::RunNotFound => formatter.write_str("the run was not found"),
             Self::LocalCommandNotFound => formatter.write_str("the local command was not found"),
             Self::SessionBusy { active_run_id } => {
@@ -372,6 +376,7 @@ impl Error for PersistenceError {
             | Self::InvalidState { .. }
             | Self::RequestConflict
             | Self::SessionNotFound
+            | Self::SessionArchived
             | Self::RunNotFound
             | Self::LocalCommandNotFound
             | Self::SessionBusy { .. }
@@ -600,6 +605,17 @@ pub(super) fn rename_session_fingerprint(
     digest.update(session_id.as_bytes());
     digest.update((display_name.len() as u64).to_be_bytes());
     digest.update(display_name.as_bytes());
+    digest.finalize().into()
+}
+
+pub(super) fn archive_session_fingerprint(
+    session_id: SessionId,
+    archived: bool,
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(ARCHIVE_SESSION_FINGERPRINT_CONTEXT);
+    digest.update(session_id.as_bytes());
+    digest.update([u8::from(archived)]);
     digest.finalize().into()
 }
 

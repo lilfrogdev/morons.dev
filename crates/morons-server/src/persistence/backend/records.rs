@@ -15,6 +15,7 @@ pub(super) const MUTATION_OPERATION_RUN_CANCEL: i64 = 5;
 pub(super) const MUTATION_OPERATION_SERVER_STOP: i64 = 6;
 pub(super) const MUTATION_OPERATION_TOOL_UNCERTAINTY_ACKNOWLEDGEMENT: i64 = 8;
 pub(super) const MUTATION_OPERATION_SESSION_RENAME: i64 = 12;
+pub(super) const MUTATION_OPERATION_SESSION_ARCHIVE: i64 = 13;
 
 pub(super) const CREATION_STATE_PREPARED: i64 = 0;
 pub(super) const CREATION_STATE_WORKSPACE_DISPATCHED: i64 = 1;
@@ -157,7 +158,8 @@ pub(super) fn load_session(
                 working_directory,
                 created_sequence,
                 updated_sequence,
-                created_at_milliseconds
+                created_at_milliseconds,
+                archived
             FROM sessions
             WHERE session_id = ?1",
             [&session_id.as_bytes()[..]],
@@ -183,6 +185,7 @@ pub(super) fn session_from_row_at(
         created_sequence: nonnegative_integer_from_row(row, offset + 4)?,
         updated_sequence: nonnegative_integer_from_row(row, offset + 5)?,
         created_at_milliseconds: nonnegative_integer_from_row(row, offset + 6)?,
+        archived: row.get::<_, i64>(offset + 7)? == 1,
     })
 }
 

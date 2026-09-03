@@ -88,6 +88,17 @@ impl Backend {
         }
         let session =
             load_session(&self.connection, session_id)?.ok_or(PersistenceError::SessionNotFound)?;
+        let archive_pending: bool = self.connection.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM session_archive_requests
+                WHERE session_id = ?1 AND archived = 1 AND state = 1
+             )",
+            [&session_id.as_bytes()[..]],
+            |row| row.get(0),
+        )?;
+        if session.archived || archive_pending {
+            return Err(PersistenceError::SessionArchived);
+        }
         let working_directory = session
             .working_directory
             .as_deref()

@@ -56,8 +56,21 @@ impl Backend {
                     FROM session_rename_requests AS rename
                     WHERE rename.session_id = fact.session_id
                       AND rename.accepted_sequence <= ?1
+                ), 0), COALESCE((
+                    SELECT MAX(archive.accepted_sequence)
+                    FROM session_archive_requests AS archive
+                    WHERE archive.session_id = fact.session_id
+                      AND archive.state = 2
+                      AND archive.accepted_sequence <= ?1
                 ), 0)),
-                fact.created_at_milliseconds
+                fact.created_at_milliseconds,
+                COALESCE((
+                    SELECT archive.archived FROM session_archive_requests AS archive
+                    WHERE archive.session_id = fact.session_id
+                      AND archive.state = 2
+                      AND archive.accepted_sequence <= ?1
+                    ORDER BY archive.accepted_sequence DESC LIMIT 1
+                ), 0)
             FROM session_created_facts AS fact
             WHERE fact.fact_sequence <= ?1
               AND fact.accepted_sequence > ?2
@@ -124,13 +137,26 @@ impl Backend {
                     FROM session_rename_requests AS rename
                     WHERE rename.session_id = fact.session_id
                       AND rename.accepted_sequence <= event.event_sequence
+                ), 0), COALESCE((
+                    SELECT MAX(archive.accepted_sequence)
+                    FROM session_archive_requests AS archive
+                    WHERE archive.session_id = fact.session_id
+                      AND archive.state = 2
+                      AND archive.accepted_sequence <= event.event_sequence
                 ), 0)),
-                fact.created_at_milliseconds
+                fact.created_at_milliseconds,
+                COALESCE((
+                    SELECT archive.archived FROM session_archive_requests AS archive
+                    WHERE archive.session_id = fact.session_id
+                      AND archive.state = 2
+                      AND archive.accepted_sequence <= event.event_sequence
+                    ORDER BY archive.accepted_sequence DESC LIMIT 1
+                ), 0)
             FROM delivery_events AS event
             INNER JOIN session_created_facts AS fact ON fact.session_id = event.session_id
             WHERE event.event_sequence > ?1
               AND event.event_sequence <= ?2
-              AND event.event_kind IN (1, 18)
+              AND event.event_kind IN (1, 18, 19)
               AND event.payload_version = 1
             ORDER BY event.event_sequence
             LIMIT ?3",
@@ -173,7 +199,7 @@ fn session_catalog_high_water(backend: &Backend) -> Result<u64, PersistenceError
     let sequence = backend.connection.query_row(
         "SELECT COALESCE(MAX(event_sequence), 0)
          FROM delivery_events
-         WHERE event_kind IN (1, 18) AND payload_version = 1",
+         WHERE event_kind IN (1, 18, 19) AND payload_version = 1",
         [],
         |row| row.get::<_, i64>(0),
     )?;

@@ -25,13 +25,14 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             UNION ALL SELECT session_id, updated_sequence FROM local_commands
             UNION ALL SELECT session_id, accepted_sequence FROM local_command_cancellations
             UNION ALL SELECT session_id, accepted_sequence FROM session_rename_requests
+            UNION ALL SELECT session_id, accepted_sequence FROM session_archive_requests WHERE state = 2
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
          )
          INSERT INTO sessions (
             session_id, workspace_id, display_name, working_directory, created_sequence,
-            updated_sequence, created_at_milliseconds, lifecycle
+            updated_sequence, created_at_milliseconds, lifecycle, archived
          )
          SELECT
             fact.session_id,
@@ -45,7 +46,12 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             fact.accepted_sequence,
             updates.updated_sequence,
             fact.created_at_milliseconds,
-            1
+            1,
+            COALESCE((
+                SELECT archive.archived FROM session_archive_requests AS archive
+                WHERE archive.session_id = fact.session_id AND archive.state = 2
+                ORDER BY archive.accepted_sequence DESC LIMIT 1
+            ), 0)
          FROM session_created_facts AS fact
          JOIN latest_updates AS updates ON updates.session_id = fact.session_id",
         [],
@@ -152,6 +158,7 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             UNION ALL SELECT session_id, updated_sequence FROM local_commands
             UNION ALL SELECT session_id, accepted_sequence FROM local_command_cancellations
             UNION ALL SELECT session_id, accepted_sequence FROM session_rename_requests
+            UNION ALL SELECT session_id, accepted_sequence FROM session_archive_requests WHERE state = 2
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
@@ -188,6 +195,10 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
          SELECT delivery_event_id, accepted_sequence, session_id, 18, 1,
                 accepted_at_milliseconds
          FROM session_rename_requests
+         UNION ALL
+         SELECT delivery_event_id, accepted_sequence, session_id, 19, 1,
+                accepted_at_milliseconds
+         FROM session_archive_requests WHERE state = 2
          UNION ALL
          SELECT delivery_event_id, fact_sequence, session_id,
                 CASE entry_kind WHEN 1 THEN 2 WHEN 2 THEN 6 WHEN 3 THEN 12 ELSE 13 END,

@@ -8,6 +8,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 pub(crate) use self::events::{SessionCatalogSubscription, SessionSubscription};
@@ -123,6 +124,7 @@ impl ServerApplication {
                 display_name,
                 working_directory,
             } => {
+                let _lifecycle_guard = self.lifecycle_mutations.lock().await;
                 let session = self
                     .sessions
                     .create_session_at(
@@ -158,6 +160,7 @@ impl ServerApplication {
                 session_id,
                 display_name,
             } => {
+                let _lifecycle_guard = self.lifecycle_mutations.lock().await;
                 let session = self
                     .sessions
                     .rename_session(
@@ -169,6 +172,98 @@ impl ServerApplication {
                     .map_err(to_application_error)?;
                 Ok(ApplicationOutcome::Response(
                     ApplicationResponse::SessionRenamed {
+                        session: to_session_summary(session),
+                    },
+                ))
+            }
+            ApplicationRequest::SetSessionArchived {
+                mutation_request_id,
+                session_id,
+                archived,
+            } => {
+                let _lifecycle_guard = self.lifecycle_mutations.lock().await;
+                let persistence_request_id = to_persistence_mutation_id(mutation_request_id);
+                let persistence_session_id = to_persistence_session_id(session_id);
+                let (session, already_applied) = self
+                    .sessions
+                    .prepare_session_archive(
+                        persistence_request_id,
+                        persistence_session_id,
+                        archived,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                let session = if already_applied {
+                    session
+                } else {
+                    if archived {
+                        let snapshot = self
+                            .sessions
+                            .list_session_transcript(persistence_session_id, None, 1)
+                            .await
+                            .map_err(to_application_error)?;
+                        if let Some(run_id) = snapshot.active_run_id {
+                            let cancellation = self
+                                .sessions
+                                .cancel_run(
+                                    derived_lifecycle_mutation_id(mutation_request_id, b"run"),
+                                    persistence_session_id,
+                                    run_id,
+                                )
+                                .await
+                                .map_err(to_application_error)?;
+                            if cancellation.intent_applied {
+                                self.run_supervisor.signal_cancellation(run_id).await;
+                            }
+                        }
+                        if let Some(command_id) = snapshot.active_command_id {
+                            let cancellation = self
+                                .sessions
+                                .cancel_local_command(
+                                    derived_lifecycle_mutation_id(mutation_request_id, b"command"),
+                                    persistence_session_id,
+                                    command_id,
+                                )
+                                .await
+                                .map_err(to_application_error)?;
+                            if cancellation.intent_applied {
+                                self.command_supervisor
+                                    .signal_cancellation(command_id)
+                                    .await;
+                            }
+                        }
+                        tokio::time::timeout(Duration::from_secs(10), async {
+                            loop {
+                                let snapshot = self
+                                    .sessions
+                                    .list_session_transcript(persistence_session_id, None, 1)
+                                    .await?;
+                                if snapshot.active_run_id.is_none()
+                                    && snapshot.active_command_id.is_none()
+                                {
+                                    return Ok::<_, PersistenceError>(());
+                                }
+                                tokio::time::sleep(Duration::from_millis(20)).await;
+                            }
+                        })
+                        .await
+                        .map_err(|_| ApplicationError::ServiceUnavailable)?
+                        .map_err(to_application_error)?;
+                        if !self
+                            .run_supervisor
+                            .terminate_session_runtime(persistence_session_id)
+                            .await
+                        {
+                            return Err(ApplicationError::Internal);
+                        }
+                    }
+                    self.sessions
+                        .complete_session_archive(persistence_request_id)
+                        .await
+                        .map_err(to_application_error)?
+                };
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::SessionArchiveChanged {
                         session: to_session_summary(session),
                     },
                 ))
@@ -906,6 +1001,24 @@ impl ServerApplication {
             shutdown_requests,
         }
     }
+}
+
+fn derived_lifecycle_mutation_id(
+    request_id: morons_protocol::MutationRequestId,
+    purpose: &[u8],
+) -> crate::persistence::MutationRequestId {
+    let mut digest = Sha256::new();
+    digest.update(b"morons.dev/session-lifecycle-derived-mutation/v1\0");
+    digest.update(request_id.as_bytes());
+    digest.update((purpose.len() as u64).to_be_bytes());
+    digest.update(purpose);
+    let digest = digest.finalize();
+    let mut identifier = [0_u8; 16];
+    identifier.copy_from_slice(&digest[..16]);
+    if identifier.iter().all(|byte| *byte == 0) {
+        identifier[0] = 1;
+    }
+    crate::persistence::MutationRequestId::from_bytes(identifier)
 }
 
 async fn prepare_image_uploads(

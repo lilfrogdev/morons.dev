@@ -136,6 +136,21 @@ impl Backend {
                 resource: PersistenceResourceLimit::Runs,
             });
         }
+        let archived = transaction
+            .query_row(
+                "SELECT archived OR EXISTS (
+                    SELECT 1 FROM session_archive_requests AS archive
+                    WHERE archive.session_id = sessions.session_id
+                      AND archive.archived = 1 AND archive.state = 1
+                 ) FROM sessions WHERE session_id = ?1",
+                [&session_id.as_bytes()[..]],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .ok_or(PersistenceError::SessionNotFound)?;
+        if archived == 1 {
+            return Err(PersistenceError::SessionArchived);
+        }
         let (active_run_id, entry_high_water) = load_session_run_state(&transaction, session_id)?;
         if let Some(active_run_id) = active_run_id {
             return Err(PersistenceError::SessionBusy { active_run_id });

@@ -175,6 +175,13 @@ impl RunSupervisor {
         }
     }
 
+    pub(crate) async fn terminate_session_runtime(
+        &self,
+        session_id: crate::persistence::SessionId,
+    ) -> bool {
+        self.ipython.terminate_session(session_id).await
+    }
+
     pub(crate) async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
         let mut tasks = {
