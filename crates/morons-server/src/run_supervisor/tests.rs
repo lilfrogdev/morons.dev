@@ -574,6 +574,121 @@ async fn direct_tool_loop_reads_edits_runs_bash_and_commits_durable_results() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
+    let root = TestRoot::new("web-search-tool-loop");
+    let selected = TestRoot::new("web-search-directory");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x91; 16]),
+            0,
+            b"not-a-real-web-tool-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session_at(
+            PersistenceMutationRequestId::from_bytes([0x92; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let (provider_base, provider_requests, provider_task) =
+        spawn_web_search_tool_loop_provider().await;
+    let (search_origin, search_request, search_task) = spawn_search_adapter().await;
+    let application = ServerApplication::from_session_store_with_search_for_test(
+        store,
+        &provider_base,
+        search_origin,
+    );
+    let session_id = SessionId::from_bytes(*session.id.as_bytes());
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x93; 16]),
+            session_id,
+            text: "find the current Rust site".to_owned(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("web search run should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run");
+    };
+    assert_eq!(
+        wait_for_terminal(&application, session_id, run.id).await,
+        RunState::Succeeded
+    );
+    search_task.await.expect("search fixture should finish");
+    provider_task.await.expect("provider fixture should finish");
+    let search_request = search_request
+        .await
+        .expect("search request should be captured");
+    assert!(search_request.starts_with(
+        "GET /search?q=current%20Rust%20release&count=10&safesearch=moderate&spellcheck=1 HTTP/1.1"
+    ));
+    let provider_requests = provider_requests
+        .await
+        .expect("provider requests should be captured");
+    assert_eq!(provider_requests.len(), 2);
+    assert!(provider_requests[0].contains("\"name\":\"web_search\""));
+    assert!(provider_requests[1].contains("https://www.rust-lang.org/"));
+    assert!(provider_requests[1].contains("Rust is a programming language"));
+    assert!(
+        !provider_requests
+            .iter()
+            .any(|request| request.contains("not-a-real-search-key"))
+    );
+
+    let mut cursor = None;
+    let mut entries = Vec::new();
+    loop {
+        let outcome = application
+            .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+                session_id,
+                cursor,
+                limit: 1,
+            })
+            .await
+            .expect("transcript should load");
+        let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+            entries: page,
+            next_cursor,
+            ..
+        }) = outcome
+        else {
+            panic!("transcript should return a page");
+        };
+        entries.extend(page);
+        let Some(next) = next_cursor else { break };
+        cursor = Some(next);
+    }
+    assert!(matches!(
+        entries[1],
+        morons_protocol::TranscriptEntry::ToolCall {
+            tool: morons_protocol::ToolKind::WebSearch,
+            ..
+        }
+    ));
+    assert!(matches!(
+        entries[2],
+        morons_protocol::TranscriptEntry::ToolResult {
+            status: morons_protocol::ToolResultStatus::Succeeded,
+            ..
+        }
+    ));
+    application.shutdown().await;
+    drop(application);
+    SessionStore::open_for_test(root.path()).expect("web search history should reopen");
+    let database = fs::read(root.path().join("data").join("sessions.sqlite3"))
+        .expect("database should be readable");
+    assert!(!contains_bytes(&database, b"not-a-real-search-key"));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn exact_cancellation_stops_the_supervised_provider_task() {
     let root = TestRoot::new("supervised-cancellation");
     let store = SessionStore::open_for_test(root.path()).expect("session store should open");
@@ -896,6 +1011,91 @@ async fn spawn_direct_tool_loop_provider() -> (
             .unwrap_or_else(|_| panic!("tool requests should be observed"));
     });
     (format!("http://{address}"), requests_receiver, server)
+}
+
+async fn spawn_web_search_tool_loop_provider() -> (
+    String,
+    oneshot::Receiver<Vec<String>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("web tool provider fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("web tool provider fixture should have an address");
+    let (requests_sender, requests_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let search_arguments = r#"{"query":"current Rust release"}"#;
+        let outputs = [
+            format!(
+                "{{\"id\":\"fc_web\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_web\",\"name\":\"web_search\",\"arguments\":{}}}",
+                serde_json::to_string(search_arguments).expect("arguments should encode")
+            ),
+            "{\"id\":\"msg_final\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"Found the Rust site.\",\"annotations\":[]}]}".to_owned(),
+        ];
+        let mut captured = Vec::new();
+        for (index, output) in outputs.into_iter().enumerate() {
+            let (mut stream, _) = listener.accept().await.expect("provider should connect");
+            captured.push(
+                String::from_utf8(read_http_request(&mut stream).await)
+                    .expect("provider request should be UTF-8"),
+            );
+            let response_id = format!("resp_web_{}", index + 1);
+            let body = format!(
+                "event: response.created\ndata: {{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"muse-spark-1.2\"}}}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"model\":\"muse-spark-1.2\",\"status\":\"completed\",\"output\":[{output}],\"usage\":{{\"input_tokens\":8,\"input_tokens_details\":{{\"cached_tokens\":0}},\"output_tokens\":3,\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":11}}}}}}\n\ndata: [DONE]\n\n"
+            );
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .await
+                .expect("provider headers should write");
+            stream
+                .write_all(body.as_bytes())
+                .await
+                .expect("provider response should write");
+            stream.shutdown().await.expect("provider should close");
+        }
+        requests_sender
+            .send(captured)
+            .unwrap_or_else(|_| panic!("provider requests should be observed"));
+    });
+    (format!("http://{address}"), requests_receiver, server)
+}
+
+async fn spawn_search_adapter() -> (
+    String,
+    oneshot::Receiver<String>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("search fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("search fixture should have an address");
+    let (request_sender, request_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("search should connect");
+        let request = read_http_request(&mut stream).await;
+        request_sender
+            .send(String::from_utf8(request).expect("search request should be UTF-8"))
+            .unwrap_or_else(|_| panic!("search request should be observed"));
+        let body = r#"{"web":{"results":[{"title":"Rust","url":"https://www.rust-lang.org/","description":"Rust is a programming language"}]}}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("search response should write");
+        stream.shutdown().await.expect("search should close");
+    });
+    (format!("http://{address}/search"), request_receiver, server)
 }
 
 async fn spawn_stalled_provider() -> (String, oneshot::Receiver<()>, tokio::task::JoinHandle<()>) {

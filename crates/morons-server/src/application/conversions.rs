@@ -392,6 +392,7 @@ const fn to_protocol_tool_kind(tool: crate::tools::ToolKind) -> ProtocolToolKind
         crate::tools::ToolKind::Write => ProtocolToolKind::Write,
         crate::tools::ToolKind::Edit => ProtocolToolKind::Edit,
         crate::tools::ToolKind::Bash => ProtocolToolKind::Bash,
+        crate::tools::ToolKind::WebSearch => ProtocolToolKind::WebSearch,
     }
 }
 

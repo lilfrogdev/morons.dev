@@ -1159,7 +1159,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                        AND image.state = 2
                  ))
                 OR
-                (accepted.tool_catalog_version IN (3, 4)
+                (accepted.tool_catalog_version IN (3, 4, 5)
                  AND accepted.tool_limits_version = accepted.tool_catalog_version
                  AND accepted.execution_image_generation IS NULL
                  AND EXISTS (
@@ -1173,9 +1173,10 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
                OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
-               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4))
-               OR (call.tool_kind = 11 AND run.tool_catalog_version != 4)
-               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4))
+               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5))
+               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5))
+               OR (call.tool_kind = 12 AND run.tool_catalog_version != 5)
+               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5))
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id

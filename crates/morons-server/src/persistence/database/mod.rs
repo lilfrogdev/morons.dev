@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -37,6 +37,7 @@ const SCHEMA_V11: &str = include_str!("../schema_v11.sql");
 const SCHEMA_V12: &str = include_str!("../schema_v12.sql");
 const SCHEMA_V13: &str = include_str!("../schema_v13.sql");
 const SCHEMA_V14: &str = include_str!("../schema_v14.sql");
+const SCHEMA_V15: &str = include_str!("../schema_v15.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -161,6 +162,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V12)?;
     connection.execute_batch(SCHEMA_V13)?;
     connection.execute_batch(SCHEMA_V14)?;
+    connection.execute_batch(SCHEMA_V15)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -265,6 +267,7 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (12, SCHEMA_V12),
         (13, SCHEMA_V13),
         (14, SCHEMA_V14),
+        (15, SCHEMA_V15),
     ] {
         if version > schema_version {
             migrate_schema(connection, schema)?;

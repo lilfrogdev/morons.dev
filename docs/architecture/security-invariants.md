@@ -126,11 +126,12 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Credential input crosses IPC only after mutual authentication, is collected without echo, uses redacted secret-bearing types, and is never automatically retried after an unknown mutation outcome.
 - Credential status returns no key bytes, prefix, suffix, verifier, or credential-derived fingerprint.
 - Every run records the accepted credential generation, and a dispatch under a stale generation fails before network transmission.
-- Production provider requests use fixed reviewed HTTPS origins and paths, disabled redirects, normal certificate and hostname verification, and exact authorization-header scoping.
+- Production provider and web-search requests use fixed reviewed HTTPS origins and paths, disabled redirects, normal certificate and hostname verification, and exact authorization-header scoping.
 - Remote catalogs may narrow but never enlarge the reviewed model, protocol, capability, limit, route, or data-use manifest.
 - Provider requests, responses, streams, errors, usage, identifiers, tool arguments, attachments, and output are bounded, strictly decoded, and sanitized at application boundaries.
 - An inference request is never retried automatically after dispatch because it may already have incurred billing or another external effect.
 - Repository content, prompts, command output, images, skill content, and tool results leave the local machine only when included by the deterministic context policy for a deliberate provider dispatch.
+- Web search sends only the bounded query to Brave Search's fixed API endpoint. Its `BRAVE_SEARCH_API_KEY` is ordinary process-environment state rather than a Morons-managed credential: Morons attaches it only to that endpoint and does not persist, audit, log, render, or include it in provider context. Like every ordinary environment credential, it is intentionally available to local child execution and therefore has no confidentiality guarantee from same-user tools.
 
 ## Durable state and recovery
 

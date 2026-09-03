@@ -63,6 +63,8 @@ The MVP model tool catalog contains exactly these small built-ins:
 
 Tool names are stable provider-facing names. Inputs and results use strict bounded schemas. Tool output is committed before it is used in a later provider turn. Tool definitions, prompts, and model annotations are usability contracts, not security boundaries.
 
+`web_search` uses Brave Search's fixed reviewed HTTPS API endpoint, does not follow redirects or accept a model-selected origin, and returns only bounded titles, URLs, and snippets. The user supplies `BRAVE_SEARCH_API_KEY` in Morons' ordinary process environment. Morons does not persist or log that value, but the trusted-local execution posture means it is also available to child commands just like the user's other environment credentials.
+
 `read`, `write`, and `edit` use direct filesystem semantics. They reject malformed encodings, oversized inputs, ambiguous edits, and impossible operations, but they do not claim to prevent the model from reaching user-accessible paths. `bash` and `ipython` make any path-only restriction unenforceable and would turn such a restriction into misleading security theater.
 
 The shell tool uses a compatible Bash executable. On Windows, release support requires a documented compatible Bash installation or explicit shell configuration; Morons does not silently reinterpret Bash commands as PowerShell. The active shell and operating system are stated in model context.
