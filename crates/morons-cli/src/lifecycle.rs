@@ -41,7 +41,6 @@ impl ConnectedServer {
     }
 }
 
-#[derive(Debug)]
 #[non_exhaustive]
 pub enum ConnectOrStartError {
     Control(ControlError),
@@ -56,30 +55,60 @@ pub enum ConnectOrStartError {
     StartupTimedOut,
 }
 
-impl fmt::Display for ConnectOrStartError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl ConnectOrStartError {
+    const fn safe_description(&self) -> &'static str {
         match self {
-            Self::Control(error) => write!(formatter, "local server discovery failed: {error}"),
-            Self::CompanionIo(error) => {
-                write!(formatter, "server companion launch failed: {error}")
+            Self::Control(_) => {
+                "local control state could not be validated; automatic replacement was refused"
             }
-            Self::CompanionInvalid { reason } => {
-                write!(formatter, "server companion is invalid: {reason}")
+            Self::CompanionIo(_) => {
+                "packaged server companion could not be loaded or launched; reinstall matching Morons binaries together"
             }
-            Self::Connect(error) => write!(formatter, "local server connection failed: {error}"),
-            Self::PeerAuthorization(error) => {
-                write!(formatter, "connected server authorization failed: {error}")
+            Self::CompanionInvalid { .. } => {
+                "packaged server companion failed integrity validation; reinstall matching Morons binaries together"
             }
-            Self::Authentication(error) => {
-                write!(formatter, "local server authentication failed: {error}")
+            Self::Connect(_) => "registered local server could not be reached safely",
+            Self::PeerAuthorization(_) => {
+                "registered local server failed operating-system peer authorization; automatic replacement was refused"
+            }
+            Self::Authentication(_) => {
+                "registered local server failed mutual authentication; automatic replacement was refused"
             }
             Self::AuthenticationTimedOut => {
-                formatter.write_str("local server authentication timed out")
+                "registered local server mutual authentication timed out"
             }
-            Self::Handshake(error) => write!(formatter, "server handshake failed: {error}"),
-            Self::HandshakeTimedOut => formatter.write_str("server handshake timed out"),
-            Self::StartupTimedOut => formatter.write_str("local server startup timed out"),
+            Self::Handshake(HandshakeError::ProtocolVersionMismatch { .. }) => {
+                "client and running server use incompatible protocol versions; stop the server with its matching client before upgrading"
+            }
+            Self::Handshake(_) => "registered local server failed protocol negotiation",
+            Self::HandshakeTimedOut => "registered local server protocol negotiation timed out",
+            Self::StartupTimedOut => {
+                "server companion did not become available before the startup timeout"
+            }
         }
+    }
+}
+
+impl fmt::Debug for ConnectOrStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Control(_) => "ConnectOrStartError::Control",
+            Self::CompanionIo(_) => "ConnectOrStartError::CompanionIo",
+            Self::CompanionInvalid { .. } => "ConnectOrStartError::CompanionInvalid",
+            Self::Connect(_) => "ConnectOrStartError::Connect",
+            Self::PeerAuthorization(_) => "ConnectOrStartError::PeerAuthorization",
+            Self::Authentication(_) => "ConnectOrStartError::Authentication",
+            Self::AuthenticationTimedOut => "ConnectOrStartError::AuthenticationTimedOut",
+            Self::Handshake(_) => "ConnectOrStartError::Handshake",
+            Self::HandshakeTimedOut => "ConnectOrStartError::HandshakeTimedOut",
+            Self::StartupTimedOut => "ConnectOrStartError::StartupTimedOut",
+        })
+    }
+}
+
+impl fmt::Display for ConnectOrStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.safe_description())
     }
 }
 
@@ -226,6 +255,82 @@ fn server_is_unavailable(error: &io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_failure_descriptions_are_actionable_and_redacted() {
+        const SENSITIVE: &str = "sensitive path\u{1b}]52;c;clipboard";
+        let cases = [
+            (
+                ConnectOrStartError::Control(ControlError::InvalidState { reason: SENSITIVE }),
+                "ConnectOrStartError::Control",
+                "local control state could not be validated; automatic replacement was refused",
+            ),
+            (
+                ConnectOrStartError::CompanionIo(io::Error::other(SENSITIVE)),
+                "ConnectOrStartError::CompanionIo",
+                "packaged server companion could not be loaded or launched; reinstall matching Morons binaries together",
+            ),
+            (
+                ConnectOrStartError::CompanionInvalid { reason: SENSITIVE },
+                "ConnectOrStartError::CompanionInvalid",
+                "packaged server companion failed integrity validation; reinstall matching Morons binaries together",
+            ),
+            (
+                ConnectOrStartError::Connect(io::Error::other(SENSITIVE)),
+                "ConnectOrStartError::Connect",
+                "registered local server could not be reached safely",
+            ),
+            (
+                ConnectOrStartError::PeerAuthorization(io::Error::other(SENSITIVE)),
+                "ConnectOrStartError::PeerAuthorization",
+                "registered local server failed operating-system peer authorization; automatic replacement was refused",
+            ),
+            (
+                ConnectOrStartError::Authentication(AuthenticationError::Frame(
+                    morons_protocol::FrameError::Io(io::Error::other(SENSITIVE)),
+                )),
+                "ConnectOrStartError::Authentication",
+                "registered local server failed mutual authentication; automatic replacement was refused",
+            ),
+            (
+                ConnectOrStartError::AuthenticationTimedOut,
+                "ConnectOrStartError::AuthenticationTimedOut",
+                "registered local server mutual authentication timed out",
+            ),
+            (
+                ConnectOrStartError::Handshake(HandshakeError::Frame(
+                    morons_protocol::FrameError::Io(io::Error::other(SENSITIVE)),
+                )),
+                "ConnectOrStartError::Handshake",
+                "registered local server failed protocol negotiation",
+            ),
+            (
+                ConnectOrStartError::Handshake(HandshakeError::ProtocolVersionMismatch {
+                    expected_protocol_version: 30,
+                    received_protocol_version: 29,
+                }),
+                "ConnectOrStartError::Handshake",
+                "client and running server use incompatible protocol versions; stop the server with its matching client before upgrading",
+            ),
+            (
+                ConnectOrStartError::HandshakeTimedOut,
+                "ConnectOrStartError::HandshakeTimedOut",
+                "registered local server protocol negotiation timed out",
+            ),
+            (
+                ConnectOrStartError::StartupTimedOut,
+                "ConnectOrStartError::StartupTimedOut",
+                "server companion did not become available before the startup timeout",
+            ),
+        ];
+
+        for (error, debug, description) in cases {
+            assert_eq!(error.to_string(), description);
+            assert_eq!(format!("{error:?}"), debug);
+            assert!(!error.to_string().contains(SENSITIVE));
+            assert!(!format!("{error:?}").contains(SENSITIVE));
+        }
+    }
 
     #[test]
     fn only_expected_connection_failures_are_startable() {

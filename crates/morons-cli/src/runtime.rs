@@ -46,13 +46,17 @@ impl fmt::Debug for TerminalApplicationError {
 
 impl fmt::Display for TerminalApplicationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Terminal(_) => "terminal application failed",
-            Self::Connect(_) => "local server connection failed",
-            Self::MutationIdentifier(_) => "mutation identifier generation failed",
-            Self::State => "terminal state validation failed",
-            Self::RequestWorkerStopped => "local application request worker stopped",
-        })
+        match self {
+            Self::Terminal(_) => formatter.write_str("terminal application failed"),
+            Self::Connect(error) => write!(formatter, "local server connection failed: {error}"),
+            Self::MutationIdentifier(_) => {
+                formatter.write_str("mutation identifier generation failed")
+            }
+            Self::State => formatter.write_str("terminal state validation failed"),
+            Self::RequestWorkerStopped => {
+                formatter.write_str("local application request worker stopped")
+            }
+        }
     }
 }
 
@@ -1008,11 +1012,27 @@ mod tests {
 
     #[test]
     fn terminal_application_errors_do_not_render_nested_input() {
-        let error = TerminalApplicationError::Terminal(io::Error::other(
-            "sensitive path\u{1b}]52;c;clipboard",
-        ));
-        assert_eq!(error.to_string(), "terminal application failed");
-        assert_eq!(format!("{error:?}"), "TerminalApplicationError::Terminal");
+        const SENSITIVE: &str = "sensitive path\u{1b}]52;c;clipboard";
+        let terminal = TerminalApplicationError::Terminal(io::Error::other(SENSITIVE));
+        assert_eq!(terminal.to_string(), "terminal application failed");
+        assert_eq!(
+            format!("{terminal:?}"),
+            "TerminalApplicationError::Terminal"
+        );
+
+        let connection = TerminalApplicationError::Connect(ConnectOrStartError::CompanionInvalid {
+            reason: SENSITIVE,
+        });
+        assert_eq!(
+            connection.to_string(),
+            "local server connection failed: packaged server companion failed integrity validation; reinstall matching Morons binaries together"
+        );
+        assert_eq!(
+            format!("{connection:?}"),
+            "TerminalApplicationError::Connect"
+        );
+        assert!(!connection.to_string().contains(SENSITIVE));
+        assert!(!format!("{connection:?}").contains(SENSITIVE));
     }
 
     #[tokio::test]
