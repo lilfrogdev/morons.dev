@@ -3,7 +3,8 @@ use morons_protocol::{
     MessageId, MutationRequestId, OpenCodeModelCapabilities, OpenCodeModelRetention,
     OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary,
     ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary,
-    WorkspaceState, WorkspaceSummary, read_client_message, write_server_message,
+    SkillSource, SkillSummary, WorkspaceState, WorkspaceSummary, read_client_message,
+    write_server_message,
 };
 
 use super::{ApplicationClient, ApplicationClientError};
@@ -154,6 +155,49 @@ async fn client_lists_models_with_exact_service_scope() {
         )
         .await
         .expect("model response should be written");
+    };
+
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_lists_bounded_session_scoped_skills() {
+    let (client_connection, mut server) = tokio::io::duplex(4096);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let session_id = SessionId::from_bytes([0x27; 16]);
+    let skill = SkillSummary {
+        name: "skill-creator".to_owned(),
+        description: "Creates standards-compatible Agent Skills.".to_owned(),
+        source: SkillSource::Bundled,
+    };
+    let expected = skill.clone();
+
+    let client_exchange = async {
+        let catalog = client
+            .list_session_skills(session_id)
+            .await
+            .expect("skill query should succeed");
+        assert_eq!(catalog.skills, vec![expected]);
+        assert_eq!(catalog.warnings, vec!["one invalid project skill"]);
+    };
+    let server_exchange = async {
+        assert_eq!(
+            read_request(&mut server, 1).await,
+            ApplicationRequest::ListSessionSkills { session_id }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::SessionSkillsListed {
+                    session_id,
+                    skills: vec![skill],
+                    warnings: vec!["one invalid project skill".to_owned()],
+                },
+            ),
+        )
+        .await
+        .expect("skill response should be written");
     };
 
     tokio::join!(client_exchange, server_exchange);

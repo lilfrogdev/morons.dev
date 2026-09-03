@@ -400,8 +400,18 @@ impl RuntimeState {
                 }
             }
             RequestEvent::SessionLoaded(snapshot) => {
+                let skill_warning = snapshot.skill_warnings.first().cloned();
+                let additional_warnings = snapshot.skill_warnings.len().saturating_sub(1);
                 self.install_session_snapshot(snapshot, subscription_events)?;
-                self.app.set_status("Session transcript is current");
+                self.app.set_status(match skill_warning {
+                    None => "Session transcript and skills are current".to_owned(),
+                    Some(warning) if additional_warnings == 0 => {
+                        format!("Skill warning: {warning}")
+                    }
+                    Some(warning) => {
+                        format!("Skill warning: {warning} (+{additional_warnings} more)")
+                    }
+                });
             }
             RequestEvent::SessionCreated {
                 mutation_request_id,
@@ -704,6 +714,8 @@ impl RuntimeState {
             snapshot.active_run_id,
             snapshot.active_command_id,
         )?;
+        self.app
+            .install_session_skills(session_id, snapshot.skills)?;
         self.session_generation = self.session_generation.wrapping_add(1);
         abort_task(&mut self.session_subscription);
         self.session_subscription = Some(spawn_session_subscription(

@@ -174,7 +174,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Persist complete bounded transcript entries and attachment references, keep deltas and runtime memory ephemeral, and never replay uncertain external effects.
 - Use deterministic versioned context construction, source-bound compaction checkpoints, recent-tail retention, model-specific reserves, and clear context-limit failures.
 - Exclude `!!` commands and transient environments from provider context and compaction.
-- Validate Agent Skills metadata, bound discovery, apply deterministic precedence, progressively load instructions, and invoke only exact installed `@name` tokens.
+- Validate bounded Agent Skills YAML metadata and matching parent-directory names, reject linked skill entries, apply deterministic precedence with fail-closed collisions, progressively load instructions, and invoke only standalone exact installed `@name` tokens whose complete instructions are snapshotted with the accepted run.
 - Capture clipboard and dropped image bytes immediately, detect type from content, normalize under dimension and encoded-size limits, store bytes once, and fail clearly for non-vision models.
 - Authorize operating-system peers before application exchange and require randomized endpoints, owner-only control state, a lifetime host lock, and role-separated HMAC proofs.
 - Start only the exact packaged companion without a shell or untrusted executable-path selection.

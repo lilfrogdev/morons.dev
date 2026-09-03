@@ -145,6 +145,44 @@ impl PromptBuffer {
         self.text.pop();
     }
 
+    #[must_use]
+    pub fn skill_completion_prefix(&self) -> Option<&str> {
+        let start = self
+            .text
+            .char_indices()
+            .rev()
+            .find_map(|(index, character)| {
+                character
+                    .is_whitespace()
+                    .then_some(index + character.len_utf8())
+            })
+            .unwrap_or(0);
+        let token = self.text.get(start..)?.strip_prefix('@')?;
+        token
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            .then_some(token)
+    }
+
+    pub fn complete_skill(&mut self, name: &str) -> bool {
+        let Some(prefix) = self.skill_completion_prefix() else {
+            return false;
+        };
+        let start = self.text.len().saturating_sub(prefix.len() + 1);
+        let replacement_bytes = name.len() + 2;
+        if start
+            .checked_add(replacement_bytes)
+            .is_none_or(|length| length > MAX_PROMPT_BYTES)
+        {
+            return false;
+        }
+        self.text.truncate(start);
+        self.text.push('@');
+        self.text.push_str(name);
+        self.text.push(' ');
+        true
+    }
+
     pub fn clear(&mut self) {
         self.text.clear();
     }
@@ -326,6 +364,20 @@ mod tests {
         assert_eq!(prompt.len_bytes(), MAX_PROMPT_BYTES - 1);
         prompt.clear();
         assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn skill_completion_replaces_only_the_active_at_token() {
+        let mut prompt = PromptBuffer::default();
+        prompt.push_paste("email user@example.com then @ski");
+        assert_eq!(prompt.skill_completion_prefix(), Some("ski"));
+        assert!(prompt.complete_skill("skill-creator"));
+        assert_eq!(
+            prompt.as_str(),
+            "email user@example.com then @skill-creator "
+        );
+        prompt.push_paste("user@example.com");
+        assert_eq!(prompt.skill_completion_prefix(), None);
     }
 
     #[test]

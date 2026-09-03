@@ -2,8 +2,8 @@ use morons_protocol::{
     ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
     OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, SessionEventCursor,
-    SessionId, SessionSummary, ToolKind, TranscriptEntry, WorkspaceBlockReason, WorkspaceState,
-    WorkspaceSummary,
+    SessionId, SessionSummary, SkillSource, SkillSummary, ToolKind, TranscriptEntry,
+    WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -155,6 +155,80 @@ fn bang_prompts_execute_local_commands_without_requiring_a_model() {
         } if selected == session_id && command == "printf private"
     ));
     assert!(!format!("{action:?}").contains("printf private"));
+}
+
+#[test]
+fn at_prefix_opens_bounded_skill_completion_and_tab_inserts_exact_name() {
+    let (session, run) = fixture_session_and_run();
+    let session_id = session.id;
+    let mut app = AppState::new("test-server");
+    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+        .expect("models should be valid");
+    app.open_session(
+        session,
+        empty_workspace(),
+        Vec::new(),
+        vec![run],
+        None,
+        None,
+    )
+    .expect("session should open");
+    app.install_session_skills(
+        session_id,
+        vec![
+            SkillSummary {
+                name: "alpha".to_owned(),
+                description: "Alpha workflow".to_owned(),
+                source: SkillSource::Project,
+            },
+            SkillSummary {
+                name: "skill-creator".to_owned(),
+                description: "Create Agent Skills".to_owned(),
+                source: SkillSource::Bundled,
+            },
+        ],
+    )
+    .expect("skills should install");
+    app.handle_paste("@");
+    assert_eq!(
+        app.skill_completion().map(|(skills, _)| skills.len()),
+        Some(2)
+    );
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("skill completion should render");
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("@alpha"));
+    assert!(rendered.contains("@skill-creator"));
+
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(app.prompt.as_str(), "@skill-creator ");
+    app.handle_paste("make a release skill");
+    let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        action,
+        AppAction::SubmitInput {
+            session_id: selected,
+            ref text,
+            ..
+        } if selected == session_id && text == "@skill-creator make a release skill"
+    ));
 }
 
 #[test]

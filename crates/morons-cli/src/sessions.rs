@@ -8,14 +8,19 @@ const MAX_MODEL_SUMMARIES: usize = 256;
 const MAX_MODEL_METADATA_BYTES: usize = 128;
 const MAX_MODEL_TOKEN_LIMIT: u32 = 1_000_000;
 const MAX_SESSION_DISPLAY_NAME_BYTES: usize = 256;
+const MAX_SKILL_SUMMARIES: usize = 128;
+const MAX_SKILL_NAME_BYTES: usize = 64;
+const MAX_SKILL_DESCRIPTION_BYTES: usize = 1_024;
+const MAX_SKILL_WARNINGS: usize = 32;
+const MAX_SKILL_WARNING_BYTES: usize = 4_096;
 
 use morons_protocol::{
     ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
     LocalCommandId, MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId, RunState, RunSummary,
     ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
-    SessionSummary, TranscriptCursor, TranscriptEntry, WorkspaceBlockReason, WorkspaceState,
-    WorkspaceSummary, read_server_message, write_client_message,
+    SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry, WorkspaceBlockReason,
+    WorkspaceState, WorkspaceSummary, read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -24,6 +29,12 @@ pub struct SessionPage {
     pub sessions: Vec<SessionSummary>,
     pub next_cursor: Option<SessionListCursor>,
     pub catalog_cursor: SessionCatalogEventCursor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillCatalog {
+    pub skills: Vec<SkillSummary>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +266,30 @@ fn valid_workspace_summary(workspace: WorkspaceSummary) -> bool {
             None => false,
         },
     }
+}
+
+fn valid_skill_catalog(skills: &[SkillSummary], warnings: &[String]) -> bool {
+    skills.len() <= MAX_SKILL_SUMMARIES
+        && warnings.len() <= MAX_SKILL_WARNINGS
+        && warnings
+            .iter()
+            .all(|warning| !warning.is_empty() && warning.len() <= MAX_SKILL_WARNING_BYTES)
+        && skills.iter().all(|skill| {
+            !skill.name.is_empty()
+                && skill.name.len() <= MAX_SKILL_NAME_BYTES
+                && !skill.name.starts_with('-')
+                && !skill.name.ends_with('-')
+                && !skill.name.contains("--")
+                && skill
+                    .name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && skill.description.len() <= MAX_SKILL_DESCRIPTION_BYTES
+                && !skill.description.is_empty()
+        })
+        && skills
+            .windows(2)
+            .all(|pair| pair[0].name.as_bytes() < pair[1].name.as_bytes())
 }
 
 fn valid_model_summaries(service: OpenCodeService, models: &[OpenCodeModelSummary]) -> bool {
@@ -662,6 +697,28 @@ where
             return Err(ApplicationClientError::EventScopeMismatch);
         }
         Ok(models)
+    }
+
+    pub async fn list_session_skills(
+        &mut self,
+        session_id: SessionId,
+    ) -> Result<SkillCatalog, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::ListSessionSkills { session_id })
+            .await?;
+        let ApplicationResponse::SessionSkillsListed {
+            session_id: response_session_id,
+            skills,
+            warnings,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        if response_session_id != session_id || !valid_skill_catalog(&skills, &warnings) {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(SkillCatalog { skills, warnings })
     }
 
     pub async fn open_code_credential_status(

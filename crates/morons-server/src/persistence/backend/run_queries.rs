@@ -10,7 +10,7 @@ use super::{
 use crate::persistence::{
     PersistenceError, Run, RunId, SessionEventCursor, SessionId, TranscriptCursor, TranscriptEntry,
     TranscriptPage,
-    run_types::{CONTEXT_POLICY_VERSION, RunContext},
+    run_types::{CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, RunContext},
 };
 
 impl Backend {
@@ -211,7 +211,10 @@ impl Backend {
 
     pub(crate) fn load_run_context(&self, run_id: RunId) -> Result<RunContext, PersistenceError> {
         let run = load_required_run(&self.connection, run_id)?;
-        if run.context_policy_version != CONTEXT_POLICY_VERSION {
+        if !matches!(
+            run.context_policy_version,
+            CONTEXT_POLICY_VERSION | LEGACY_CONTEXT_POLICY_VERSION
+        ) {
             return Err(PersistenceError::InvalidState {
                 reason: "a run uses an unsupported context policy version",
             });
@@ -293,6 +296,19 @@ impl Backend {
                 reason: "a run context high water is not present",
             });
         }
+        let skills = load_run_skills(&self.connection, run_id)?;
+        if run.context_policy_version == LEGACY_CONTEXT_POLICY_VERSION && !skills.skills.is_empty()
+        {
+            return Err(PersistenceError::InvalidState {
+                reason: "a legacy run unexpectedly contains a skill context",
+            });
+        }
+        let skill_context_bytes =
+            skills
+                .context_bytes()
+                .ok_or(PersistenceError::ResourceLimit {
+                    resource: crate::persistence::PersistenceResourceLimit::Context,
+                })?;
         let context_bytes = entries
             .iter()
             .try_fold(0_u64, |total, entry| {
@@ -317,13 +333,19 @@ impl Backend {
                 };
                 total.checked_add(bytes as u64)
             })
+            .and_then(|bytes| bytes.checked_add(skill_context_bytes as u64))
             .ok_or(PersistenceError::ResourceLimit {
                 resource: crate::persistence::PersistenceResourceLimit::Context,
             })?;
+        let context_items = entries.len().checked_add(skills.skills.len()).ok_or(
+            PersistenceError::ResourceLimit {
+                resource: crate::persistence::PersistenceResourceLimit::Context,
+            },
+        )?;
         let estimated_input_tokens =
             crate::persistence::run_types::conservative_input_token_estimate(
                 context_bytes,
-                entries.len() as u64,
+                context_items as u64,
             )
             .filter(|estimate| *estimate <= run.maximum_input_tokens)
             .ok_or(PersistenceError::ResourceLimit {
@@ -368,10 +390,63 @@ impl Backend {
         }
         Ok(RunContext {
             run,
+            skills,
             entries,
             current_entry_high_water,
             estimated_input_tokens,
             working_directory,
         })
     }
+}
+
+pub(crate) fn load_run_skills(
+    connection: &rusqlite::Connection,
+    run_id: RunId,
+) -> Result<crate::skills::RunSkillContext, PersistenceError> {
+    let mut statement = connection.prepare(
+        "SELECT skill_index, skill_name, description, skill_file,
+                skill_source, active, instructions
+         FROM run_skill_snapshots WHERE run_id = ?1 ORDER BY skill_index",
+    )?;
+    let rows = statement
+        .query_map([&run_id.as_bytes()[..]], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                crate::skills::SkillSnapshot {
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    skill_file: row.get(3)?,
+                    source: crate::skills::SkillSource::from_record(row.get(4)?).ok_or_else(
+                        || {
+                            rusqlite::Error::InvalidColumnType(
+                                4,
+                                "skill_source".to_owned(),
+                                rusqlite::types::Type::Integer,
+                            )
+                        },
+                    )?,
+                    active: row.get(5)?,
+                    instructions: row.get(6)?,
+                },
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    if rows
+        .iter()
+        .enumerate()
+        .any(|(index, (stored_index, _))| usize::try_from(*stored_index).ok() != Some(index + 1))
+    {
+        return Err(PersistenceError::InvalidState {
+            reason: "a run skill snapshot has invalid ordering",
+        });
+    }
+    let skills = crate::skills::RunSkillContext {
+        skills: rows.into_iter().map(|(_, skill)| skill).collect(),
+    };
+    if !skills.is_valid() {
+        return Err(PersistenceError::InvalidState {
+            reason: "a run skill snapshot is invalid",
+        });
+    }
+    Ok(skills)
 }

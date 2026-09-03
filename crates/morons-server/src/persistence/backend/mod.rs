@@ -8,7 +8,7 @@ mod repository_import;
 mod run_acceptance;
 mod run_cancellation;
 mod run_execution;
-mod run_queries;
+pub(super) mod run_queries;
 mod run_records;
 mod run_recovery;
 mod server_stop;

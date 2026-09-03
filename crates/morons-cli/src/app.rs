@@ -6,7 +6,7 @@ use std::{error::Error, fmt};
 use morons_protocol::{
     ApplicationEvent, LocalCommandId, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelSummary, OpenCodeService, RunId, RunState, RunSummary, SessionId, SessionSummary,
-    TranscriptEntry, WorkspaceSummary,
+    SkillSummary, TranscriptEntry, WorkspaceSummary,
 };
 use ratatui::Frame;
 
@@ -198,6 +198,7 @@ pub(super) struct AppState {
     pub(super) confirm_stop: bool,
     pub(super) confirm_uncertainty: bool,
     pub(super) transcript_scroll: u16,
+    pub(super) skill_completion_index: usize,
 }
 
 impl AppState {
@@ -219,11 +220,56 @@ impl AppState {
             confirm_stop: false,
             confirm_uncertainty: false,
             transcript_scroll: 0,
+            skill_completion_index: 0,
         }
     }
 
     pub(super) fn render(&self, frame: &mut Frame<'_>) {
         render::render(frame, self);
+    }
+
+    pub(super) fn skill_completion(&self) -> Option<(Vec<&PresentedSkill>, usize)> {
+        let prefix = self.prompt.skill_completion_prefix()?;
+        let matches = self
+            .session
+            .as_ref()?
+            .skills
+            .iter()
+            .filter(|skill| skill.name.starts_with(prefix))
+            .collect::<Vec<_>>();
+        if matches.is_empty() {
+            return None;
+        }
+        let selected = self.skill_completion_index.min(matches.len() - 1);
+        Some((matches, selected))
+    }
+
+    pub(super) fn cycle_skill_completion(&mut self, reverse: bool) -> bool {
+        let Some((matches, selected)) = self.skill_completion() else {
+            return false;
+        };
+        self.skill_completion_index = if reverse {
+            selected.checked_sub(1).unwrap_or(matches.len() - 1)
+        } else {
+            (selected + 1) % matches.len()
+        };
+        true
+    }
+
+    pub(super) fn complete_selected_skill(&mut self) -> bool {
+        let Some((matches, selected)) = self.skill_completion() else {
+            return false;
+        };
+        let name = matches[selected].name.clone();
+        let completed = self.prompt.complete_skill(&name);
+        if completed {
+            self.skill_completion_index = 0;
+        }
+        completed
+    }
+
+    pub(super) fn reset_skill_completion(&mut self) {
+        self.skill_completion_index = 0;
     }
 
     pub(super) fn set_status(&mut self, status: impl AsRef<str>) {
@@ -322,11 +368,24 @@ impl AppState {
             runs,
             active_run_id,
             active_command_id,
+            Vec::new(),
         )?;
         self.session = Some(session);
         self.view = View::Session;
         self.prompt.clear();
         self.transcript_scroll = 0;
+        self.skill_completion_index = 0;
+        Ok(())
+    }
+
+    pub(super) fn install_session_skills(
+        &mut self,
+        session_id: SessionId,
+        skills: Vec<SkillSummary>,
+    ) -> Result<(), UiStateError> {
+        let session = self.session_mut(session_id)?;
+        session.skills = skills.into_iter().map(PresentedSkill::new).collect();
+        self.reset_skill_completion();
         Ok(())
     }
 
@@ -337,6 +396,7 @@ impl AppState {
         self.pending = None;
         self.pending_unknown = false;
         self.transcript_scroll = 0;
+        self.skill_completion_index = 0;
     }
 
     pub(super) fn apply_event(&mut self, event: ApplicationEvent) -> Result<(), UiStateError> {
@@ -393,6 +453,7 @@ impl AppState {
 
     pub(super) fn session_input_accepted(&mut self, run: RunSummary) -> Result<(), UiStateError> {
         self.prompt.clear();
+        self.reset_skill_completion();
         self.clear_pending();
         self.session_mut(run.session_id)?.apply_run(run)
     }
@@ -403,6 +464,7 @@ impl AppState {
         command_id: LocalCommandId,
     ) -> Result<(), UiStateError> {
         self.prompt.clear();
+        self.reset_skill_completion();
         self.clear_pending();
         let session = self.session_mut(session_id)?;
         if !session
@@ -532,6 +594,24 @@ impl PresentedModel {
     }
 }
 
+pub(super) struct PresentedSkill {
+    pub(super) name: String,
+    pub(super) safe_name: SafeText,
+    pub(super) description: SafeText,
+    pub(super) source: morons_protocol::SkillSource,
+}
+
+impl PresentedSkill {
+    fn new(skill: SkillSummary) -> Self {
+        Self {
+            safe_name: SafeText::from_untrusted(&skill.name),
+            description: SafeText::from_untrusted(&skill.description),
+            name: skill.name,
+            source: skill.source,
+        }
+    }
+}
+
 pub(super) struct SessionView {
     pub(super) summary: SessionSummary,
     pub(super) workspace: WorkspaceSummary,
@@ -540,6 +620,7 @@ pub(super) struct SessionView {
     pub(super) runs: Vec<RunSummary>,
     pub(super) active_run_id: Option<RunId>,
     pub(super) active_command_id: Option<LocalCommandId>,
+    pub(super) skills: Vec<PresentedSkill>,
     pub(super) transient: Option<TransientAssistant>,
 }
 
@@ -551,6 +632,7 @@ impl SessionView {
         runs: Vec<RunSummary>,
         active_run_id: Option<RunId>,
         active_command_id: Option<LocalCommandId>,
+        skills: Vec<SkillSummary>,
     ) -> Result<Self, UiStateError> {
         if entries.len() > MAX_CLIENT_TRANSCRIPT_ENTRIES || runs.len() > MAX_CLIENT_RUNS {
             return Err(UiStateError::ResourceLimitExceeded);
@@ -586,6 +668,7 @@ impl SessionView {
             runs,
             active_run_id,
             active_command_id,
+            skills: skills.into_iter().map(PresentedSkill::new).collect(),
             transient: None,
         })
     }

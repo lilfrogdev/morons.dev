@@ -448,6 +448,99 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn exact_skill_invocation_binds_full_instructions_while_catalog_stays_progressive() {
+    let root = TestRoot::new("skill-context");
+    let selected = TestRoot::new("skill-directory");
+    write_test_skill(
+        selected.path(),
+        "release-helper",
+        "Prepares releases when the user asks for release work.",
+        "ACTIVE_RELEASE_INSTRUCTIONS",
+    );
+    write_test_skill(
+        selected.path(),
+        "inactive-helper",
+        "Handles inactive test work.",
+        "INACTIVE_PRIVATE_INSTRUCTIONS",
+    );
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0xb1; 16]),
+            0,
+            b"not-a-real-skill-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session_at(
+            PersistenceMutationRequestId::from_bytes([0xb2; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let (base, captured_request, complete_provider, provider_task) =
+        spawn_successful_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let protocol_session_id = SessionId::from_bytes(*session.id.as_bytes());
+    let catalog = application
+        .execute_for_local_owner(ApplicationRequest::ListSessionSkills {
+            session_id: protocol_session_id,
+        })
+        .await
+        .expect("skill catalog should load");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionSkillsListed {
+        skills,
+        warnings,
+        ..
+    }) = catalog
+    else {
+        panic!("skill catalog should return a response");
+    };
+    assert!(warnings.is_empty());
+    assert_eq!(
+        skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        ["inactive-helper", "release-helper", "skill-creator"]
+    );
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0xb3; 16]),
+            session_id: protocol_session_id,
+            text: "@release-helper prepare a release".to_owned(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("skill-bearing input should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run");
+    };
+    let request = time::timeout(Duration::from_secs(5), captured_request)
+        .await
+        .expect("provider request should dispatch")
+        .expect("provider request should be captured");
+    assert!(request.contains("Prepares releases when the user asks for release work."));
+    assert!(request.contains("Handles inactive test work."));
+    assert!(request.contains("ACTIVE_RELEASE_INSTRUCTIONS"));
+    assert!(!request.contains("INACTIVE_PRIVATE_INSTRUCTIONS"));
+    complete_provider
+        .send(())
+        .unwrap_or_else(|_| panic!("provider completion should be released"));
+    provider_task.await.expect("provider fixture should finish");
+    assert_eq!(
+        wait_for_terminal(&application, run.session_id, run.id).await,
+        RunState::Succeeded
+    );
+    application.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn direct_tool_loop_reads_edits_runs_bash_and_commits_durable_results() {
     let root = TestRoot::new("direct-tool-loop");
     let selected = TestRoot::new("direct-tool-directory");
@@ -1330,6 +1423,16 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
         received.extend_from_slice(&chunk[..bytes]);
     }
     received
+}
+
+fn write_test_skill(root: &std::path::Path, name: &str, description: &str, body: &str) {
+    let directory = root.join(".agents/skills").join(name);
+    fs::create_dir_all(&directory).expect("skill directory should be created");
+    fs::write(
+        directory.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"),
+    )
+    .expect("skill should be written");
 }
 
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {

@@ -39,12 +39,31 @@ impl SessionStore {
         .await
     }
 
+    #[cfg(test)]
     pub async fn accept_session_input(
         &self,
         request_id: MutationRequestId,
         session_id: SessionId,
         text: String,
         selection: RunModelSelection,
+    ) -> Result<AcceptedRun, PersistenceError> {
+        self.accept_session_input_with_skills(
+            request_id,
+            session_id,
+            text,
+            selection,
+            crate::skills::RunSkillContext::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn accept_session_input_with_skills(
+        &self,
+        request_id: MutationRequestId,
+        session_id: SessionId,
+        text: String,
+        selection: RunModelSelection,
+        skills: crate::skills::RunSkillContext,
     ) -> Result<AcceptedRun, PersistenceError> {
         validate_request_id(request_id)?;
         validate_user_text(&text)?;
@@ -61,6 +80,7 @@ impl SessionStore {
             session_id,
             text,
             selection,
+            skills,
             response,
         })
         .await
@@ -324,6 +344,7 @@ pub(super) enum RunWorkerRequest {
         session_id: SessionId,
         text: String,
         selection: RunModelSelection,
+        skills: crate::skills::RunSkillContext,
         response: oneshot::Sender<Result<AcceptedRun, PersistenceError>>,
     },
     Activate {
@@ -432,6 +453,7 @@ impl RunWorkerRequest {
                 session_id,
                 text,
                 selection,
+                skills,
                 response,
             } => {
                 let _ = response.send(backend.accept_session_input(
@@ -440,6 +462,7 @@ impl RunWorkerRequest {
                     session_id,
                     text,
                     selection,
+                    skills,
                 ));
             }
             Self::Activate { run_id, response } => {

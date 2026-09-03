@@ -524,7 +524,7 @@ fn build_provider_request(
     {
         return Err(ProviderError::InvalidRequest);
     }
-    let mut input = Vec::with_capacity(context.entries.len() + usize::from(tools_enabled));
+    let mut input = Vec::with_capacity(context.entries.len() + usize::from(tools_enabled) + 1);
     if tools_enabled {
         let working_directory = context
             .working_directory
@@ -536,6 +536,13 @@ fn build_provider_request(
                 "{}\nSelected working directory: {working_directory}",
                 developer_instruction()
             ),
+            phase: None,
+        });
+    }
+    if let Some(skill_context) = context.skills.developer_text() {
+        input.push(ProviderInputItem::Message {
+            role: ProviderMessageRole::Developer,
+            text: skill_context,
             phase: None,
         });
     }

@@ -4,6 +4,7 @@ mod connection;
 mod persistence;
 pub mod provider;
 mod run_supervisor;
+mod skills;
 mod tools;
 
 pub use application::{ApplicationStartupError, ServerApplication};

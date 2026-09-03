@@ -32,6 +32,7 @@ use crate::{
         find_open_code_model,
     },
     run_supervisor::RunSupervisor,
+    skills::SkillDiscovery,
 };
 
 const SESSION_CATALOG_REPLAY_PAGE_SIZE: u16 = 100;
@@ -43,6 +44,7 @@ pub struct ServerApplication {
     run_supervisor: Arc<RunSupervisor>,
     command_supervisor: Arc<CommandSupervisor>,
     session_event_hub: Arc<SessionEventHub>,
+    skills: Arc<SkillDiscovery>,
     host_epoch: [u8; 16],
     stopping: AtomicBool,
     lifecycle_mutations: Mutex<()>,
@@ -195,6 +197,34 @@ impl ServerApplication {
                     ApplicationResponse::OpenCodeModelsListed { service, models },
                 ))
             }
+            ApplicationRequest::ListSessionSkills { session_id } => {
+                let working_directory = self
+                    .sessions
+                    .get_session(to_persistence_session_id(session_id))
+                    .await
+                    .map_err(to_application_error)?
+                    .ok_or(ApplicationError::SessionNotFound)?
+                    .working_directory
+                    .map(std::path::PathBuf::from)
+                    .filter(|path| path.is_dir());
+                let skills = Arc::clone(&self.skills);
+                let catalog = tokio::task::spawn_blocking(move || {
+                    skills.catalog(working_directory.as_deref())
+                })
+                .await
+                .map_err(|_| ApplicationError::ServiceUnavailable)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::SessionSkillsListed {
+                        session_id,
+                        skills: catalog
+                            .skills
+                            .into_iter()
+                            .map(to_protocol_skill_summary)
+                            .collect(),
+                        warnings: catalog.warnings,
+                    },
+                ))
+            }
             ApplicationRequest::GetOpenCodeCredentialStatus => {
                 let credential = self
                     .sessions
@@ -273,6 +303,21 @@ impl ServerApplication {
                 let provider_service = to_provider_service(service);
                 let model = find_open_code_model(provider_service, &model_id)
                     .ok_or(ApplicationError::UnsupportedModel)?;
+                let working_directory = self
+                    .sessions
+                    .get_session(session_id)
+                    .await
+                    .map_err(to_application_error)?
+                    .ok_or(ApplicationError::SessionNotFound)?
+                    .working_directory
+                    .ok_or(ApplicationError::WorkingDirectoryUnavailable)?;
+                let skills = Arc::clone(&self.skills);
+                let skill_prompt = text.clone();
+                let skill_context = tokio::task::spawn_blocking(move || {
+                    skills.context(std::path::Path::new(&working_directory), &skill_prompt)
+                })
+                .await
+                .map_err(|_| ApplicationError::ServiceUnavailable)?;
                 let lifecycle_guard = self.lifecycle_mutations.lock().await;
                 if self.stopping.load(Ordering::Acquire) || self.run_supervisor.is_stopping() {
                     return Err(ApplicationError::ServiceUnavailable);
@@ -290,7 +335,7 @@ impl ServerApplication {
                 };
                 let accepted = self
                     .sessions
-                    .accept_session_input(
+                    .accept_session_input_with_skills(
                         mutation_request_id,
                         session_id,
                         text,
@@ -302,6 +347,7 @@ impl ServerApplication {
                             maximum_output_tokens: model.maximum_output_tokens,
                             supports_tool_calls: model.capabilities.tool_calls,
                         },
+                        skill_context,
                     )
                     .await
                     .map_err(to_application_error)?;
@@ -779,10 +825,22 @@ impl ServerApplication {
             run_supervisor,
             command_supervisor,
             session_event_hub,
+            skills: Arc::new(application_skill_discovery()),
             host_epoch,
             stopping: AtomicBool::new(false),
             lifecycle_mutations: Mutex::new(()),
             shutdown_requests,
         }
+    }
+}
+
+fn application_skill_discovery() -> SkillDiscovery {
+    #[cfg(test)]
+    {
+        SkillDiscovery::for_test(Vec::new())
+    }
+    #[cfg(not(test))]
+    {
+        SkillDiscovery::new()
     }
 }

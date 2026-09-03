@@ -228,6 +228,22 @@ impl<'de> Deserialize<'de> for SessionEventCursor {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillSource {
+    Bundled,
+    User,
+    Project,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    pub source: SkillSource,
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApplicationRequest {
@@ -248,6 +264,9 @@ pub enum ApplicationRequest {
     },
     ListOpenCodeModels {
         service: crate::OpenCodeService,
+    },
+    ListSessionSkills {
+        session_id: SessionId,
     },
     GetOpenCodeCredentialStatus,
     SetOpenCodeCredential {
@@ -334,6 +353,10 @@ impl fmt::Debug for ApplicationRequest {
             Self::ListOpenCodeModels { service } => formatter
                 .debug_struct("ListOpenCodeModels")
                 .field("service", service)
+                .finish(),
+            Self::ListSessionSkills { session_id } => formatter
+                .debug_struct("ListSessionSkills")
+                .field("session_id", session_id)
                 .finish(),
             Self::GetOpenCodeCredentialStatus => formatter.write_str("GetOpenCodeCredentialStatus"),
             Self::SetOpenCodeCredential {
@@ -460,6 +483,11 @@ pub enum ApplicationResponse {
     OpenCodeModelsListed {
         service: crate::OpenCodeService,
         models: Vec<crate::OpenCodeModelSummary>,
+    },
+    SessionSkillsListed {
+        session_id: SessionId,
+        skills: Vec<SkillSummary>,
+        warnings: Vec<String>,
     },
     OpenCodeCredentialStatus {
         credential: crate::OpenCodeCredentialStatus,
