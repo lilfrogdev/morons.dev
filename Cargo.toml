@@ -29,7 +29,7 @@ hyper-rustls = { version = "=0.27.9", default-features = false, features = ["aws
 hyper-util = { version = "=0.1.20", default-features = false, features = ["client-legacy", "http1", "tokio"] }
 image = { version = "=0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 interprocess = { version = "=2.4.3", default-features = false, features = ["tokio"] }
-ratatui = { version = "=0.30.2", default-features = false, features = ["std"] }
+ratatui = { version = "=0.30.2", default-features = false, features = ["std", "unstable-rendered-line-info"] }
 ratatui-crossterm = "=0.1.2"
 rustix = { version = "=1.1.4", default-features = false }
 rusqlite = { version = "=0.40.2", default-features = false, features = ["backup", "bundled", "limits", "load_extension"] }
