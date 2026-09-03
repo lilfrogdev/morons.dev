@@ -1,4 +1,5 @@
 mod backend;
+mod compactions;
 mod credentials;
 mod database;
 pub(crate) mod images;
@@ -45,7 +46,8 @@ pub(crate) use self::types::{ExecutionTargetArch, ExecutionTargetOs};
 
 pub(crate) use self::run_types::{
     ActivationOutcome, AssistantMessagePhase, CommittedToolCall, CommittedToolTurn,
-    CompletedAssistant, CompletedToolTurn, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
+    CompactionOperationId, CompactionPlan, CompletedAssistant, CompletedToolTurn,
+    ContextCheckpoint, ContextCheckpointId, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
     PrepareOperationOutcome, PreparedImageAttachment, ProviderOperationFailureState, ProviderUsage,
     RunContext, RunInputContext, ToolOperationRecovery,
 };

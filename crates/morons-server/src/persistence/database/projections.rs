@@ -1,13 +1,14 @@
 mod rebuild;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension as _, params};
 
 use super::validate_integrity;
 use crate::persistence::{
     PersistenceError, RunModelSelection, RunOpenCodeService, SessionId,
     run_types::{
-        CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, LEGACY_SKILL_CONTEXT_POLICY_VERSION,
-        MAX_CONTEXT_ENTRIES, conservative_input_token_estimate,
+        CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, LEGACY_IMAGE_CONTEXT_POLICY_VERSION,
+        LEGACY_SKILL_CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES,
+        conservative_input_token_estimate,
     },
     types::{
         acknowledge_tool_uncertainty_fingerprint, cancel_run_fingerprint,
@@ -35,6 +36,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_worktree_generation_facts(connection)?;
     validate_run_canonical_facts(connection)?;
     validate_run_skill_snapshots(connection)?;
+    validate_compaction_facts(connection)?;
     validate_tool_facts(connection)?;
     validate_logical_sequences(connection)?;
     rebuild::rebuild(connection)?;
@@ -736,9 +738,12 @@ fn validate_image_attachment_facts(connection: &Connection) -> Result<(), Persis
             WHERE attachment.session_id IS NOT call.session_id
                OR attachment.run_id IS NOT call.run_id
                OR call.tool_kind != 8
-               OR run.context_policy_version != ?1
+               OR run.context_policy_version NOT IN (?1, ?2)
         )",
-        [i64::from(CONTEXT_POLICY_VERSION)],
+        [
+            i64::from(CONTEXT_POLICY_VERSION),
+            i64::from(LEGACY_IMAGE_CONTEXT_POLICY_VERSION),
+        ],
         |row| row.get(0),
     )?;
     if invalid_tool {
@@ -932,6 +937,35 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
                 reason: "a persisted run input has invalid canonical bindings",
             });
         }
+        let accepted_checkpoint = connection
+            .query_row(
+                "SELECT checkpoint.checkpoint_id, checkpoint.source_entry_high_water,
+                        length(CAST(checkpoint.summary AS BLOB))
+                 FROM run_accepted_checkpoints AS binding
+                 JOIN context_checkpoints AS checkpoint
+                   ON checkpoint.checkpoint_id = binding.checkpoint_id
+                 WHERE binding.run_id = ?1",
+                [&request_run[..]],
+                |row| {
+                    Ok((
+                        row.get::<_, [u8; 16]>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let checkpoint_high_water = accepted_checkpoint
+            .as_ref()
+            .map_or(0, |checkpoint| checkpoint.1);
+        let checkpoint_bytes = accepted_checkpoint
+            .as_ref()
+            .map_or(0, |checkpoint| checkpoint.2);
+        if context_policy_version != i64::from(CONTEXT_POLICY_VERSION)
+            && accepted_checkpoint.is_some()
+        {
+            return Err(invalid_run_context());
+        }
         let (entry_count, text_bytes) = connection.query_row(
             "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM (
                  SELECT COALESCE(length(CAST(entry.text AS BLOB)),
@@ -942,15 +976,27 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
                  LEFT JOIN tool_operation_facts AS result
                    ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
                  WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2
+                   AND entry.entry_sequence > ?3
                  UNION ALL
                  SELECT length(CAST(command.command_text AS BLOB)) + length(command.result_payload)
                  FROM local_commands AS command
                  WHERE command.session_id = ?1 AND command.entry_sequence <= ?2
+                   AND command.entry_sequence > ?3
                    AND command.context_visible = 1 AND command.state BETWEEN 3 AND 5
              )",
-            params![&request_session[..], source_high_water],
+            params![
+                &request_session[..],
+                source_high_water,
+                checkpoint_high_water
+            ],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )?;
+        let entry_count = entry_count
+            .checked_add(i64::from(accepted_checkpoint.is_some()))
+            .ok_or_else(invalid_run_context)?;
+        let text_bytes = text_bytes
+            .checked_add(checkpoint_bytes)
+            .ok_or_else(invalid_run_context)?;
         let entry_count = u64::try_from(entry_count).map_err(|_| invalid_run_context())?;
         let text_bytes = u64::try_from(text_bytes).map_err(|_| invalid_run_context())?;
         let skills = crate::persistence::backend::run_queries::load_run_skills(
@@ -964,7 +1010,11 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
         }
         let skill_bytes = u64::try_from(skills.context_bytes().ok_or_else(invalid_run_context)?)
             .map_err(|_| invalid_run_context())?;
-        if context_policy_version != i64::from(CONTEXT_POLICY_VERSION) && !attachments.is_empty() {
+        if !matches!(
+            u16::try_from(context_policy_version).ok(),
+            Some(CONTEXT_POLICY_VERSION | LEGACY_IMAGE_CONTEXT_POLICY_VERSION)
+        ) && !attachments.is_empty()
+        {
             return Err(invalid_run_context());
         }
         let context_items = entry_count
@@ -985,6 +1035,7 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
                 u16::try_from(context_policy_version).ok(),
                 Some(
                     CONTEXT_POLICY_VERSION
+                        | LEGACY_IMAGE_CONTEXT_POLICY_VERSION
                         | LEGACY_SKILL_CONTEXT_POLICY_VERSION
                         | LEGACY_CONTEXT_POLICY_VERSION
                 )
@@ -1294,6 +1345,60 @@ fn validate_run_skill_snapshots(connection: &Connection) -> Result<(), Persisten
             connection,
             crate::persistence::RunId::from_bytes(run_id),
         )?;
+    }
+    Ok(())
+}
+
+fn validate_compaction_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM context_checkpoints AS checkpoint
+            LEFT JOIN context_checkpoints AS parent
+              ON parent.checkpoint_id = checkpoint.parent_checkpoint_id
+            WHERE (checkpoint.parent_checkpoint_id IS NULL AND EXISTS (
+                      SELECT 1 FROM context_checkpoints AS earlier
+                      WHERE earlier.session_id = checkpoint.session_id
+                        AND earlier.source_entry_high_water < checkpoint.source_entry_high_water
+                  ))
+               OR (checkpoint.parent_checkpoint_id IS NOT NULL AND (
+                      parent.session_id IS NOT checkpoint.session_id
+                      OR parent.source_entry_high_water >= checkpoint.source_entry_high_water
+                      OR parent.source_entry_high_water IS NOT (
+                          SELECT MAX(earlier.source_entry_high_water)
+                          FROM context_checkpoints AS earlier
+                          WHERE earlier.session_id = checkpoint.session_id
+                            AND earlier.source_entry_high_water < checkpoint.source_entry_high_water
+                      )
+                  ))
+            UNION ALL
+            SELECT 1 FROM compaction_operations AS operation
+            JOIN run_accepted_facts AS run ON run.run_id = operation.run_id
+            LEFT JOIN context_checkpoints AS checkpoint
+              ON checkpoint.checkpoint_id = operation.checkpoint_id
+            WHERE operation.session_id IS NOT run.session_id
+               OR operation.source_entry_high_water >= run.source_entry_high_water
+               OR (operation.state = 3 AND (
+                    checkpoint.session_id IS NOT operation.session_id
+                    OR checkpoint.parent_checkpoint_id IS NOT operation.parent_checkpoint_id
+                    OR checkpoint.source_entry_high_water IS NOT operation.source_entry_high_water
+                    OR checkpoint.source_digest IS NOT operation.source_digest
+               ))
+            UNION ALL
+            SELECT 1 FROM run_accepted_checkpoints AS binding
+            JOIN run_accepted_facts AS run ON run.run_id = binding.run_id
+            JOIN context_checkpoints AS checkpoint
+              ON checkpoint.checkpoint_id = binding.checkpoint_id
+            WHERE checkpoint.session_id IS NOT run.session_id
+               OR checkpoint.source_entry_high_water >= run.source_entry_high_water
+               OR run.context_policy_version != ?1
+        )",
+        [i64::from(CONTEXT_POLICY_VERSION)],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "context compaction facts have invalid lineage or scope",
+        });
     }
     Ok(())
 }

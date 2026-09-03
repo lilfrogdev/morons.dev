@@ -187,11 +187,23 @@ pub(crate) fn image_context_capacity_available(
     additional_bytes: u64,
 ) -> Result<bool, rusqlite::Error> {
     let (stored_count, stored_bytes): (i64, i64) = connection.query_row(
-        "SELECT
-            (SELECT COUNT(*) FROM image_attachments WHERE session_id = ?1) +
-            (SELECT COUNT(*) FROM tool_image_attachments WHERE session_id = ?1),
-            COALESCE((SELECT SUM(byte_count) FROM image_attachments WHERE session_id = ?1), 0) +
-            COALESCE((SELECT SUM(byte_count) FROM tool_image_attachments WHERE session_id = ?1), 0)",
+        "WITH checkpoint(high_water) AS (
+            SELECT COALESCE(MAX(source_entry_high_water), 0)
+            FROM context_checkpoints WHERE session_id = ?1
+         ), visible(byte_count) AS (
+            SELECT attachment.byte_count
+            FROM image_attachments AS attachment
+            JOIN session_entries AS entry ON entry.message_id = attachment.user_message_id
+            WHERE attachment.session_id = ?1
+              AND entry.entry_sequence > (SELECT high_water FROM checkpoint)
+            UNION ALL
+            SELECT attachment.byte_count
+            FROM tool_image_attachments AS attachment
+            JOIN session_entries AS entry ON entry.tool_call_id = attachment.call_id
+            WHERE attachment.session_id = ?1 AND entry.entry_kind = 4
+              AND entry.entry_sequence > (SELECT high_water FROM checkpoint)
+         )
+         SELECT COUNT(*), COALESCE(SUM(byte_count), 0) FROM visible",
         [&session_id.as_bytes()[..]],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;

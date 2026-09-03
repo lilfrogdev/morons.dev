@@ -1,4 +1,5 @@
 pub(super) mod command_execution;
+mod compaction;
 mod creation;
 mod credential_mutation;
 pub(super) mod image_attachment;
@@ -39,6 +40,8 @@ impl Backend {
             paths,
         };
         backend.reconcile_image_attachments()?;
+        backend.validate_context_checkpoint_digests()?;
+        backend.recover_compaction_operations()?;
         backend.recover_credential_mutations()?;
         backend.recover_incomplete_session_creations()?;
         backend.recover_tool_operations()?;

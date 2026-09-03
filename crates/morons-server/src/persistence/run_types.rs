@@ -3,9 +3,10 @@ use std::fmt;
 use super::{Session, SessionId, types::IDENTIFIER_BYTES};
 use crate::tools::{ToolInput, ToolKind, ToolResult, ValidatedProviderCall};
 
-pub const CONTEXT_POLICY_VERSION: u16 = 3;
+pub const CONTEXT_POLICY_VERSION: u16 = 4;
 pub(super) const LEGACY_CONTEXT_POLICY_VERSION: u16 = 1;
 pub(super) const LEGACY_SKILL_CONTEXT_POLICY_VERSION: u16 = 2;
+pub(super) const LEGACY_IMAGE_CONTEXT_POLICY_VERSION: u16 = 3;
 pub(super) const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_TRANSCRIPT_TEXT_BYTES: usize = 128 * 1024;
 pub(super) const MAX_MODEL_ID_BYTES: usize = 128;
@@ -689,11 +690,58 @@ pub struct RunModelSelection {
     pub supports_image_input: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ContextCheckpointId([u8; IDENTIFIER_BYTES]);
+
+impl ContextCheckpointId {
+    pub(crate) const fn from_bytes(bytes: [u8; IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ContextCheckpoint {
+    pub id: ContextCheckpointId,
+    pub source_entry_high_water: u64,
+    pub source_digest: [u8; 32],
+    pub summary: String,
+    pub estimated_summary_tokens: u32,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompactionPlan {
+    pub parent_checkpoint_id: Option<ContextCheckpointId>,
+    pub source_entry_high_water: u64,
+    pub source_digest: [u8; 32],
+    pub entries: Vec<TranscriptEntry>,
+    pub parent_summary: Option<String>,
+    pub estimated_input_tokens: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CompactionOperationId([u8; IDENTIFIER_BYTES]);
+
+impl CompactionOperationId {
+    pub(crate) const fn from_bytes(bytes: [u8; IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct RunContext {
     pub run: Run,
     pub skills: crate::skills::RunSkillContext,
     pub attachment_data: std::collections::HashMap<ImageAttachmentId, Vec<u8>>,
+    pub checkpoint: Option<ContextCheckpoint>,
+    pub compaction_plan: Option<CompactionPlan>,
     pub entries: Vec<TranscriptEntry>,
     pub current_entry_high_water: u64,
     pub estimated_input_tokens: u32,
