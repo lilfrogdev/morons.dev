@@ -313,10 +313,6 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
             )));
         }
     }
-    let visible_height = usize::from(area.height.saturating_sub(2));
-    let maximum_scroll =
-        u16::try_from(lines.len().saturating_sub(visible_height)).unwrap_or(u16::MAX);
-    let scroll = maximum_scroll.saturating_sub(scroll.min(maximum_scroll));
     let run_status = active_work_label(session);
     let shared = if session.shared_directory {
         " · shared directory race risk"
@@ -332,13 +328,14 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
         " {} · {run_status}{archived}{shared} ",
         session.display_name.first_line()
     );
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
-        area,
-    );
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let rendered_height = paragraph.line_count(inner.width);
+    let maximum_scroll = u16::try_from(rendered_height.saturating_sub(usize::from(inner.height)))
+        .unwrap_or(u16::MAX);
+    let scroll = maximum_scroll.saturating_sub(scroll.min(maximum_scroll));
+    frame.render_widget(paragraph.block(block).scroll((scroll, 0)), area);
 }
 
 fn extend_terminal_run_outcome(lines: &mut Vec<Line<'_>>, run: &morons_protocol::RunSummary) {

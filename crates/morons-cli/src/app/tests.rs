@@ -88,6 +88,53 @@ fn rendering_strips_terminal_and_bidirectional_controls() {
 }
 
 #[test]
+fn transcript_auto_scroll_accounts_for_wrapped_lines() {
+    let (session, mut run) = fixture_session_and_run();
+    run.state = RunState::Succeeded;
+    let mut app = AppState::new("test-server");
+    app.open_session(
+        session,
+        vec![
+            TranscriptEntry::UserMessage {
+                id: run.user_message_id,
+                run_id: run.id,
+                text: "wrapped transcript content ".repeat(40),
+                attachments: Vec::new(),
+                created_at_milliseconds: 1,
+            },
+            TranscriptEntry::AssistantMessage {
+                id: MessageId::from_bytes([0x45; 16]),
+                run_id: run.id,
+                service: OpenCodeService::Zen,
+                model_id: "grok-4.6".to_owned(),
+                text: "LATEST-ASSISTANT-OUTPUT".to_owned(),
+                refusal: false,
+                created_at_milliseconds: 2,
+            },
+        ],
+        vec![run],
+        None,
+        None,
+    )
+    .expect("session should open");
+
+    let backend = TestBackend::new(40, 20);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("wrapped transcript should render");
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(rendered.contains("LATEST-ASSISTANT-OUTPUT"));
+}
+
+#[test]
 fn restored_failed_run_is_rendered_after_its_last_transcript_entry() {
     let (session, mut run) = fixture_session_and_run();
     run.state = RunState::Failed;
