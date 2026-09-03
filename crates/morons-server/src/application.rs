@@ -86,7 +86,7 @@ pub(crate) struct DeliveredSessionCatalogEvent {
 
 pub(crate) struct DeliveredSessionEvent {
     pub(crate) cursor: SessionEventCursor,
-    pub(crate) event: ApplicationEvent,
+    pub(crate) event: Option<ApplicationEvent>,
 }
 
 impl ServerApplication {
@@ -692,7 +692,6 @@ impl ServerApplication {
                 Ok(ApplicationOutcome::Response(
                     ApplicationResponse::SessionTranscriptListed {
                         session: to_session_summary(page.session),
-                        workspace: to_protocol_workspace_summary(page.workspace),
                         entries: page
                             .entries
                             .into_iter()
@@ -779,28 +778,6 @@ impl ServerApplication {
                     },
                 ))
             }
-            ApplicationRequest::AcknowledgeToolUncertainty {
-                mutation_request_id,
-                session_id,
-                run_id,
-            } => {
-                let acknowledgement = self
-                    .sessions
-                    .acknowledge_tool_uncertainty(
-                        to_persistence_mutation_id(mutation_request_id),
-                        to_persistence_session_id(session_id),
-                        to_persistence_run_id(run_id),
-                    )
-                    .await
-                    .map_err(to_application_error)?;
-                Ok(ApplicationOutcome::Response(
-                    ApplicationResponse::ToolUncertaintyAcknowledged {
-                        session_id,
-                        run_id,
-                        workspace: to_protocol_workspace_summary(acknowledgement.workspace),
-                    },
-                ))
-            }
             ApplicationRequest::StopServer {
                 mutation_request_id,
             } => {
@@ -880,23 +857,23 @@ impl ServerApplication {
             .map(|event| match event.payload {
                 SessionEventPayload::TranscriptEntry(entry) => DeliveredSessionEvent {
                     cursor: event.cursor,
-                    event: ApplicationEvent::SessionTranscriptEntryCommitted {
+                    event: Some(ApplicationEvent::SessionTranscriptEntryCommitted {
                         cursor: to_protocol_session_event_cursor(event.cursor),
                         session_id: morons_protocol::SessionId::from_bytes(*session_id.as_bytes()),
                         entry: to_protocol_transcript_entry(entry),
-                    },
+                    }),
                 },
                 SessionEventPayload::RunChanged(run) => DeliveredSessionEvent {
                     cursor: event.cursor,
-                    event: ApplicationEvent::SessionRunChanged {
+                    event: Some(ApplicationEvent::SessionRunChanged {
                         cursor: to_protocol_session_event_cursor(event.cursor),
                         run: to_run_summary(run),
-                    },
+                    }),
                 },
                 SessionEventPayload::LocalCommandChanged { command_id, active } => {
                     DeliveredSessionEvent {
                         cursor: event.cursor,
-                        event: ApplicationEvent::SessionLocalCommandChanged {
+                        event: Some(ApplicationEvent::SessionLocalCommandChanged {
                             cursor: to_protocol_session_event_cursor(event.cursor),
                             session_id: morons_protocol::SessionId::from_bytes(
                                 *session_id.as_bytes(),
@@ -905,16 +882,12 @@ impl ServerApplication {
                                 *command_id.as_bytes(),
                             ),
                             active,
-                        },
+                        }),
                     }
                 }
-                SessionEventPayload::WorkspaceChanged(workspace) => DeliveredSessionEvent {
+                SessionEventPayload::WorkspaceChanged(_) => DeliveredSessionEvent {
                     cursor: event.cursor,
-                    event: ApplicationEvent::SessionWorkspaceChanged {
-                        cursor: to_protocol_session_event_cursor(event.cursor),
-                        session_id: morons_protocol::SessionId::from_bytes(*session_id.as_bytes()),
-                        workspace: to_protocol_workspace_summary(workspace),
-                    },
+                    event: None,
                 },
             })
             .collect())

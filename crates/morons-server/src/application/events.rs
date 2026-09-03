@@ -73,7 +73,7 @@ impl SessionSubscription {
 
     pub(crate) fn advance(&mut self, event: &DeliveredSessionEvent) {
         self.cursor = event.cursor;
-        if let ApplicationEvent::SessionRunChanged { run, .. } = &event.event {
+        if let Some(ApplicationEvent::SessionRunChanged { run, .. }) = &event.event {
             let run_id = to_persistence_run_id(run.id);
             if run.state.is_terminal() {
                 if self.active_run == Some(run_id) {
@@ -117,6 +117,29 @@ impl SessionEventHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_historical_events_advance_the_durable_cursor() {
+        let session_id = SessionId::from_bytes([0x10; 16]);
+        let first = SessionEventCursor::new(session_id, 1);
+        let second = SessionEventCursor::new(session_id, 2);
+        let (_notifications, receiver) = watch::channel(0);
+        let (_deltas, assistant_deltas) = broadcast::channel(1);
+        let mut subscription = SessionSubscription {
+            session_id,
+            cursor: first,
+            notifications: receiver,
+            assistant_deltas,
+            active_run: None,
+            terminal_run: None,
+        };
+        subscription.advance(&DeliveredSessionEvent {
+            cursor: second,
+            event: None,
+        });
+        assert_eq!(subscription.cursor, second);
+        assert_eq!(subscription.active_run, None);
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn assistant_delta_broadcast_is_redacted_and_multi_subscriber() {

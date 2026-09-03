@@ -217,13 +217,6 @@ pub struct WorkspaceSummary {
     pub blocked_tool: Option<crate::tools::ToolKind>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ToolUncertaintyAcknowledgement {
-    pub session_id: SessionId,
-    pub run_id: super::RunId,
-    pub workspace: WorkspaceSummary,
-}
-
 /// Historical execution-image target retained only for durable schema validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecutionTargetOs {
@@ -302,7 +295,6 @@ pub enum PersistenceError {
     CredentialMutationNotApplied,
     ImageInputUnsupported,
     WorkspaceBlocked,
-    ToolUncertaintyNotFound,
     ResourceLimit {
         resource: PersistenceResourceLimit,
     },
@@ -356,9 +348,6 @@ impl fmt::Display for PersistenceError {
                 formatter.write_str("the selected model does not support image context")
             }
             Self::WorkspaceBlocked => formatter.write_str("the session workspace is blocked"),
-            Self::ToolUncertaintyNotFound => {
-                formatter.write_str("the uncertain tool effect was not found")
-            }
             Self::ResourceLimit { resource } => match resource {
                 PersistenceResourceLimit::Sessions => {
                     formatter.write_str("the persistence session count limit was reached")
@@ -410,7 +399,6 @@ impl Error for PersistenceError {
             | Self::CredentialMutationNotApplied
             | Self::ImageInputUnsupported
             | Self::WorkspaceBlocked
-            | Self::ToolUncertaintyNotFound
             | Self::ResourceLimit { .. }
             | Self::WorkerStopped => None,
         }

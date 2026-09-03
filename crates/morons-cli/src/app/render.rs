@@ -1,5 +1,5 @@
 use morons_protocol::{
-    OpenCodeModelRetention, OpenCodeModelTrainingUse, OpenCodeService, RunState, WorkspaceState,
+    OpenCodeModelRetention, OpenCodeModelTrainingUse, OpenCodeService, RunState,
 };
 use ratatui::{
     Frame,
@@ -11,7 +11,7 @@ use ratatui::{
 
 use super::{
     AppState, CredentialDialog, InformationDialog, PendingOperation, PresentedModel, SessionView,
-    View, tool_label,
+    View,
 };
 use crate::terminal::SafeText;
 
@@ -33,9 +33,6 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
     render_footer(frame, layout[2], app);
     if app.confirm_stop {
         render_stop_confirmation(frame, area);
-    }
-    if app.confirm_uncertainty {
-        render_uncertainty_confirmation(frame, area);
     }
     if app.confirm_delete.is_some() {
         render_delete_confirmation(frame, area);
@@ -273,27 +270,6 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
         extend_safe_lines(&mut lines, &entry.text);
         lines.push(Line::default());
     }
-    if session.workspace.block_reason
-        == Some(morons_protocol::WorkspaceBlockReason::UncertainToolEffect)
-        && let (Some(run_id), Some(tool)) = (
-            session.workspace.blocked_run_id,
-            session.workspace.blocked_tool,
-        )
-    {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "Workspace blocked · uncertain {} effect · {run_id:?}",
-                tool_label(tool)
-            ),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(
-            "Ctrl+A acknowledges and parks the uncertainty without resolving it",
-        ));
-        lines.push(Line::default());
-    }
     if let Some(transient) = session.transient.as_ref() {
         let label = if transient.refusal {
             "Assistant refusal · streaming"
@@ -319,7 +295,6 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
         u16::try_from(lines.len().saturating_sub(visible_height)).unwrap_or(u16::MAX);
     let scroll = maximum_scroll.saturating_sub(scroll.min(maximum_scroll));
     let run_status = active_work_label(session);
-    let workspace = workspace_label(session.workspace.state);
     let shared = if session.shared_directory {
         " · shared directory race risk"
     } else {
@@ -331,7 +306,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
         ""
     };
     let title = format!(
-        " {} · {run_status} · {workspace}{archived}{shared} ",
+        " {} · {run_status}{archived}{shared} ",
         session.display_name.first_line()
     );
     frame.render_widget(
@@ -478,30 +453,6 @@ fn render_delete_confirmation(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-fn render_uncertainty_confirmation(frame: &mut Frame<'_>, area: Rect) {
-    let width = area.width.min(72);
-    let height = area.height.min(7);
-    let popup = Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    };
-    frame.render_widget(Clear, popup);
-    frame.render_widget(
-        Paragraph::new(
-            "Acknowledge and park this uncertain tool effect?\nThis does not prove, reverse, or retry the workspace change.\nPress y to acknowledge or n/Esc to cancel.",
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Uncertain workspace effect "),
-        )
-        .wrap(Wrap { trim: false }),
-        popup,
-    );
-}
-
 fn render_credential_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &CredentialDialog) {
     let (height, title, message) = match dialog {
         CredentialDialog::ChooseAction => (
@@ -602,17 +553,8 @@ fn active_work_label(session: &SessionView) -> &'static str {
             | RunState::Failed
             | RunState::Cancelled
             | RunState::Interrupted => "idle",
-            RunState::Uncertain => "workspace effect uncertain",
+            RunState::Uncertain => "local effect uncertain",
         })
-}
-
-const fn workspace_label(state: WorkspaceState) -> &'static str {
-    match state {
-        WorkspaceState::Empty => "workspace empty",
-        WorkspaceState::Importing => "repository importing",
-        WorkspaceState::Ready => "repository ready",
-        WorkspaceState::Blocked => "workspace blocked",
-    }
 }
 
 const fn service_label(service: OpenCodeService) -> &'static str {

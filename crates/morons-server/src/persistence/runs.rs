@@ -3,16 +3,14 @@ use tokio::sync::oneshot;
 use super::{
     AcceptedRun, CommittedToolTurn, CompletedToolTurn, MutationRequestId, PersistenceError, Run,
     RunCancellationResult, RunFailureKind, RunId, RunModelSelection, RunOpenCodeService, SessionId,
-    SessionStore, ToolCallId, ToolUncertaintyAcknowledgement, TranscriptCursor, TranscriptEntry,
-    TranscriptPage, WorkerRequest,
+    SessionStore, ToolCallId, TranscriptCursor, TranscriptEntry, TranscriptPage, WorkerRequest,
     backend::Backend,
     run_types::{
         self, ActivationOutcome, CompletedAssistant, DispatchOutcome, PrepareOperationOutcome,
         ProviderOperationFailureState, ProviderOperationId, RunContext, ToolOperationId,
     },
     types::{
-        REQUEST_FINGERPRINT_BYTES, acknowledge_tool_uncertainty_fingerprint,
-        cancel_run_fingerprint, submit_session_input_fingerprint,
+        REQUEST_FINGERPRINT_BYTES, cancel_run_fingerprint, submit_session_input_fingerprint,
         submit_session_input_with_images_fingerprint, validate_model_identifier,
         validate_model_selection, validate_user_text,
     },
@@ -345,24 +343,6 @@ impl SessionStore {
         .await
     }
 
-    pub async fn acknowledge_tool_uncertainty(
-        &self,
-        request_id: MutationRequestId,
-        session_id: SessionId,
-        run_id: RunId,
-    ) -> Result<ToolUncertaintyAcknowledgement, PersistenceError> {
-        validate_request_id(request_id)?;
-        let fingerprint = acknowledge_tool_uncertainty_fingerprint(session_id, run_id);
-        self.run_request(|response| RunWorkerRequest::AcknowledgeToolUncertainty {
-            request_id,
-            fingerprint,
-            session_id,
-            run_id,
-            response,
-        })
-        .await
-    }
-
     pub async fn get_run(
         &self,
         session_id: SessionId,
@@ -570,13 +550,6 @@ pub(super) enum RunWorkerRequest {
         run_id: RunId,
         response: oneshot::Sender<Result<RunCancellationResult, PersistenceError>>,
     },
-    AcknowledgeToolUncertainty {
-        request_id: MutationRequestId,
-        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
-        session_id: SessionId,
-        run_id: RunId,
-        response: oneshot::Sender<Result<ToolUncertaintyAcknowledgement, PersistenceError>>,
-    },
     Get {
         session_id: SessionId,
         run_id: RunId,
@@ -777,20 +750,6 @@ impl RunWorkerRequest {
             } => {
                 let _ =
                     response.send(backend.cancel_run(request_id, fingerprint, session_id, run_id));
-            }
-            Self::AcknowledgeToolUncertainty {
-                request_id,
-                fingerprint,
-                session_id,
-                run_id,
-                response,
-            } => {
-                let _ = response.send(backend.acknowledge_tool_uncertainty(
-                    request_id,
-                    fingerprint,
-                    session_id,
-                    run_id,
-                ));
             }
             Self::Get {
                 session_id,

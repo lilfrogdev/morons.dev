@@ -359,20 +359,6 @@ impl RuntimeState {
                 self.start_mutation(command, PendingOperation::CancelLocalCommand, commands)?;
                 self.app.set_status("Requesting local command cancellation");
             }
-            AppAction::AcknowledgeToolUncertainty { session_id, run_id } => {
-                let command = RequestCommand::AcknowledgeToolUncertainty {
-                    mutation_request_id: generate_mutation_request_id()?,
-                    session_id,
-                    run_id,
-                };
-                self.start_mutation(
-                    command,
-                    PendingOperation::AcknowledgeToolUncertainty,
-                    commands,
-                )?;
-                self.app
-                    .set_status("Acknowledging and parking the uncertain workspace effect");
-            }
             AppAction::SetCredential {
                 expected_generation,
                 api_key,
@@ -616,17 +602,6 @@ impl RuntimeState {
                     "The local command was already terminal"
                 });
             }
-            RequestEvent::ToolUncertaintyAcknowledged {
-                mutation_request_id,
-                session_id,
-                workspace,
-            } => {
-                self.finish_mutation(mutation_request_id)?;
-                self.app.workspace_updated(session_id, workspace)?;
-                self.app.set_status(
-                    "Uncertain effect acknowledged and parked; no effect was retried or resolved",
-                );
-            }
             RequestEvent::CredentialUpdated {
                 mutation_request_id,
                 credential,
@@ -863,7 +838,6 @@ impl RuntimeState {
         let event_cursor = snapshot.event_cursor;
         self.app.open_session(
             snapshot.session,
-            snapshot.workspace,
             snapshot.entries,
             snapshot.runs,
             snapshot.active_run_id,

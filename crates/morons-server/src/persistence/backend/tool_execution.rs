@@ -2,8 +2,7 @@ use super::{
     Backend,
     image_attachment::AttachmentStaging,
     records::{
-        MUTATION_OPERATION_TOOL_UNCERTAINTY_ACKNOWLEDGEMENT, current_time_milliseconds,
-        load_mutation_operation, next_sequence, random_identifier, sequence_to_sql, time_to_sql,
+        current_time_milliseconds, next_sequence, random_identifier, sequence_to_sql, time_to_sql,
     },
     run_acceptance::insert_delivery_event,
     run_execution::facts::{
@@ -18,13 +17,11 @@ use super::{
 };
 use crate::{
     persistence::{
-        CommittedToolCall, CommittedToolTurn, CompletedToolTurn, MessageId, MutationRequestId,
-        PersistenceError, PersistenceResourceLimit, RunId, RunState, ToolCallId,
-        ToolUncertaintyAcknowledgement, TranscriptEntry,
+        CommittedToolCall, CommittedToolTurn, CompletedToolTurn, MessageId, PersistenceError,
+        PersistenceResourceLimit, RunId, RunState, ToolCallId, TranscriptEntry,
         run_types::{
             MAX_TRANSCRIPT_ENTRIES, MAX_TRANSCRIPT_TEXT_BYTES, ProviderOperationId, ToolOperationId,
         },
-        types::{REQUEST_FINGERPRINT_BYTES, acknowledge_tool_uncertainty_fingerprint},
     },
     tools::{
         MAX_TOOL_CALLS_PER_RUN, MAX_TOOL_MUTATIONS_PER_RUN, MAX_TOOL_PAYLOAD_BYTES,
@@ -729,152 +726,6 @@ impl Backend {
             })?
             .collect::<Result<Vec<_>, _>>()
             .map_err(PersistenceError::from)
-    }
-
-    pub(crate) fn acknowledge_tool_uncertainty(
-        &mut self,
-        request_id: MutationRequestId,
-        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
-        session_id: crate::persistence::SessionId,
-        run_id: RunId,
-    ) -> Result<ToolUncertaintyAcknowledgement, PersistenceError> {
-        let existing = self
-            .connection
-            .query_row(
-                "SELECT operation_fingerprint, session_id, run_id
-                 FROM tool_uncertainty_acknowledgements WHERE request_id = ?1",
-                [&request_id.as_bytes()[..]],
-                |row| {
-                    Ok((
-                        row.get::<_, [u8; 32]>(0)?,
-                        row.get::<_, [u8; 16]>(1)?,
-                        row.get::<_, [u8; 16]>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
-        match (
-            existing,
-            load_mutation_operation(&self.connection, request_id)?,
-        ) {
-            (Some((stored, stored_session, stored_run)), Some(kind))
-                if kind == MUTATION_OPERATION_TOOL_UNCERTAINTY_ACKNOWLEDGEMENT =>
-            {
-                if stored != fingerprint
-                    || stored_session != *session_id.as_bytes()
-                    || stored_run != *run_id.as_bytes()
-                {
-                    return Err(PersistenceError::RequestConflict);
-                }
-                return Ok(ToolUncertaintyAcknowledgement {
-                    session_id,
-                    run_id,
-                    workspace: self.workspace_summary(session_id)?,
-                });
-            }
-            (Some(_), _) => {
-                return Err(PersistenceError::InvalidState {
-                    reason: "a tool uncertainty acknowledgement lost its mutation record",
-                });
-            }
-            (None, Some(_)) => return Err(PersistenceError::RequestConflict),
-            (None, None) => {}
-        }
-        if fingerprint != acknowledge_tool_uncertainty_fingerprint(session_id, run_id) {
-            return Err(PersistenceError::InvalidInput {
-                reason: "a tool uncertainty acknowledgement fingerprint is invalid",
-            });
-        }
-        let run = load_required_run(&self.connection, run_id)?;
-        if run.session_id != session_id {
-            return Err(PersistenceError::ToolUncertaintyNotFound);
-        }
-        if run.state != RunState::Uncertain {
-            return Err(PersistenceError::ToolUncertaintyNotFound);
-        }
-        let uncertainty_exists: bool = self.connection.query_row(
-            "SELECT EXISTS (
-                SELECT 1 FROM tool_operation_facts
-                WHERE session_id = ?1 AND run_id = ?2 AND fact_kind = 6
-             )",
-            params![&session_id.as_bytes()[..], &run_id.as_bytes()[..]],
-            |row| row.get(0),
-        )?;
-        if !uncertainty_exists {
-            return Err(PersistenceError::InvalidState {
-                reason: "an uncertain run is missing its uncertain tool fact",
-            });
-        }
-        let event_id = random_identifier()?;
-        let audit_id = random_identifier()?;
-        let now = current_time_milliseconds()?;
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let fact_sequence = next_sequence(&transaction)?;
-        let audit_sequence = next_sequence(&transaction)?;
-        transaction.execute(
-            "INSERT INTO mutation_requests (
-                request_id, operation_kind, accepted_sequence, accepted_at_milliseconds
-             ) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                &request_id.as_bytes()[..],
-                MUTATION_OPERATION_TOOL_UNCERTAINTY_ACKNOWLEDGEMENT,
-                sequence_to_sql(fact_sequence)?,
-                time_to_sql(now)?,
-            ],
-        )?;
-        transaction.execute(
-            "INSERT INTO tool_uncertainty_acknowledgements (
-                request_id, operation_fingerprint, session_id, run_id,
-                fact_sequence, accepted_at_milliseconds, delivery_event_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                &request_id.as_bytes()[..],
-                &fingerprint[..],
-                &session_id.as_bytes()[..],
-                &run_id.as_bytes()[..],
-                sequence_to_sql(fact_sequence)?,
-                time_to_sql(now)?,
-                &event_id[..],
-            ],
-        )?;
-        transaction.execute(
-            "INSERT INTO tool_audit_facts (
-                audit_id, audit_sequence, call_id, request_id, session_id, run_id,
-                operation_id, tool_kind, audit_kind, path_digest, created_at_milliseconds
-             ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, NULL, NULL, 6, NULL, ?6)",
-            params![
-                &audit_id[..],
-                sequence_to_sql(audit_sequence)?,
-                &request_id.as_bytes()[..],
-                &session_id.as_bytes()[..],
-                &run_id.as_bytes()[..],
-                time_to_sql(now)?,
-            ],
-        )?;
-        insert_delivery_event(
-            &transaction,
-            &event_id,
-            fact_sequence,
-            session_id,
-            EVENT_TOOL_UNCERTAINTY_CHANGED,
-            now,
-        )?;
-        transaction.execute(
-            "UPDATE sessions SET updated_sequence = ?1 WHERE session_id = ?2",
-            params![sequence_to_sql(fact_sequence)?, &session_id.as_bytes()[..]],
-        )?;
-        transaction.execute(
-            "UPDATE session_run_states SET updated_sequence = ?1 WHERE session_id = ?2",
-            params![sequence_to_sql(fact_sequence)?, &session_id.as_bytes()[..]],
-        )?;
-        transaction.commit()?;
-        Ok(ToolUncertaintyAcknowledgement {
-            session_id,
-            run_id,
-            workspace: self.workspace_summary(session_id)?,
-        })
     }
 }
 

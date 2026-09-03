@@ -6,7 +6,7 @@ use std::{error::Error, fmt};
 use morons_protocol::{
     ApplicationEvent, LocalCommandId, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelSummary, OpenCodeService, RunId, RunState, RunSummary, SessionContextStatus,
-    SessionId, SessionSummary, SkillSummary, TranscriptEntry, WorkspaceSummary,
+    SessionId, SessionSummary, SkillSummary, TranscriptEntry,
 };
 use ratatui::Frame;
 
@@ -36,7 +36,6 @@ pub(super) enum PendingOperation {
     ExecuteLocalCommand,
     CancelRun,
     CancelLocalCommand,
-    AcknowledgeToolUncertainty,
     UpdateCredential,
     StopServer,
 }
@@ -99,10 +98,6 @@ pub(super) enum AppAction {
     CancelLocalCommand {
         session_id: SessionId,
         command_id: LocalCommandId,
-    },
-    AcknowledgeToolUncertainty {
-        session_id: SessionId,
-        run_id: RunId,
     },
     SetCredential {
         expected_generation: u64,
@@ -195,11 +190,6 @@ impl fmt::Debug for AppAction {
                 .field("session_id", session_id)
                 .field("command_id", command_id)
                 .finish(),
-            Self::AcknowledgeToolUncertainty { session_id, run_id } => formatter
-                .debug_struct("AcknowledgeToolUncertainty")
-                .field("session_id", session_id)
-                .field("run_id", run_id)
-                .finish(),
             Self::SetCredential {
                 expected_generation,
                 ..
@@ -226,7 +216,6 @@ pub(super) enum UiStateError {
     ResourceScopeMismatch,
     ResourceLimitExceeded,
     InvalidRunTransition,
-    InvalidWorkspaceTransition,
 }
 
 impl fmt::Display for UiStateError {
@@ -235,7 +224,6 @@ impl fmt::Display for UiStateError {
             Self::ResourceScopeMismatch => "received application state outside the selected scope",
             Self::ResourceLimitExceeded => "application state exceeded a client resource limit",
             Self::InvalidRunTransition => "received an invalid run transition",
-            Self::InvalidWorkspaceTransition => "received an invalid workspace transition",
         })
     }
 }
@@ -266,7 +254,6 @@ pub(super) struct AppState {
     pub(super) pending_unknown: bool,
     pub(super) confirm_stop: bool,
     pub(super) confirm_delete: Option<SessionId>,
-    pub(super) confirm_uncertainty: bool,
     pub(super) transcript_scroll: u16,
     pub(super) skill_completion_index: usize,
 }
@@ -292,7 +279,6 @@ impl AppState {
             pending_unknown: false,
             confirm_stop: false,
             confirm_delete: None,
-            confirm_uncertainty: false,
             transcript_scroll: 0,
             skill_completion_index: 0,
         }
@@ -351,7 +337,6 @@ impl AppState {
             && self.pending.is_none()
             && self.credential_dialog.is_none()
             && !self.confirm_stop
-            && !self.confirm_uncertainty
     }
 
     pub(super) fn add_draft_image(
@@ -567,7 +552,6 @@ impl AppState {
     pub(super) fn open_session(
         &mut self,
         summary: SessionSummary,
-        workspace: WorkspaceSummary,
         entries: Vec<TranscriptEntry>,
         runs: Vec<RunSummary>,
         active_run_id: Option<RunId>,
@@ -587,7 +571,6 @@ impl AppState {
             });
         let mut session = SessionView::new(
             summary,
-            workspace,
             entries,
             runs,
             active_run_id,
@@ -671,11 +654,6 @@ impl AppState {
                 session.active_command_id = active.then_some(command_id);
                 Ok(())
             }
-            ApplicationEvent::SessionWorkspaceChanged {
-                session_id,
-                workspace,
-                ..
-            } => self.session_mut(session_id)?.apply_workspace(workspace),
             ApplicationEvent::SessionAssistantDelta {
                 session_id,
                 run_id,
@@ -758,15 +736,6 @@ impl AppState {
             self.prompt.clear();
         }
         Ok(())
-    }
-
-    pub(super) fn workspace_updated(
-        &mut self,
-        session_id: SessionId,
-        workspace: WorkspaceSummary,
-    ) -> Result<(), UiStateError> {
-        self.clear_pending();
-        self.session_mut(session_id)?.apply_workspace(workspace)
     }
 
     pub(super) fn cancellation_resolved(
@@ -890,7 +859,6 @@ impl PresentedSkill {
 
 pub(super) struct SessionView {
     pub(super) summary: SessionSummary,
-    pub(super) workspace: WorkspaceSummary,
     pub(super) display_name: SafeText,
     pub(super) entries: Vec<PresentedTranscriptEntry>,
     pub(super) runs: Vec<RunSummary>,
@@ -905,7 +873,6 @@ pub(super) struct SessionView {
 impl SessionView {
     fn new(
         summary: SessionSummary,
-        workspace: WorkspaceSummary,
         entries: Vec<TranscriptEntry>,
         runs: Vec<RunSummary>,
         active_run_id: Option<RunId>,
@@ -937,7 +904,6 @@ impl SessionView {
         );
         Ok(Self {
             summary,
-            workspace,
             display_name,
             entries: entries
                 .into_iter()
@@ -951,50 +917,6 @@ impl SessionView {
             context_status: None,
             shared_directory: false,
         })
-    }
-
-    fn apply_workspace(&mut self, workspace: WorkspaceSummary) -> Result<(), UiStateError> {
-        if self.workspace.state == morons_protocol::WorkspaceState::Ready
-            && workspace.state == morons_protocol::WorkspaceState::Importing
-        {
-            return Ok(());
-        }
-        let valid = matches!(
-            (self.workspace.state, workspace.state),
-            (
-                morons_protocol::WorkspaceState::Empty,
-                morons_protocol::WorkspaceState::Importing
-            ) | (
-                morons_protocol::WorkspaceState::Empty,
-                morons_protocol::WorkspaceState::Ready
-            ) | (
-                morons_protocol::WorkspaceState::Importing,
-                morons_protocol::WorkspaceState::Empty
-            ) | (
-                morons_protocol::WorkspaceState::Importing,
-                morons_protocol::WorkspaceState::Ready
-            ) | (
-                morons_protocol::WorkspaceState::Importing,
-                morons_protocol::WorkspaceState::Blocked
-            ) | (
-                morons_protocol::WorkspaceState::Ready,
-                morons_protocol::WorkspaceState::Ready
-            ) | (
-                morons_protocol::WorkspaceState::Ready,
-                morons_protocol::WorkspaceState::Blocked
-            ) | (
-                morons_protocol::WorkspaceState::Blocked,
-                morons_protocol::WorkspaceState::Ready
-            ) | (
-                morons_protocol::WorkspaceState::Blocked,
-                morons_protocol::WorkspaceState::Blocked
-            )
-        );
-        if !valid {
-            return Err(UiStateError::InvalidWorkspaceTransition);
-        }
-        self.workspace = workspace;
-        Ok(())
     }
 
     fn append_transcript_entry(&mut self, entry: TranscriptEntry) -> Result<(), UiStateError> {

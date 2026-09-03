@@ -5,7 +5,7 @@ use morons_protocol::{
     ApplicationError, FrameError, LocalCommandId, MutationRequestId, OpenCodeApiKey,
     OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, RunId, RunSummary,
     SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId, SessionSummary,
-    SkillSummary, TranscriptEntry, WorkspaceSummary,
+    SkillSummary, TranscriptEntry,
 };
 use tokio::{sync::mpsc, time};
 
@@ -75,11 +75,6 @@ pub(super) enum RequestCommand {
         session_id: SessionId,
         command_id: LocalCommandId,
     },
-    AcknowledgeToolUncertainty {
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        run_id: RunId,
-    },
     SetCredential {
         mutation_request_id: MutationRequestId,
         expected_generation: u64,
@@ -133,10 +128,6 @@ impl RequestCommand {
                 mutation_request_id,
                 ..
             }
-            | Self::AcknowledgeToolUncertainty {
-                mutation_request_id,
-                ..
-            }
             | Self::SetCredential {
                 mutation_request_id,
                 ..
@@ -166,7 +157,6 @@ impl RequestCommand {
             Self::ExecuteLocalCommand { .. } => "local command",
             Self::CancelRun { .. } => "run cancellation",
             Self::CancelLocalCommand { .. } => "local command cancellation",
-            Self::AcknowledgeToolUncertainty { .. } => "tool uncertainty acknowledgement",
             Self::SetCredential { .. } => "credential configuration",
             Self::RemoveCredential { .. } => "credential removal",
             Self::StopServer { .. } => "server stop",
@@ -269,15 +259,6 @@ impl RequestCommand {
                 session_id: *session_id,
                 command_id: *command_id,
             }),
-            Self::AcknowledgeToolUncertainty {
-                mutation_request_id,
-                session_id,
-                run_id,
-            } => Some(Self::AcknowledgeToolUncertainty {
-                mutation_request_id: *mutation_request_id,
-                session_id: *session_id,
-                run_id: *run_id,
-            }),
             Self::StopServer {
                 mutation_request_id,
             } => Some(Self::StopServer {
@@ -337,11 +318,6 @@ pub(super) enum RequestEvent {
         command_id: LocalCommandId,
         cancellation_requested: bool,
     },
-    ToolUncertaintyAcknowledged {
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        workspace: WorkspaceSummary,
-    },
     CredentialUpdated {
         mutation_request_id: MutationRequestId,
         credential: OpenCodeCredentialStatus,
@@ -375,7 +351,6 @@ pub(super) enum RequestEvent {
 
 pub(super) struct SessionSnapshot {
     pub(super) session: SessionSummary,
-    pub(super) workspace: WorkspaceSummary,
     pub(super) entries: Vec<TranscriptEntry>,
     pub(super) runs: Vec<RunSummary>,
     pub(super) active_run_id: Option<RunId>,
@@ -546,7 +521,6 @@ async fn execute_credential(
         | RequestCommand::ExecuteLocalCommand { .. }
         | RequestCommand::CancelRun { .. }
         | RequestCommand::CancelLocalCommand { .. }
-        | RequestCommand::AcknowledgeToolUncertainty { .. }
         | RequestCommand::StopServer { .. } => {
             unreachable!("only credential mutations use credential execution")
         }
@@ -685,18 +659,6 @@ async fn execute(
                 mutation_request_id: *mutation_request_id,
                 result,
             }),
-        RequestCommand::AcknowledgeToolUncertainty {
-            mutation_request_id,
-            session_id,
-            run_id,
-        } => client
-            .acknowledge_tool_uncertainty(*mutation_request_id, *session_id, *run_id)
-            .await
-            .map(|workspace| RequestResult::ToolUncertaintyAcknowledged {
-                mutation_request_id: *mutation_request_id,
-                session_id: *session_id,
-                workspace,
-            }),
         RequestCommand::SetCredential { .. } | RequestCommand::RemoveCredential { .. } => {
             unreachable!("credential mutations use single-attempt execution")
         }
@@ -749,7 +711,6 @@ async fn load_session(
     let mut runs = Vec::new();
     let mut cursor = None;
     let mut session = None;
-    let mut workspace = None;
     let mut event_cursor = None;
     let mut active_run_id = None;
     let mut active_command_id = None;
@@ -761,7 +722,6 @@ async fn load_session(
         if session
             .as_ref()
             .is_some_and(|session: &SessionSummary| session != &page.session)
-            || workspace.is_some_and(|workspace| workspace != page.workspace)
             || event_cursor.is_some_and(|event_cursor| event_cursor != page.event_cursor)
             || snapshot_metadata_loaded
                 && (active_run_id != page.active_run_id
@@ -770,7 +730,6 @@ async fn load_session(
             return Err(ApplicationClientError::EventScopeMismatch);
         }
         session = Some(page.session);
-        workspace = Some(page.workspace);
         event_cursor = Some(page.event_cursor);
         if !snapshot_metadata_loaded {
             active_run_id = page.active_run_id;
@@ -794,7 +753,6 @@ async fn load_session(
         if cursor.is_none() {
             return Ok(SessionSnapshot {
                 session: session.ok_or(ApplicationClientError::EventScopeMismatch)?,
-                workspace: workspace.ok_or(ApplicationClientError::EventScopeMismatch)?,
                 entries,
                 runs,
                 active_run_id,
@@ -853,11 +811,6 @@ enum RequestResult {
     LocalCommandCancellationResolved {
         mutation_request_id: MutationRequestId,
         result: LocalCommandCancellationResult,
-    },
-    ToolUncertaintyAcknowledged {
-        mutation_request_id: MutationRequestId,
-        session_id: SessionId,
-        workspace: WorkspaceSummary,
     },
     CredentialUpdated {
         mutation_request_id: MutationRequestId,
@@ -936,15 +889,6 @@ impl RequestResult {
                 command_id: result.command_id,
                 cancellation_requested: result.cancellation_requested,
             },
-            Self::ToolUncertaintyAcknowledged {
-                mutation_request_id,
-                session_id,
-                workspace,
-            } => RequestEvent::ToolUncertaintyAcknowledged {
-                mutation_request_id,
-                session_id,
-                workspace,
-            },
             Self::CredentialUpdated {
                 mutation_request_id,
                 credential,
@@ -991,7 +935,6 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 | RequestCommand::ExecuteLocalCommand { .. }
                 | RequestCommand::CancelRun { .. }
                 | RequestCommand::CancelLocalCommand { .. }
-                | RequestCommand::AcknowledgeToolUncertainty { .. }
                 | RequestCommand::SetCredential { .. }
                 | RequestCommand::RemoveCredential { .. }
                 | RequestCommand::StopServer { .. } => None,

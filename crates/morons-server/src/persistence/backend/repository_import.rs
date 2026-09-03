@@ -1,9 +1,6 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::{
-    Backend,
-    records::{load_session, sequence_to_sql},
-};
+use super::records::sequence_to_sql;
 use crate::persistence::{
     PersistenceError, SessionId, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
 };
@@ -12,18 +9,6 @@ const FACT_PREPARED: i64 = 1;
 const FACT_COMPLETED: i64 = 3;
 const FACT_NOT_APPLIED: i64 = 4;
 const FACT_BLOCKED: i64 = 5;
-
-impl Backend {
-    pub(crate) fn workspace_summary(
-        &self,
-        session_id: SessionId,
-    ) -> Result<WorkspaceSummary, PersistenceError> {
-        if load_session(&self.connection, session_id)?.is_none() {
-            return Err(PersistenceError::SessionNotFound);
-        }
-        workspace_summary_at_sequence(&self.connection, session_id, u64::MAX)
-    }
-}
 
 pub(super) fn workspace_summary_at_sequence(
     connection: &Connection,

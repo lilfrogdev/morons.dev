@@ -32,8 +32,7 @@ pub use session::{
     APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
     ApplicationResponse, MAX_WORKING_DIRECTORY_PATH_BYTES, MutationRequestId, ResourceLimit,
     SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId,
-    SessionListCursor, SessionSummary, SkillSource, SkillSummary, WorkspaceBlockReason,
-    WorkspaceState, WorkspaceSummary,
+    SessionListCursor, SessionSummary, SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 28;
+pub const PROTOCOL_VERSION: u32 = 29;
