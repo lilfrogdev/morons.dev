@@ -9,7 +9,7 @@ use crate::{ClientMessage, ServerMessage};
 pub(crate) const FRAME_HEADER_BYTES: usize = std::mem::size_of::<u32>();
 
 /// Maximum JSON payload size, excluding the four-byte frame header.
-pub const MAX_FRAME_PAYLOAD_BYTES: usize = 1024 * 1024;
+pub const MAX_FRAME_PAYLOAD_BYTES: usize = 12 * 1024 * 1024;
 
 #[derive(Debug)]
 #[non_exhaustive]

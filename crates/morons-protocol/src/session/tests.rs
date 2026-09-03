@@ -79,6 +79,7 @@ fn run_request_has_stable_json_shape() {
         mutation_request_id: MutationRequestId::from_bytes([0x12; 16]),
         session_id: SessionId::from_bytes([0x13; 16]),
         text: "sensitive prompt text".to_owned(),
+        attachments: Vec::new(),
         service: OpenCodeService::Zen,
         model_id: "muse-spark-1.2".to_owned(),
     };
@@ -93,8 +94,44 @@ fn run_request_has_stable_json_shape() {
             "mutation_request_id": "mut_12121212121212121212121212121212",
             "session_id": "ses_13131313131313131313131313131313",
             "text": "sensitive prompt text",
+            "attachments": [],
             "service": "zen",
             "model_id": "muse-spark-1.2",
+        })
+    );
+}
+
+#[test]
+fn image_submission_contract_is_stable_and_debug_redacts_payload() {
+    let request = ApplicationRequest::SubmitSessionInput {
+        mutation_request_id: MutationRequestId::from_bytes([0x14; 16]),
+        session_id: SessionId::from_bytes([0x15; 16]),
+        text: "see [picture.png]".to_owned(),
+        attachments: vec![crate::ImageUpload {
+            display_name: "picture.png".to_owned(),
+            marker_start: 4,
+            data_base64: "c2Vuc2l0aXZlLWltYWdl".to_owned(),
+        }],
+        service: OpenCodeService::Zen,
+        model_id: "gpt-5.4".to_owned(),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("c2Vuc2l0aXZlLWltYWdl"));
+    assert!(debug.contains("attachments"));
+    assert_eq!(
+        serde_json::to_value(request).expect("image request should encode"),
+        json!({
+            "operation": "submit_session_input",
+            "mutation_request_id": "mut_14141414141414141414141414141414",
+            "session_id": "ses_15151515151515151515151515151515",
+            "text": "see [picture.png]",
+            "attachments": [{
+                "display_name": "picture.png",
+                "marker_start": 4,
+                "data_base64": "c2Vuc2l0aXZlLWltYWdl",
+            }],
+            "service": "zen",
+            "model_id": "gpt-5.4",
         })
     );
 }
@@ -276,6 +313,7 @@ fn model_catalog_contract_has_stable_json_shape() {
             responses_protocol_revision: 1,
             capabilities: OpenCodeModelCapabilities {
                 text_input: true,
+                image_input: false,
                 text_output: true,
                 reasoning: true,
                 reasoning_continuation: false,
@@ -300,6 +338,7 @@ fn model_catalog_contract_has_stable_json_shape() {
                 "responses_protocol_revision": 1,
                 "capabilities": {
                     "text_input": true,
+                    "image_input": false,
                     "text_output": true,
                     "reasoning": true,
                     "reasoning_continuation": false,

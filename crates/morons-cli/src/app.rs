@@ -10,12 +10,15 @@ use morons_protocol::{
 };
 use ratatui::Frame;
 
-use crate::terminal::{CredentialBuffer, PromptBuffer, SafeText};
+use crate::terminal::{CredentialBuffer, PromptBuffer, SafeText, is_bidirectional_control};
 
 const MAX_CLIENT_SESSIONS: usize = 10_000;
 const MAX_CLIENT_TRANSCRIPT_ENTRIES: usize = 512;
 const MAX_CLIENT_RUNS: usize = 512;
 const MAX_TRANSIENT_DELTA_BYTES: usize = 128 * 1024;
+const MAX_DRAFT_IMAGES: usize = 4;
+const MAX_DRAFT_IMAGE_BYTES: usize = 6 * 1024 * 1024;
+const MAX_IMAGE_DISPLAY_NAME_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum View {
@@ -55,6 +58,7 @@ pub(super) enum AppAction {
     SubmitInput {
         session_id: SessionId,
         text: String,
+        attachments: Vec<morons_protocol::ImageUpload>,
         service: OpenCodeService,
         model_id: String,
     },
@@ -102,12 +106,14 @@ impl fmt::Debug for AppAction {
             Self::SubmitInput {
                 session_id,
                 text,
+                attachments,
                 service,
                 model_id,
             } => formatter
                 .debug_struct("SubmitInput")
                 .field("session_id", session_id)
                 .field("text_bytes", &text.len())
+                .field("attachments", &attachments.len())
                 .field("service", service)
                 .field("model_id", model_id)
                 .finish(),
@@ -181,6 +187,11 @@ impl fmt::Display for UiStateError {
 
 impl Error for UiStateError {}
 
+struct DraftImage {
+    upload: morons_protocol::ImageUpload,
+    normalized_bytes: usize,
+}
+
 pub(super) struct AppState {
     pub(super) server_version: SafeText,
     pub(super) status: SafeText,
@@ -193,6 +204,7 @@ pub(super) struct AppState {
     pub(super) view: View,
     pub(super) session: Option<SessionView>,
     pub(super) prompt: PromptBuffer,
+    draft_images: Vec<DraftImage>,
     pub(super) pending: Option<PendingOperation>,
     pub(super) pending_unknown: bool,
     pub(super) confirm_stop: bool,
@@ -215,6 +227,7 @@ impl AppState {
             view: View::Sessions,
             session: None,
             prompt: PromptBuffer::default(),
+            draft_images: Vec::new(),
             pending: None,
             pending_unknown: false,
             confirm_stop: false,
@@ -270,6 +283,94 @@ impl AppState {
 
     pub(super) fn reset_skill_completion(&mut self) {
         self.skill_completion_index = 0;
+    }
+
+    pub(super) fn accepts_image_input(&self) -> bool {
+        self.view == View::Session
+            && self.pending.is_none()
+            && self.credential_dialog.is_none()
+            && !self.confirm_stop
+            && !self.confirm_uncertainty
+    }
+
+    pub(super) fn add_draft_image(
+        &mut self,
+        image: morons_image::NormalizedImage,
+        suggested_name: Option<&str>,
+    ) {
+        if !self.accepts_image_input() {
+            return;
+        }
+        if self.draft_images.len() >= MAX_DRAFT_IMAGES
+            || self
+                .draft_images
+                .iter()
+                .map(|image| image.normalized_bytes)
+                .sum::<usize>()
+                .checked_add(image.bytes.len())
+                .is_none_or(|bytes| bytes > MAX_DRAFT_IMAGE_BYTES)
+        {
+            self.set_status("Image attachment limit reached");
+            return;
+        }
+        let base_name = suggested_name
+            .map(sanitize_image_name)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| {
+                format!(
+                    "pasted-image-{}.{}",
+                    self.draft_images.len() + 1,
+                    image.media_type.extension()
+                )
+            });
+        let Some(display_name) = unique_image_name(
+            &base_name,
+            self.draft_images
+                .iter()
+                .map(|image| image.upload.display_name.as_str()),
+        ) else {
+            self.set_status("A unique bounded image name could not be assigned");
+            return;
+        };
+        let Some(marker_start) = self.prompt.push_image_marker(&display_name) else {
+            self.set_status("The image marker does not fit in the current message");
+            return;
+        };
+        let normalized_bytes = image.bytes.len();
+        self.draft_images.push(DraftImage {
+            upload: morons_protocol::ImageUpload {
+                display_name: display_name.clone(),
+                marker_start,
+                data_base64: morons_image::encode_base64(&image.bytes),
+            },
+            normalized_bytes,
+        });
+        self.reset_skill_completion();
+        self.set_status(format!(
+            "Attached [{display_name}] · {}×{} · {} bytes",
+            image.width, image.height, normalized_bytes
+        ));
+    }
+
+    pub(super) fn backspace_prompt(&mut self) {
+        if let Some(image) = self.draft_images.last() {
+            let marker_start = usize::try_from(image.upload.marker_start).unwrap_or(usize::MAX);
+            let marker_end = marker_start.saturating_add(image.upload.display_name.len() + 2);
+            if marker_end == self.prompt.len_bytes() && self.prompt.truncate(marker_start) {
+                self.draft_images.pop();
+                self.reset_skill_completion();
+                return;
+            }
+        }
+        self.prompt.backspace();
+        self.reset_skill_completion();
+    }
+
+    fn image_uploads(&self) -> Vec<morons_protocol::ImageUpload> {
+        self.draft_images
+            .iter()
+            .map(|image| image.upload.clone())
+            .collect()
     }
 
     pub(super) fn set_status(&mut self, status: impl AsRef<str>) {
@@ -373,6 +474,7 @@ impl AppState {
         self.session = Some(session);
         self.view = View::Session;
         self.prompt.clear();
+        self.draft_images.clear();
         self.transcript_scroll = 0;
         self.skill_completion_index = 0;
         Ok(())
@@ -393,6 +495,7 @@ impl AppState {
         self.view = View::Sessions;
         self.session = None;
         self.prompt.clear();
+        self.draft_images.clear();
         self.pending = None;
         self.pending_unknown = false;
         self.transcript_scroll = 0;
@@ -453,6 +556,7 @@ impl AppState {
 
     pub(super) fn session_input_accepted(&mut self, run: RunSummary) -> Result<(), UiStateError> {
         self.prompt.clear();
+        self.draft_images.clear();
         self.reset_skill_completion();
         self.clear_pending();
         self.session_mut(run.session_id)?.apply_run(run)
@@ -950,6 +1054,59 @@ fn transcript_entry_run_id(entry: &TranscriptEntry) -> Option<RunId> {
         | TranscriptEntry::ToolResult { run_id, .. } => Some(*run_id),
         TranscriptEntry::LocalCommand { .. } => None,
     }
+}
+
+fn sanitize_image_name(value: &str) -> String {
+    let mut name = value
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || is_bidirectional_control(character)
+                || matches!(character, '/' | '\\' | '[' | ']')
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    while name.len() > MAX_IMAGE_DISPLAY_NAME_BYTES {
+        name.pop();
+    }
+    if matches!(name.as_str(), "" | "." | "..") {
+        String::new()
+    } else {
+        name
+    }
+}
+
+fn unique_image_name<'a>(base: &str, existing: impl Iterator<Item = &'a str>) -> Option<String> {
+    let existing = existing.collect::<std::collections::BTreeSet<_>>();
+    if !existing.contains(base) {
+        return Some(base.to_owned());
+    }
+    let (stem, extension) = base
+        .rsplit_once('.')
+        .map_or((base, None), |(stem, extension)| (stem, Some(extension)));
+    for index in 2_u32..=5 {
+        let suffix = format!(" ({index})");
+        let extension_bytes = extension.map_or(0, |extension| extension.len() + 1);
+        let maximum_stem = MAX_IMAGE_DISPLAY_NAME_BYTES
+            .saturating_sub(suffix.len())
+            .saturating_sub(extension_bytes);
+        let mut bounded_stem = stem.to_owned();
+        while bounded_stem.len() > maximum_stem {
+            bounded_stem.pop();
+        }
+        let candidate = sanitize_image_name(&extension.map_or_else(
+            || format!("{bounded_stem}{suffix}"),
+            |extension| format!("{bounded_stem}{suffix}.{extension}"),
+        ));
+        if !existing.contains(candidate.as_str()) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 const fn tool_label(tool: morons_protocol::ToolKind) -> &'static str {

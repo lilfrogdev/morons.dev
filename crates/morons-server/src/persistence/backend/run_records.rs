@@ -290,6 +290,7 @@ pub(super) fn transcript_entry_from_row(
             id,
             run_id,
             text,
+            attachments: Vec::new(),
             created_at_milliseconds,
         }),
         (2, Some(service), Some(model_id), Some(text), refusal, Some(phase), None) => {

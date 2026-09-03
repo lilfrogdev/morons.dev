@@ -15,7 +15,10 @@ use ratatui_crossterm::{
     CrosstermBackend,
     crossterm::{
         cursor::{Hide, Show},
-        event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEvent},
+        event::{
+            self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent,
+            KeyEventKind, KeyModifiers,
+        },
         execute,
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
@@ -23,9 +26,10 @@ use ratatui_crossterm::{
 use tokio::sync::mpsc;
 use zeroize::Zeroizing;
 
+pub(crate) use safety::is_bidirectional_control;
 pub use safety::{CredentialBuffer, MAX_PROMPT_BYTES, PromptBuffer, SafeText};
 
-const TERMINAL_EVENT_QUEUE_CAPACITY: usize = 64;
+const TERMINAL_EVENT_QUEUE_CAPACITY: usize = 16;
 const TERMINAL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_PASTE_BYTES: usize = MAX_PROMPT_BYTES;
 
@@ -34,6 +38,8 @@ type AppTerminal = Terminal<CrosstermBackend<Stdout>>;
 pub enum TerminalInput {
     Key(KeyEvent),
     Paste(Zeroizing<String>),
+    Image(morons_image::NormalizedImage),
+    ClipboardUnavailable,
     Resize,
 }
 
@@ -45,6 +51,16 @@ impl std::fmt::Debug for TerminalInput {
                 .debug_struct("TerminalInput::Paste")
                 .field("paste_bytes", &paste.len())
                 .finish(),
+            Self::Image(image) => formatter
+                .debug_struct("TerminalInput::Image")
+                .field("media_type", &image.media_type)
+                .field("width", &image.width)
+                .field("height", &image.height)
+                .field("bytes", &image.bytes.len())
+                .finish(),
+            Self::ClipboardUnavailable => {
+                formatter.write_str("TerminalInput::ClipboardUnavailable")
+            }
             Self::Resize => formatter.write_str("TerminalInput::Resize"),
         }
     }
@@ -174,7 +190,12 @@ fn read_terminal_events(sender: mpsc::Sender<io::Result<TerminalInput>>, stop: &
             Ok(false) => {}
             Ok(true) => match event::read() {
                 Ok(Event::Key(key)) => {
-                    if sender.try_send(Ok(TerminalInput::Key(key))).is_err() && sender.is_closed() {
+                    let input = if is_clipboard_paste_key(key) {
+                        capture_clipboard()
+                    } else {
+                        TerminalInput::Key(key)
+                    };
+                    if sender.try_send(Ok(input)).is_err() && sender.is_closed() {
                         return;
                     }
                 }
@@ -205,6 +226,36 @@ fn read_terminal_events(sender: mpsc::Sender<io::Result<TerminalInput>>, stop: &
     }
 }
 
+fn is_clipboard_paste_key(key: KeyEvent) -> bool {
+    if key.kind != KeyEventKind::Press || key.code != KeyCode::Char('v') {
+        return false;
+    }
+    #[cfg(windows)]
+    return key.modifiers.contains(KeyModifiers::ALT);
+    #[cfg(not(windows))]
+    key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn capture_clipboard() -> TerminalInput {
+    let Ok(mut clipboard) = arboard::Clipboard::new() else {
+        return TerminalInput::ClipboardUnavailable;
+    };
+    if let Ok(image) = clipboard.get_image() {
+        let (Ok(width), Ok(height)) = (u32::try_from(image.width), u32::try_from(image.height))
+        else {
+            return TerminalInput::ClipboardUnavailable;
+        };
+        return morons_image::normalize_rgba(width, height, image.bytes.into_owned())
+            .map_or(TerminalInput::ClipboardUnavailable, TerminalInput::Image);
+    }
+    clipboard
+        .get_text()
+        .map(|text| {
+            TerminalInput::Paste(Zeroizing::new(bounded_utf8_prefix(text, MAX_PASTE_BYTES)))
+        })
+        .unwrap_or(TerminalInput::ClipboardUnavailable)
+}
+
 fn bounded_utf8_prefix(mut value: String, maximum_bytes: usize) -> String {
     if value.len() <= maximum_bytes {
         return value;
@@ -219,7 +270,9 @@ fn bounded_utf8_prefix(mut value: String, maximum_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalInput, bounded_utf8_prefix};
+    use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::{TerminalInput, bounded_utf8_prefix, is_clipboard_paste_key};
 
     #[test]
     fn paste_prefix_preserves_utf8_boundaries() {
@@ -233,5 +286,26 @@ mod tests {
         let debug = format!("{input:?}");
         assert!(!debug.contains("sensitive paste"));
         assert!(debug.contains("paste_bytes"));
+        let image = morons_image::normalize_rgba(1, 1, vec![1, 2, 3, 4])
+            .expect("fixture image should normalize");
+        let debug = format!("{:?}", TerminalInput::Image(image));
+        assert!(!debug.contains("AQIDBA"));
+        assert!(debug.contains("width"));
+    }
+
+    #[test]
+    fn platform_clipboard_shortcut_is_explicit() {
+        #[cfg(windows)]
+        let modifiers = KeyModifiers::ALT;
+        #[cfg(not(windows))]
+        let modifiers = KeyModifiers::CONTROL;
+        assert!(is_clipboard_paste_key(KeyEvent::new(
+            KeyCode::Char('v'),
+            modifiers
+        )));
+        assert!(!is_clipboard_paste_key(KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::SHIFT
+        )));
     }
 }

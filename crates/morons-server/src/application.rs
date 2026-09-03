@@ -19,13 +19,14 @@ use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ResourceLimit,
     ServerEndpoint,
 };
+use sha2::{Digest as _, Sha256};
 use tokio::sync::{Mutex, watch};
 
 use crate::{
     command_supervisor::CommandSupervisor,
     persistence::{
-        PersistenceError, RunModelSelection, SessionCatalogEventCursor, SessionEventCursor,
-        SessionEventPayload, SessionId, SessionStore,
+        PersistenceError, PreparedImageAttachment, RunModelSelection, SessionCatalogEventCursor,
+        SessionEventCursor, SessionEventPayload, SessionId, SessionStore,
     },
     provider::{
         OpenCodeModelAvailability, OpenCodeProvider, OpenCodeService, ProviderError,
@@ -279,20 +280,23 @@ impl ServerApplication {
                 mutation_request_id,
                 session_id,
                 text,
+                attachments,
                 service,
                 model_id,
             } => {
                 let mutation_request_id = to_persistence_mutation_id(mutation_request_id);
                 let session_id = to_persistence_session_id(session_id);
                 let persistence_service = to_persistence_service(service);
+                let prepared_attachments = prepare_image_uploads(attachments).await?;
                 if let Some(accepted) = self
                     .sessions
-                    .find_session_input_retry(
+                    .find_session_input_retry_with_images(
                         mutation_request_id,
                         session_id,
                         &text,
                         persistence_service,
                         &model_id,
+                        &prepared_attachments,
                     )
                     .await
                     .map_err(to_application_error)?
@@ -303,6 +307,9 @@ impl ServerApplication {
                 let provider_service = to_provider_service(service);
                 let model = find_open_code_model(provider_service, &model_id)
                     .ok_or(ApplicationError::UnsupportedModel)?;
+                if !prepared_attachments.is_empty() && !model.capabilities.image_input {
+                    return Err(ApplicationError::UnsupportedModel);
+                }
                 let working_directory = self
                     .sessions
                     .get_session(session_id)
@@ -346,8 +353,10 @@ impl ServerApplication {
                             maximum_input_tokens: model.maximum_input_tokens,
                             maximum_output_tokens: model.maximum_output_tokens,
                             supports_tool_calls: model.capabilities.tool_calls,
+                            supports_image_input: model.capabilities.image_input,
                         },
                         skill_context,
+                        prepared_attachments,
                     )
                     .await
                     .map_err(to_application_error)?;
@@ -832,6 +841,40 @@ impl ServerApplication {
             shutdown_requests,
         }
     }
+}
+
+async fn prepare_image_uploads(
+    uploads: Vec<morons_protocol::ImageUpload>,
+) -> Result<Vec<PreparedImageAttachment>, ApplicationError> {
+    if uploads.len() > 4 {
+        return Err(ApplicationError::InvalidRequest);
+    }
+    tokio::task::spawn_blocking(move || {
+        uploads
+            .into_iter()
+            .map(|upload| {
+                if !crate::persistence::images::valid_display_name(&upload.display_name) {
+                    return Err(ApplicationError::InvalidRequest);
+                }
+                let raw = morons_image::decode_base64(&upload.data_base64)
+                    .map_err(|_| ApplicationError::InvalidRequest)?;
+                let normalized = morons_image::normalize_image(&raw)
+                    .map_err(|_| ApplicationError::InvalidRequest)?;
+                let digest = Sha256::digest(&normalized.bytes).into();
+                Ok(PreparedImageAttachment {
+                    display_name: upload.display_name,
+                    marker_start: upload.marker_start,
+                    media_type: normalized.media_type,
+                    width: normalized.width,
+                    height: normalized.height,
+                    bytes: normalized.bytes,
+                    digest,
+                })
+            })
+            .collect()
+    })
+    .await
+    .map_err(|_| ApplicationError::Internal)?
 }
 
 fn application_skill_discovery() -> SkillDiscovery {

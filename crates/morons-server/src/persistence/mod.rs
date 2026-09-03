@@ -1,6 +1,7 @@
 mod backend;
 mod credentials;
 mod database;
+pub(crate) mod images;
 mod local_commands;
 mod paths;
 mod run_types;
@@ -26,11 +27,11 @@ use self::{
 
 pub use self::{
     run_types::{
-        AcceptedLocalCommand, AcceptedRun, LocalCommandCancellationResult, LocalCommandId,
-        LocalCommandStatus, MessageId, Run, RunCancellationResult, RunFailureKind, RunId,
-        RunModelSelection, RunOpenCodeService, RunState, SessionEvent, SessionEventCursor,
-        SessionEventPage, SessionEventPayload, ToolCallId, TranscriptCursor, TranscriptEntry,
-        TranscriptPage,
+        AcceptedLocalCommand, AcceptedRun, ImageAttachment, ImageAttachmentId,
+        LocalCommandCancellationResult, LocalCommandId, LocalCommandStatus, MessageId, Run,
+        RunCancellationResult, RunFailureKind, RunId, RunModelSelection, RunOpenCodeService,
+        RunState, SessionEvent, SessionEventCursor, SessionEventPage, SessionEventPayload,
+        ToolCallId, TranscriptCursor, TranscriptEntry, TranscriptPage,
     },
     types::{
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
@@ -45,8 +46,8 @@ pub(crate) use self::types::{ExecutionTargetArch, ExecutionTargetOs};
 pub(crate) use self::run_types::{
     ActivationOutcome, AssistantMessagePhase, CommittedToolCall, CommittedToolTurn,
     CompletedAssistant, CompletedToolTurn, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
-    PrepareOperationOutcome, ProviderOperationFailureState, ProviderUsage, RunContext,
-    ToolOperationRecovery,
+    PrepareOperationOutcome, PreparedImageAttachment, ProviderOperationFailureState, ProviderUsage,
+    RunContext, RunInputContext, ToolOperationRecovery,
 };
 
 const WORKER_QUEUE_CAPACITY: usize = 64;

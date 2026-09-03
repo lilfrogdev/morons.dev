@@ -1,9 +1,10 @@
 use std::{fs, path::PathBuf, process};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
 use rusqlite::Connection;
+use sha2::{Digest as _, Sha256};
 
 use super::{
     ActivationOutcome, CompletedAssistant, DispatchOutcome, MutationRequestId,
@@ -203,6 +204,7 @@ async fn accepted_run_binds_active_skill_instructions_and_catalog_metadata() {
             "@release-helper prepare this release".to_owned(),
             model_selection(),
             skills.clone(),
+            Vec::new(),
         )
         .await
         .expect("skill-bearing run should be accepted");
@@ -247,6 +249,143 @@ async fn accepted_run_binds_active_skill_instructions_and_catalog_metadata() {
         Err(error) => error,
     };
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn image_attachments_are_fingerprint_bound_file_backed_and_durable() {
+    let root = TestRoot::new("run-image-context");
+    let selected = TestRoot::new("run-image-directory");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    configure_credential(&store).await;
+    let session = store
+        .create_session_at(
+            MutationRequestId::from_bytes([0xc1; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let image =
+        morons_image::normalize_rgba(2, 2, vec![0x44; 16]).expect("fixture image should normalize");
+    let attachment = crate::persistence::PreparedImageAttachment {
+        display_name: "picture.png".to_owned(),
+        marker_start: 5,
+        media_type: image.media_type,
+        width: image.width,
+        height: image.height,
+        digest: Sha256::digest(&image.bytes).into(),
+        bytes: image.bytes,
+    };
+    let mut selection = model_selection();
+    selection.supports_image_input = true;
+    let request_id = MutationRequestId::from_bytes([0xc2; 16]);
+    let accepted = store
+        .accept_session_input_with_skills(
+            request_id,
+            session.id,
+            "look [picture.png]".to_owned(),
+            selection.clone(),
+            crate::skills::RunSkillContext::default(),
+            vec![attachment.clone()],
+        )
+        .await
+        .expect("image-bearing run should be accepted");
+    let retry = store
+        .accept_session_input_with_skills(
+            request_id,
+            session.id,
+            "look [picture.png]".to_owned(),
+            selection,
+            crate::skills::RunSkillContext::default(),
+            vec![attachment.clone()],
+        )
+        .await
+        .expect("exact image retry should resolve");
+    assert_eq!(retry.run.id, accepted.run.id);
+    assert!(!retry.newly_accepted);
+
+    let page = store
+        .list_session_transcript(session.id, None, 1)
+        .await
+        .expect("image transcript should load");
+    let [TranscriptEntry::UserMessage { attachments, .. }] = &page.entries[..] else {
+        panic!("user message should remain canonical");
+    };
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].display_name, "picture.png");
+    let context = store
+        .load_run_context(accepted.run.id)
+        .await
+        .expect("image context should load");
+    assert_eq!(context.attachment_data.len(), 1);
+    assert_eq!(
+        context
+            .attachment_data
+            .get(&attachments[0].id)
+            .map(Vec::as_slice),
+        Some(attachment.bytes.as_slice())
+    );
+    assert!(matches!(
+        store
+            .accept_session_input_with_skills(
+                MutationRequestId::from_bytes([0xc3; 16]),
+                session.id,
+                "continue without vision".to_owned(),
+                model_selection(),
+                crate::skills::RunSkillContext::default(),
+                Vec::new(),
+            )
+            .await,
+        Err(PersistenceError::ImageInputUnsupported)
+    ));
+    assert_eq!(
+        fs::read_dir(root.path().join("attachments"))
+            .expect("attachment directory should be readable")
+            .count(),
+        1
+    );
+    drop(store);
+    let attachment_session_directory = fs::read_dir(root.path().join("attachments"))
+        .expect("attachment root should be readable")
+        .next()
+        .expect("attachment session directory should exist")
+        .expect("attachment session entry should load")
+        .path();
+    let orphan = attachment_session_directory.join("11111111111111111111111111111111.image");
+    fs::write(&orphan, &attachment.bytes).expect("orphan fixture should be written");
+    #[cfg(unix)]
+    fs::set_permissions(&orphan, fs::Permissions::from_mode(0o600))
+        .expect("orphan should be owner-only");
+    let reopened =
+        SessionStore::open_at(root.path()).expect("image attachment should survive reopen");
+    assert!(!orphan.exists());
+    drop(reopened);
+    let durable_file = fs::read_dir(attachment_session_directory)
+        .expect("attachment directory should remain readable")
+        .next()
+        .expect("durable attachment should exist")
+        .expect("durable attachment entry should load")
+        .path();
+    #[cfg(unix)]
+    {
+        let directory_metadata = fs::symlink_metadata(
+            durable_file
+                .parent()
+                .expect("durable attachment should have a parent"),
+        )
+        .expect("attachment session directory metadata should load");
+        assert_eq!(directory_metadata.mode() & 0o777, 0o700);
+        let metadata =
+            fs::symlink_metadata(&durable_file).expect("durable attachment metadata should load");
+        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
+    }
+    fs::remove_file(durable_file).expect("durable attachment should be removed for corruption");
+    let error = match SessionStore::open_at(root.path()) {
+        Ok(_) => panic!("missing durable attachment should fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, PersistenceError::Io(_)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -758,6 +897,7 @@ fn model_selection() -> RunModelSelection {
         maximum_input_tokens: 96_000,
         maximum_output_tokens: 32_000,
         supports_tool_calls: true,
+        supports_image_input: false,
     }
 }
 

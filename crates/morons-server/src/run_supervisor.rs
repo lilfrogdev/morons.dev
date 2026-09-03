@@ -23,9 +23,9 @@ use crate::{
     },
     provider::{
         OpenCodeProvider, OpenCodeResponseRequest, OpenCodeService, ProviderCancellation,
-        ProviderCancellationHandle, ProviderError, ProviderInputItem, ProviderMessagePhase,
-        ProviderMessageRole, ProviderOutcome, ProviderOutputItem, ProviderStreamEvent,
-        ProviderToolCall, provider_cancellation,
+        ProviderCancellationHandle, ProviderContentPart, ProviderError, ProviderInputItem,
+        ProviderMessagePhase, ProviderMessageRole, ProviderOutcome, ProviderOutputItem,
+        ProviderStreamEvent, ProviderToolCall, find_open_code_model, provider_cancellation,
     },
     tools::{
         BashToolExecutor, DirectToolExecutor, IpythonSupervisor, TOOL_CATALOG_VERSION,
@@ -394,6 +394,11 @@ impl RunSupervisor {
                             run_id,
                             PathBuf::from(working_directory),
                             committed.calls,
+                            find_open_code_model(
+                                to_provider_service(context.run.service),
+                                &context.run.model_id,
+                            )
+                            .is_some_and(|model| model.capabilities.image_input),
                             &cancellation,
                         )
                         .await?;
@@ -426,6 +431,7 @@ impl RunSupervisor {
         run_id: RunId,
         working_directory: PathBuf,
         calls: Vec<crate::persistence::CommittedToolCall>,
+        supports_image_input: bool,
         cancellation: &ProviderCancellation,
     ) -> Result<bool, PersistenceError> {
         for call in calls {
@@ -487,6 +493,7 @@ impl RunSupervisor {
                     })
                 })
             };
+            let result = enforce_image_capability(result, supports_image_input);
             let cancelled = result.error_kind() == Some(crate::tools::ToolErrorKind::Cancelled);
             let uncertain = result.is_uncertain();
             self.sessions
@@ -505,6 +512,14 @@ impl RunSupervisor {
 
     async fn remove_control(&self, run_id: RunId) {
         self.state.lock().await.controls.remove(&run_id);
+    }
+}
+
+fn enforce_image_capability(result: ToolResult, supports_image_input: bool) -> ToolResult {
+    if !supports_image_input && result.has_image() {
+        ToolResult::error(crate::tools::ToolErrorKind::ImageInputUnsupported)
+    } else {
+        result
     }
 }
 
@@ -561,11 +576,16 @@ fn build_provider_request(
             continuation_inserted = true;
         }
         input.push(match entry {
-            TranscriptEntry::UserMessage { text, .. } => ProviderInputItem::Message {
+            TranscriptEntry::UserMessage {
+                text, attachments, ..
+            } if attachments.is_empty() => ProviderInputItem::Message {
                 role: ProviderMessageRole::User,
                 text: text.clone(),
                 phase: None,
             },
+            TranscriptEntry::UserMessage {
+                text, attachments, ..
+            } => multimodal_user_message(text, attachments, &context.attachment_data)?,
             TranscriptEntry::AssistantMessage { text, phase, .. } => ProviderInputItem::Message {
                 role: ProviderMessageRole::Assistant,
                 text: text.clone(),
@@ -614,6 +634,16 @@ fn build_provider_request(
                 ..
             } => return Err(ProviderError::InvalidRequest),
         });
+        if let TranscriptEntry::ToolResult {
+            result:
+                ToolResult::Ok {
+                    output: crate::tools::ToolOutput::ReadImage { image, .. },
+                },
+            ..
+        } = entry
+        {
+            input.push(tool_image_message(image, &context.attachment_data)?);
+        }
     }
     if reasoning_continuation.is_some() && !continuation_inserted {
         return Err(ProviderError::InvalidRequest);
@@ -630,6 +660,76 @@ fn build_provider_request(
             Vec::new()
         },
     )
+}
+
+fn multimodal_user_message(
+    text: &str,
+    attachments: &[crate::persistence::ImageAttachment],
+    data: &std::collections::HashMap<crate::persistence::ImageAttachmentId, Vec<u8>>,
+) -> Result<ProviderInputItem, ProviderError> {
+    let mut parts = Vec::with_capacity(attachments.len() * 2 + 1);
+    let mut cursor = 0_usize;
+    for attachment in attachments {
+        let start =
+            usize::try_from(attachment.marker_start).map_err(|_| ProviderError::InvalidRequest)?;
+        let marker_end = start
+            .checked_add(attachment.display_name.len() + 2)
+            .ok_or(ProviderError::InvalidRequest)?;
+        let text_part = text
+            .get(cursor..marker_end)
+            .filter(|part| !part.is_empty())
+            .ok_or(ProviderError::InvalidRequest)?;
+        parts.push(ProviderContentPart::Text(text_part.to_owned()));
+        let bytes = data
+            .get(&attachment.id)
+            .filter(|bytes| bytes.len() as u64 == attachment.bytes)
+            .ok_or(ProviderError::InvalidRequest)?;
+        parts.push(ProviderContentPart::Image {
+            media_type: attachment.media_type,
+            width: attachment.width,
+            height: attachment.height,
+            bytes: bytes.clone(),
+        });
+        cursor = marker_end;
+    }
+    if let Some(remainder) = text.get(cursor..).filter(|part| !part.is_empty()) {
+        parts.push(ProviderContentPart::Text(remainder.to_owned()));
+    }
+    Ok(ProviderInputItem::MultimodalMessage {
+        role: ProviderMessageRole::User,
+        parts,
+        phase: None,
+    })
+}
+
+fn tool_image_message(
+    image: &crate::tools::ToolImageOutput,
+    data: &std::collections::HashMap<crate::persistence::ImageAttachmentId, Vec<u8>>,
+) -> Result<ProviderInputItem, ProviderError> {
+    let attachment_id = image
+        .attachment_id
+        .map(crate::persistence::ImageAttachmentId::from_bytes)
+        .ok_or(ProviderError::InvalidRequest)?;
+    let bytes = data
+        .get(&attachment_id)
+        .filter(|bytes| bytes.len() as u64 == image.bytes)
+        .ok_or(ProviderError::InvalidRequest)?;
+    Ok(ProviderInputItem::MultimodalMessage {
+        role: ProviderMessageRole::User,
+        parts: vec![
+            ProviderContentPart::Text(format!(
+                "[{}] Image returned by the preceding read tool call.",
+                image.display_name
+            )),
+            ProviderContentPart::Image {
+                media_type: image.media_type,
+                width: image.width,
+                height: image.height,
+                bytes: bytes.clone(),
+            },
+        ],
+        phase: None,
+    })
 }
 
 fn deterministic_provider_call_id(call_id: crate::persistence::ToolCallId) -> String {

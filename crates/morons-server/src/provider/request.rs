@@ -7,10 +7,13 @@ use super::{
     OpenCodeModel, OpenCodeService, ProviderError, find_open_code_model, json::parse_strict_value,
 };
 
-pub const MAX_PROVIDER_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_PROVIDER_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_INPUT_ITEMS: usize = 256;
 const MAX_INPUT_TEXT_BYTES: usize = 512 * 1024;
-const MAX_AGGREGATE_INPUT_BYTES: usize = 3 * 1024 * 1024;
+const MAX_AGGREGATE_INPUT_BYTES: usize = 12 * 1024 * 1024;
+const MAX_INPUT_IMAGES: usize = 16;
+const MAX_INPUT_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_AGGREGATE_IMAGE_BYTES: usize = 6 * 1024 * 1024;
 pub(super) const MAX_TOOL_COUNT: usize = 64;
 pub(super) const MAX_TOOL_NAME_BYTES: usize = 64;
 const MAX_TOOL_DESCRIPTION_BYTES: usize = 4 * 1024;
@@ -39,11 +42,50 @@ pub enum ProviderMessagePhase {
     FinalAnswer,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub enum ProviderContentPart {
+    Text(String),
+    Image {
+        media_type: morons_image::ImageMediaType,
+        width: u32,
+        height: u32,
+        bytes: Vec<u8>,
+    },
+}
+
+impl fmt::Debug for ProviderContentPart {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Text(text) => formatter
+                .debug_struct("Text")
+                .field("text_bytes", &text.len())
+                .finish(),
+            Self::Image {
+                media_type,
+                width,
+                height,
+                bytes,
+            } => formatter
+                .debug_struct("Image")
+                .field("media_type", media_type)
+                .field("width", width)
+                .field("height", height)
+                .field("bytes", &bytes.len())
+                .finish(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum ProviderInputItem {
     Message {
         role: ProviderMessageRole,
         text: String,
+        phase: Option<ProviderMessagePhase>,
+    },
+    MultimodalMessage {
+        role: ProviderMessageRole,
+        parts: Vec<ProviderContentPart>,
         phase: Option<ProviderMessagePhase>,
     },
     FunctionCall {
@@ -70,6 +112,12 @@ impl fmt::Debug for ProviderInputItem {
                 .field("role", role)
                 .field("phase", phase)
                 .field("text_bytes", &text.len())
+                .finish(),
+            Self::MultimodalMessage { role, parts, phase } => formatter
+                .debug_struct("MultimodalMessage")
+                .field("role", role)
+                .field("phase", phase)
+                .field("parts", &parts.len())
                 .finish(),
             Self::FunctionCall {
                 call_id,
@@ -214,6 +262,8 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
         return Err(ProviderError::InvalidRequest);
     }
     let mut aggregate_bytes = 0_usize;
+    let mut image_count = 0_usize;
+    let mut aggregate_image_bytes = 0_usize;
     for item in input {
         let item_bytes = match item {
             ProviderInputItem::Message { role, text, phase } => {
@@ -224,6 +274,71 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
                     return Err(ProviderError::InvalidRequest);
                 }
                 text.len()
+            }
+            ProviderInputItem::MultimodalMessage { role, parts, phase } => {
+                if *role != ProviderMessageRole::User
+                    || phase.is_some()
+                    || !model.capabilities.image_input
+                    || parts.is_empty()
+                    || parts.len() > MAX_INPUT_IMAGES * 2 + 1
+                {
+                    return Err(ProviderError::InvalidRequest);
+                }
+                let mut item_bytes = 0_usize;
+                let mut saw_image = false;
+                for part in parts {
+                    let bytes = match part {
+                        ProviderContentPart::Text(text) => {
+                            if text.is_empty() || text.len() > MAX_INPUT_TEXT_BYTES {
+                                return Err(ProviderError::InvalidRequest);
+                            }
+                            text.len()
+                        }
+                        ProviderContentPart::Image {
+                            media_type,
+                            width,
+                            height,
+                            bytes,
+                        } => {
+                            if bytes.is_empty()
+                                || bytes.len() > MAX_INPUT_IMAGE_BYTES
+                                || !morons_image::validate_normalized_image(
+                                    bytes,
+                                    *media_type,
+                                    *width,
+                                    *height,
+                                )
+                            {
+                                return Err(ProviderError::InvalidRequest);
+                            }
+                            image_count = image_count
+                                .checked_add(1)
+                                .ok_or(ProviderError::InvalidRequest)?;
+                            aggregate_image_bytes = aggregate_image_bytes
+                                .checked_add(bytes.len())
+                                .ok_or(ProviderError::InvalidRequest)?;
+                            if image_count > MAX_INPUT_IMAGES
+                                || aggregate_image_bytes > MAX_AGGREGATE_IMAGE_BYTES
+                            {
+                                return Err(ProviderError::InvalidRequest);
+                            }
+                            saw_image = true;
+                            bytes
+                                .len()
+                                .checked_add(2)
+                                .and_then(|length| length.checked_div(3))
+                                .and_then(|length| length.checked_mul(4))
+                                .ok_or(ProviderError::InvalidRequest)?
+                        }
+                    };
+                    item_bytes = item_bytes
+                        .checked_add(bytes)
+                        .ok_or(ProviderError::InvalidRequest)?;
+                }
+                if !saw_image {
+                    return Err(ProviderError::InvalidRequest);
+                }
+                item_bytes
             }
             ProviderInputItem::FunctionCall {
                 call_id,
@@ -391,9 +506,35 @@ impl<'a> From<&'a ProviderInputItem> for WireInputItem<'a> {
         match item {
             ProviderInputItem::Message { role, text, phase } => Self::Message(WireMessage {
                 role: *role,
-                content: text,
+                content: WireMessageContent::Text(text),
                 phase: *phase,
             }),
+            ProviderInputItem::MultimodalMessage { role, parts, phase } => {
+                Self::Message(WireMessage {
+                    role: *role,
+                    content: WireMessageContent::Parts(
+                        parts
+                            .iter()
+                            .map(|part| match part {
+                                ProviderContentPart::Text(text) => {
+                                    WireContentPart::InputText { text }
+                                }
+                                ProviderContentPart::Image {
+                                    media_type, bytes, ..
+                                } => WireContentPart::InputImage {
+                                    image_url: format!(
+                                        "data:{};base64,{}",
+                                        media_type.as_str(),
+                                        morons_image::encode_base64(bytes)
+                                    ),
+                                    detail: "auto",
+                                },
+                            })
+                            .collect(),
+                    ),
+                    phase: *phase,
+                })
+            }
             ProviderInputItem::FunctionCall {
                 call_id,
                 name,
@@ -434,9 +575,28 @@ impl<'a> From<&'a ProviderInputItem> for WireInputItem<'a> {
 #[derive(Serialize)]
 struct WireMessage<'a> {
     role: ProviderMessageRole,
-    content: &'a str,
+    content: WireMessageContent<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     phase: Option<ProviderMessagePhase>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum WireMessageContent<'a> {
+    Text(&'a str),
+    Parts(Vec<WireContentPart<'a>>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum WireContentPart<'a> {
+    InputText {
+        text: &'a str,
+    },
+    InputImage {
+        image_url: String,
+        detail: &'static str,
+    },
 }
 
 #[derive(Serialize)]

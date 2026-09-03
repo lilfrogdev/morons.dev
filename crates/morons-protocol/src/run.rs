@@ -7,6 +7,7 @@ use crate::{APPLICATION_IDENTIFIER_BYTES, SessionId};
 const RUN_ID_PREFIX: &str = "run_";
 const MESSAGE_ID_PREFIX: &str = "msg_";
 const TOOL_CALL_ID_PREFIX: &str = "tool_";
+const IMAGE_ATTACHMENT_ID_PREFIX: &str = "img_";
 const LOCAL_COMMAND_ID_PREFIX: &str = "cmd_";
 const TRANSCRIPT_CURSOR_PREFIX: &str = "tc2_";
 const TRANSCRIPT_CURSOR_BYTES: usize = 40;
@@ -90,6 +91,48 @@ impl<'de> Deserialize<'de> for MessageId {
     {
         let encoded = String::deserialize(deserializer)?;
         decode_prefixed_hex(&encoded, MESSAGE_ID_PREFIX)
+            .map(Self)
+            .map_err(de::Error::custom)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImageAttachmentId([u8; APPLICATION_IDENTIFIER_BYTES]);
+
+impl ImageAttachmentId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; APPLICATION_IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; APPLICATION_IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ImageAttachmentId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_prefixed_hex(formatter, IMAGE_ATTACHMENT_ID_PREFIX, &self.0)
+    }
+}
+
+impl Serialize for ImageAttachmentId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&encode_prefixed_hex(IMAGE_ATTACHMENT_ID_PREFIX, &self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for ImageAttachmentId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+        decode_prefixed_hex(&encoded, IMAGE_ATTACHMENT_ID_PREFIX)
             .map(Self)
             .map_err(de::Error::custom)
     }
@@ -245,6 +288,7 @@ pub enum OpenCodeModelRetention {
 #[serde(deny_unknown_fields)]
 pub struct OpenCodeModelCapabilities {
     pub text_input: bool,
+    pub image_input: bool,
     pub text_output: bool,
     pub reasoning: bool,
     pub reasoning_continuation: bool,
@@ -362,12 +406,44 @@ pub enum ToolResultStatus {
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageUpload {
+    pub display_name: String,
+    pub marker_start: u32,
+    pub data_base64: String,
+}
+
+impl fmt::Debug for ImageUpload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ImageUpload")
+            .field("display_name_bytes", &self.display_name.len())
+            .field("marker_start", &self.marker_start)
+            .field("data_base64", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageAttachmentSummary {
+    pub id: ImageAttachmentId,
+    pub display_name: String,
+    pub media_type: String,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+    pub marker_start: u32,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "entry", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TranscriptEntry {
     UserMessage {
         id: MessageId,
         run_id: RunId,
         text: String,
+        attachments: Vec<ImageAttachmentSummary>,
         created_at_milliseconds: u64,
     },
     AssistantMessage {
@@ -417,12 +493,14 @@ impl fmt::Debug for TranscriptEntry {
                 id,
                 run_id,
                 text,
+                attachments,
                 created_at_milliseconds,
             } => formatter
                 .debug_struct("UserMessage")
                 .field("id", id)
                 .field("run_id", run_id)
                 .field("text_bytes", &text.len())
+                .field("attachments", &attachments.len())
                 .field("created_at_milliseconds", created_at_milliseconds)
                 .finish(),
             Self::AssistantMessage {
@@ -612,11 +690,31 @@ mod tests {
             id: MessageId::from_bytes([0x44; APPLICATION_IDENTIFIER_BYTES]),
             run_id: RunId::from_bytes([0x55; APPLICATION_IDENTIFIER_BYTES]),
             text: "sensitive transcript text".to_owned(),
+            attachments: Vec::new(),
             created_at_milliseconds: 1,
         };
         let debug = format!("{entry:?}");
         assert!(!debug.contains("sensitive transcript text"));
         assert!(debug.contains("text_bytes"));
+    }
+
+    #[test]
+    fn image_upload_debug_redacts_payload_and_identifier_is_strict() {
+        let upload = ImageUpload {
+            display_name: "picture.png".to_owned(),
+            marker_start: 4,
+            data_base64: "c2Vuc2l0aXZlIGltYWdl".to_owned(),
+        };
+        let debug = format!("{upload:?}");
+        assert!(!debug.contains("c2Vuc2l0aXZlIGltYWdl"));
+        assert!(debug.contains("[REDACTED]"));
+        let id = ImageAttachmentId::from_bytes([0x45; APPLICATION_IDENTIFIER_BYTES]);
+        assert!(format!("{id:?}").starts_with("img_"));
+        let encoded = serde_json::to_string(&id).expect("identifier should encode");
+        assert_eq!(
+            serde_json::from_str::<ImageAttachmentId>(&encoded).expect("identifier should decode"),
+            id
+        );
     }
 
     #[test]

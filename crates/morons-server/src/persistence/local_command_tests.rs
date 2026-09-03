@@ -109,6 +109,7 @@ async fn local_commands_are_idempotent_durable_and_context_visibility_is_explici
                 maximum_input_tokens: 96_000,
                 maximum_output_tokens: 8_192,
                 supports_tool_calls: true,
+                supports_image_input: false,
             },
         )
         .await

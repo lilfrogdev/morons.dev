@@ -24,6 +24,6 @@ pub use outcome::{
     ProviderStreamEvent, ProviderToolCall, ProviderUsage,
 };
 pub use request::{
-    OpenCodeResponseRequest, ProviderInputItem, ProviderMessagePhase, ProviderMessageRole,
-    ProviderTool,
+    OpenCodeResponseRequest, ProviderContentPart, ProviderInputItem, ProviderMessagePhase,
+    ProviderMessageRole, ProviderTool,
 };

@@ -3,8 +3,9 @@ use std::fmt;
 use super::{Session, SessionId, types::IDENTIFIER_BYTES};
 use crate::tools::{ToolInput, ToolKind, ToolResult, ValidatedProviderCall};
 
-pub const CONTEXT_POLICY_VERSION: u16 = 2;
+pub const CONTEXT_POLICY_VERSION: u16 = 3;
 pub(super) const LEGACY_CONTEXT_POLICY_VERSION: u16 = 1;
+pub(super) const LEGACY_SKILL_CONTEXT_POLICY_VERSION: u16 = 2;
 pub(super) const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_TRANSCRIPT_TEXT_BYTES: usize = 128 * 1024;
 pub(super) const MAX_MODEL_ID_BYTES: usize = 128;
@@ -111,6 +112,67 @@ impl fmt::Debug for MessageId {
         write_hex(formatter, &self.0)?;
         formatter.write_str(")")
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImageAttachmentId([u8; IDENTIFIER_BYTES]);
+
+impl ImageAttachmentId {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; IDENTIFIER_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; IDENTIFIER_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ImageAttachmentId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ImageAttachmentId(")?;
+        write_hex(formatter, &self.0)?;
+        formatter.write_str(")")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PreparedImageAttachment {
+    pub display_name: String,
+    pub marker_start: u32,
+    pub media_type: morons_image::ImageMediaType,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>,
+    pub digest: [u8; 32],
+}
+
+impl fmt::Debug for PreparedImageAttachment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedImageAttachment")
+            .field("display_name_bytes", &self.display_name.len())
+            .field("marker_start", &self.marker_start)
+            .field("media_type", &self.media_type)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("bytes", &self.bytes.len())
+            .field("digest", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageAttachment {
+    pub id: ImageAttachmentId,
+    pub display_name: String,
+    pub marker_start: u32,
+    pub media_type: morons_image::ImageMediaType,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+    pub digest: [u8; 32],
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -368,6 +430,7 @@ pub enum TranscriptEntry {
         id: MessageId,
         run_id: RunId,
         text: String,
+        attachments: Vec<ImageAttachment>,
         created_at_milliseconds: u64,
     },
     AssistantMessage {
@@ -448,6 +511,7 @@ impl fmt::Debug for TranscriptEntry {
                 id,
                 run_id,
                 text,
+                attachments,
                 created_at_milliseconds,
             } => formatter
                 .debug_struct("UserMessage")
@@ -455,6 +519,7 @@ impl fmt::Debug for TranscriptEntry {
                 .field("id", id)
                 .field("run_id", run_id)
                 .field("text_bytes", &text.len())
+                .field("attachments", &attachments.len())
                 .field("created_at_milliseconds", created_at_milliseconds)
                 .finish(),
             Self::AssistantMessage {
@@ -608,6 +673,12 @@ pub struct TranscriptPage {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct RunInputContext {
+    pub skills: crate::skills::RunSkillContext,
+    pub attachments: Vec<PreparedImageAttachment>,
+}
+
+#[derive(Clone, Debug)]
 pub struct RunModelSelection {
     pub service: RunOpenCodeService,
     pub model_id: String,
@@ -615,12 +686,14 @@ pub struct RunModelSelection {
     pub maximum_input_tokens: u32,
     pub maximum_output_tokens: u32,
     pub supports_tool_calls: bool,
+    pub supports_image_input: bool,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct RunContext {
     pub run: Run,
     pub skills: crate::skills::RunSkillContext,
+    pub attachment_data: std::collections::HashMap<ImageAttachmentId, Vec<u8>>,
     pub entries: Vec<TranscriptEntry>,
     pub current_entry_high_water: u64,
     pub estimated_input_tokens: u32,

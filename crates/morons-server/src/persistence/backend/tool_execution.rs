@@ -1,5 +1,6 @@
 use super::{
     Backend,
+    image_attachment::AttachmentStaging,
     records::{
         MUTATION_OPERATION_TOOL_UNCERTAINTY_ACKNOWLEDGEMENT, current_time_milliseconds,
         load_mutation_operation, next_sequence, random_identifier, sequence_to_sql, time_to_sql,
@@ -27,11 +28,12 @@ use crate::{
     },
     tools::{
         MAX_TOOL_CALLS_PER_RUN, MAX_TOOL_MUTATIONS_PER_RUN, MAX_TOOL_PAYLOAD_BYTES,
-        MAX_TOOL_RESULT_BYTES_PER_RUN, ToolErrorKind, ToolInput, ToolKind, ToolResult,
+        MAX_TOOL_RESULT_BYTES_PER_RUN, ToolErrorKind, ToolInput, ToolKind, ToolOutput, ToolResult,
         tool_path_digest,
     },
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
+use sha2::Digest as _;
 
 const TOOL_PAYLOAD_VERSION: i64 = 1;
 const TOOL_TERMINAL_RESULT_RESERVE_BYTES: u64 = 16 * 1024;
@@ -375,6 +377,44 @@ impl Backend {
         operation_id: ToolOperationId,
         mut result: ToolResult,
     ) -> Result<TranscriptEntry, PersistenceError> {
+        let attachment_paths = self.paths.clone();
+        let attachment_session_id = if result.has_image() {
+            Some(
+                self.connection
+                    .query_row(
+                        "SELECT session_id FROM tool_calls WHERE call_id = ?1 AND run_id = ?2",
+                        params![&call_id.as_bytes()[..], &run_id.as_bytes()[..]],
+                        |row| row.get::<_, [u8; 16]>(0),
+                    )
+                    .map(crate::persistence::SessionId::from_bytes)?,
+            )
+        } else {
+            None
+        };
+        if let (
+            Some(session_id),
+            ToolResult::Ok {
+                output: ToolOutput::ReadImage { image, .. },
+            },
+        ) = (attachment_session_id, &result)
+            && (!crate::persistence::images::image_context_capacity_available(
+                &self.connection,
+                session_id,
+                1,
+                image.bytes,
+            )? || !crate::persistence::images::attachment_storage_available(
+                &self.connection,
+                image.bytes,
+            )?)
+        {
+            result = ToolResult::error(ToolErrorKind::ResourceLimit);
+        }
+        let attachment_session_id = result
+            .has_image()
+            .then_some(attachment_session_id)
+            .flatten();
+        let mut image_staging =
+            stage_tool_result_image(attachment_paths, attachment_session_id, &mut result)?;
         let mut result_payload = encode_payload(&result)?;
         let mut result_bytes = u64::try_from(result_payload.len()).map_err(|_| limit())?;
         let fact_id = random_identifier()?;
@@ -442,6 +482,20 @@ impl Backend {
                 workspace_event_id.as_ref().map(|id| &id[..]),
             ],
         )?;
+        if let Some(staging) = image_staging.as_ref()
+            && matches!(result, ToolResult::Ok { .. })
+        {
+            insert_tool_image_attachment(
+                &transaction,
+                call_id,
+                run.session_id,
+                run.id,
+                now,
+                staging.attachments(),
+            )?;
+        } else {
+            image_staging = None;
+        }
         transaction.execute(
             "INSERT INTO session_entries (
                 fact_id, fact_sequence, session_id, entry_sequence, message_id,
@@ -521,6 +575,9 @@ impl Backend {
             )?;
         }
         transaction.commit()?;
+        if let Some(staging) = image_staging {
+            staging.commit();
+        }
         Ok(TranscriptEntry::ToolResult {
             entry_sequence,
             id: entry_id,
@@ -1044,6 +1101,116 @@ fn ensure_tool_not_terminal(
         });
     }
     Ok(())
+}
+
+fn stage_tool_result_image(
+    paths: crate::persistence::paths::StoragePaths,
+    session_id: Option<crate::persistence::SessionId>,
+    result: &mut ToolResult,
+) -> Result<Option<AttachmentStaging>, PersistenceError> {
+    let ToolResult::Ok {
+        output: ToolOutput::ReadImage { image, .. },
+    } = result
+    else {
+        return Ok(None);
+    };
+    let session_id = session_id.ok_or(PersistenceError::InvalidState {
+        reason: "a read image tool call has no session",
+    })?;
+    let digest = decode_sha256(&image.sha256).ok_or(PersistenceError::InvalidInput {
+        reason: "a read image result has an invalid digest",
+    })?;
+    if image.attachment_id.is_some()
+        || image.data.len() as u64 != image.bytes
+        || digest != sha2::Sha256::digest(&image.data)[..]
+        || !crate::persistence::images::valid_display_name(&image.display_name)
+        || !morons_image::validate_normalized_image(
+            &image.data,
+            image.media_type,
+            image.width,
+            image.height,
+        )
+    {
+        return Err(PersistenceError::InvalidInput {
+            reason: "a read image result is invalid",
+        });
+    }
+    let prepared = crate::persistence::PreparedImageAttachment {
+        display_name: image.display_name.clone(),
+        marker_start: 0,
+        media_type: image.media_type,
+        width: image.width,
+        height: image.height,
+        bytes: std::mem::take(&mut image.data),
+        digest,
+    };
+    let staging = AttachmentStaging::stage(paths, session_id, &[prepared])?;
+    let attachment = staging
+        .attachments()
+        .first()
+        .ok_or(PersistenceError::InvalidState {
+            reason: "a staged read image is missing its attachment",
+        })?;
+    image.attachment_id = Some(*attachment.id.as_bytes());
+    Ok(Some(staging))
+}
+
+fn insert_tool_image_attachment(
+    transaction: &Transaction<'_>,
+    call_id: ToolCallId,
+    session_id: crate::persistence::SessionId,
+    run_id: RunId,
+    created_at_milliseconds: u64,
+    attachments: &[crate::persistence::ImageAttachment],
+) -> Result<(), PersistenceError> {
+    let [attachment] = attachments else {
+        return Err(PersistenceError::InvalidState {
+            reason: "a read image must stage exactly one attachment",
+        });
+    };
+    transaction.execute(
+        "INSERT INTO tool_image_attachments (
+            attachment_id, call_id, session_id, run_id, display_name,
+            media_type, width, height, byte_count, sha256, created_at_milliseconds
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            &attachment.id.as_bytes()[..],
+            &call_id.as_bytes()[..],
+            &session_id.as_bytes()[..],
+            &run_id.as_bytes()[..],
+            &attachment.display_name,
+            i64::from(crate::persistence::images::media_type_record(
+                attachment.media_type
+            )),
+            i64::from(attachment.width),
+            i64::from(attachment.height),
+            i64::try_from(attachment.bytes).map_err(|_| limit())?,
+            &attachment.digest[..],
+            time_to_sql(created_at_milliseconds)?,
+        ],
+    )?;
+    Ok(())
+}
+
+fn decode_sha256(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 {
+        return None;
+    }
+    let mut digest = [0_u8; 32];
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let high = decode_hex_digit(pair[0])?;
+        let low = decode_hex_digit(pair[1])?;
+        digest[index] = (high << 4) | low;
+    }
+    Some(digest)
+}
+
+fn decode_hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
 }
 
 fn classify_result(result: &ToolResult, dispatched: bool) -> Result<(i64, i64), PersistenceError> {

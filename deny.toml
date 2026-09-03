@@ -5,6 +5,7 @@ allow = [
     "0BSD",
     "Apache-2.0",
     "BSD-3-Clause",
+    "BSL-1.0",
     "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
@@ -19,8 +20,11 @@ wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 skip = [
+    { name = "foldhash", version = "=0.1.5", reason = "Arboard's Wayland clipboard MIME detector requires petgraph's hashbrown 0.15 line" },
+    { name = "hashbrown", version = "=0.15.5", reason = "Arboard's Wayland clipboard MIME detector requires petgraph's older hash table line" },
     { name = "hashbrown", version = "=0.16.1", reason = "Ratatui 0.30 uses this line in its layout engine alongside its cache line" },
     { name = "syn", version = "=2.0.119", reason = "Ratatui 0.30 macro dependencies still use syn 2 while the workspace macro stack uses syn 3" },
+    { name = "windows-sys", version = "=0.52.0", reason = "Arboard 3.6 constrains its Windows clipboard implementation below windows-sys 0.61" },
 ]
 
 [sources]

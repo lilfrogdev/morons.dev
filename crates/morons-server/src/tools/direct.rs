@@ -3,9 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use sha2::{Digest as _, Sha256};
+
 use super::{
     MAX_FILE_BYTES, MAX_READ_LINES, MAX_READ_OUTPUT_BYTES, MAX_REPLACEMENTS, TextReplacement,
-    ToolErrorKind, ToolInput, ToolOutput, ToolPath, ToolResult,
+    ToolErrorKind, ToolImageOutput, ToolInput, ToolOutput, ToolPath, ToolResult,
 };
 
 pub(crate) struct DirectToolExecutor {
@@ -52,11 +54,26 @@ impl DirectToolExecutor {
         if offset == 0 || limit == 0 || limit > MAX_READ_LINES {
             return Err(ToolErrorKind::ResourceLimit);
         }
-        let bytes = read_bounded(&self.resolve(path), cancelled)?;
-        if bytes.contains(&0) {
-            return Err(ToolErrorKind::BinaryFile);
-        }
-        let text = String::from_utf8(bytes).map_err(|_| ToolErrorKind::InvalidUtf8)?;
+        let bytes = read_bounded_with_limit(
+            &self.resolve(path),
+            morons_image::MAX_INPUT_IMAGE_BYTES as u64,
+            cancelled,
+        )?;
+        let text = match String::from_utf8(bytes) {
+            Ok(text) if !text.contains('\0') => text,
+            Ok(text) => return normalize_read_image(path, text.into_bytes(), cancelled),
+            Err(error) => {
+                return normalize_read_image(path, error.into_bytes(), cancelled).map_err(
+                    |error| {
+                        if error == ToolErrorKind::BinaryFile {
+                            ToolErrorKind::InvalidUtf8
+                        } else {
+                            error
+                        }
+                    },
+                );
+            }
+        };
         let lines = text.split_inclusive('\n').collect::<Vec<_>>();
         let start = usize::try_from(offset - 1).map_err(|_| ToolErrorKind::ResourceLimit)?;
         let mut output = String::new();
@@ -160,21 +177,86 @@ fn read_bounded<F>(path: &Path, cancelled: &F) -> Result<Vec<u8>, ToolErrorKind>
 where
     F: Fn() -> bool,
 {
+    read_bounded_with_limit(path, MAX_FILE_BYTES, cancelled)
+}
+
+fn read_bounded_with_limit<F>(
+    path: &Path,
+    maximum_bytes: u64,
+    cancelled: &F,
+) -> Result<Vec<u8>, ToolErrorKind>
+where
+    F: Fn() -> bool,
+{
     let metadata = fs::metadata(path).map_err(map_io)?;
     if !metadata.is_file() {
         return Err(ToolErrorKind::WrongNodeKind);
     }
-    if metadata.len() > MAX_FILE_BYTES {
+    if metadata.len() > maximum_bytes {
         return Err(ToolErrorKind::ResourceLimit);
     }
     if cancelled() {
         return Err(ToolErrorKind::Cancelled);
     }
     let bytes = fs::read(path).map_err(map_io)?;
-    if bytes.len() as u64 > MAX_FILE_BYTES {
+    if bytes.len() as u64 > maximum_bytes {
         return Err(ToolErrorKind::ResourceLimit);
     }
     Ok(bytes)
+}
+
+fn normalize_read_image<F>(
+    path: &ToolPath,
+    bytes: Vec<u8>,
+    cancelled: &F,
+) -> Result<ToolOutput, ToolErrorKind>
+where
+    F: Fn() -> bool,
+{
+    let image = morons_image::normalize_image(&bytes).map_err(|_| ToolErrorKind::BinaryFile)?;
+    if cancelled() {
+        return Err(ToolErrorKind::Cancelled);
+    }
+    let mut display_name = Path::new(path.as_str())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map_or_else(
+            || format!("image.{}", image.media_type.extension()),
+            str::to_owned,
+        );
+    display_name = display_name
+        .chars()
+        .map(|character| {
+            if character.is_control() || matches!(character, '/' | '\\' | '[' | ']') {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect();
+    while display_name.len() > crate::persistence::images::MAX_IMAGE_DISPLAY_NAME_BYTES {
+        display_name.pop();
+    }
+    if !crate::persistence::images::valid_display_name(&display_name) {
+        display_name = format!("image.{}", image.media_type.extension());
+    }
+    let sha256 = Sha256::digest(&image.bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(ToolOutput::ReadImage {
+        path: path.clone(),
+        image: ToolImageOutput {
+            attachment_id: None,
+            display_name,
+            media_type: image.media_type,
+            width: image.width,
+            height: image.height,
+            bytes: image.bytes.len() as u64,
+            sha256,
+            data: image.bytes,
+        },
+    })
 }
 
 fn apply_replacements(
@@ -295,6 +377,38 @@ mod tests {
             fs::read_to_string(root.join("file.txt")).unwrap(),
             "after\nsecond\n"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_normalizes_common_image_content_without_trusting_the_extension() {
+        let root = test_directory("image");
+        let source = morons_image::normalize_rgba(2, 3, vec![0x77; 24])
+            .expect("fixture image should normalize");
+        fs::write(root.join("not-an-image.bin"), &source.bytes).expect("fixture should be written");
+        let result = DirectToolExecutor::new(root.clone()).execute(
+            &ToolInput::Read {
+                path: ToolPath::parse("not-an-image.bin").unwrap(),
+                offset: 1,
+                limit: 1,
+            },
+            &|| false,
+        );
+        assert!(matches!(
+            result,
+            ToolResult::Ok {
+                output: ToolOutput::ReadImage {
+                    image: ToolImageOutput {
+                        attachment_id: None,
+                        width: 2,
+                        height: 3,
+                        ref data,
+                        ..
+                    },
+                    ..
+                }
+            } if data == &source.bytes
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

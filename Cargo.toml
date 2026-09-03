@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/morons-cli",
+    "crates/morons-image",
     "crates/morons-protocol",
     "crates/morons-server",
 ]
@@ -15,6 +16,8 @@ repository = "https://github.com/lilfrogdev/morons.dev"
 publish = false
 
 [workspace.dependencies]
+arboard = { version = "=3.6.1", default-features = false, features = ["image-data", "wayland-data-control"] }
+base64 = "=0.22.1"
 bytes = "=1.12.1"
 fence-windows = "=0.1.0-alpha.2"
 getrandom = { version = "=0.4.3", features = ["std"] }
@@ -24,6 +27,7 @@ http-body-util = "=0.1.5"
 hyper = { version = "=1.10.0", default-features = false, features = ["client", "http1"] }
 hyper-rustls = { version = "=0.27.9", default-features = false, features = ["aws-lc-rs", "http1", "tls12", "webpki-tokio"] }
 hyper-util = { version = "=0.1.20", default-features = false, features = ["client-legacy", "http1", "tokio"] }
+image = { version = "=0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 interprocess = { version = "=2.4.3", default-features = false, features = ["tokio"] }
 ratatui = { version = "=0.30.2", default-features = false, features = ["std"] }
 ratatui-crossterm = "=0.1.2"

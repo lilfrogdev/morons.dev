@@ -14,6 +14,8 @@ const DATA_DIRECTORY_NAME: &str = "data";
 const WORKSPACE_DIRECTORY_NAME: &str = "workspaces";
 const SANDBOX_OPERATION_DIRECTORY_NAME: &str = "sandbox-operations";
 const BACKUP_DIRECTORY_NAME: &str = "backups";
+const ATTACHMENT_DIRECTORY_NAME: &str = "attachments";
+const ATTACHMENT_FILE_SUFFIX: &str = ".image";
 const DATABASE_FILE_NAME: &str = "sessions.sqlite3";
 const DATABASE_INITIALIZATION_PREFIX: &str = ".sessions.sqlite3.initializing-";
 const DATABASE_JOURNAL_SUFFIX: &str = "-journal";
@@ -23,6 +25,9 @@ const MIGRATION_BACKUP_TEMPORARY_PREFIX: &str = ".sessions-before-schema-v";
 const MIGRATION_BACKUP_TEMPORARY_SUFFIX: &str = ".tmp";
 const IDENTIFIER_BYTES: usize = 16;
 const HEX_IDENTIFIER_BYTES: usize = IDENTIFIER_BYTES * 2;
+const MAX_ATTACHMENT_SESSION_DIRECTORIES: usize = 100_000;
+const MAX_ATTACHMENT_FILES: usize = 400_000;
+type AttachmentFileId = ([u8; IDENTIFIER_BYTES], [u8; IDENTIFIER_BYTES]);
 
 #[derive(Debug)]
 pub(crate) enum PathError {
@@ -66,6 +71,7 @@ impl From<io::Error> for PathError {
 pub(crate) struct StoragePaths {
     data_directory: PathBuf,
     backup_directory: PathBuf,
+    attachment_directory: PathBuf,
     pub(super) workspace_directory: PathBuf,
     pub(super) sandbox_operation_directory: PathBuf,
     database_path: PathBuf,
@@ -77,10 +83,12 @@ impl StoragePaths {
 
         let data_directory = application_root.join(DATA_DIRECTORY_NAME);
         let backup_directory = application_root.join(BACKUP_DIRECTORY_NAME);
+        let attachment_directory = application_root.join(ATTACHMENT_DIRECTORY_NAME);
         let workspace_directory = application_root.join(WORKSPACE_DIRECTORY_NAME);
         let sandbox_operation_directory = application_root.join(SANDBOX_OPERATION_DIRECTORY_NAME);
         ensure_private_directory(&data_directory)?;
         ensure_private_directory(&backup_directory)?;
+        ensure_private_directory(&attachment_directory)?;
         ensure_private_directory(&workspace_directory)?;
         ensure_private_directory(&sandbox_operation_directory)?;
 
@@ -88,6 +96,7 @@ impl StoragePaths {
             database_path: data_directory.join(DATABASE_FILE_NAME),
             data_directory,
             backup_directory,
+            attachment_directory,
             workspace_directory,
             sandbox_operation_directory,
         };
@@ -102,6 +111,145 @@ impl StoragePaths {
 
     pub(super) fn workspace_path(&self, workspace_id: &[u8; IDENTIFIER_BYTES]) -> PathBuf {
         self.workspace_directory.join(encode_hex(workspace_id))
+    }
+
+    pub(super) fn create_attachment_file(
+        &self,
+        session_id: &[u8; IDENTIFIER_BYTES],
+        attachment_id: &[u8; IDENTIFIER_BYTES],
+    ) -> Result<(PathBuf, File), PathError> {
+        let session_directory = self.attachment_session_directory(session_id);
+        ensure_private_directory(&session_directory)?;
+        let path = self.attachment_path(session_id, attachment_id);
+        let file = create_private_file(&path)?;
+        Ok((path, file))
+    }
+
+    fn attachment_session_directory(&self, session_id: &[u8; IDENTIFIER_BYTES]) -> PathBuf {
+        self.attachment_directory.join(encode_hex(session_id))
+    }
+
+    pub(super) fn attachment_path(
+        &self,
+        session_id: &[u8; IDENTIFIER_BYTES],
+        attachment_id: &[u8; IDENTIFIER_BYTES],
+    ) -> PathBuf {
+        self.attachment_session_directory(session_id).join(format!(
+            "{}{ATTACHMENT_FILE_SUFFIX}",
+            encode_hex(attachment_id)
+        ))
+    }
+
+    pub(super) fn validate_attachment_file(
+        &self,
+        session_id: &[u8; IDENTIFIER_BYTES],
+        attachment_id: &[u8; IDENTIFIER_BYTES],
+        maximum_bytes: u64,
+    ) -> Result<PathBuf, PathError> {
+        let session_directory = self.attachment_session_directory(session_id);
+        validate_private_directory(&session_directory)?;
+        let path = self.attachment_path(session_id, attachment_id);
+        validate_private_file(&path, Some(maximum_bytes))?;
+        Ok(path)
+    }
+
+    pub(super) fn remove_attachment_file(
+        &self,
+        session_id: &[u8; IDENTIFIER_BYTES],
+        attachment_id: &[u8; IDENTIFIER_BYTES],
+    ) -> Result<(), PathError> {
+        let session_directory = self.attachment_session_directory(session_id);
+        let path = self.attachment_path(session_id, attachment_id);
+        if path_entry_exists(&path)? {
+            validate_private_directory(&session_directory)?;
+            validate_private_file(&path, None)?;
+            fs::remove_file(path)?;
+            sync_directory(&session_directory)?;
+        }
+        if path_entry_exists(&session_directory)? {
+            validate_private_directory(&session_directory)?;
+            if fs::read_dir(&session_directory)?.next().is_none() {
+                fs::remove_dir(&session_directory)?;
+                sync_directory(&self.attachment_directory)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn attachment_file_ids(&self) -> Result<Vec<AttachmentFileId>, PathError> {
+        let mut identifiers = Vec::new();
+        let mut empty_directories = Vec::new();
+        let mut session_directories = 0_usize;
+        for session_entry in fs::read_dir(&self.attachment_directory)? {
+            let session_entry = session_entry?;
+            session_directories = session_directories
+                .checked_add(1)
+                .filter(|count| *count <= MAX_ATTACHMENT_SESSION_DIRECTORIES)
+                .ok_or(PathError::InvalidState {
+                    reason: "the attachment root contains too many session directories",
+                })?;
+            let session_id = session_entry
+                .file_name()
+                .to_str()
+                .and_then(decode_hex_identifier)
+                .ok_or(PathError::InvalidState {
+                    reason: "the attachment directory contains an invalid session directory",
+                })?;
+            let session_directory = session_entry.path();
+            validate_private_directory(&session_directory)?;
+            let mut file_count = 0_usize;
+            for entry in fs::read_dir(&session_directory)? {
+                let entry = entry?;
+                file_count = file_count.checked_add(1).ok_or(PathError::InvalidState {
+                    reason: "an attachment directory contains too many files",
+                })?;
+                if identifiers.len() >= MAX_ATTACHMENT_FILES {
+                    return Err(PathError::InvalidState {
+                        reason: "the attachment root contains too many files",
+                    });
+                }
+                let file_name = entry.file_name();
+                let Some(file_name) = file_name.to_str() else {
+                    return Err(PathError::InvalidState {
+                        reason: "an attachment directory contains a non-UTF-8 entry",
+                    });
+                };
+                let Some(encoded) = file_name.strip_suffix(ATTACHMENT_FILE_SUFFIX) else {
+                    return Err(PathError::InvalidState {
+                        reason: "an attachment directory contains unexpected state",
+                    });
+                };
+                let attachment_id =
+                    decode_hex_identifier(encoded).ok_or(PathError::InvalidState {
+                        reason: "an attachment directory contains an invalid file name",
+                    })?;
+                validate_private_file(
+                    &entry.path(),
+                    Some(morons_image::MAX_NORMALIZED_IMAGE_BYTES as u64),
+                )?;
+                identifiers.push((session_id, attachment_id));
+            }
+            if file_count == 0 {
+                empty_directories.push(session_directory);
+            }
+        }
+        let removed_empty_directories = !empty_directories.is_empty();
+        for directory in empty_directories {
+            validate_private_directory(&directory)?;
+            fs::remove_dir(directory)?;
+        }
+        if removed_empty_directories {
+            sync_directory(&self.attachment_directory)?;
+        }
+        identifiers.sort_unstable();
+        Ok(identifiers)
+    }
+
+    pub(super) fn sync_attachment_session_directory(
+        &self,
+        session_id: &[u8; IDENTIFIER_BYTES],
+    ) -> Result<(), PathError> {
+        sync_directory(&self.attachment_session_directory(session_id)).map_err(PathError::from)
     }
 
     pub(crate) fn database_exists(&self) -> Result<bool, PathError> {
@@ -523,6 +671,27 @@ fn database_sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
     let mut path = database_path.as_os_str().to_owned();
     path.push(suffix);
     PathBuf::from(path)
+}
+
+fn decode_hex_identifier(value: &str) -> Option<[u8; IDENTIFIER_BYTES]> {
+    if value.len() != HEX_IDENTIFIER_BYTES {
+        return None;
+    }
+    let mut identifier = [0_u8; IDENTIFIER_BYTES];
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let high = decode_hex_digit(pair[0])?;
+        let low = decode_hex_digit(pair[1])?;
+        identifier[index] = (high << 4) | low;
+    }
+    Some(identifier)
+}
+
+fn decode_hex_digit(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        _ => None,
+    }
 }
 
 pub(super) fn encode_hex(bytes: &[u8; IDENTIFIER_BYTES]) -> String {

@@ -1,6 +1,9 @@
 use serde_json::{Value, json};
 
-use super::{OpenCodeResponseRequest, ProviderInputItem, ProviderMessageRole, ProviderTool};
+use super::{
+    OpenCodeResponseRequest, ProviderContentPart, ProviderInputItem, ProviderMessageRole,
+    ProviderTool,
+};
 use crate::provider::{OpenCodeService, ProviderError};
 
 fn request() -> OpenCodeResponseRequest {
@@ -47,6 +50,56 @@ fn request_has_a_bounded_stable_responses_shape() {
     assert_eq!(body["tools"][0]["type"], "function");
     assert_eq!(body["tools"][0]["strict"], true);
     assert!(!format!("{request:?}").contains("hello"));
+}
+
+#[test]
+fn multimodal_request_uses_bounded_data_urls_only_for_reviewed_vision_models() {
+    let image = morons_image::normalize_rgba(1, 1, vec![10, 20, 30, 255])
+        .expect("fixture should normalize");
+    let message = ProviderInputItem::MultimodalMessage {
+        role: ProviderMessageRole::User,
+        parts: vec![
+            ProviderContentPart::Text("[picture.png] describe this".to_owned()),
+            ProviderContentPart::Image {
+                media_type: image.media_type,
+                width: image.width,
+                height: image.height,
+                bytes: image.bytes.clone(),
+            },
+        ],
+        phase: None,
+    };
+    let request = OpenCodeResponseRequest::new(
+        OpenCodeService::Zen,
+        "gpt-5.4",
+        8_192,
+        512,
+        vec![message.clone()],
+        Vec::new(),
+    )
+    .expect("vision request should validate");
+    let body: Value = serde_json::from_slice(&request.encode_body().expect("body should encode"))
+        .expect("body should be JSON");
+    assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
+    assert_eq!(body["input"][0]["content"][1]["type"], "input_image");
+    assert!(
+        body["input"][0]["content"][1]["image_url"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("data:image/png;base64,"))
+    );
+    assert!(!format!("{message:?}").contains(&morons_image::encode_base64(&image.bytes)));
+    assert_eq!(
+        OpenCodeResponseRequest::new(
+            OpenCodeService::Zen,
+            "muse-spark-1.2",
+            8_192,
+            512,
+            vec![message],
+            Vec::new(),
+        )
+        .expect_err("non-vision model should reject image input"),
+        ProviderError::InvalidRequest
+    );
 }
 
 #[test]

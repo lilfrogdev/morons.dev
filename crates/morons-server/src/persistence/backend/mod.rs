@@ -1,6 +1,7 @@
 pub(super) mod command_execution;
 mod creation;
 mod credential_mutation;
+pub(super) mod image_attachment;
 pub(super) mod local_command;
 mod queries;
 mod records;
@@ -37,6 +38,7 @@ impl Backend {
             credentials,
             paths,
         };
+        backend.reconcile_image_attachments()?;
         backend.recover_credential_mutations()?;
         backend.recover_incomplete_session_creations()?;
         backend.recover_tool_operations()?;

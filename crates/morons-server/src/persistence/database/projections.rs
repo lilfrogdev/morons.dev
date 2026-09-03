@@ -6,14 +6,15 @@ use super::validate_integrity;
 use crate::persistence::{
     PersistenceError, RunModelSelection, RunOpenCodeService, SessionId,
     run_types::{
-        CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES,
-        conservative_input_token_estimate,
+        CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, LEGACY_SKILL_CONTEXT_POLICY_VERSION,
+        MAX_CONTEXT_ENTRIES, conservative_input_token_estimate,
     },
     types::{
         acknowledge_tool_uncertainty_fingerprint, cancel_run_fingerprint,
         create_session_fingerprint, create_session_with_directory_fingerprint,
         import_repository_fingerprint_from_digest, provision_execution_image_fingerprint,
-        stop_server_fingerprint, submit_session_input_fingerprint, validate_display_name,
+        stop_server_fingerprint, submit_session_input_fingerprint,
+        submit_session_input_with_images_fingerprint, validate_display_name,
         validate_model_selection, validate_user_text,
     },
 };
@@ -26,6 +27,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_session_creation_facts(connection)?;
     validate_mutation_registry(connection)?;
     validate_local_command_facts(connection)?;
+    validate_image_attachment_facts(connection)?;
     validate_run_request_payloads(connection)?;
     validate_server_stop_facts(connection)?;
     validate_repository_import_facts(connection)?;
@@ -701,6 +703,106 @@ fn validate_worktree_generation_facts(connection: &Connection) -> Result<(), Per
     Ok(())
 }
 
+fn validate_image_attachment_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM image_attachments AS attachment
+            JOIN run_accepted_facts AS run ON run.run_id = attachment.run_id
+            JOIN session_entries AS entry ON entry.message_id = attachment.user_message_id
+            WHERE attachment.session_id IS NOT run.session_id
+               OR attachment.user_message_id IS NOT run.user_message_id
+               OR entry.session_id IS NOT attachment.session_id
+               OR entry.run_id IS NOT attachment.run_id
+               OR entry.entry_kind != 1
+            UNION ALL
+            SELECT 1 FROM image_attachments
+            GROUP BY run_id
+            HAVING MIN(attachment_index) != 1
+                OR MAX(attachment_index) != COUNT(*)
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "image attachment facts have invalid canonical bindings",
+        });
+    }
+    let invalid_tool: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM tool_image_attachments AS attachment
+            JOIN tool_calls AS call ON call.call_id = attachment.call_id
+            JOIN run_accepted_facts AS run ON run.run_id = attachment.run_id
+            WHERE attachment.session_id IS NOT call.session_id
+               OR attachment.run_id IS NOT call.run_id
+               OR call.tool_kind != 8
+               OR run.context_policy_version != ?1
+        )",
+        [i64::from(CONTEXT_POLICY_VERSION)],
+        |row| row.get(0),
+    )?;
+    if invalid_tool {
+        return Err(PersistenceError::InvalidState {
+            reason: "tool image attachment facts have invalid canonical bindings",
+        });
+    }
+    let mut statement = connection.prepare(
+        "SELECT call.call_id, terminal.result_payload
+         FROM tool_calls AS call
+         JOIN tool_operation_facts AS terminal ON terminal.call_id = call.call_id
+         WHERE call.tool_kind = 8 AND terminal.fact_kind BETWEEN 3 AND 6",
+    )?;
+    let results = statement
+        .query_map([], |row| {
+            Ok((
+                crate::persistence::ToolCallId::from_bytes(row.get(0)?),
+                row.get::<_, Vec<u8>>(1)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (call_id, payload) in results {
+        let result: ToolResult =
+            serde_json::from_slice(&payload).map_err(|_| PersistenceError::InvalidState {
+                reason: "a read tool image result payload is invalid",
+            })?;
+        let stored = crate::persistence::backend::image_attachment::load_tool_image_attachment(
+            connection, call_id,
+        )?;
+        match (result, stored) {
+            (
+                ToolResult::Ok {
+                    output: crate::tools::ToolOutput::ReadImage { image, .. },
+                },
+                Some(stored),
+            ) if image.attachment_id == Some(*stored.id.as_bytes())
+                && image.display_name == stored.display_name
+                && image.media_type == stored.media_type
+                && image.width == stored.width
+                && image.height == stored.height
+                && image.bytes == stored.bytes
+                && image.sha256 == encode_sha256(&stored.digest)
+                && image.data.is_empty() => {}
+            (
+                ToolResult::Ok {
+                    output: crate::tools::ToolOutput::Read { .. },
+                },
+                None,
+            )
+            | (ToolResult::Error { .. }, None) => {}
+            _ => {
+                return Err(PersistenceError::InvalidState {
+                    reason: "a read tool result conflicts with its image attachment",
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn encode_sha256(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn validate_run_request_payloads(connection: &Connection) -> Result<(), PersistenceError> {
     let mut statement = connection.prepare(
         "SELECT
@@ -791,8 +893,30 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
             maximum_input_tokens: positive_u32(maximum_input_tokens)?,
             maximum_output_tokens: positive_u32(maximum_output_tokens)?,
             supports_tool_calls: true,
+            supports_image_input: true,
         };
         let session_id = SessionId::from_bytes(request_session);
+        let message_id = crate::persistence::MessageId::from_bytes(request_message);
+        let attachments =
+            crate::persistence::backend::image_attachment::load_message_image_attachments(
+                connection, session_id, message_id,
+            )?;
+        if !crate::persistence::images::valid_stored_attachments(&text, &attachments) {
+            return Err(PersistenceError::InvalidState {
+                reason: "a persisted run input has invalid image attachments",
+            });
+        }
+        let expected_fingerprint = if attachments.is_empty() {
+            submit_session_input_fingerprint(session_id, &text, service, &model_id)
+        } else {
+            submit_session_input_with_images_fingerprint(
+                session_id,
+                &text,
+                service,
+                &model_id,
+                &crate::persistence::images::stored_attachment_digest(&attachments),
+            )
+        };
         if validate_user_text(&text).is_err()
             || validate_model_selection(&selection).is_err()
             || request_session != accepted_session
@@ -802,8 +926,7 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
             || request_message != accepted_message
             || request_message != entry_message
             || source_high_water != entry_sequence
-            || fingerprint
-                != submit_session_input_fingerprint(session_id, &text, service, &model_id)
+            || fingerprint != expected_fingerprint
         {
             return Err(PersistenceError::InvalidState {
                 reason: "a persisted run input has invalid canonical bindings",
@@ -841,11 +964,16 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
         }
         let skill_bytes = u64::try_from(skills.context_bytes().ok_or_else(invalid_run_context)?)
             .map_err(|_| invalid_run_context())?;
+        if context_policy_version != i64::from(CONTEXT_POLICY_VERSION) && !attachments.is_empty() {
+            return Err(invalid_run_context());
+        }
         let context_items = entry_count
             .checked_add(skills.skills.len() as u64)
+            .and_then(|items| items.checked_add(attachments.len() as u64))
             .ok_or_else(invalid_run_context)?;
         let context_bytes = text_bytes
             .checked_add(skill_bytes)
+            .and_then(|bytes| bytes.checked_add((attachments.len() as u64).checked_mul(8_192)?))
             .ok_or_else(invalid_run_context)?;
         let estimate = conservative_input_token_estimate(context_bytes, context_items)
             .ok_or_else(invalid_run_context)?;
@@ -855,7 +983,11 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
             || estimated_input_tokens > maximum_input_tokens
             || !matches!(
                 u16::try_from(context_policy_version).ok(),
-                Some(CONTEXT_POLICY_VERSION | LEGACY_CONTEXT_POLICY_VERSION)
+                Some(
+                    CONTEXT_POLICY_VERSION
+                        | LEGACY_SKILL_CONTEXT_POLICY_VERSION
+                        | LEGACY_CONTEXT_POLICY_VERSION
+                )
             )
         {
             return Err(invalid_run_context());
@@ -1197,7 +1329,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                        AND image.state = 2
                  ))
                 OR
-                (accepted.tool_catalog_version IN (3, 4, 5, 6)
+                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7)
                  AND accepted.tool_limits_version = accepted.tool_catalog_version
                  AND accepted.execution_image_generation IS NULL
                  AND EXISTS (
@@ -1211,11 +1343,11 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
                OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
-               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6))
-               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6))
-               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6))
-               OR (call.tool_kind = 13 AND run.tool_catalog_version != 6)
-               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6))
+               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7))
+               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7))
+               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7))
+               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7))
+               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7))
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id

@@ -301,6 +301,7 @@ async fn client_submits_inspects_and_cancels_exact_run() {
                 mutation_request_id,
                 session_id,
                 text: "hello".to_owned(),
+                attachments: Vec::new(),
                 service: OpenCodeService::Zen,
                 model_id: "muse-spark-1.2".to_owned(),
             }
@@ -792,6 +793,7 @@ fn fixture_model_summary(service: OpenCodeService) -> OpenCodeModelSummary {
         responses_protocol_revision: 1,
         capabilities: OpenCodeModelCapabilities {
             text_input: true,
+            image_input: false,
             text_output: true,
             reasoning: true,
             reasoning_continuation: false,

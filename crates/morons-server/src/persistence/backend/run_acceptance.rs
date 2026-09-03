@@ -4,6 +4,7 @@ use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 
 use super::{
     Backend,
+    image_attachment::AttachmentStaging,
     records::{
         MUTATION_OPERATION_RUN_INPUT, current_time_milliseconds, load_mutation_operation,
         next_sequence, random_identifier, sequence_to_sql, time_to_sql,
@@ -16,7 +17,7 @@ use super::{
 use crate::{
     persistence::{
         AcceptedRun, MessageId, MutationRequestId, PersistenceError, PersistenceResourceLimit,
-        RunId, RunModelSelection,
+        RunId, RunInputContext, RunModelSelection,
         run_types::{
             CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES, MAX_TRANSCRIPT_ENTRIES,
             conservative_input_token_estimate,
@@ -44,8 +45,12 @@ impl Backend {
         session_id: crate::persistence::SessionId,
         text: String,
         selection: RunModelSelection,
-        skills: crate::skills::RunSkillContext,
+        context: RunInputContext,
     ) -> Result<AcceptedRun, PersistenceError> {
+        let RunInputContext {
+            skills,
+            attachments,
+        } = context;
         validate_user_text(&text)?;
         validate_model_selection(&selection)?;
         if let Some(existing) = resolve_existing_input(&self.connection, request_id, &fingerprint)?
@@ -55,6 +60,11 @@ impl Backend {
         if !skills.is_valid() {
             return Err(PersistenceError::InvalidInput {
                 reason: "the accepted skill context is invalid",
+            });
+        }
+        if !crate::persistence::images::validate_prepared_attachments(&text, &attachments) {
+            return Err(PersistenceError::InvalidInput {
+                reason: "the accepted image attachments are invalid",
             });
         }
 
@@ -71,6 +81,11 @@ impl Backend {
         if !Path::new(&working_directory).is_dir() {
             return Err(PersistenceError::WorkingDirectoryUnavailable);
         }
+        if !selection.supports_image_input
+            && (!attachments.is_empty() || session_has_image_context(&self.connection, session_id)?)
+        {
+            return Err(PersistenceError::ImageInputUnsupported);
+        }
 
         self.credentials.ensure_consistent()?;
         let credential = self.credentials.status();
@@ -86,6 +101,28 @@ impl Backend {
         let run_delivery_event_id = random_identifier()?;
         let audit_id = random_identifier()?;
         let accepted_at_milliseconds = current_time_milliseconds()?;
+        let attachment_bytes = attachments
+            .iter()
+            .try_fold(0_u64, |bytes, attachment| {
+                bytes.checked_add(attachment.bytes.len() as u64)
+            })
+            .ok_or(PersistenceError::ResourceLimit {
+                resource: PersistenceResourceLimit::Context,
+            })?;
+        if !crate::persistence::images::image_context_capacity_available(
+            &self.connection,
+            session_id,
+            attachments.len(),
+            attachment_bytes,
+        )? || !crate::persistence::images::attachment_storage_available(
+            &self.connection,
+            attachment_bytes,
+        )? {
+            return Err(PersistenceError::ResourceLimit {
+                resource: PersistenceResourceLimit::Context,
+            });
+        }
+        let attachment_paths = self.paths.clone();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -136,15 +173,19 @@ impl Backend {
             &transaction,
             session_id,
             entry_high_water,
-            text.len(),
-            skills
-                .context_bytes()
-                .ok_or(PersistenceError::ResourceLimit {
-                    resource: PersistenceResourceLimit::Context,
-                })?,
-            skills.skills.len(),
-            selection.maximum_input_tokens,
+            NewContextSize {
+                text_bytes: text.len(),
+                skill_bytes: skills
+                    .context_bytes()
+                    .ok_or(PersistenceError::ResourceLimit {
+                        resource: PersistenceResourceLimit::Context,
+                    })?,
+                skill_count: skills.skills.len(),
+                image_count: attachments.len(),
+                maximum_input_tokens: selection.maximum_input_tokens,
+            },
         )?;
+        let staging = AttachmentStaging::stage(attachment_paths, session_id, &attachments)?;
         let source_entry_high_water = entry_high_water + 1;
         let input_fact_sequence = next_sequence(&transaction)?;
         let run_fact_sequence = next_sequence(&transaction)?;
@@ -263,6 +304,14 @@ impl Backend {
                 &input_delivery_event_id[..],
             ],
         )?;
+        insert_image_attachments(
+            &transaction,
+            session_id,
+            run_id,
+            user_message_id,
+            accepted_at_milliseconds,
+            staging.attachments(),
+        )?;
         transaction.execute(
             "INSERT INTO runs (
                 run_id,
@@ -374,6 +423,7 @@ impl Backend {
             ],
         )?;
         transaction.commit()?;
+        staging.commit();
 
         let request = RunInputRequest {
             fingerprint,
@@ -434,6 +484,49 @@ fn load_session_run_state(
         })
 }
 
+fn insert_image_attachments(
+    transaction: &Transaction<'_>,
+    session_id: crate::persistence::SessionId,
+    run_id: RunId,
+    user_message_id: MessageId,
+    created_at_milliseconds: u64,
+    attachments: &[crate::persistence::ImageAttachment],
+) -> Result<(), PersistenceError> {
+    for (index, attachment) in attachments.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO image_attachments (
+                attachment_id, session_id, run_id, user_message_id, attachment_index,
+                display_name, marker_start, media_type, width, height,
+                byte_count, sha256, created_at_milliseconds
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                &attachment.id.as_bytes()[..],
+                &session_id.as_bytes()[..],
+                &run_id.as_bytes()[..],
+                &user_message_id.as_bytes()[..],
+                i64::try_from(index + 1).map_err(|_| PersistenceError::ResourceLimit {
+                    resource: PersistenceResourceLimit::Context,
+                })?,
+                &attachment.display_name,
+                i64::from(attachment.marker_start),
+                i64::from(crate::persistence::images::media_type_record(
+                    attachment.media_type
+                )),
+                i64::from(attachment.width),
+                i64::from(attachment.height),
+                i64::try_from(attachment.bytes).map_err(|_| {
+                    PersistenceError::ResourceLimit {
+                        resource: PersistenceResourceLimit::Context,
+                    }
+                })?,
+                &attachment.digest[..],
+                time_to_sql(created_at_milliseconds)?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn insert_run_skills(
     transaction: &Transaction<'_>,
     run_id: RunId,
@@ -462,14 +555,19 @@ fn insert_run_skills(
     Ok(())
 }
 
+struct NewContextSize {
+    text_bytes: usize,
+    skill_bytes: usize,
+    skill_count: usize,
+    image_count: usize,
+    maximum_input_tokens: u32,
+}
+
 fn estimate_context_tokens(
     transaction: &Transaction<'_>,
     session_id: crate::persistence::SessionId,
     entry_high_water: u64,
-    new_text_bytes: usize,
-    skill_context_bytes: usize,
-    skill_count: usize,
-    maximum_input_tokens: u32,
+    size: NewContextSize,
 ) -> Result<u32, PersistenceError> {
     let (entry_count, text_bytes) = transaction.query_row(
         "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM (
@@ -498,7 +596,8 @@ fn estimate_context_tokens(
     })?;
     if entry_count
         .checked_add(1)
-        .and_then(|entries| entries.checked_add(skill_count as u64))
+        .and_then(|entries| entries.checked_add(size.skill_count as u64))
+        .and_then(|entries| entries.checked_add(size.image_count as u64))
         .is_none_or(|entries| entries > MAX_CONTEXT_ENTRIES as u64)
     {
         return Err(PersistenceError::ResourceLimit {
@@ -508,10 +607,11 @@ fn estimate_context_tokens(
     let text_bytes = u64::try_from(text_bytes).map_err(|_| PersistenceError::InvalidState {
         reason: "the session context byte count is invalid",
     })?;
-    let total_entries = entry_count + 1 + skill_count as u64;
+    let total_entries = entry_count + 1 + size.skill_count as u64 + size.image_count as u64;
     let total_text_bytes = text_bytes
-        .checked_add(new_text_bytes as u64)
-        .and_then(|bytes| bytes.checked_add(skill_context_bytes as u64))
+        .checked_add(size.text_bytes as u64)
+        .and_then(|bytes| bytes.checked_add(size.skill_bytes as u64))
+        .and_then(|bytes| bytes.checked_add((size.image_count as u64).checked_mul(8_192)?))
         .ok_or(PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Context,
         })?;
@@ -520,12 +620,27 @@ fn estimate_context_tokens(
             resource: PersistenceResourceLimit::Context,
         },
     )?;
-    if estimate == 0 || estimate > maximum_input_tokens {
+    if estimate == 0 || estimate > size.maximum_input_tokens {
         return Err(PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Context,
         });
     }
     Ok(estimate)
+}
+
+fn session_has_image_context(
+    connection: &rusqlite::Connection,
+    session_id: crate::persistence::SessionId,
+) -> Result<bool, PersistenceError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM image_attachments WHERE session_id = ?1
+            UNION ALL
+            SELECT 1 FROM tool_image_attachments WHERE session_id = ?1
+        )",
+        [&session_id.as_bytes()[..]],
+        |row| row.get(0),
+    )?)
 }
 
 fn count_runs(transaction: &Transaction<'_>) -> Result<i64, PersistenceError> {

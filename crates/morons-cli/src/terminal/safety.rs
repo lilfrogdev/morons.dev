@@ -113,7 +113,6 @@ impl PromptBuffer {
         self.text.is_empty()
     }
 
-    #[cfg(test)]
     #[must_use]
     pub fn len_bytes(&self) -> usize {
         self.text.len()
@@ -162,6 +161,31 @@ impl PromptBuffer {
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
             .then_some(token)
+    }
+
+    pub fn push_image_marker(&mut self, display_name: &str) -> Option<u32> {
+        let marker_bytes = display_name.len().checked_add(2)?;
+        if self
+            .text
+            .len()
+            .checked_add(marker_bytes)
+            .is_none_or(|length| length > MAX_PROMPT_BYTES)
+        {
+            return None;
+        }
+        let start = u32::try_from(self.text.len()).ok()?;
+        self.text.push('[');
+        self.text.push_str(display_name);
+        self.text.push(']');
+        Some(start)
+    }
+
+    pub fn truncate(&mut self, bytes: usize) -> bool {
+        if bytes > self.text.len() || !self.text.is_char_boundary(bytes) {
+            return false;
+        }
+        self.text.truncate(bytes);
+        true
     }
 
     pub fn complete_skill(&mut self, name: &str) -> bool {
@@ -291,7 +315,7 @@ fn push_bounded(text: &mut String, character: char, scalars: &mut usize) -> bool
     true
 }
 
-const fn is_bidirectional_control(character: char) -> bool {
+pub(crate) const fn is_bidirectional_control(character: char) -> bool {
     matches!(
         character,
         '\u{061c}'
