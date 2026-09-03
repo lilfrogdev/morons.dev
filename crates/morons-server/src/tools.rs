@@ -602,7 +602,9 @@ impl ToolErrorKind {
             Self::Network => "network request failed",
             Self::InvalidResponse => "search service returned an invalid response",
             Self::CredentialNotConfigured => "search credential is not configured",
-            Self::KernelUnavailable => "IPython kernel is unavailable",
+            Self::KernelUnavailable => {
+                "IPython kernel unavailable; install jupyter_client and ipykernel or set MORONS_PYTHON"
+            }
             Self::ExecutionFailed => "IPython cell failed",
             Self::ImageInputUnsupported => "selected model does not support image input",
         }

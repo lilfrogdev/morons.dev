@@ -905,6 +905,15 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_kernel_result_has_actionable_setup_guidance() {
+        let summary = ToolResult::error(ToolErrorKind::KernelUnavailable).summary();
+
+        assert!(summary.contains("jupyter_client"));
+        assert!(summary.contains("ipykernel"));
+        assert!(summary.contains("MORONS_PYTHON"));
+    }
+
+    #[test]
     fn cells_are_bounded_without_restricting_normal_python_source() {
         assert!(validate_ipython_cell("value = 1\nvalue + 1"));
         assert!(!validate_ipython_cell(""));

@@ -19,7 +19,7 @@ Requirements:
 - Rust 1.98 (selected by `rust-toolchain.toml`)
 - a Bash-compatible shell; Windows requires Git Bash or compatible Bash configuration
 - an OpenCode Zen or Go API key
-- Python with `jupyter_client` and `ipykernel` for the `ipython` tool
+- Python with `jupyter_client` and `ipykernel` for the `ipython` tool (see setup below)
 - `BRAVE_SEARCH_API_KEY` for `web_search`
 
 Build both packaged companions:
@@ -35,6 +35,28 @@ Keep the resulting `morons` and `morons-server` executables together, change to 
 ```
 
 On first launch, read and acknowledge the trusted-local authority notice. Configure the OpenCode credential with `Ctrl+K`.
+
+### IPython setup
+
+Morons does not install or bundle a Python environment. The selected Python executable must provide `jupyter_client` and `ipykernel`. To keep these packages separate from a system Python, create a virtual environment yourself.
+
+macOS or Linux:
+
+```sh
+python3 -m venv "$HOME/.venvs/morons"
+"$HOME/.venvs/morons/bin/python" -m pip install jupyter_client ipykernel
+MORONS_PYTHON="$HOME/.venvs/morons/bin/python" ./target/release/morons
+```
+
+Windows from Git Bash:
+
+```sh
+py -m venv "$HOME/.venvs/morons"
+"$HOME/.venvs/morons/Scripts/python.exe" -m pip install jupyter_client ipykernel
+MORONS_PYTHON="$HOME/.venvs/morons/Scripts/python.exe" ./target/release/morons.exe
+```
+
+If `MORONS_PYTHON` is unset, Morons uses `python3` on macOS/Linux and `python` on Windows. The companion reads this setting when it starts; stop an existing companion with `Ctrl+S` before relaunching with a different Python executable.
 
 ## Interaction
 
