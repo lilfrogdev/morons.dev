@@ -2,6 +2,7 @@ mod bash;
 mod catalog;
 mod direct;
 mod path;
+mod web_search;
 mod worktree;
 
 use std::fmt;
@@ -16,9 +17,10 @@ pub(crate) use catalog::{
 };
 pub(crate) use direct::DirectToolExecutor;
 pub(crate) use path::{ToolPath, WorktreePath};
+pub(crate) use web_search::WebSearchToolExecutor;
 pub(crate) use worktree::recovery_plan_is_valid;
 
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 4;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 5;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
@@ -41,6 +43,12 @@ pub(crate) const MAX_DIRECTORY_ENTRIES: usize = 200;
 pub(crate) const MAX_SEARCH_QUERY_BYTES: usize = 512;
 pub(crate) const MAX_SEARCH_MATCHES: usize = 200;
 pub(crate) const MAX_SEARCH_OUTPUT_BYTES: usize = 128 * 1024;
+pub(crate) const MAX_WEB_SEARCH_QUERY_BYTES: usize = 512;
+pub(crate) const MAX_WEB_SEARCH_RESULTS: usize = 10;
+pub(crate) const MAX_WEB_SEARCH_TITLE_BYTES: usize = 512;
+pub(crate) const MAX_WEB_SEARCH_URL_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_WEB_SEARCH_SNIPPET_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_WEB_SEARCH_BODY_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_REPLACEMENTS: usize = 32;
 pub(crate) const MAX_REPLACEMENT_BYTES: usize = 256 * 1024;
 const TOOL_PATH_DIGEST_CONTEXT: &[u8] = b"morons.dev/tool-path/v1\0";
@@ -68,6 +76,7 @@ pub(crate) enum ToolKind {
     Write,
     Edit,
     Bash,
+    WebSearch,
 }
 
 impl ToolKind {
@@ -84,6 +93,7 @@ impl ToolKind {
             Self::Write => "write",
             Self::Edit => "edit",
             Self::Bash => "bash",
+            Self::WebSearch => "web_search",
         }
     }
 
@@ -100,6 +110,7 @@ impl ToolKind {
             Self::Write => 9,
             Self::Edit => 10,
             Self::Bash => 11,
+            Self::WebSearch => 12,
         }
     }
 
@@ -116,6 +127,7 @@ impl ToolKind {
             9 => Some(Self::Write),
             10 => Some(Self::Edit),
             11 => Some(Self::Bash),
+            12 => Some(Self::WebSearch),
             _ => None,
         }
     }
@@ -183,6 +195,9 @@ pub(crate) enum ToolInput {
     Bash {
         command: String,
     },
+    WebSearch {
+        query: String,
+    },
 }
 
 impl ToolInput {
@@ -199,6 +214,7 @@ impl ToolInput {
             Self::Write { .. } => ToolKind::Write,
             Self::Edit { .. } => ToolKind::Edit,
             Self::Bash { .. } => ToolKind::Bash,
+            Self::WebSearch { .. } => ToolKind::WebSearch,
         }
     }
 
@@ -218,6 +234,7 @@ impl ToolInput {
                 path.as_str()
             }
             Self::Bash { command } => command,
+            Self::WebSearch { query } => query,
         }
     }
 
@@ -283,6 +300,7 @@ impl ToolInput {
                 replacements,
             }),
             Self::Bash { command } => serde_json::to_string(&BashArguments { command }),
+            Self::WebSearch { query } => serde_json::to_string(&WebSearchArguments { query }),
         }
     }
 }
@@ -324,6 +342,11 @@ struct BashArguments<'a> {
     command: &'a str,
 }
 
+#[derive(Serialize)]
+struct WebSearchArguments<'a> {
+    query: &'a str,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TextReplacement {
@@ -361,6 +384,9 @@ pub(crate) enum ToolErrorKind {
     NotDispatched,
     Uncertain,
     Filesystem,
+    Network,
+    InvalidResponse,
+    CredentialNotConfigured,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -449,6 +475,9 @@ impl ToolErrorKind {
             Self::NotDispatched => "not dispatched",
             Self::Uncertain => "workspace effect is uncertain",
             Self::Filesystem => "filesystem operation failed",
+            Self::Network => "network request failed",
+            Self::InvalidResponse => "search service returned an invalid response",
+            Self::CredentialNotConfigured => "search credential is not configured",
         }
     }
 }
@@ -517,6 +546,11 @@ pub(crate) enum ToolOutput {
         stdout: String,
         stderr: String,
     },
+    WebSearch {
+        query: String,
+        results: Vec<WebSearchResult>,
+        truncated: bool,
+    },
 }
 
 impl ToolOutput {
@@ -533,6 +567,7 @@ impl ToolOutput {
             Self::Written { .. } => ToolKind::Write,
             Self::Edited { .. } => ToolKind::Edit,
             Self::Bash { .. } => ToolKind::Bash,
+            Self::WebSearch { .. } => ToolKind::WebSearch,
         }
     }
 
@@ -587,6 +622,14 @@ impl ToolOutput {
                 bytes,
                 ..
             } => format!("applied {replacements} replacement(s) ({bytes} bytes)"),
+            Self::WebSearch {
+                results, truncated, ..
+            } => format!(
+                "found {} cited web result{}{}",
+                results.len(),
+                if results.len() == 1 { "" } else { "s" },
+                if *truncated { " (truncated)" } else { "" }
+            ),
             Self::Bash {
                 exit_code,
                 signal,
@@ -780,6 +823,13 @@ pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> 
                 && stdout.len() <= MAX_COMMAND_OUTPUT_BYTES
                 && stderr.len() <= MAX_COMMAND_OUTPUT_BYTES
         }
+        ToolResult::Ok {
+            output: ToolOutput::WebSearch { query, results, .. },
+        } => {
+            valid_web_search_query(query)
+                && results.len() <= MAX_WEB_SEARCH_RESULTS
+                && results.iter().all(WebSearchResult::is_valid)
+        }
         ToolResult::Ok { output } => validate_bash_output(output, true),
     }
 }
@@ -809,6 +859,12 @@ pub(crate) fn valid_command_executable(value: &str) -> bool {
         })
 }
 
+fn valid_web_search_query(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_WEB_SEARCH_QUERY_BYTES
+        && !value.contains(['\0', '\r', '\n'])
+}
+
 fn valid_digest(value: &str) -> bool {
     value.len() == 64
         && value
@@ -836,6 +892,31 @@ pub(crate) struct SearchMatch {
     pub path: WorktreePath,
     pub line: u32,
     pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebSearchResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+}
+
+impl WebSearchResult {
+    fn is_valid(&self) -> bool {
+        self.title.len() <= MAX_WEB_SEARCH_TITLE_BYTES
+            && self.url.len() <= MAX_WEB_SEARCH_URL_BYTES
+            && self.snippet.len() <= MAX_WEB_SEARCH_SNIPPET_BYTES
+            && !self.url.is_empty()
+            && self.url.is_ascii()
+            && !self
+                .url
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+            && self.url.parse::<http::Uri>().is_ok_and(|uri| {
+                matches!(uri.scheme_str(), Some("http" | "https")) && uri.authority().is_some()
+            })
+    }
 }
 
 #[derive(Serialize)]

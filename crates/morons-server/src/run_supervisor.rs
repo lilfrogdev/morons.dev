@@ -29,7 +29,8 @@ use crate::{
     },
     tools::{
         BashToolExecutor, DirectToolExecutor, TOOL_CATALOG_VERSION, ToolCallValidationError,
-        ToolKind, ToolResult, developer_instruction, parse_provider_calls, provider_tools,
+        ToolKind, ToolResult, WebSearchToolExecutor, developer_instruction, parse_provider_calls,
+        provider_tools,
     },
 };
 
@@ -43,6 +44,7 @@ pub(crate) struct RunSupervisor {
     permits: Arc<Semaphore>,
     stopping: AtomicBool,
     session_events: Arc<SessionEventHub>,
+    web_search: WebSearchToolExecutor,
     state: Mutex<SupervisorState>,
 }
 
@@ -57,12 +59,42 @@ impl RunSupervisor {
         provider: Arc<OpenCodeProvider>,
         session_events: Arc<SessionEventHub>,
     ) -> Arc<Self> {
+        Self::with_web_search(
+            sessions,
+            provider,
+            session_events,
+            WebSearchToolExecutor::new(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        sessions: Arc<SessionStore>,
+        provider: Arc<OpenCodeProvider>,
+        session_events: Arc<SessionEventHub>,
+        search_origin: String,
+    ) -> Arc<Self> {
+        Self::with_web_search(
+            sessions,
+            provider,
+            session_events,
+            WebSearchToolExecutor::for_test(search_origin),
+        )
+    }
+
+    fn with_web_search(
+        sessions: Arc<SessionStore>,
+        provider: Arc<OpenCodeProvider>,
+        session_events: Arc<SessionEventHub>,
+        web_search: WebSearchToolExecutor,
+    ) -> Arc<Self> {
         Arc::new(Self {
             sessions,
             provider,
             permits: Arc::new(Semaphore::new(MAX_CONCURRENT_RUNS)),
             stopping: AtomicBool::new(false),
             session_events,
+            web_search,
             state: Mutex::new(SupervisorState {
                 controls: HashMap::new(),
                 tasks: JoinSet::new(),
@@ -396,26 +428,32 @@ impl RunSupervisor {
             let execution_cancellation = cancellation.clone();
             let tool = call.input.kind();
             let mutation = tool.is_mutation();
-            let result = tokio::task::spawn_blocking(move || {
-                let cancelled = || execution_cancellation.is_cancelled();
-                match tool {
-                    ToolKind::Bash => BashToolExecutor::new(execution_directory)
-                        .execute(&execution_input, &cancelled),
-                    ToolKind::Read | ToolKind::Write | ToolKind::Edit => {
-                        DirectToolExecutor::new(execution_directory)
-                            .execute(&execution_input, &cancelled)
+            let result = if tool == ToolKind::WebSearch {
+                self.web_search
+                    .execute(&execution_input, &execution_cancellation)
+                    .await
+            } else {
+                tokio::task::spawn_blocking(move || {
+                    let cancelled = || execution_cancellation.is_cancelled();
+                    match tool {
+                        ToolKind::Bash => BashToolExecutor::new(execution_directory)
+                            .execute(&execution_input, &cancelled),
+                        ToolKind::Read | ToolKind::Write | ToolKind::Edit => {
+                            DirectToolExecutor::new(execution_directory)
+                                .execute(&execution_input, &cancelled)
+                        }
+                        _ => ToolResult::error(crate::tools::ToolErrorKind::Filesystem),
                     }
-                    _ => ToolResult::error(crate::tools::ToolErrorKind::Filesystem),
-                }
-            })
-            .await
-            .unwrap_or_else(|_| {
-                ToolResult::error(if mutation {
-                    crate::tools::ToolErrorKind::Uncertain
-                } else {
-                    crate::tools::ToolErrorKind::Interrupted
                 })
-            });
+                .await
+                .unwrap_or_else(|_| {
+                    ToolResult::error(if mutation {
+                        crate::tools::ToolErrorKind::Uncertain
+                    } else {
+                        crate::tools::ToolErrorKind::Interrupted
+                    })
+                })
+            };
             let cancelled = result.error_kind() == Some(crate::tools::ToolErrorKind::Cancelled);
             let uncertain = result.is_uncertain();
             self.sessions

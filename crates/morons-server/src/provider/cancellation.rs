@@ -32,7 +32,7 @@ impl ProviderCancellation {
         *self.receiver.borrow()
     }
 
-    pub(super) async fn cancelled(&mut self) {
+    pub(crate) async fn cancelled(&mut self) {
         loop {
             if *self.receiver.borrow_and_update() {
                 return;

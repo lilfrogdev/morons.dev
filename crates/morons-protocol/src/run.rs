@@ -339,6 +339,7 @@ pub enum ToolKind {
     Write,
     Edit,
     Bash,
+    WebSearch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
