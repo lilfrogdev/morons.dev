@@ -38,6 +38,12 @@ pub(super) enum PendingOperation {
     StopServer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum InformationDialog {
+    TrustNotice,
+    Help,
+}
+
 pub(super) enum CredentialDialog {
     ChooseAction,
     Enter {
@@ -216,6 +222,7 @@ pub(super) struct AppState {
     pub(super) selected_model: Option<usize>,
     pub(super) credential: Option<OpenCodeCredentialStatus>,
     pub(super) credential_dialog: Option<CredentialDialog>,
+    pub(super) information_dialog: Option<InformationDialog>,
     pub(super) view: View,
     pub(super) session: Option<SessionView>,
     pub(super) prompt: PromptBuffer,
@@ -239,6 +246,7 @@ impl AppState {
             selected_model: None,
             credential: None,
             credential_dialog: None,
+            information_dialog: initial_information_dialog(),
             view: View::Sessions,
             session: None,
             prompt: PromptBuffer::default(),
@@ -1065,6 +1073,17 @@ impl fmt::Debug for TransientAssistant {
             .field("refusal", &self.refusal)
             .field("truncated", &self.truncated)
             .finish()
+    }
+}
+
+const fn initial_information_dialog() -> Option<InformationDialog> {
+    #[cfg(test)]
+    {
+        None
+    }
+    #[cfg(not(test))]
+    {
+        Some(InformationDialog::TrustNotice)
     }
 }
 
