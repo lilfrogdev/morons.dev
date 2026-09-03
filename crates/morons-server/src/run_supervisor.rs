@@ -28,9 +28,9 @@ use crate::{
         ProviderToolCall, provider_cancellation,
     },
     tools::{
-        BashToolExecutor, DirectToolExecutor, TOOL_CATALOG_VERSION, ToolCallValidationError,
-        ToolKind, ToolResult, WebSearchToolExecutor, developer_instruction, parse_provider_calls,
-        provider_tools,
+        BashToolExecutor, DirectToolExecutor, IpythonSupervisor, TOOL_CATALOG_VERSION,
+        ToolCallValidationError, ToolKind, ToolResult, WebSearchToolExecutor,
+        developer_instruction, parse_provider_calls, provider_tools,
     },
 };
 
@@ -45,6 +45,7 @@ pub(crate) struct RunSupervisor {
     stopping: AtomicBool,
     session_events: Arc<SessionEventHub>,
     web_search: WebSearchToolExecutor,
+    ipython: Arc<IpythonSupervisor>,
     state: Mutex<SupervisorState>,
 }
 
@@ -59,11 +60,12 @@ impl RunSupervisor {
         provider: Arc<OpenCodeProvider>,
         session_events: Arc<SessionEventHub>,
     ) -> Arc<Self> {
-        Self::with_web_search(
+        Self::with_tools(
             sessions,
             provider,
             session_events,
             WebSearchToolExecutor::new(),
+            IpythonSupervisor::new(),
         )
     }
 
@@ -74,19 +76,36 @@ impl RunSupervisor {
         session_events: Arc<SessionEventHub>,
         search_origin: String,
     ) -> Arc<Self> {
-        Self::with_web_search(
+        Self::with_tools(
             sessions,
             provider,
             session_events,
             WebSearchToolExecutor::for_test(search_origin),
+            IpythonSupervisor::new(),
         )
     }
 
-    fn with_web_search(
+    #[cfg(test)]
+    pub(crate) fn with_ipython_for_test(
+        sessions: Arc<SessionStore>,
+        provider: Arc<OpenCodeProvider>,
+        session_events: Arc<SessionEventHub>,
+    ) -> Arc<Self> {
+        Self::with_tools(
+            sessions,
+            provider,
+            session_events,
+            WebSearchToolExecutor::for_test("http://127.0.0.1:9/search".to_owned()),
+            IpythonSupervisor::for_test(),
+        )
+    }
+
+    fn with_tools(
         sessions: Arc<SessionStore>,
         provider: Arc<OpenCodeProvider>,
         session_events: Arc<SessionEventHub>,
         web_search: WebSearchToolExecutor,
+        ipython: Arc<IpythonSupervisor>,
     ) -> Arc<Self> {
         Arc::new(Self {
             sessions,
@@ -95,6 +114,7 @@ impl RunSupervisor {
             stopping: AtomicBool::new(false),
             session_events,
             web_search,
+            ipython,
             state: Mutex::new(SupervisorState {
                 controls: HashMap::new(),
                 tasks: JoinSet::new(),
@@ -178,6 +198,8 @@ impl RunSupervisor {
         }
         let mut state = self.state.lock().await;
         state.controls.clear();
+        drop(state);
+        self.ipython.shutdown().await;
     }
 
     async fn execute_run(
@@ -368,6 +390,7 @@ impl RunSupervisor {
                         .ok_or(PersistenceError::WorkingDirectoryUnavailable)?;
                     let terminal = self
                         .execute_tool_calls(
+                            context.run.session_id,
                             run_id,
                             PathBuf::from(working_directory),
                             committed.calls,
@@ -399,6 +422,7 @@ impl RunSupervisor {
 
     async fn execute_tool_calls(
         &self,
+        session_id: crate::persistence::SessionId,
         run_id: RunId,
         working_directory: PathBuf,
         calls: Vec<crate::persistence::CommittedToolCall>,
@@ -431,6 +455,15 @@ impl RunSupervisor {
             let result = if tool == ToolKind::WebSearch {
                 self.web_search
                     .execute(&execution_input, &execution_cancellation)
+                    .await
+            } else if tool == ToolKind::Ipython {
+                self.ipython
+                    .execute(
+                        session_id,
+                        execution_directory,
+                        &execution_input,
+                        &execution_cancellation,
+                    )
                     .await
             } else {
                 tokio::task::spawn_blocking(move || {

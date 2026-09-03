@@ -77,9 +77,9 @@ The server-owned provider credential boundary is an application boundary, not an
 
 ### Persistent IPython
 
-Each active session may start one IPython kernel on demand through the standard Jupyter protocol. The kernel starts in the selected working directory with the same intentional local-authority posture as shell commands. It may import packages, access the network, launch subprocesses, and modify user-accessible files.
+Each active session may start one IPython kernel on demand through the standard Jupyter protocol. Morons launches the configured Python runtime (`MORONS_PYTHON`, or the platform default), which must provide `jupyter_client` and `ipykernel`, and supervises the bridge, kernel, and descendants as one process tree. The kernel starts in the selected working directory with the same intentional local-authority posture as shell commands. It may import packages, access the network, launch subprocesses, and modify user-accessible files.
 
-Kernel variables persist across cells while that kernel remains alive. Kernel memory is temporary and is never authoritative session state; server restart, explicit kernel restart, or unrecoverable kernel failure loses it. The durable transcript retains only bounded submitted cells and displayed results.
+Kernel variables persist across cells and top-level runs while that kernel remains alive. Kernel memory is temporary and is never authoritative session state; server restart, cancellation, limit exhaustion, least-recently-used idle-kernel eviction, or unrecoverable kernel failure loses it. Morons keeps at most four session kernels alive, terminates the complete kernel process tree when an operation cannot finish safely, and starts a fresh kernel on the next cell. The durable transcript retains only bounded submitted cells and displayed results.
 
 Morons exposes a small Python helper surface that can invoke the same built-in tools programmatically. Those calls retain their ordinary typed inputs, limits, cancellation, transcript ordering, and provider-context behavior. The helper is not a generic privileged server proxy.
 
