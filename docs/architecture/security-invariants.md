@@ -146,7 +146,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Recovery does not inspect, reset, delete, or repair the selected working directory automatically.
 - Storage quotas reject new work before uncontrolled growth and never silently delete canonical history to regain space.
 - Schema migrations remain ordered and transactional; newer, corrupt, foreign, or unsupported state fails closed without automatic recreation or downgrade.
-- Live database backup uses SQLite's online backup API. A database backup does not include selected project files and must not be described as a project backup.
+- Live database backup uses SQLite's online backup API. A database-only backup does not include selected project files or file-backed image payloads and must not be described as a project or complete session backup.
 
 ## Terminal and local presentation
 

@@ -23,10 +23,10 @@ pub use framing::{
 };
 pub use messages::{ClientMessage, ServerMessage};
 pub use run::{
-    LocalCommandId, LocalCommandStatus, MessageId, OpenCodeModelCapabilities,
-    OpenCodeModelRetention, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
-    RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
-    TranscriptCursor, TranscriptEntry,
+    ImageAttachmentId, ImageAttachmentSummary, ImageUpload, LocalCommandId, LocalCommandStatus,
+    MessageId, OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
+    OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary,
+    ToolCallId, ToolKind, ToolResultStatus, TranscriptCursor, TranscriptEntry,
 };
 pub use session::{
     APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
@@ -35,4 +35,4 @@ pub use session::{
     SkillSource, SkillSummary, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 23;
+pub const PROTOCOL_VERSION: u32 = 24;

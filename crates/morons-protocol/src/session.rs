@@ -282,6 +282,7 @@ pub enum ApplicationRequest {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
         text: String,
+        attachments: Vec<crate::ImageUpload>,
         service: crate::OpenCodeService,
         model_id: String,
     },
@@ -381,6 +382,7 @@ impl fmt::Debug for ApplicationRequest {
                 mutation_request_id,
                 session_id,
                 text,
+                attachments,
                 service,
                 model_id,
             } => formatter
@@ -388,6 +390,7 @@ impl fmt::Debug for ApplicationRequest {
                 .field("mutation_request_id", mutation_request_id)
                 .field("session_id", session_id)
                 .field("text_bytes", &text.len())
+                .field("attachments", &attachments.len())
                 .field("service", service)
                 .field("model_id", model_id)
                 .finish(),

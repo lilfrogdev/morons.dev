@@ -22,7 +22,7 @@ pub(crate) use path::{ToolPath, WorktreePath};
 pub(crate) use web_search::WebSearchToolExecutor;
 pub(crate) use worktree::recovery_plan_is_valid;
 
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 6;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 7;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
@@ -409,6 +409,7 @@ pub(crate) enum ToolErrorKind {
     CredentialNotConfigured,
     KernelUnavailable,
     ExecutionFailed,
+    ImageInputUnsupported,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +445,15 @@ impl ToolResult {
             Self::Ok { .. } => None,
             Self::Error { error, .. } => Some(*error),
         }
+    }
+
+    pub(crate) const fn has_image(&self) -> bool {
+        matches!(
+            self,
+            Self::Ok {
+                output: ToolOutput::ReadImage { .. }
+            }
+        )
     }
 
     pub(crate) const fn is_uncertain(&self) -> bool {
@@ -502,6 +512,7 @@ impl ToolErrorKind {
             Self::CredentialNotConfigured => "search credential is not configured",
             Self::KernelUnavailable => "IPython kernel is unavailable",
             Self::ExecutionFailed => "IPython cell failed",
+            Self::ImageInputUnsupported => "selected model does not support image input",
         }
     }
 }
@@ -555,6 +566,10 @@ pub(crate) enum ToolOutput {
         end_of_file: bool,
         text: String,
     },
+    ReadImage {
+        path: ToolPath,
+        image: ToolImageOutput,
+    },
     Written {
         path: ToolPath,
         bytes: u64,
@@ -593,7 +608,7 @@ impl ToolOutput {
             Self::FileCreated { .. } => ToolKind::CreateFile,
             Self::DirectoryCreated { .. } => ToolKind::CreateDirectory,
             Self::CommandCompleted { .. } => ToolKind::RunCommand,
-            Self::Read { .. } => ToolKind::Read,
+            Self::Read { .. } | Self::ReadImage { .. } => ToolKind::Read,
             Self::Written { .. } => ToolKind::Write,
             Self::Edited { .. } => ToolKind::Edit,
             Self::Bash { .. } => ToolKind::Bash,
@@ -637,6 +652,14 @@ impl ToolOutput {
             Self::FileEdited { bytes, .. } => format!("edited file ({bytes} bytes)"),
             Self::FileCreated { bytes, .. } => format!("created file ({bytes} bytes)"),
             Self::DirectoryCreated { .. } => "created directory".to_owned(),
+            Self::ReadImage { image, .. } => format!(
+                "read image [{}] ({}×{}, {}, {} bytes)",
+                image.display_name,
+                image.width,
+                image.height,
+                image.media_type.as_str(),
+                image.bytes
+            ),
             Self::Read {
                 offset,
                 next_offset,
@@ -861,6 +884,9 @@ pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> 
                 && text.len() <= MAX_READ_OUTPUT_BYTES
         }
         ToolResult::Ok {
+            output: ToolOutput::ReadImage { path, image },
+        } => ToolPath::parse(path.as_str()).is_ok() && image.canonical_is_valid(),
+        ToolResult::Ok {
             output: ToolOutput::Written { path, bytes },
         } => ToolPath::parse(path.as_str()).is_ok() && *bytes <= MAX_FILE_BYTES,
         ToolResult::Ok {
@@ -977,6 +1003,52 @@ pub(crate) struct SearchMatch {
     pub path: WorktreePath,
     pub line: u32,
     pub text: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ToolImageOutput {
+    pub attachment_id: Option<[u8; 16]>,
+    pub display_name: String,
+    pub media_type: morons_image::ImageMediaType,
+    pub width: u32,
+    pub height: u32,
+    pub bytes: u64,
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data: Vec<u8>,
+}
+
+impl fmt::Debug for ToolImageOutput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ToolImageOutput")
+            .field("attachment_id", &self.attachment_id)
+            .field("display_name_bytes", &self.display_name.len())
+            .field("media_type", &self.media_type)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("bytes", &self.bytes)
+            .field("sha256", &"[REDACTED]")
+            .field("data", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl ToolImageOutput {
+    fn canonical_is_valid(&self) -> bool {
+        self.attachment_id
+            .is_some_and(|id| id.iter().any(|byte| *byte != 0))
+            && crate::persistence::images::valid_display_name(&self.display_name)
+            && self.width > 0
+            && self.height > 0
+            && self.width <= morons_image::MAX_IMAGE_DIMENSION
+            && self.height <= morons_image::MAX_IMAGE_DIMENSION
+            && self.bytes > 0
+            && self.bytes <= morons_image::MAX_NORMALIZED_IMAGE_BYTES as u64
+            && valid_digest(&self.sha256)
+            && self.data.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

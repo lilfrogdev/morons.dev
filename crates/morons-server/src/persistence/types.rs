@@ -23,6 +23,8 @@ const MAX_SESSION_NAME_BYTES: usize = 256;
 const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1\0";
 const CREATE_SESSION_WITH_DIRECTORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v2\0";
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
+const SUBMIT_SESSION_INPUT_WITH_IMAGES_FINGERPRINT_CONTEXT: &[u8] =
+    b"morons.dev/submit-session-input/v2\0";
 const CANCEL_RUN_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/cancel-run/v1\0";
 const STOP_SERVER_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/stop-server/v1\0";
 const IMPORT_REPOSITORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/import-repository/v1\0";
@@ -274,6 +276,7 @@ pub enum PersistenceError {
     CredentialGenerationConflict,
     CredentialNotConfigured,
     CredentialMutationNotApplied,
+    ImageInputUnsupported,
     WorkspaceBlocked,
     ToolUncertaintyNotFound,
     ResourceLimit {
@@ -320,6 +323,9 @@ impl fmt::Display for PersistenceError {
             }
             Self::CredentialMutationNotApplied => {
                 formatter.write_str("the credential mutation was not applied")
+            }
+            Self::ImageInputUnsupported => {
+                formatter.write_str("the selected model does not support image context")
             }
             Self::WorkspaceBlocked => formatter.write_str("the session workspace is blocked"),
             Self::ToolUncertaintyNotFound => {
@@ -372,6 +378,7 @@ impl Error for PersistenceError {
             | Self::CredentialGenerationConflict
             | Self::CredentialNotConfigured
             | Self::CredentialMutationNotApplied
+            | Self::ImageInputUnsupported
             | Self::WorkspaceBlocked
             | Self::ToolUncertaintyNotFound
             | Self::ResourceLimit { .. }
@@ -507,6 +514,21 @@ pub(super) fn submit_session_input_fingerprint(
     }]);
     digest.update((model_id.len() as u16).to_be_bytes());
     digest.update(model_id.as_bytes());
+    digest.finalize().into()
+}
+
+pub(super) fn submit_session_input_with_images_fingerprint(
+    session_id: SessionId,
+    text: &str,
+    service: RunOpenCodeService,
+    model_id: &str,
+    attachment_digest: &[u8; 32],
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let base = submit_session_input_fingerprint(session_id, text, service, model_id);
+    let mut digest = Sha256::new();
+    digest.update(SUBMIT_SESSION_INPUT_WITH_IMAGES_FINGERPRINT_CONTEXT);
+    digest.update(base);
+    digest.update(attachment_digest);
     digest.finalize().into()
 }
 

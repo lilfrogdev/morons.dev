@@ -142,6 +142,31 @@ fn tool_turn_validation_rejects_the_entire_unknown_or_contradictory_response() {
 }
 
 #[test]
+fn nonvision_models_reject_read_image_results_before_persistence() {
+    let image =
+        morons_image::normalize_rgba(1, 1, vec![1, 2, 3, 255]).expect("fixture should normalize");
+    let result = crate::tools::ToolResult::Ok {
+        output: crate::tools::ToolOutput::ReadImage {
+            path: crate::tools::ToolPath::parse("picture.png").expect("path should parse"),
+            image: crate::tools::ToolImageOutput {
+                attachment_id: None,
+                display_name: "picture.png".to_owned(),
+                media_type: image.media_type,
+                width: image.width,
+                height: image.height,
+                bytes: image.bytes.len() as u64,
+                sha256: "00".repeat(32),
+                data: image.bytes,
+            },
+        },
+    };
+    assert_eq!(
+        super::enforce_image_capability(result, false),
+        crate::tools::ToolResult::error(crate::tools::ToolErrorKind::ImageInputUnsupported)
+    );
+}
+
+#[test]
 fn oversized_complete_assistant_is_a_run_resource_failure() {
     let outcome = ProviderOutcome {
         provider_response_id: "resp_oversized".to_owned(),
@@ -196,6 +221,7 @@ async fn changed_credential_generation_fails_before_network_dispatch() {
                 maximum_input_tokens: 96_000,
                 maximum_output_tokens: 32_000,
                 supports_tool_calls: true,
+                supports_image_input: false,
             },
         )
         .await
@@ -448,6 +474,118 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn image_submission_requires_vision_and_maps_durable_bytes_to_multimodal_content() {
+    let root = TestRoot::new("image-context");
+    let selected = TestRoot::new("image-directory");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0xc1; 16]),
+            0,
+            b"not-a-real-image-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session_at(
+            PersistenceMutationRequestId::from_bytes([0xc2; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let image =
+        morons_image::normalize_rgba(2, 2, vec![0x88; 16]).expect("fixture image should normalize");
+    let upload = morons_protocol::ImageUpload {
+        display_name: "puppies.png".to_owned(),
+        marker_start: 4,
+        data_base64: morons_image::encode_base64(&image.bytes),
+    };
+    let (base, captured_request, provider_task) = spawn_image_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let session_id = SessionId::from_bytes(*session.id.as_bytes());
+
+    let unsupported = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0xc3; 16]),
+            session_id,
+            text: "see [puppies.png]".to_owned(),
+            attachments: vec![upload.clone()],
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await;
+    assert!(matches!(
+        unsupported,
+        Err(ApplicationError::UnsupportedModel)
+    ));
+    assert_eq!(
+        fs::read_dir(root.path().join("attachments"))
+            .expect("attachment directory should be readable")
+            .count(),
+        0
+    );
+
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0xc4; 16]),
+            session_id,
+            text: "see [puppies.png]".to_owned(),
+            attachments: vec![upload],
+            service: OpenCodeService::Zen,
+            model_id: "gpt-5.4".to_owned(),
+        })
+        .await
+        .expect("vision run should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run");
+    };
+    assert_eq!(
+        wait_for_terminal(&application, session_id, run.id).await,
+        RunState::Succeeded
+    );
+    provider_task.await.expect("image provider should finish");
+    let request = captured_request
+        .await
+        .expect("image request should be captured");
+    assert!(request.contains("\"type\":\"input_text\""));
+    assert!(request.contains("\"type\":\"input_image\""));
+    assert!(request.contains("data:image/png;base64,"));
+    assert!(request.contains("[puppies.png]"));
+
+    let page = application
+        .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+            session_id,
+            cursor: None,
+            limit: 1,
+        })
+        .await
+        .expect("image transcript should load");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+        entries, ..
+    }) = page
+    else {
+        panic!("transcript should return a page");
+    };
+    assert!(matches!(
+        &entries[..],
+        [morons_protocol::TranscriptEntry::UserMessage { attachments, .. }]
+            if attachments.len() == 1 && attachments[0].display_name == "puppies.png"
+    ));
+    application.shutdown().await;
+    drop(application);
+    let database =
+        fs::read(root.path().join("data/sessions.sqlite3")).expect("database should be readable");
+    assert!(!contains_bytes(&database, &image.bytes));
+    assert!(!contains_bytes(
+        &database,
+        morons_image::encode_base64(&image.bytes).as_bytes()
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn exact_skill_invocation_binds_full_instructions_while_catalog_stays_progressive() {
     let root = TestRoot::new("skill-context");
     let selected = TestRoot::new("skill-directory");
@@ -511,6 +649,7 @@ async fn exact_skill_invocation_binds_full_instructions_while_catalog_stays_prog
             mutation_request_id: MutationRequestId::from_bytes([0xb3; 16]),
             session_id: protocol_session_id,
             text: "@release-helper prepare a release".to_owned(),
+            attachments: Vec::new(),
             service: OpenCodeService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
@@ -571,6 +710,7 @@ async fn direct_tool_loop_reads_edits_runs_bash_and_commits_durable_results() {
             mutation_request_id: MutationRequestId::from_bytes([0x83; 16]),
             session_id,
             text: "inspect and update note.txt".to_owned(),
+            attachments: Vec::new(),
             service: OpenCodeService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
@@ -667,6 +807,75 @@ async fn direct_tool_loop_reads_edits_runs_bash_and_commits_durable_results() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn read_image_tool_stores_bytes_outside_sqlite_and_returns_multimodal_content() {
+    let root = TestRoot::new("read-image-tool");
+    let selected = TestRoot::new("read-image-directory");
+    let image =
+        morons_image::normalize_rgba(3, 2, vec![0x66; 24]).expect("fixture image should normalize");
+    fs::write(selected.path().join("picture.png"), &image.bytes)
+        .expect("fixture image should be written");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0xd1; 16]),
+            0,
+            b"not-a-real-read-image-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session_at(
+            PersistenceMutationRequestId::from_bytes([0xd2; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let (base, requests, provider_task) = spawn_read_image_tool_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let session_id = SessionId::from_bytes(*session.id.as_bytes());
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0xd3; 16]),
+            session_id,
+            text: "inspect picture.png".to_owned(),
+            attachments: Vec::new(),
+            service: OpenCodeService::Zen,
+            model_id: "gpt-5.4".to_owned(),
+        })
+        .await
+        .expect("image tool run should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run");
+    };
+    assert_eq!(
+        wait_for_terminal(&application, session_id, run.id).await,
+        RunState::Succeeded
+    );
+    provider_task.await.expect("provider fixture should finish");
+    let requests = requests.await.expect("requests should be captured");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].contains("\"name\":\"read\""));
+    assert!(requests[1].contains("function_call_output"));
+    assert!(requests[1].contains("data:image/png;base64,"));
+    assert!(requests[1].contains("[picture.png]"));
+    application.shutdown().await;
+    drop(application);
+    let database =
+        fs::read(root.path().join("data/sessions.sqlite3")).expect("database should be readable");
+    assert!(!contains_bytes(&database, &image.bytes));
+    assert_eq!(
+        fs::read_dir(root.path().join("attachments"))
+            .expect("attachment directory should be readable")
+            .count(),
+        1
+    );
+    SessionStore::open_for_test(root.path()).expect("read image result should reopen");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
     let root = TestRoot::new("web-search-tool-loop");
     let selected = TestRoot::new("web-search-directory");
@@ -701,6 +910,7 @@ async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
             mutation_request_id: MutationRequestId::from_bytes([0x93; 16]),
             session_id,
             text: "find the current Rust site".to_owned(),
+            attachments: Vec::new(),
             service: OpenCodeService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
@@ -812,6 +1022,7 @@ async fn ipython_tool_reuses_one_session_kernel_and_commits_bounded_results() {
             mutation_request_id: MutationRequestId::from_bytes([0xa3; 16]),
             session_id,
             text: "use persistent Python state".to_owned(),
+            attachments: Vec::new(),
             service: OpenCodeService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
@@ -904,6 +1115,7 @@ async fn exact_cancellation_stops_the_supervised_provider_task() {
             mutation_request_id: MutationRequestId::from_bytes([0x13; 16]),
             session_id: SessionId::from_bytes(*session.id.as_bytes()),
             text: "cancel the network request".to_owned(),
+            attachments: Vec::new(),
             service: OpenCodeService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
@@ -968,6 +1180,7 @@ async fn graceful_shutdown_interrupts_run_without_owner_cancellation() {
             mutation_request_id: MutationRequestId::from_bytes([0x23; 16]),
             session_id: SessionId::from_bytes(*session.id.as_bytes()),
             text: "interrupt on shutdown".to_owned(),
+            attachments: Vec::new(),
             service: OpenCodeService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
@@ -1002,6 +1215,7 @@ async fn graceful_shutdown_interrupts_run_without_owner_cancellation() {
             mutation_request_id: MutationRequestId::from_bytes([0x24; 16]),
             session_id: run.session_id,
             text: "must not start during shutdown".to_owned(),
+            attachments: Vec::new(),
             service: OpenCodeService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
@@ -1074,6 +1288,48 @@ async fn spawn_catalog_provider() -> (
             .shutdown()
             .await
             .expect("catalog response should close");
+    });
+    (format!("http://{address}"), captured_receiver, server)
+}
+
+async fn spawn_image_provider() -> (
+    String,
+    oneshot::Receiver<String>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("image provider fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("image provider fixture should have an address");
+    let (captured_sender, captured_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("request should connect");
+        let request = read_http_request(&mut stream).await;
+        captured_sender
+            .send(String::from_utf8(request).expect("request should be UTF-8"))
+            .unwrap_or_else(|_| panic!("request should be observed"));
+        let output = "{\"id\":\"msg_image\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"I see the image.\",\"annotations\":[]}]}";
+        let body = format!(
+            "event: response.created\ndata: {{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{{\"id\":\"resp_image\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"gpt-5.4\"}}}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{{\"id\":\"resp_image\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"output\":[{output}],\"usage\":{{\"input_tokens\":20,\"input_tokens_details\":{{\"cached_tokens\":0}},\"output_tokens\":5,\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":25}}}}}}\n\ndata: [DONE]\n\n"
+        );
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream
+            .write_all(headers.as_bytes())
+            .await
+            .expect("image headers should write");
+        stream
+            .write_all(body.as_bytes())
+            .await
+            .expect("image response should write");
+        stream
+            .shutdown()
+            .await
+            .expect("image response should close");
     });
     (format!("http://{address}"), captured_receiver, server)
 }
@@ -1202,6 +1458,59 @@ async fn spawn_direct_tool_loop_provider() -> (
         requests_sender
             .send(captured)
             .unwrap_or_else(|_| panic!("tool requests should be observed"));
+    });
+    (format!("http://{address}"), requests_receiver, server)
+}
+
+async fn spawn_read_image_tool_provider() -> (
+    String,
+    oneshot::Receiver<Vec<String>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("read image provider should bind");
+    let address = listener
+        .local_addr()
+        .expect("provider should have an address");
+    let (requests_sender, requests_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let arguments = r#"{"path":"picture.png","offset":1,"limit":1}"#;
+        let outputs = [
+            format!(
+                "{{\"id\":\"fc_read_image\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_read_image\",\"name\":\"read\",\"arguments\":{}}}",
+                serde_json::to_string(arguments).expect("arguments should encode")
+            ),
+            "{\"id\":\"msg_image_final\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"I inspected picture.png.\",\"annotations\":[]}]}".to_owned(),
+        ];
+        let mut captured = Vec::new();
+        for (index, output) in outputs.into_iter().enumerate() {
+            let (mut stream, _) = listener.accept().await.expect("provider should connect");
+            captured.push(
+                String::from_utf8(read_http_request(&mut stream).await)
+                    .expect("provider request should be UTF-8"),
+            );
+            let response_id = format!("resp_read_image_{}", index + 1);
+            let body = format!(
+                "event: response.created\ndata: {{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"gpt-5.4\"}}}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"output\":[{output}],\"usage\":{{\"input_tokens\":16,\"input_tokens_details\":{{\"cached_tokens\":0}},\"output_tokens\":4,\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":20}}}}}}\n\ndata: [DONE]\n\n"
+            );
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .await
+                .expect("provider headers should write");
+            stream
+                .write_all(body.as_bytes())
+                .await
+                .expect("provider response should write");
+            stream.shutdown().await.expect("provider should close");
+        }
+        requests_sender
+            .send(captured)
+            .unwrap_or_else(|_| panic!("requests should be observed"));
     });
     (format!("http://{address}"), requests_receiver, server)
 }

@@ -1,4 +1,5 @@
 use rusqlite::params;
+use sha2::Digest as _;
 
 use super::{
     Backend,
@@ -10,7 +11,10 @@ use super::{
 use crate::persistence::{
     PersistenceError, Run, RunId, SessionEventCursor, SessionId, TranscriptCursor, TranscriptEntry,
     TranscriptPage,
-    run_types::{CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, RunContext},
+    run_types::{
+        CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, LEGACY_SKILL_CONTEXT_POLICY_VERSION,
+        RunContext,
+    },
 };
 
 impl Backend {
@@ -163,6 +167,7 @@ impl Backend {
         if has_more {
             entries.pop();
         }
+        self.attach_image_metadata(session_id, &mut entries)?;
         let next_cursor = if has_more {
             let after_entry_sequence = entries
                 .last()
@@ -209,11 +214,38 @@ impl Backend {
         })
     }
 
+    fn attach_image_metadata(
+        &self,
+        session_id: SessionId,
+        entries: &mut [TranscriptEntry],
+    ) -> Result<(), PersistenceError> {
+        for entry in entries {
+            if let TranscriptEntry::UserMessage {
+                id,
+                text,
+                attachments,
+                ..
+            } = entry
+            {
+                let loaded = self.load_message_image_attachments(session_id, *id)?;
+                if !crate::persistence::images::valid_stored_attachments(text, &loaded) {
+                    return Err(PersistenceError::InvalidState {
+                        reason: "user message image attachment metadata is invalid",
+                    });
+                }
+                *attachments = loaded;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn load_run_context(&self, run_id: RunId) -> Result<RunContext, PersistenceError> {
         let run = load_required_run(&self.connection, run_id)?;
         if !matches!(
             run.context_policy_version,
-            CONTEXT_POLICY_VERSION | LEGACY_CONTEXT_POLICY_VERSION
+            CONTEXT_POLICY_VERSION
+                | LEGACY_SKILL_CONTEXT_POLICY_VERSION
+                | LEGACY_CONTEXT_POLICY_VERSION
         ) {
             return Err(PersistenceError::InvalidState {
                 reason: "a run uses an unsupported context policy version",
@@ -268,6 +300,7 @@ impl Backend {
             )?
             .collect::<Result<Vec<_>, _>>()?;
         let mut entries = entries;
+        self.attach_image_metadata(run.session_id, &mut entries)?;
         entries.extend(self.list_local_command_entries(
             run.session_id,
             0,
@@ -294,6 +327,95 @@ impl Backend {
         if entries.is_empty() || !all_entries_reach_high_water {
             return Err(PersistenceError::InvalidState {
                 reason: "a run context high water is not present",
+            });
+        }
+        let mut attachment_data = std::collections::HashMap::new();
+        let mut attachment_count = 0_usize;
+        let mut attachment_bytes = 0_u64;
+        for entry in &entries {
+            match entry {
+                TranscriptEntry::UserMessage { attachments, .. } => {
+                    attachment_count = attachment_count.checked_add(attachments.len()).ok_or(
+                        PersistenceError::ResourceLimit {
+                            resource: crate::persistence::PersistenceResourceLimit::Context,
+                        },
+                    )?;
+                    for attachment in attachments {
+                        attachment_bytes = attachment_bytes.checked_add(attachment.bytes).ok_or(
+                            PersistenceError::ResourceLimit {
+                                resource: crate::persistence::PersistenceResourceLimit::Context,
+                            },
+                        )?;
+                        if attachment_count > crate::persistence::images::MAX_CONTEXT_IMAGES
+                            || attachment_bytes
+                                > crate::persistence::images::MAX_CONTEXT_IMAGE_BYTES
+                        {
+                            return Err(PersistenceError::ResourceLimit {
+                                resource: crate::persistence::PersistenceResourceLimit::Context,
+                            });
+                        }
+                        let bytes = self.read_image_attachment(run.session_id, attachment.id)?;
+                        if bytes.len() as u64 != attachment.bytes
+                            || sha2::Sha256::digest(&bytes)[..] != attachment.digest
+                            || attachment_data.insert(attachment.id, bytes).is_some()
+                        {
+                            return Err(PersistenceError::InvalidState {
+                                reason: "run context image attachment data is invalid",
+                            });
+                        }
+                    }
+                }
+                TranscriptEntry::ToolResult {
+                    result:
+                        crate::tools::ToolResult::Ok {
+                            output: crate::tools::ToolOutput::ReadImage { image, .. },
+                        },
+                    ..
+                } => {
+                    attachment_bytes = attachment_bytes.checked_add(image.bytes).ok_or(
+                        PersistenceError::ResourceLimit {
+                            resource: crate::persistence::PersistenceResourceLimit::Context,
+                        },
+                    )?;
+                    let attachment_id = image
+                        .attachment_id
+                        .map(crate::persistence::ImageAttachmentId::from_bytes)
+                        .ok_or(PersistenceError::InvalidState {
+                            reason: "read image result is missing its attachment identifier",
+                        })?;
+                    let bytes = self.read_image_attachment(run.session_id, attachment_id)?;
+                    let digest = sha2::Sha256::digest(&bytes)
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    if bytes.len() as u64 != image.bytes
+                        || digest != image.sha256
+                        || attachment_data.insert(attachment_id, bytes).is_some()
+                    {
+                        return Err(PersistenceError::InvalidState {
+                            reason: "read image attachment data is invalid",
+                        });
+                    }
+                    attachment_count =
+                        attachment_count
+                            .checked_add(1)
+                            .ok_or(PersistenceError::ResourceLimit {
+                                resource: crate::persistence::PersistenceResourceLimit::Context,
+                            })?;
+                    if attachment_count > crate::persistence::images::MAX_CONTEXT_IMAGES
+                        || attachment_bytes > crate::persistence::images::MAX_CONTEXT_IMAGE_BYTES
+                    {
+                        return Err(PersistenceError::ResourceLimit {
+                            resource: crate::persistence::PersistenceResourceLimit::Context,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        if run.context_policy_version != CONTEXT_POLICY_VERSION && attachment_count != 0 {
+            return Err(PersistenceError::InvalidState {
+                reason: "a legacy run unexpectedly contains image attachments",
             });
         }
         let skills = load_run_skills(&self.connection, run_id)?;
@@ -334,14 +456,17 @@ impl Backend {
                 total.checked_add(bytes as u64)
             })
             .and_then(|bytes| bytes.checked_add(skill_context_bytes as u64))
+            .and_then(|bytes| bytes.checked_add((attachment_count as u64).checked_mul(8_192)?))
             .ok_or(PersistenceError::ResourceLimit {
                 resource: crate::persistence::PersistenceResourceLimit::Context,
             })?;
-        let context_items = entries.len().checked_add(skills.skills.len()).ok_or(
-            PersistenceError::ResourceLimit {
+        let context_items = entries
+            .len()
+            .checked_add(skills.skills.len())
+            .and_then(|items| items.checked_add(attachment_count))
+            .ok_or(PersistenceError::ResourceLimit {
                 resource: crate::persistence::PersistenceResourceLimit::Context,
-            },
-        )?;
+            })?;
         let estimated_input_tokens =
             crate::persistence::run_types::conservative_input_token_estimate(
                 context_bytes,
@@ -391,6 +516,7 @@ impl Backend {
         Ok(RunContext {
             run,
             skills,
+            attachment_data,
             entries,
             current_entry_high_water,
             estimated_input_tokens,

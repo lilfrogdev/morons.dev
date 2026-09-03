@@ -15,8 +15,10 @@ name = "morons"
 path = "src/main.rs"
 
 [dependencies]
+arboard.workspace = true
 getrandom.workspace = true
 interprocess.workspace = true
+morons-image = { path = "../morons-image" }
 morons-protocol = { path = "../morons-protocol" }
 ratatui.workspace = true
 ratatui-crossterm.workspace = true

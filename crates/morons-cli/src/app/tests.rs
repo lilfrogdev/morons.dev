@@ -25,6 +25,7 @@ fn rendering_strips_terminal_and_bidirectional_controls() {
             run_id: run.id,
             text: "safe\u{1b}]8;;https://example.invalid\u{7}link\u{1b}]8;;\u{7}\u{202e}txt"
                 .to_owned(),
+            attachments: Vec::new(),
             created_at_milliseconds: 1,
         }],
         vec![run],
@@ -232,6 +233,57 @@ fn at_prefix_opens_bounded_skill_completion_and_tab_inserts_exact_name() {
 }
 
 #[test]
+fn image_drafts_use_atomic_unique_markers_and_survive_unsupported_submission() {
+    let (session, run) = fixture_session_and_run();
+    let session_id = session.id;
+    let mut app = AppState::new("test-server");
+    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+        .expect("models should be valid");
+    app.open_session(
+        session,
+        empty_workspace(),
+        Vec::new(),
+        vec![run],
+        None,
+        None,
+    )
+    .expect("session should open");
+    let image =
+        morons_image::normalize_rgba(2, 2, vec![0x55; 16]).expect("fixture image should normalize");
+    assert_eq!(
+        sanitize_image_name("bad\u{202e}[name].png"),
+        "bad__name_.png"
+    );
+    app.add_draft_image(image.clone(), Some("puppies.png"));
+    app.add_draft_image(image, Some("puppies.png"));
+    assert_eq!(app.prompt.as_str(), "[puppies.png][puppies (2).png]");
+    app.backspace_prompt();
+    assert_eq!(app.prompt.as_str(), "[puppies.png]");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(app.prompt.as_str(), "[puppies.png]");
+
+    app.models[0].model.capabilities.image_input = true;
+    let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let debug = format!("{action:?}");
+    assert!(matches!(
+        action,
+        AppAction::SubmitInput {
+            session_id: selected,
+            ref attachments,
+            ..
+        } if selected == session_id
+            && attachments.len() == 1
+            && attachments[0].display_name == "puppies.png"
+            && attachments[0].marker_start == 0
+    ));
+    assert!(!debug.contains("iVBOR"));
+    assert!(debug.contains("attachments"));
+}
+
+#[test]
 fn unknown_mutation_requires_exact_retry_or_abandonment() {
     let mut app = AppState::new("test-server");
     app.mark_pending(PendingOperation::CreateSession);
@@ -396,6 +448,7 @@ fn input_action_debug_omits_prompt_text() {
     let action = AppAction::SubmitInput {
         session_id: SessionId::from_bytes([0x55; 16]),
         text: "sensitive prompt text".to_owned(),
+        attachments: Vec::new(),
         service: OpenCodeService::Zen,
         model_id: "grok-4.6".to_owned(),
     };
@@ -482,6 +535,7 @@ fn fixture_model() -> OpenCodeModelSummary {
         responses_protocol_revision: 1,
         capabilities: OpenCodeModelCapabilities {
             text_input: true,
+            image_input: false,
             text_output: true,
             reasoning: true,
             reasoning_continuation: false,

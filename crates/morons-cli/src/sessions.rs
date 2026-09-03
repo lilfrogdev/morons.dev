@@ -13,6 +13,8 @@ const MAX_SKILL_NAME_BYTES: usize = 64;
 const MAX_SKILL_DESCRIPTION_BYTES: usize = 1_024;
 const MAX_SKILL_WARNINGS: usize = 32;
 const MAX_SKILL_WARNING_BYTES: usize = 4_096;
+const MAX_IMAGE_ATTACHMENTS_PER_MESSAGE: usize = 4;
+const MAX_IMAGE_DISPLAY_NAME_BYTES: usize = 128;
 
 use morons_protocol::{
     ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
@@ -268,6 +270,57 @@ fn valid_workspace_summary(workspace: WorkspaceSummary) -> bool {
     }
 }
 
+pub(super) fn valid_image_attachments(
+    text: &str,
+    attachments: &[morons_protocol::ImageAttachmentSummary],
+) -> bool {
+    if attachments.len() > MAX_IMAGE_ATTACHMENTS_PER_MESSAGE {
+        return false;
+    }
+    let mut last_end = 0_usize;
+    let mut identifiers = BTreeSet::new();
+    let mut names = BTreeSet::new();
+    let mut aggregate_bytes = 0_u64;
+    attachments.iter().all(|attachment| {
+        let Ok(start) = usize::try_from(attachment.marker_start) else {
+            return false;
+        };
+        let Some(end) = start.checked_add(attachment.display_name.len() + 2) else {
+            return false;
+        };
+        let valid = attachment.id.as_bytes().iter().any(|byte| *byte != 0)
+            && identifiers.insert(*attachment.id.as_bytes())
+            && !attachment.display_name.is_empty()
+            && names.insert(attachment.display_name.as_str())
+            && attachment.display_name.len() <= MAX_IMAGE_DISPLAY_NAME_BYTES
+            && !attachment.display_name.chars().any(|character| {
+                character.is_control()
+                    || crate::terminal::is_bidirectional_control(character)
+                    || matches!(character, '/' | '\\' | '[' | ']')
+            })
+            && matches!(
+                attachment.media_type.as_str(),
+                "image/png" | "image/jpeg" | "image/gif"
+            )
+            && attachment.width > 0
+            && attachment.height > 0
+            && attachment.width <= morons_image::MAX_IMAGE_DIMENSION
+            && attachment.height <= morons_image::MAX_IMAGE_DIMENSION
+            && attachment.bytes > 0
+            && attachment.bytes <= morons_image::MAX_NORMALIZED_IMAGE_BYTES as u64
+            && aggregate_bytes
+                .checked_add(attachment.bytes)
+                .is_some_and(|bytes| bytes <= 6 * 1024 * 1024)
+            && start >= last_end
+            && text.get(start..end) == Some(format!("[{}]", attachment.display_name).as_str());
+        last_end = end;
+        if valid {
+            aggregate_bytes += attachment.bytes;
+        }
+        valid
+    })
+}
+
 fn valid_skill_catalog(skills: &[SkillSummary], warnings: &[String]) -> bool {
     skills.len() <= MAX_SKILL_SUMMARIES
         && warnings.len() <= MAX_SKILL_WARNINGS
@@ -395,11 +448,32 @@ where
         service: OpenCodeService,
         model_id: String,
     ) -> Result<SessionInputAcceptance, ApplicationClientError> {
+        self.submit_session_input_with_images(
+            mutation_request_id,
+            session_id,
+            text,
+            Vec::new(),
+            service,
+            model_id,
+        )
+        .await
+    }
+
+    pub async fn submit_session_input_with_images(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        text: String,
+        attachments: Vec<morons_protocol::ImageUpload>,
+        service: OpenCodeService,
+        model_id: String,
+    ) -> Result<SessionInputAcceptance, ApplicationClientError> {
         let response = self
             .request(ApplicationRequest::SubmitSessionInput {
                 mutation_request_id,
                 session_id,
                 text,
+                attachments,
                 service,
                 model_id: model_id.clone(),
             })
@@ -515,9 +589,18 @@ where
             .enumerate()
             .all(|(index, run)| runs[..index].iter().all(|prior| prior.id != run.id));
         let entries_have_runs = entries.iter().all(|entry| match entry {
-            TranscriptEntry::UserMessage { id, run_id, .. } => runs
-                .iter()
-                .any(|run| run.id == *run_id && run.user_message_id == *id),
+            TranscriptEntry::UserMessage {
+                id,
+                run_id,
+                text,
+                attachments,
+                ..
+            } => {
+                valid_image_attachments(text, attachments)
+                    && runs
+                        .iter()
+                        .any(|run| run.id == *run_id && run.user_message_id == *id)
+            }
             TranscriptEntry::AssistantMessage {
                 run_id,
                 service,

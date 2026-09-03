@@ -36,6 +36,7 @@ pub(super) enum RequestCommand {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
         text: String,
+        attachments: Vec<morons_protocol::ImageUpload>,
         service: OpenCodeService,
         model_id: String,
     },
@@ -158,12 +159,14 @@ impl RequestCommand {
                 mutation_request_id,
                 session_id,
                 text,
+                attachments,
                 service,
                 model_id,
             } => Some(Self::SubmitInput {
                 mutation_request_id: *mutation_request_id,
                 session_id: *session_id,
                 text: text.clone(),
+                attachments: attachments.clone(),
                 service: *service,
                 model_id: model_id.clone(),
             }),
@@ -498,13 +501,15 @@ async fn execute(
             mutation_request_id,
             session_id,
             text,
+            attachments,
             service,
             model_id,
         } => client
-            .submit_session_input(
+            .submit_session_input_with_images(
                 *mutation_request_id,
                 *session_id,
                 text.clone(),
+                attachments.clone(),
                 *service,
                 model_id.clone(),
             )
@@ -855,6 +860,7 @@ mod tests {
             mutation_request_id,
             session_id: SessionId::from_bytes([0x22; 16]),
             text: "sensitive prompt".to_owned(),
+            attachments: Vec::new(),
             service: OpenCodeService::Zen,
             model_id: "grok-4.6".to_owned(),
         };

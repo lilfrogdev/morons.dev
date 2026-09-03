@@ -99,9 +99,35 @@ impl Backend {
                     EVENT_USER_MESSAGE
                     | EVENT_ASSISTANT_MESSAGE
                     | EVENT_TOOL_CALL
-                    | EVENT_TOOL_RESULT => SessionEventPayload::TranscriptEntry(
-                        load_entry_for_event(&self.connection, session_id, &event_id, event_kind)?,
-                    ),
+                    | EVENT_TOOL_RESULT => {
+                        let mut entry = load_entry_for_event(
+                            &self.connection,
+                            session_id,
+                            &event_id,
+                            event_kind,
+                        )?;
+                        if let crate::persistence::TranscriptEntry::UserMessage {
+                            id,
+                            text,
+                            attachments,
+                            ..
+                        } = &mut entry
+                        {
+                            let loaded = super::image_attachment::load_message_image_attachments(
+                                &self.connection,
+                                session_id,
+                                *id,
+                            )?;
+                            if !crate::persistence::images::valid_stored_attachments(text, &loaded)
+                            {
+                                return Err(PersistenceError::InvalidState {
+                                    reason: "user message event image attachments are invalid",
+                                });
+                            }
+                            *attachments = loaded;
+                        }
+                        SessionEventPayload::TranscriptEntry(entry)
+                    }
                     EVENT_LOCAL_COMMAND_CHANGED => {
                         let command_id = self
                             .connection

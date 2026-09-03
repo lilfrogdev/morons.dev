@@ -1,7 +1,7 @@
 mod requests;
 mod subscriptions;
 
-use std::{error::Error, fmt, io};
+use std::{error::Error, fmt, fs, io, path::PathBuf};
 
 use morons_protocol::{MutationRequestId, OpenCodeService, SessionId};
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -133,7 +133,23 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
                             break Ok(());
                         }
                     }
-                    TerminalInput::Paste(paste) => runtime.app.handle_paste(&paste),
+                    TerminalInput::Paste(paste) => {
+                        if !runtime.app.accepts_image_input() {
+                            runtime.app.handle_paste(&paste);
+                            continue;
+                        }
+                        match capture_pasted_image(&paste).await {
+                            Some(Ok((image, display_name))) => {
+                                runtime.app.add_draft_image(image, Some(&display_name));
+                            }
+                            Some(Err(error)) => runtime.app.set_status(error),
+                            None => runtime.app.handle_paste(&paste),
+                        }
+                    }
+                    TerminalInput::Image(image) => runtime.app.add_draft_image(image, None),
+                    TerminalInput::ClipboardUnavailable => {
+                        runtime.app.set_status("Clipboard does not contain a supported bounded image or text value");
+                    }
                     TerminalInput::Resize => {}
                 }
             }
@@ -240,6 +256,7 @@ impl RuntimeState {
             AppAction::SubmitInput {
                 session_id,
                 text,
+                attachments,
                 service,
                 model_id,
             } => {
@@ -247,6 +264,7 @@ impl RuntimeState {
                     mutation_request_id: generate_mutation_request_id()?,
                     session_id,
                     text,
+                    attachments,
                     service,
                     model_id,
                 };
@@ -734,6 +752,116 @@ impl RuntimeState {
     }
 }
 
+async fn capture_pasted_image(
+    value: &str,
+) -> Option<Result<(morons_image::NormalizedImage, String), String>> {
+    let path = pasted_image_path(value)?;
+    if !path.is_file() {
+        return None;
+    }
+    let display_name = path.file_name()?.to_str()?.to_owned();
+    Some(
+        tokio::task::spawn_blocking(move || {
+            let metadata =
+                fs::metadata(&path).map_err(|_| "Image path could not be read".to_owned())?;
+            if metadata.len() == 0 || metadata.len() > morons_image::MAX_INPUT_IMAGE_BYTES as u64 {
+                return Err("Image path exceeds the input byte limit".to_owned());
+            }
+            let bytes = fs::read(path).map_err(|_| "Image path could not be read".to_owned())?;
+            morons_image::normalize_image(&bytes)
+                .map(|image| (image, display_name))
+                .map_err(|_| {
+                    "Image path is unsupported, malformed, or exceeds image limits".to_owned()
+                })
+        })
+        .await
+        .unwrap_or_else(|_| Err("Image processing stopped unexpectedly".to_owned())),
+    )
+}
+
+fn pasted_image_path(value: &str) -> Option<PathBuf> {
+    if value.contains(['\n', '\r', '\0']) {
+        return None;
+    }
+    let mut value = value.trim();
+    if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        value = &value[1..value.len() - 1];
+    }
+    let decoded;
+    if let Some(url_path) = value.strip_prefix("file://") {
+        decoded = percent_decode_path(url_path)?;
+        value = &decoded;
+    }
+    let path = PathBuf::from(value);
+    let path = if path.is_file() {
+        path
+    } else {
+        #[cfg(not(windows))]
+        {
+            PathBuf::from(unescape_drag_path(value))
+        }
+        #[cfg(windows)]
+        {
+            path
+        }
+    };
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase();
+    matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp").then_some(path)
+}
+
+#[cfg(not(windows))]
+fn unescape_drag_path(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            if let Some(next) = characters.next() {
+                output.push(next);
+            }
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
+fn percent_decode_path(value: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(value.len());
+    let mut input = value.as_bytes().iter().copied();
+    while let Some(byte) = input.next() {
+        if byte == b'%' {
+            let high = decode_hex(input.next()?)?;
+            let low = decode_hex(input.next()?)?;
+            bytes.push((high << 4) | low);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    let decoded = String::from_utf8(bytes).ok()?;
+    #[cfg(windows)]
+    let decoded = decoded
+        .strip_prefix('/')
+        .filter(|value| value.as_bytes().get(1) == Some(&b':'))
+        .unwrap_or(&decoded)
+        .to_owned();
+    Some(decoded)
+}
+
+fn decode_hex(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn enqueue_initial_queries(
     commands: &mpsc::Sender<RequestCommand>,
 ) -> Result<(), TerminalApplicationError> {
@@ -774,6 +902,37 @@ mod tests {
         ));
         assert_eq!(error.to_string(), "terminal application failed");
         assert_eq!(format!("{error:?}"), "TerminalApplicationError::Terminal");
+    }
+
+    #[tokio::test]
+    async fn pasted_and_file_url_image_paths_are_captured_immediately() {
+        let mut nonce = [0_u8; 16];
+        getrandom::fill(&mut nonce).expect("randomness should be available");
+        let root = std::env::temp_dir().join(format!(
+            "morons-pasted-image-{}-{}",
+            std::process::id(),
+            nonce
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ));
+        fs::create_dir(&root).expect("test directory should be created");
+        let path = root.join("picture with spaces.png");
+        let image = morons_image::normalize_rgba(2, 1, vec![0x99; 8])
+            .expect("fixture image should normalize");
+        fs::write(&path, &image.bytes).expect("fixture image should be written");
+        let captured = capture_pasted_image(&path.to_string_lossy())
+            .await
+            .expect("path should be recognized")
+            .expect("path should normalize");
+        assert_eq!(captured.1, "picture with spaces.png");
+        let encoded = path.to_string_lossy().replace(' ', "%20");
+        let captured = capture_pasted_image(&format!("file://{encoded}"))
+            .await
+            .expect("file URL should be recognized")
+            .expect("file URL should normalize");
+        assert_eq!((captured.0.width, captured.0.height), (2, 1));
+        fs::remove_dir_all(root).expect("test directory should be removed");
     }
 
     #[tokio::test]

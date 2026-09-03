@@ -12,13 +12,15 @@ use super::{
     },
     types::{
         REQUEST_FINGERPRINT_BYTES, acknowledge_tool_uncertainty_fingerprint,
-        cancel_run_fingerprint, submit_session_input_fingerprint, validate_model_identifier,
+        cancel_run_fingerprint, submit_session_input_fingerprint,
+        submit_session_input_with_images_fingerprint, validate_model_identifier,
         validate_model_selection, validate_user_text,
     },
 };
 use crate::tools::ToolResult;
 
 impl SessionStore {
+    #[cfg(test)]
     pub async fn find_session_input_retry(
         &self,
         request_id: MutationRequestId,
@@ -27,10 +29,35 @@ impl SessionStore {
         service: RunOpenCodeService,
         model_id: &str,
     ) -> Result<Option<AcceptedRun>, PersistenceError> {
+        self.find_session_input_retry_with_images(
+            request_id,
+            session_id,
+            text,
+            service,
+            model_id,
+            &[],
+        )
+        .await
+    }
+
+    pub(crate) async fn find_session_input_retry_with_images(
+        &self,
+        request_id: MutationRequestId,
+        session_id: SessionId,
+        text: &str,
+        service: RunOpenCodeService,
+        model_id: &str,
+        attachments: &[crate::persistence::PreparedImageAttachment],
+    ) -> Result<Option<AcceptedRun>, PersistenceError> {
         validate_request_id(request_id)?;
         validate_user_text(text)?;
         validate_model_identifier(model_id)?;
-        let fingerprint = submit_session_input_fingerprint(session_id, text, service, model_id);
+        if !crate::persistence::images::validate_prepared_attachments(text, attachments) {
+            return Err(PersistenceError::InvalidInput {
+                reason: "image attachments are invalid",
+            });
+        }
+        let fingerprint = input_fingerprint(session_id, text, service, model_id, attachments);
         self.run_request(|response| RunWorkerRequest::FindInputRetry {
             request_id,
             fingerprint,
@@ -53,6 +80,7 @@ impl SessionStore {
             text,
             selection,
             crate::skills::RunSkillContext::default(),
+            Vec::new(),
         )
         .await
     }
@@ -64,15 +92,22 @@ impl SessionStore {
         text: String,
         selection: RunModelSelection,
         skills: crate::skills::RunSkillContext,
+        attachments: Vec<crate::persistence::PreparedImageAttachment>,
     ) -> Result<AcceptedRun, PersistenceError> {
         validate_request_id(request_id)?;
         validate_user_text(&text)?;
         validate_model_selection(&selection)?;
-        let fingerprint = submit_session_input_fingerprint(
+        if !crate::persistence::images::validate_prepared_attachments(&text, &attachments) {
+            return Err(PersistenceError::InvalidInput {
+                reason: "image attachments are invalid",
+            });
+        }
+        let fingerprint = input_fingerprint(
             session_id,
             &text,
             selection.service,
             &selection.model_id,
+            &attachments,
         );
         self.run_request(|response| RunWorkerRequest::AcceptInput {
             request_id,
@@ -81,6 +116,7 @@ impl SessionStore {
             text,
             selection,
             skills,
+            attachments,
             response,
         })
         .await
@@ -323,6 +359,26 @@ impl SessionStore {
     }
 }
 
+fn input_fingerprint(
+    session_id: SessionId,
+    text: &str,
+    service: RunOpenCodeService,
+    model_id: &str,
+    attachments: &[crate::persistence::PreparedImageAttachment],
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    if attachments.is_empty() {
+        submit_session_input_fingerprint(session_id, text, service, model_id)
+    } else {
+        submit_session_input_with_images_fingerprint(
+            session_id,
+            text,
+            service,
+            model_id,
+            &crate::persistence::images::prepared_attachment_digest(attachments),
+        )
+    }
+}
+
 fn validate_request_id(request_id: MutationRequestId) -> Result<(), PersistenceError> {
     if request_id.is_zero() {
         return Err(PersistenceError::InvalidInput {
@@ -345,6 +401,7 @@ pub(super) enum RunWorkerRequest {
         text: String,
         selection: RunModelSelection,
         skills: crate::skills::RunSkillContext,
+        attachments: Vec<crate::persistence::PreparedImageAttachment>,
         response: oneshot::Sender<Result<AcceptedRun, PersistenceError>>,
     },
     Activate {
@@ -454,6 +511,7 @@ impl RunWorkerRequest {
                 text,
                 selection,
                 skills,
+                attachments,
                 response,
             } => {
                 let _ = response.send(backend.accept_session_input(
@@ -462,7 +520,10 @@ impl RunWorkerRequest {
                     session_id,
                     text,
                     selection,
-                    skills,
+                    crate::persistence::RunInputContext {
+                        skills,
+                        attachments,
+                    },
                 ));
             }
             Self::Activate { run_id, response } => {

@@ -1,10 +1,12 @@
 use morons_protocol::{
     ApplicationEvent, RunId, ServerMessage, SessionCatalogEventCursor, SessionEventCursor,
-    SessionId, read_server_message,
+    SessionId, TranscriptEntry, read_server_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use super::{ApplicationClientError, valid_session_summary, valid_workspace_summary};
+use super::{
+    ApplicationClientError, valid_image_attachments, valid_session_summary, valid_workspace_summary,
+};
 
 pub struct SessionCatalogSubscription<S> {
     pub(super) connection: S,
@@ -128,9 +130,20 @@ where
     fn validate_event(&mut self, event: &ApplicationEvent) -> Result<(), ApplicationClientError> {
         match event {
             ApplicationEvent::SessionTranscriptEntryCommitted {
-                cursor, session_id, ..
+                cursor,
+                session_id,
+                entry,
             } => {
-                if *session_id != self.session_id {
+                if *session_id != self.session_id
+                    || matches!(
+                        entry,
+                        TranscriptEntry::UserMessage {
+                            text,
+                            attachments,
+                            ..
+                        } if !valid_image_attachments(text, attachments)
+                    )
+                {
                     return Err(self.event_scope_mismatch());
                 }
                 self.advance_cursor(*cursor)

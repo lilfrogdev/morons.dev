@@ -306,8 +306,7 @@ impl AppState {
                 AppAction::None
             }
             KeyCode::Backspace if self.pending.is_none() => {
-                self.prompt.backspace();
-                self.reset_skill_completion();
+                self.backspace_prompt();
                 AppAction::None
             }
             KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) && self.pending.is_none() => {
@@ -341,6 +340,10 @@ impl AppState {
             return AppAction::None;
         }
         let prompt = self.prompt.as_str();
+        if !self.draft_images.is_empty() && prompt.starts_with('!') {
+            self.set_status("Image attachments cannot be submitted in command mode");
+            return AppAction::None;
+        }
         if let Some(command) = prompt.strip_prefix("!!") {
             let command = command.trim_start();
             if command.is_empty() {
@@ -369,9 +372,14 @@ impl AppState {
             self.set_status("No reviewed model is currently available");
             return AppAction::None;
         };
+        if !self.draft_images.is_empty() && !model.model.capabilities.image_input {
+            self.set_status("The selected model does not support image input; draft retained");
+            return AppAction::None;
+        }
         AppAction::SubmitInput {
             session_id: session.summary.id,
             text: self.prompt.as_str().to_owned(),
+            attachments: self.image_uploads(),
             service: model.model.service,
             model_id: model.model.id.clone(),
         }

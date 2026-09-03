@@ -35,6 +35,7 @@ pub struct ModelDataUse {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModelCapabilities {
     pub text_input: bool,
+    pub image_input: bool,
     pub text_output: bool,
     pub reasoning: bool,
     pub reasoning_continuation: bool,
@@ -60,12 +61,14 @@ pub const MAXIMUM_CONTEXT_TOKENS: u32 = MAXIMUM_INPUT_TOKENS + MAXIMUM_OUTPUT_TO
 
 const RESPONSES_CAPABILITIES: ModelCapabilities = ModelCapabilities {
     text_input: true,
+    image_input: false,
     text_output: true,
     reasoning: true,
     reasoning_continuation: false,
     tool_calls: true,
 };
 const OPENAI_RESPONSES_CAPABILITIES: ModelCapabilities = ModelCapabilities {
+    image_input: true,
     reasoning_continuation: true,
     ..RESPONSES_CAPABILITIES
 };
@@ -311,6 +314,14 @@ mod tests {
                 .data_use
                 .retention,
             super::ModelRetention::UpToThirtyDays
+        );
+        assert!(
+            find_open_code_model(OpenCodeService::Zen, "gpt-5.4")
+                .is_some_and(|model| model.capabilities.image_input)
+        );
+        assert!(
+            find_open_code_model(OpenCodeService::Zen, "muse-spark-1.2")
+                .is_some_and(|model| !model.capabilities.image_input)
         );
         assert!(find_open_code_model(OpenCodeService::Zen, "Gpt-5.6-luna").is_none());
         for model_id in [

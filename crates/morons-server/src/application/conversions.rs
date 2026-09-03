@@ -193,6 +193,7 @@ pub(super) fn to_protocol_model_summary(
         responses_protocol_revision: model.responses_protocol_revision,
         capabilities: OpenCodeModelCapabilities {
             text_input: model.capabilities.text_input,
+            image_input: model.capabilities.image_input,
             text_output: model.capabilities.text_output,
             reasoning: model.capabilities.reasoning,
             reasoning_continuation: model.capabilities.reasoning_continuation,
@@ -296,12 +297,25 @@ pub(super) fn to_protocol_transcript_entry(entry: TranscriptEntry) -> ProtocolTr
             id,
             run_id,
             text,
+            attachments,
             created_at_milliseconds,
             ..
         } => ProtocolTranscriptEntry::UserMessage {
             id: ProtocolMessageId::from_bytes(*id.as_bytes()),
             run_id: to_protocol_run_id(run_id),
             text,
+            attachments: attachments
+                .into_iter()
+                .map(|attachment| morons_protocol::ImageAttachmentSummary {
+                    id: morons_protocol::ImageAttachmentId::from_bytes(*attachment.id.as_bytes()),
+                    display_name: attachment.display_name,
+                    media_type: attachment.media_type.as_str().to_owned(),
+                    width: attachment.width,
+                    height: attachment.height,
+                    bytes: attachment.bytes,
+                    marker_start: attachment.marker_start,
+                })
+                .collect(),
             created_at_milliseconds,
         },
         TranscriptEntry::AssistantMessage {
@@ -482,6 +496,7 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::CredentialMutationNotApplied => {
             ApplicationError::CredentialMutationNotApplied
         }
+        PersistenceError::ImageInputUnsupported => ApplicationError::UnsupportedModel,
         PersistenceError::WorkspaceBlocked | PersistenceError::ToolUncertaintyNotFound => {
             ApplicationError::WorkspaceBlocked
         }
