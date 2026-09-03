@@ -79,6 +79,7 @@ impl AppState {
             && !self.confirm_uncertainty
         {
             self.prompt.push_paste(paste);
+            self.reset_skill_completion();
         }
     }
 
@@ -283,13 +284,19 @@ impl AppState {
         match code {
             KeyCode::Esc if self.pending.is_none() => AppAction::CloseSession,
             KeyCode::Tab => {
-                self.select_next_model(false);
+                if !self.complete_selected_skill() {
+                    self.select_next_model(false);
+                }
                 AppAction::None
             }
             KeyCode::BackTab => {
-                self.select_next_model(true);
+                if !self.cycle_skill_completion(true) {
+                    self.select_next_model(true);
+                }
                 AppAction::None
             }
+            KeyCode::Up if self.cycle_skill_completion(true) => AppAction::None,
+            KeyCode::Down if self.cycle_skill_completion(false) => AppAction::None,
             KeyCode::PageUp => {
                 self.transcript_scroll = self.transcript_scroll.saturating_add(10);
                 AppAction::None
@@ -300,10 +307,12 @@ impl AppState {
             }
             KeyCode::Backspace if self.pending.is_none() => {
                 self.prompt.backspace();
+                self.reset_skill_completion();
                 AppAction::None
             }
             KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) && self.pending.is_none() => {
                 let _ = self.prompt.push_character('\n');
+                self.reset_skill_completion();
                 AppAction::None
             }
             KeyCode::Enter if self.pending.is_none() => self.submit_action(),
@@ -312,6 +321,7 @@ impl AppState {
                     && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 let _ = self.prompt.push_character(character);
+                self.reset_skill_completion();
                 AppAction::None
             }
             _ => AppAction::None,

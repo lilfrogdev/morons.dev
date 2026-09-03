@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -39,6 +39,7 @@ const SCHEMA_V13: &str = include_str!("../schema_v13.sql");
 const SCHEMA_V14: &str = include_str!("../schema_v14.sql");
 const SCHEMA_V15: &str = include_str!("../schema_v15.sql");
 const SCHEMA_V16: &str = include_str!("../schema_v16.sql");
+const SCHEMA_V17: &str = include_str!("../schema_v17.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -81,6 +82,7 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("run_input_requests", "table"),
     ("run_state_facts", "table"),
     ("run_state_facts_by_run", "index"),
+    ("run_skill_snapshots", "table"),
     ("runs", "table"),
     ("server_audit_facts", "table"),
     ("server_stop_requests", "table"),
@@ -165,6 +167,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V14)?;
     connection.execute_batch(SCHEMA_V15)?;
     connection.execute_batch(SCHEMA_V16)?;
+    connection.execute_batch(SCHEMA_V17)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -271,6 +274,7 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (14, SCHEMA_V14),
         (15, SCHEMA_V15),
         (16, SCHEMA_V16),
+        (17, SCHEMA_V17),
     ] {
         if version > schema_version {
             migrate_schema(connection, schema)?;

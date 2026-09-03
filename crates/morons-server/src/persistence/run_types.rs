@@ -3,7 +3,8 @@ use std::fmt;
 use super::{Session, SessionId, types::IDENTIFIER_BYTES};
 use crate::tools::{ToolInput, ToolKind, ToolResult, ValidatedProviderCall};
 
-pub const CONTEXT_POLICY_VERSION: u16 = 1;
+pub const CONTEXT_POLICY_VERSION: u16 = 2;
+pub(super) const LEGACY_CONTEXT_POLICY_VERSION: u16 = 1;
 pub(super) const MAX_USER_MESSAGE_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_TRANSCRIPT_TEXT_BYTES: usize = 128 * 1024;
 pub(super) const MAX_MODEL_ID_BYTES: usize = 128;
@@ -619,6 +620,7 @@ pub struct RunModelSelection {
 #[derive(Clone, Debug)]
 pub(crate) struct RunContext {
     pub run: Run,
+    pub skills: crate::skills::RunSkillContext,
     pub entries: Vec<TranscriptEntry>,
     pub current_entry_high_water: u64,
     pub estimated_input_tokens: u32,

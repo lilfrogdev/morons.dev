@@ -95,9 +95,9 @@ The MVP discovers skills from these roots:
 
 Project skills override user skills of the same name, user skills override bundled skills, and collisions at the same precedence are reported rather than selected nondeterministically. Discovery is bounded and validates the Agent Skills name and description rules.
 
-Only skill names and descriptions are included in normal model context. The complete `SKILL.md` is loaded when the model selects a relevant skill or the user invokes it explicitly with an exact installed `@name` token. Typing `@` opens skill completion. Unknown `@` tokens remain ordinary prompt text so email addresses, package names, and usernames are not rewritten.
+Only bounded skill names, descriptions, sources, and exact `SKILL.md` locators are included in normal model context. A model progressively loads a filesystem skill through `read`. When the user invokes a standalone whitespace-delimited exact installed `@name` token, the server captures the complete bounded `SKILL.md` into that run's durable context snapshot before dispatch. Typing `@` opens bounded skill completion. Unknown `@` tokens remain ordinary prompt text so email addresses, package names, and usernames are not rewritten.
 
-Morons reserves `@` for skills and does not use it for file references. Files use ordinary paths, drag and drop, clipboard attachment, or the `read` tool. A bundled skill-creator skill can create or refine standards-compatible skills in a user- or project-selected skill root.
+Morons reserves `@` for skills and does not use it for file references. Files use ordinary paths, drag and drop, clipboard attachment, or the `read` tool. A bundled `skill-creator` skill can create or refine standards-compatible skills in a user- or project-selected skill root using ordinary file tools. Discovery parses bounded YAML 1.2 frontmatter without following skill-directory symlinks, requires standard names to match parent directories, applies deterministic project-over-user-over-bundled precedence, and makes same-precedence name collisions unavailable with a local warning.
 
 Skills are instructions and ordinary executable resources, not trusted extensions or capabilities. They can direct the model to use every authority already available to tools.
 
@@ -165,7 +165,7 @@ Git hooks, signing agents, SSH agents, credential helpers, network access, repos
 
 ### Persistence and recovery
 
-SQLite remains authoritative for session metadata, selected working-directory locators, bounded canonical transcripts, run state, attachment references, context checkpoints, idempotent client mutations, and durable subscription cursors. Attachments are Morons-owned files referenced from SQLite rather than repeated base64 payloads.
+SQLite remains authoritative for session metadata, selected working-directory locators, bounded canonical transcripts, run state, run-bound skill catalogs and active instruction snapshots, attachment references, context checkpoints, idempotent client mutations, and durable subscription cursors. Attachments are Morons-owned files referenced from SQLite rather than repeated base64 payloads.
 
 Canonical transcript entries include attributed user messages, completed assistant messages, typed tool calls and results, and bounded local command-mode entries whose context-visibility field distinguishes `!` from `!!`. Persistence records these ordinary completed or interrupted operations but does not attempt to make direct filesystem or external command effects atomic with SQLite. A crash can leave a command's effects applied without a terminal transcript result. Startup terminates nonterminal runs as interrupted, does not rerun provider or tool work, and does not claim rollback or infer filesystem state.
 

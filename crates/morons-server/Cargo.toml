@@ -30,6 +30,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+yaml-rust2.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]

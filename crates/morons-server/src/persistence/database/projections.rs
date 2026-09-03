@@ -5,7 +5,10 @@ use rusqlite::{Connection, params};
 use super::validate_integrity;
 use crate::persistence::{
     PersistenceError, RunModelSelection, RunOpenCodeService, SessionId,
-    run_types::{CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES, conservative_input_token_estimate},
+    run_types::{
+        CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES,
+        conservative_input_token_estimate,
+    },
     types::{
         acknowledge_tool_uncertainty_fingerprint, cancel_run_fingerprint,
         create_session_fingerprint, create_session_with_directory_fingerprint,
@@ -29,6 +32,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_execution_image_facts(connection)?;
     validate_worktree_generation_facts(connection)?;
     validate_run_canonical_facts(connection)?;
+    validate_run_skill_snapshots(connection)?;
     validate_tool_facts(connection)?;
     validate_logical_sequences(connection)?;
     rebuild::rebuild(connection)?;
@@ -826,13 +830,33 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
         )?;
         let entry_count = u64::try_from(entry_count).map_err(|_| invalid_run_context())?;
         let text_bytes = u64::try_from(text_bytes).map_err(|_| invalid_run_context())?;
-        let estimate = conservative_input_token_estimate(text_bytes, entry_count)
+        let skills = crate::persistence::backend::run_queries::load_run_skills(
+            connection,
+            crate::persistence::RunId::from_bytes(request_run),
+        )?;
+        if context_policy_version == i64::from(LEGACY_CONTEXT_POLICY_VERSION)
+            && !skills.skills.is_empty()
+        {
+            return Err(invalid_run_context());
+        }
+        let skill_bytes = u64::try_from(skills.context_bytes().ok_or_else(invalid_run_context)?)
+            .map_err(|_| invalid_run_context())?;
+        let context_items = entry_count
+            .checked_add(skills.skills.len() as u64)
             .ok_or_else(invalid_run_context)?;
-        if entry_count == 0
-            || entry_count > MAX_CONTEXT_ENTRIES as u64
+        let context_bytes = text_bytes
+            .checked_add(skill_bytes)
+            .ok_or_else(invalid_run_context)?;
+        let estimate = conservative_input_token_estimate(context_bytes, context_items)
+            .ok_or_else(invalid_run_context)?;
+        if context_items == 0
+            || context_items > MAX_CONTEXT_ENTRIES as u64
             || i64::from(estimate) != estimated_input_tokens
             || estimated_input_tokens > maximum_input_tokens
-            || context_policy_version != i64::from(CONTEXT_POLICY_VERSION)
+            || !matches!(
+                u16::try_from(context_policy_version).ok(),
+                Some(CONTEXT_POLICY_VERSION | LEGACY_CONTEXT_POLICY_VERSION)
+            )
         {
             return Err(invalid_run_context());
         }
@@ -1124,6 +1148,20 @@ fn validate_run_canonical_facts(connection: &Connection) -> Result<(), Persisten
         return Err(PersistenceError::InvalidState {
             reason: "canonical run facts have invalid ordering or provenance",
         });
+    }
+    Ok(())
+}
+
+fn validate_run_skill_snapshots(connection: &Connection) -> Result<(), PersistenceError> {
+    let mut statement = connection.prepare("SELECT run_id FROM run_accepted_facts")?;
+    let run_ids = statement
+        .query_map([], |row| row.get::<_, [u8; 16]>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for run_id in run_ids {
+        crate::persistence::backend::run_queries::load_run_skills(
+            connection,
+            crate::persistence::RunId::from_bytes(run_id),
+        )?;
     }
     Ok(())
 }

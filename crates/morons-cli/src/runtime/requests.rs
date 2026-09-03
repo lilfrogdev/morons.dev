@@ -4,8 +4,8 @@ use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
     ApplicationError, FrameError, LocalCommandId, MutationRequestId, OpenCodeApiKey,
     OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, RunId, RunSummary,
-    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, TranscriptEntry,
-    WorkspaceSummary,
+    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, SkillSummary,
+    TranscriptEntry, WorkspaceSummary,
 };
 use tokio::{sync::mpsc, time};
 
@@ -123,7 +123,7 @@ impl RequestCommand {
             Self::LoadSessions => "session list",
             Self::LoadModels(_) => "model list",
             Self::LoadCredentialStatus => "credential status",
-            Self::LoadSession(_) => "session transcript",
+            Self::LoadSession(_) => "session transcript and skills",
             Self::CreateSession { .. } => "session creation",
             Self::SubmitInput { .. } => "message submission",
             Self::ExecuteLocalCommand { .. } => "local command",
@@ -294,6 +294,8 @@ pub(super) struct SessionSnapshot {
     pub(super) runs: Vec<RunSummary>,
     pub(super) active_run_id: Option<RunId>,
     pub(super) active_command_id: Option<LocalCommandId>,
+    pub(super) skills: Vec<SkillSummary>,
+    pub(super) skill_warnings: Vec<String>,
     pub(super) event_cursor: SessionEventCursor,
 }
 
@@ -610,6 +612,7 @@ async fn load_session(
     client: &mut Client,
     session_id: SessionId,
 ) -> Result<SessionSnapshot, ApplicationClientError> {
+    let skill_catalog = client.list_session_skills(session_id).await?;
     let mut entries = Vec::new();
     let mut runs = Vec::new();
     let mut cursor = None;
@@ -664,6 +667,8 @@ async fn load_session(
                 runs,
                 active_run_id,
                 active_command_id,
+                skills: skill_catalog.skills,
+                skill_warnings: skill_catalog.warnings,
                 event_cursor: event_cursor.ok_or(ApplicationClientError::EventScopeMismatch)?,
             });
         }

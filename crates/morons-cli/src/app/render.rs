@@ -133,12 +133,17 @@ fn render_models(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 }
 
 fn render_session(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let completion = app.skill_completion();
+    let completion_height = completion.as_ref().map_or(0, |(skills, _)| {
+        u16::try_from(skills.len().min(5) + 2).unwrap_or(7)
+    });
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(1),
             Constraint::Length(3),
             Constraint::Length(3),
+            Constraint::Length(completion_height),
         ])
         .split(area);
     if let Some(session) = app.session.as_ref() {
@@ -163,6 +168,52 @@ fn render_session(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             .wrap(Wrap { trim: false }),
         sections[2],
     );
+    if let Some((skills, selected)) = completion {
+        let window_start = selected.saturating_sub(4);
+        let items = skills
+            .iter()
+            .skip(window_start)
+            .take(5)
+            .map(|skill| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!("@{}", skill.safe_name.first_line()),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" · "),
+                    Span::raw(skill.description.first_line()),
+                    Span::styled(
+                        format!(" · {}", skill_source_label(skill.source)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Skills · ↑↓ choose · Tab complete "),
+            )
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("› ");
+        let mut state =
+            ListState::default().with_selected(Some(selected.saturating_sub(window_start)));
+        frame.render_stateful_widget(list, sections[3], &mut state);
+    }
+}
+
+const fn skill_source_label(source: morons_protocol::SkillSource) -> &'static str {
+    match source {
+        morons_protocol::SkillSource::Bundled => "bundled",
+        morons_protocol::SkillSource::User => "user",
+        morons_protocol::SkillSource::Project => "project",
+    }
 }
 
 fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, scroll: u16) {
@@ -270,7 +321,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         View::Sessions => {
             "↑↓ select · Enter open · n new · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
         }
-        View::Session => "Enter send · !/!! command · Esc sessions · Ctrl+X cancel",
+        View::Session => "Enter send · @ skill · !/!! command · Esc sessions · Ctrl+X cancel",
     };
     let status = Line::from(vec![
         Span::styled(" ", Style::default()),

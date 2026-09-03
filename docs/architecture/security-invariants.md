@@ -55,9 +55,9 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 ## Skills
 
 - Morons supports Markdown `SKILL.md` directories conforming to the Agent Skills format; it does not treat a skill as a trusted binary extension or new capability.
-- Skill discovery is bounded to documented bundled, user, and project roots with deterministic precedence and collision handling.
+- Skill discovery is bounded to documented bundled, user, and project roots, rejects linked skill directories and files, requires standard names to match their parent directories, and applies deterministic precedence and collision handling.
 - Skill names and descriptions are validated and bounded before entering the system prompt. Full instructions and referenced resources are loaded only when selected.
-- An exact installed `@name` token invokes that skill. Unknown `@` tokens remain prompt text.
+- A standalone whitespace-delimited exact installed `@name` token invokes that skill and binds its complete bounded instructions to the accepted run. Unknown `@` tokens remain prompt text.
 - `@` is reserved for skills and must not be interpreted as a file-path authority.
 - Skills, their scripts, references, and assets are untrusted local content and may direct the model to use every authority already available to tools.
 - The bundled skill creator writes only through ordinary tools and does not bypass filesystem or execution semantics.

@@ -44,13 +44,18 @@ impl Backend {
         session_id: crate::persistence::SessionId,
         text: String,
         selection: RunModelSelection,
+        skills: crate::skills::RunSkillContext,
     ) -> Result<AcceptedRun, PersistenceError> {
         validate_user_text(&text)?;
         validate_model_selection(&selection)?;
-
         if let Some(existing) = resolve_existing_input(&self.connection, request_id, &fingerprint)?
         {
             return Ok(existing);
+        }
+        if !skills.is_valid() {
+            return Err(PersistenceError::InvalidInput {
+                reason: "the accepted skill context is invalid",
+            });
         }
 
         let working_directory = self
@@ -132,6 +137,12 @@ impl Backend {
             session_id,
             entry_high_water,
             text.len(),
+            skills
+                .context_bytes()
+                .ok_or(PersistenceError::ResourceLimit {
+                    resource: PersistenceResourceLimit::Context,
+                })?,
+            skills.skills.len(),
             selection.maximum_input_tokens,
         )?;
         let source_entry_high_water = entry_high_water + 1;
@@ -222,6 +233,7 @@ impl Backend {
                 execution_image_generation.as_ref().map(|id| &id[..]),
             ],
         )?;
+        insert_run_skills(&transaction, run_id, &skills)?;
         transaction.execute(
             "INSERT INTO session_entries (
                 fact_id,
@@ -422,11 +434,41 @@ fn load_session_run_state(
         })
 }
 
+fn insert_run_skills(
+    transaction: &Transaction<'_>,
+    run_id: RunId,
+    skills: &crate::skills::RunSkillContext,
+) -> Result<(), PersistenceError> {
+    for (index, skill) in skills.skills.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO run_skill_snapshots (
+                run_id, skill_index, skill_name, description, skill_file,
+                skill_source, active, instructions
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                &run_id.as_bytes()[..],
+                i64::try_from(index + 1).map_err(|_| PersistenceError::ResourceLimit {
+                    resource: PersistenceResourceLimit::Context,
+                })?,
+                &skill.name,
+                &skill.description,
+                &skill.skill_file,
+                skill.source.to_record(),
+                skill.active,
+                skill.instructions.as_deref(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn estimate_context_tokens(
     transaction: &Transaction<'_>,
     session_id: crate::persistence::SessionId,
     entry_high_water: u64,
     new_text_bytes: usize,
+    skill_context_bytes: usize,
+    skill_count: usize,
     maximum_input_tokens: u32,
 ) -> Result<u32, PersistenceError> {
     let (entry_count, text_bytes) = transaction.query_row(
@@ -454,7 +496,11 @@ fn estimate_context_tokens(
     let entry_count = u64::try_from(entry_count).map_err(|_| PersistenceError::InvalidState {
         reason: "the session context entry count is invalid",
     })?;
-    if entry_count >= MAX_CONTEXT_ENTRIES as u64 {
+    if entry_count
+        .checked_add(1)
+        .and_then(|entries| entries.checked_add(skill_count as u64))
+        .is_none_or(|entries| entries > MAX_CONTEXT_ENTRIES as u64)
+    {
         return Err(PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Context,
         });
@@ -462,13 +508,13 @@ fn estimate_context_tokens(
     let text_bytes = u64::try_from(text_bytes).map_err(|_| PersistenceError::InvalidState {
         reason: "the session context byte count is invalid",
     })?;
-    let total_entries = entry_count + 1;
-    let total_text_bytes =
-        text_bytes
-            .checked_add(new_text_bytes as u64)
-            .ok_or(PersistenceError::ResourceLimit {
-                resource: PersistenceResourceLimit::Context,
-            })?;
+    let total_entries = entry_count + 1 + skill_count as u64;
+    let total_text_bytes = text_bytes
+        .checked_add(new_text_bytes as u64)
+        .and_then(|bytes| bytes.checked_add(skill_context_bytes as u64))
+        .ok_or(PersistenceError::ResourceLimit {
+            resource: PersistenceResourceLimit::Context,
+        })?;
     let estimate = conservative_input_token_estimate(total_text_bytes, total_entries).ok_or(
         PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Context,

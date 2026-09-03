@@ -166,6 +166,90 @@ async fn run_input_is_atomic_idempotent_and_session_serialized() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn accepted_run_binds_active_skill_instructions_and_catalog_metadata() {
+    let root = TestRoot::new("run-skill-context");
+    let selected = TestRoot::new("run-skill-directory");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    configure_credential(&store).await;
+    let session = store
+        .create_session_at(
+            MutationRequestId::from_bytes([0xb1; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let skills = crate::skills::RunSkillContext {
+        skills: vec![crate::skills::SkillSnapshot {
+            name: "release-helper".to_owned(),
+            description: "Helps prepare a release when explicitly requested.".to_owned(),
+            skill_file: selected
+                .path()
+                .join(".agents/skills/release-helper/SKILL.md")
+                .to_string_lossy()
+                .into_owned(),
+            source: crate::skills::SkillSource::Project,
+            active: true,
+            instructions: Some(
+                "---\nname: release-helper\ndescription: Helps prepare a release when explicitly requested.\n---\nRun checks first.\n"
+                    .to_owned(),
+            ),
+        }],
+    };
+    let accepted = store
+        .accept_session_input_with_skills(
+            MutationRequestId::from_bytes([0xb2; 16]),
+            session.id,
+            "@release-helper prepare this release".to_owned(),
+            model_selection(),
+            skills.clone(),
+        )
+        .await
+        .expect("skill-bearing run should be accepted");
+    assert_eq!(
+        accepted.run.context_policy_version,
+        crate::persistence::run_types::CONTEXT_POLICY_VERSION
+    );
+    let context = store
+        .load_run_context(accepted.run.id)
+        .await
+        .expect("skill-bearing context should load");
+    assert_eq!(context.skills, skills);
+    assert!(
+        context
+            .skills
+            .developer_text()
+            .is_some_and(|text| text.contains("Run checks first."))
+    );
+    drop(store);
+
+    let reopened = SessionStore::open_at(root.path()).expect("session store should reopen");
+    assert_eq!(
+        reopened
+            .load_run_context(accepted.run.id)
+            .await
+            .expect("durable skill context should reload")
+            .skills,
+        skills
+    );
+    drop(reopened);
+    let database_path = root.path().join("data").join("sessions.sqlite3");
+    let connection = Connection::open(database_path).expect("database should open for corruption");
+    connection
+        .execute(
+            "UPDATE run_skill_snapshots SET skill_name = 'INVALID' WHERE run_id = ?1",
+            [&accepted.run.id.as_bytes()[..]],
+        )
+        .expect("skill snapshot should be corrupted");
+    drop(connection);
+    let error = match SessionStore::open_at(root.path()) {
+        Ok(_) => panic!("invalid skill snapshot should fail closed"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, PersistenceError::InvalidState { .. }));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn concurrent_session_input_accepts_one_run_without_queueing() {
     let root = TestRoot::new("concurrent-run-acceptance");
     let store = SessionStore::open_at(root.path()).expect("session store should open");

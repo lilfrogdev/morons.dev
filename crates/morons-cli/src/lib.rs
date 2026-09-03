@@ -14,5 +14,5 @@ pub use sessions::{
     ApplicationClient, ApplicationClientError, LocalCommandAcceptance,
     LocalCommandCancellationResult, RunCancellationResult, ServerStopAcceptance,
     SessionCatalogSubscription, SessionInputAcceptance, SessionPage, SessionSubscription,
-    TranscriptPage,
+    SkillCatalog, TranscriptPage,
 };

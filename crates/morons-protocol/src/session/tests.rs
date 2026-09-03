@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use super::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, MutationRequestId,
     ResourceLimit, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
-    SessionSummary, WorkspaceState, WorkspaceSummary,
+    SessionSummary, SkillSource, SkillSummary, WorkspaceState, WorkspaceSummary,
 };
 use crate::{
     ClientMessage, LocalCommandId, LocalCommandStatus, MessageId, OpenCodeApiKey,
@@ -34,6 +34,41 @@ fn application_request_has_stable_json_shape() {
             "mutation_request_id": "mut_11111111111111111111111111111111",
             "display_name": "A session",
             "working_directory": "/projects/example",
+        })
+    );
+}
+
+#[test]
+fn session_skill_catalog_has_stable_json_shapes() {
+    let session_id = SessionId::from_bytes([0x18; 16]);
+    let request = ApplicationRequest::ListSessionSkills { session_id };
+    assert_eq!(
+        serde_json::to_value(request).expect("skill request should encode"),
+        json!({
+            "operation": "list_session_skills",
+            "session_id": "ses_18181818181818181818181818181818",
+        })
+    );
+    let response = ApplicationResponse::SessionSkillsListed {
+        session_id,
+        skills: vec![SkillSummary {
+            name: "skill-creator".to_owned(),
+            description: "Creates Agent Skills.".to_owned(),
+            source: SkillSource::Bundled,
+        }],
+        warnings: Vec::new(),
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("skill response should encode"),
+        json!({
+            "result": "session_skills_listed",
+            "session_id": "ses_18181818181818181818181818181818",
+            "skills": [{
+                "name": "skill-creator",
+                "description": "Creates Agent Skills.",
+                "source": "bundled",
+            }],
+            "warnings": [],
         })
     );
 }

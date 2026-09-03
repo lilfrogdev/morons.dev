@@ -8,6 +8,7 @@ use morons_protocol::{
     RunSummary, SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
     SessionEventCursor as ProtocolSessionEventCursor, SessionId as ProtocolSessionId,
     SessionListCursor as ProtocolSessionListCursor, SessionSummary,
+    SkillSource as ProtocolSkillSource, SkillSummary as ProtocolSkillSummary,
     ToolCallId as ProtocolToolCallId, ToolKind as ProtocolToolKind,
     ToolResultStatus as ProtocolToolResultStatus, TranscriptCursor as ProtocolTranscriptCursor,
     TranscriptEntry as ProtocolTranscriptEntry,
@@ -153,6 +154,20 @@ pub(super) fn to_protocol_session_event_cursor(
     bytes[..16].copy_from_slice(cursor.session_id().as_bytes());
     bytes[16..].copy_from_slice(&cursor.sequence().to_be_bytes());
     ProtocolSessionEventCursor::from_bytes(bytes)
+}
+
+pub(super) fn to_protocol_skill_summary(
+    skill: crate::skills::SkillSummary,
+) -> ProtocolSkillSummary {
+    ProtocolSkillSummary {
+        name: skill.name,
+        description: skill.description,
+        source: match skill.source {
+            crate::skills::SkillSource::Bundled => ProtocolSkillSource::Bundled,
+            crate::skills::SkillSource::User => ProtocolSkillSource::User,
+            crate::skills::SkillSource::Project => ProtocolSkillSource::Project,
+        },
+    }
 }
 
 pub(super) fn to_protocol_model_summary(
