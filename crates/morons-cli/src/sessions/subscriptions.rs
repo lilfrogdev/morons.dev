@@ -44,6 +44,10 @@ where
                     ApplicationEvent::SessionCreated { session, .. }
                         | ApplicationEvent::SessionChanged { session, .. }
                         if !valid_session_summary(session)
+                ) || matches!(
+                    &event,
+                    ApplicationEvent::SessionRemoved { session_id, .. }
+                        if session_id.as_bytes().iter().all(|byte| *byte == 0)
                 ) {
                     self.usable = false;
                     return Err(ApplicationClientError::EventScopeMismatch);
@@ -220,9 +224,9 @@ where
                 self.delta_sequence = *sequence;
                 Ok(())
             }
-            ApplicationEvent::SessionCreated { .. } | ApplicationEvent::SessionChanged { .. } => {
-                Err(self.event_scope_mismatch())
-            }
+            ApplicationEvent::SessionCreated { .. }
+            | ApplicationEvent::SessionChanged { .. }
+            | ApplicationEvent::SessionRemoved { .. } => Err(self.event_scope_mismatch()),
         }
     }
 

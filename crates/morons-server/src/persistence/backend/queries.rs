@@ -6,7 +6,7 @@ use super::{
 };
 use crate::persistence::{
     PersistenceError, Session, SessionCatalogEvent, SessionCatalogEventCursor,
-    SessionCatalogEventPage, SessionId, SessionListCursor, SessionPage,
+    SessionCatalogEventKind, SessionCatalogEventPage, SessionId, SessionListCursor, SessionPage,
 };
 
 impl Backend {
@@ -161,7 +161,7 @@ impl Backend {
             ORDER BY event.event_sequence
             LIMIT ?3",
         )?;
-        let events = statement
+        let mut events = statement
             .query_map(
                 params![
                     sequence_to_sql(cursor.sequence())?,
@@ -169,16 +169,56 @@ impl Backend {
                     i64::from(limit),
                 ],
                 |row| {
+                    let session = session_from_row_at(row, 2)?;
                     Ok(SessionCatalogEvent {
                         cursor: SessionCatalogEventCursor::from_sequence(
                             nonnegative_integer_from_row(row, 0)?,
                         ),
-                        session: session_from_row_at(row, 2)?,
-                        created: row.get::<_, i64>(1)? == 1,
+                        kind: if row.get::<_, i64>(1)? == 1 {
+                            SessionCatalogEventKind::Created(session)
+                        } else {
+                            SessionCatalogEventKind::Changed(session)
+                        },
                     })
                 },
             )?
             .collect::<Result<Vec<_>, _>>()?;
+        let mut deleted_statement = self.connection.prepare(
+            "SELECT event.event_sequence, event.session_id
+             FROM delivery_events AS event
+             INNER JOIN session_delete_requests AS deletion
+               ON deletion.delivery_event_id = event.event_id
+             WHERE event.event_sequence > ?1
+               AND event.event_sequence <= ?2
+               AND event.event_kind = 20
+               AND event.payload_version = 1
+               AND deletion.state = 3
+             ORDER BY event.event_sequence
+             LIMIT ?3",
+        )?;
+        events.extend(
+            deleted_statement
+                .query_map(
+                    params![
+                        sequence_to_sql(cursor.sequence())?,
+                        sequence_to_sql(high_water)?,
+                        i64::from(limit),
+                    ],
+                    |row| {
+                        Ok(SessionCatalogEvent {
+                            cursor: SessionCatalogEventCursor::from_sequence(
+                                nonnegative_integer_from_row(row, 0)?,
+                            ),
+                            kind: SessionCatalogEventKind::Removed(SessionId::from_bytes(
+                                row.get(1)?,
+                            )),
+                        })
+                    },
+                )?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        events.sort_by_key(|event| event.cursor);
+        events.truncate(usize::from(limit));
         Ok(SessionCatalogEventPage {
             events,
             high_water: SessionCatalogEventCursor::from_sequence(high_water),
@@ -199,7 +239,7 @@ fn session_catalog_high_water(backend: &Backend) -> Result<u64, PersistenceError
     let sequence = backend.connection.query_row(
         "SELECT COALESCE(MAX(event_sequence), 0)
          FROM delivery_events
-         WHERE event_kind IN (1, 18, 19) AND payload_version = 1",
+         WHERE event_kind IN (1, 18, 19, 20) AND payload_version = 1",
         [],
         |row| row.get::<_, i64>(0),
     )?;

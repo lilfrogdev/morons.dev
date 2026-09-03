@@ -27,7 +27,7 @@ use crate::{
     command_supervisor::CommandSupervisor,
     persistence::{
         PersistenceError, PreparedImageAttachment, RunModelSelection, SessionCatalogEventCursor,
-        SessionEventCursor, SessionEventPayload, SessionId, SessionStore,
+        SessionCatalogEventKind, SessionEventCursor, SessionEventPayload, SessionId, SessionStore,
     },
     provider::{
         OpenCodeModelAvailability, OpenCodeProvider, OpenCodeService, ProviderError,
@@ -266,6 +266,43 @@ impl ServerApplication {
                     ApplicationResponse::SessionArchiveChanged {
                         session: to_session_summary(session),
                     },
+                ))
+            }
+            ApplicationRequest::DeleteSession {
+                mutation_request_id,
+                session_id,
+            } => {
+                let _lifecycle_guard = self.lifecycle_mutations.lock().await;
+                let persistence_request_id = to_persistence_mutation_id(mutation_request_id);
+                let persistence_session_id = to_persistence_session_id(session_id);
+                let complete = self
+                    .sessions
+                    .prepare_session_delete(persistence_request_id, persistence_session_id)
+                    .await
+                    .map_err(to_application_error)?;
+                if !complete {
+                    if !self
+                        .run_supervisor
+                        .terminate_session_runtime(persistence_session_id)
+                        .await
+                    {
+                        return Err(ApplicationError::Internal);
+                    }
+                    self.sessions
+                        .clean_session_database(persistence_request_id)
+                        .await
+                        .map_err(to_application_error)?;
+                    let deleted_session_id = self
+                        .sessions
+                        .complete_session_delete(persistence_request_id)
+                        .await
+                        .map_err(to_application_error)?;
+                    if deleted_session_id != persistence_session_id {
+                        return Err(ApplicationError::Internal);
+                    }
+                }
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::SessionDeleted { session_id },
                 ))
             }
             ApplicationRequest::ListSessions { cursor, limit } => {
@@ -803,22 +840,26 @@ impl ServerApplication {
         Ok(page
             .events
             .into_iter()
-            .map(|event| {
-                let created = event.created;
-                DeliveredSessionCatalogEvent {
-                    cursor: event.cursor,
-                    event: if created {
-                        ApplicationEvent::SessionCreated {
-                            cursor: to_protocol_catalog_cursor(event.cursor),
-                            session: to_session_summary(event.session),
-                        }
-                    } else {
-                        ApplicationEvent::SessionChanged {
-                            cursor: to_protocol_catalog_cursor(event.cursor),
-                            session: to_session_summary(event.session),
-                        }
+            .map(|event| DeliveredSessionCatalogEvent {
+                cursor: event.cursor,
+                event: match event.kind {
+                    SessionCatalogEventKind::Created(session) => ApplicationEvent::SessionCreated {
+                        cursor: to_protocol_catalog_cursor(event.cursor),
+                        session: to_session_summary(session),
                     },
-                }
+                    SessionCatalogEventKind::Changed(session) => ApplicationEvent::SessionChanged {
+                        cursor: to_protocol_catalog_cursor(event.cursor),
+                        session: to_session_summary(session),
+                    },
+                    SessionCatalogEventKind::Removed(session_id) => {
+                        ApplicationEvent::SessionRemoved {
+                            cursor: to_protocol_catalog_cursor(event.cursor),
+                            session_id: morons_protocol::SessionId::from_bytes(
+                                *session_id.as_bytes(),
+                            ),
+                        }
+                    }
+                },
             })
             .collect())
     }

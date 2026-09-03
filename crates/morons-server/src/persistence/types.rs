@@ -24,6 +24,7 @@ const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1
 const CREATE_SESSION_WITH_DIRECTORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v2\0";
 const RENAME_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/rename-session/v1\0";
 const ARCHIVE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/archive-session/v1\0";
+const DELETE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/delete-session/v1\0";
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
 const SUBMIT_SESSION_INPUT_WITH_IMAGES_FINGERPRINT_CONTEXT: &[u8] =
     b"morons.dev/submit-session-input/v2\0";
@@ -153,8 +154,25 @@ pub struct SessionPage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionCatalogEvent {
     pub cursor: SessionCatalogEventCursor,
-    pub session: Session,
-    pub created: bool,
+    pub kind: SessionCatalogEventKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionCatalogEventKind {
+    Created(Session),
+    Changed(Session),
+    Removed(SessionId),
+}
+
+impl SessionCatalogEvent {
+    #[cfg(test)]
+    pub fn session(&self) -> Option<&Session> {
+        match &self.kind {
+            SessionCatalogEventKind::Created(session)
+            | SessionCatalogEventKind::Changed(session) => Some(session),
+            SessionCatalogEventKind::Removed(_) => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -269,6 +287,7 @@ pub enum PersistenceError {
     RequestConflict,
     SessionNotFound,
     SessionArchived,
+    SessionNotArchived,
     RunNotFound,
     LocalCommandNotFound,
     SessionBusy {
@@ -310,6 +329,9 @@ impl fmt::Display for PersistenceError {
             }
             Self::SessionNotFound => formatter.write_str("the session was not found"),
             Self::SessionArchived => formatter.write_str("the session is archived"),
+            Self::SessionNotArchived => {
+                formatter.write_str("the session must be archived before deletion")
+            }
             Self::RunNotFound => formatter.write_str("the run was not found"),
             Self::LocalCommandNotFound => formatter.write_str("the local command was not found"),
             Self::SessionBusy { active_run_id } => {
@@ -377,6 +399,7 @@ impl Error for PersistenceError {
             | Self::RequestConflict
             | Self::SessionNotFound
             | Self::SessionArchived
+            | Self::SessionNotArchived
             | Self::RunNotFound
             | Self::LocalCommandNotFound
             | Self::SessionBusy { .. }
@@ -616,6 +639,13 @@ pub(super) fn archive_session_fingerprint(
     digest.update(ARCHIVE_SESSION_FINGERPRINT_CONTEXT);
     digest.update(session_id.as_bytes());
     digest.update([u8::from(archived)]);
+    digest.finalize().into()
+}
+
+pub(super) fn delete_session_fingerprint(session_id: SessionId) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(DELETE_SESSION_FINGERPRINT_CONTEXT);
+    digest.update(session_id.as_bytes());
     digest.finalize().into()
 }
 

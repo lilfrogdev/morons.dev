@@ -265,6 +265,10 @@ pub enum ApplicationRequest {
         session_id: SessionId,
         archived: bool,
     },
+    DeleteSession {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+    },
     ListSessions {
         cursor: Option<SessionListCursor>,
         limit: u16,
@@ -376,6 +380,14 @@ impl fmt::Debug for ApplicationRequest {
                 .field("mutation_request_id", mutation_request_id)
                 .field("session_id", session_id)
                 .field("archived", archived)
+                .finish(),
+            Self::DeleteSession {
+                mutation_request_id,
+                session_id,
+            } => formatter
+                .debug_struct("DeleteSession")
+                .field("mutation_request_id", mutation_request_id)
+                .field("session_id", session_id)
                 .finish(),
             Self::ListSessions { cursor, limit } => formatter
                 .debug_struct("ListSessions")
@@ -526,6 +538,9 @@ pub enum ApplicationResponse {
     SessionArchiveChanged {
         session: SessionSummary,
     },
+    SessionDeleted {
+        session_id: SessionId,
+    },
     SessionsListed {
         sessions: Vec<SessionSummary>,
         next_cursor: Option<SessionListCursor>,
@@ -606,6 +621,10 @@ pub enum ApplicationEvent {
         cursor: SessionCatalogEventCursor,
         session: SessionSummary,
     },
+    SessionRemoved {
+        cursor: SessionCatalogEventCursor,
+        session_id: SessionId,
+    },
     SessionTranscriptEntryCommitted {
         cursor: SessionEventCursor,
         session_id: SessionId,
@@ -639,9 +658,9 @@ impl ApplicationEvent {
     #[must_use]
     pub const fn session_catalog_cursor(&self) -> Option<SessionCatalogEventCursor> {
         match self {
-            Self::SessionCreated { cursor, .. } | Self::SessionChanged { cursor, .. } => {
-                Some(*cursor)
-            }
+            Self::SessionCreated { cursor, .. }
+            | Self::SessionChanged { cursor, .. }
+            | Self::SessionRemoved { cursor, .. } => Some(*cursor),
             Self::SessionTranscriptEntryCommitted { .. }
             | Self::SessionRunChanged { .. }
             | Self::SessionLocalCommandChanged { .. }
@@ -659,6 +678,7 @@ impl ApplicationEvent {
             | Self::SessionWorkspaceChanged { cursor, .. } => Some(*cursor),
             Self::SessionCreated { .. }
             | Self::SessionChanged { .. }
+            | Self::SessionRemoved { .. }
             | Self::SessionAssistantDelta { .. } => None,
         }
     }
@@ -676,6 +696,11 @@ impl fmt::Debug for ApplicationEvent {
                 .debug_struct("SessionChanged")
                 .field("cursor", cursor)
                 .field("session", session)
+                .finish(),
+            Self::SessionRemoved { cursor, session_id } => formatter
+                .debug_struct("SessionRemoved")
+                .field("cursor", cursor)
+                .field("session_id", session_id)
                 .finish(),
             Self::SessionTranscriptEntryCommitted {
                 cursor,
@@ -791,6 +816,7 @@ pub enum ApplicationError {
     RequestConflict,
     SessionNotFound,
     SessionArchived,
+    SessionNotArchived,
     RunNotFound,
     LocalCommandNotFound,
     SessionBusy {

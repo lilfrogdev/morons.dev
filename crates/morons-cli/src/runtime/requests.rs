@@ -47,6 +47,10 @@ pub(super) enum RequestCommand {
         session_id: SessionId,
         archived: bool,
     },
+    DeleteSession {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+    },
     SubmitInput {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
@@ -109,6 +113,10 @@ impl RequestCommand {
                 mutation_request_id,
                 ..
             }
+            | Self::DeleteSession {
+                mutation_request_id,
+                ..
+            }
             | Self::SubmitInput {
                 mutation_request_id,
                 ..
@@ -153,6 +161,7 @@ impl RequestCommand {
             Self::CreateSession { .. } => "session creation",
             Self::RenameSession { .. } => "session rename",
             Self::SetSessionArchived { .. } => "session archive change",
+            Self::DeleteSession { .. } => "session deletion",
             Self::SubmitInput { .. } => "message submission",
             Self::ExecuteLocalCommand { .. } => "local command",
             Self::CancelRun { .. } => "run cancellation",
@@ -208,6 +217,13 @@ impl RequestCommand {
                 mutation_request_id: *mutation_request_id,
                 session_id: *session_id,
                 archived: *archived,
+            }),
+            Self::DeleteSession {
+                mutation_request_id,
+                session_id,
+            } => Some(Self::DeleteSession {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
             }),
             Self::SubmitInput {
                 mutation_request_id,
@@ -298,6 +314,10 @@ pub(super) enum RequestEvent {
     SessionArchiveChanged {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
+    },
+    SessionDeleted {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
     },
     InputAccepted {
         mutation_request_id: MutationRequestId,
@@ -521,6 +541,7 @@ async fn execute_credential(
         | RequestCommand::CreateSession { .. }
         | RequestCommand::RenameSession { .. }
         | RequestCommand::SetSessionArchived { .. }
+        | RequestCommand::DeleteSession { .. }
         | RequestCommand::SubmitInput { .. }
         | RequestCommand::ExecuteLocalCommand { .. }
         | RequestCommand::CancelRun { .. }
@@ -592,6 +613,16 @@ async fn execute(
             .map(|session| RequestResult::SessionArchiveChanged {
                 mutation_request_id: *mutation_request_id,
                 session,
+            }),
+        RequestCommand::DeleteSession {
+            mutation_request_id,
+            session_id,
+        } => client
+            .delete_session(*mutation_request_id, *session_id)
+            .await
+            .map(|()| RequestResult::SessionDeleted {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
             }),
         RequestCommand::SubmitInput {
             mutation_request_id,
@@ -802,6 +833,10 @@ enum RequestResult {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
     },
+    SessionDeleted {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+    },
     InputAccepted {
         mutation_request_id: MutationRequestId,
         accepted: SessionInputAcceptance,
@@ -862,6 +897,13 @@ impl RequestResult {
             } => RequestEvent::SessionArchiveChanged {
                 mutation_request_id,
                 session,
+            },
+            Self::SessionDeleted {
+                mutation_request_id,
+                session_id,
+            } => RequestEvent::SessionDeleted {
+                mutation_request_id,
+                session_id,
             },
             Self::InputAccepted {
                 mutation_request_id,
@@ -944,6 +986,7 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 RequestCommand::CreateSession { .. }
                 | RequestCommand::RenameSession { .. }
                 | RequestCommand::SetSessionArchived { .. }
+                | RequestCommand::DeleteSession { .. }
                 | RequestCommand::SubmitInput { .. }
                 | RequestCommand::ExecuteLocalCommand { .. }
                 | RequestCommand::CancelRun { .. }

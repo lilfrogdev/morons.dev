@@ -174,6 +174,9 @@ fn write_application_error(
         }
         ApplicationError::SessionNotFound => formatter.write_str("session was not found"),
         ApplicationError::SessionArchived => formatter.write_str("session is archived"),
+        ApplicationError::SessionNotArchived => {
+            formatter.write_str("session must be archived before deletion")
+        }
         ApplicationError::RunNotFound => formatter.write_str("run was not found"),
         ApplicationError::LocalCommandNotFound => {
             formatter.write_str("local command was not found")
@@ -497,6 +500,30 @@ where
             return Err(ApplicationClientError::EventScopeMismatch);
         }
         Ok(session)
+    }
+
+    pub async fn delete_session(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+    ) -> Result<(), ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::DeleteSession {
+                mutation_request_id,
+                session_id,
+            })
+            .await?;
+        let ApplicationResponse::SessionDeleted {
+            session_id: deleted_session_id,
+        } = response
+        else {
+            return Err(self.unexpected_application_response());
+        };
+        if deleted_session_id != session_id {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(())
     }
 
     pub async fn submit_session_input(

@@ -16,6 +16,7 @@ pub(super) const MUTATION_OPERATION_SERVER_STOP: i64 = 6;
 pub(super) const MUTATION_OPERATION_TOOL_UNCERTAINTY_ACKNOWLEDGEMENT: i64 = 8;
 pub(super) const MUTATION_OPERATION_SESSION_RENAME: i64 = 12;
 pub(super) const MUTATION_OPERATION_SESSION_ARCHIVE: i64 = 13;
+pub(super) const MUTATION_OPERATION_SESSION_DELETE: i64 = 14;
 
 pub(super) const CREATION_STATE_PREPARED: i64 = 0;
 pub(super) const CREATION_STATE_WORKSPACE_DISPATCHED: i64 = 1;
@@ -40,7 +41,9 @@ pub(super) fn load_mutation_operation(
 ) -> Result<Option<i64>, PersistenceError> {
     connection
         .query_row(
-            "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
+            "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1
+             UNION ALL
+             SELECT operation_kind FROM deleted_mutation_tombstones WHERE request_id = ?1",
             [&request_id.as_bytes()[..]],
             |row| row.get(0),
         )

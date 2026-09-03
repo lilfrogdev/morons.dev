@@ -175,6 +175,8 @@ The MVP retains one nonterminal top-level run per session, exact-run cancellatio
 
 Archiving is an idempotent durable lifecycle mutation with a prepared and applied boundary. Preparing an archive blocks new model runs and local commands, durably requests cancellation of active work, terminates the session's temporary IPython runtime after work stops, and only then publishes the archived catalog state. Startup completes a prepared archive after normal command and run recovery without inspecting or modifying the selected directory. Unarchiving changes only Morons-owned session metadata.
 
+Deletion requires an archived session and explicit client confirmation. Its durable lifecycle separates preparation, transactional database cleanup, bounded attachment-file cleanup, and completion. Database cleanup physically removes the session's canonical history, projections, checkpoints, and attachment metadata while retaining only a minimal deletion record and compact mutation-identifier tombstones needed to prevent old requests from appearing unused. File cleanup derives paths only from the validated session and attachment identifiers copied into the prepared deletion manifest, never from the selected working-directory locator or attachment display metadata. A completed deletion publishes a session-removal catalog event; startup resumes prepared or database-cleaned deletions before serving requests. Logical deletion and file removal are not represented as forensic erasure.
+
 ## Implementation sequence
 
 The architecture reset is implemented in narrow changes:
