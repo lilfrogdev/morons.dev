@@ -268,6 +268,11 @@ pub enum ApplicationRequest {
     ListSessionSkills {
         session_id: SessionId,
     },
+    GetSessionContext {
+        session_id: SessionId,
+        service: crate::OpenCodeService,
+        model_id: String,
+    },
     GetOpenCodeCredentialStatus,
     SetOpenCodeCredential {
         mutation_request_id: MutationRequestId,
@@ -358,6 +363,16 @@ impl fmt::Debug for ApplicationRequest {
             Self::ListSessionSkills { session_id } => formatter
                 .debug_struct("ListSessionSkills")
                 .field("session_id", session_id)
+                .finish(),
+            Self::GetSessionContext {
+                session_id,
+                service,
+                model_id,
+            } => formatter
+                .debug_struct("GetSessionContext")
+                .field("session_id", session_id)
+                .field("service", service)
+                .field("model_id", model_id)
                 .finish(),
             Self::GetOpenCodeCredentialStatus => formatter.write_str("GetOpenCodeCredentialStatus"),
             Self::SetOpenCodeCredential {
@@ -491,6 +506,9 @@ pub enum ApplicationResponse {
         session_id: SessionId,
         skills: Vec<SkillSummary>,
         warnings: Vec<String>,
+    },
+    SessionContextFound {
+        context: SessionContextStatus,
     },
     OpenCodeCredentialStatus {
         credential: crate::OpenCodeCredentialStatus,
@@ -663,6 +681,21 @@ impl fmt::Debug for ApplicationEvent {
                 .finish(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionContextStatus {
+    pub session_id: SessionId,
+    pub service: crate::OpenCodeService,
+    pub model_id: String,
+    pub context_policy_version: u16,
+    pub estimated_input_tokens: u32,
+    pub maximum_input_tokens: u32,
+    pub maximum_output_tokens: u32,
+    pub compaction_threshold_tokens: u32,
+    pub checkpoint_source_entry_high_water: Option<u64>,
+    pub checkpoint_estimated_summary_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

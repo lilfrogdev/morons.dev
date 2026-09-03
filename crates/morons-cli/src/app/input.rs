@@ -335,13 +335,28 @@ impl AppState {
         let Some(session) = self.session.as_ref() else {
             return AppAction::None;
         };
+        let prompt = self.prompt.as_str();
+        if prompt == "/context" {
+            let Some(model) = self.selected_model() else {
+                self.set_status("No reviewed model is currently available");
+                return AppAction::None;
+            };
+            return AppAction::ShowContext {
+                session_id: session.summary.id,
+                service: model.model.service,
+                model_id: model.model.id.clone(),
+            };
+        }
         if session.active_run_id.is_some() || session.active_command_id.is_some() {
             self.set_status("The selected session already has active work");
             return AppAction::None;
         }
-        let prompt = self.prompt.as_str();
-        if !self.draft_images.is_empty() && prompt.starts_with('!') {
-            self.set_status("Image attachments cannot be submitted in command mode");
+        if !self.draft_images.is_empty()
+            && (prompt.starts_with('!') || manual_compaction_guidance(prompt).is_some())
+        {
+            self.set_status(
+                "Image attachments cannot be submitted with command or context controls",
+            );
             return AppAction::None;
         }
         if let Some(command) = prompt.strip_prefix("!!") {
@@ -367,6 +382,10 @@ impl AppState {
                 command: command.to_owned(),
                 context_visible: true,
             };
+        }
+        if prompt.starts_with("/compact") && manual_compaction_guidance(prompt).is_none() {
+            self.set_status("Use /compact or /compact <instructions>");
+            return AppAction::None;
         }
         let Some(model) = self.selected_model() else {
             self.set_status("No reviewed model is currently available");
@@ -407,6 +426,17 @@ impl AppState {
         };
         self.selected_model = Some(available[next]);
     }
+}
+
+fn manual_compaction_guidance(prompt: &str) -> Option<Option<&str>> {
+    if prompt == "/compact" {
+        return Some(None);
+    }
+    prompt
+        .strip_prefix("/compact ")
+        .map(str::trim)
+        .filter(|guidance| !guidance.is_empty())
+        .map(Some)
 }
 
 fn credential_input_constraint() -> String {

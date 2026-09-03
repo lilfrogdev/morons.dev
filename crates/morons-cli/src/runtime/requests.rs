@@ -4,8 +4,8 @@ use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
     ApplicationError, FrameError, LocalCommandId, MutationRequestId, OpenCodeApiKey,
     OpenCodeCredentialStatus, OpenCodeModelSummary, OpenCodeService, RunId, RunSummary,
-    SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary, SkillSummary,
-    TranscriptEntry, WorkspaceSummary,
+    SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId, SessionSummary,
+    SkillSummary, TranscriptEntry, WorkspaceSummary,
 };
 use tokio::{sync::mpsc, time};
 
@@ -29,6 +29,11 @@ pub(super) enum RequestCommand {
     LoadModels(OpenCodeService),
     LoadCredentialStatus,
     LoadSession(SessionId),
+    LoadContext {
+        session_id: SessionId,
+        service: OpenCodeService,
+        model_id: String,
+    },
     CreateSession {
         mutation_request_id: MutationRequestId,
     },
@@ -81,7 +86,8 @@ impl RequestCommand {
             Self::LoadSessions
             | Self::LoadModels(_)
             | Self::LoadCredentialStatus
-            | Self::LoadSession(_) => None,
+            | Self::LoadSession(_)
+            | Self::LoadContext { .. } => None,
             Self::CreateSession {
                 mutation_request_id,
             }
@@ -125,6 +131,7 @@ impl RequestCommand {
             Self::LoadModels(_) => "model list",
             Self::LoadCredentialStatus => "credential status",
             Self::LoadSession(_) => "session transcript and skills",
+            Self::LoadContext { .. } => "session context status",
             Self::CreateSession { .. } => "session creation",
             Self::SubmitInput { .. } => "message submission",
             Self::ExecuteLocalCommand { .. } => "local command",
@@ -150,6 +157,15 @@ impl RequestCommand {
             Self::LoadModels(service) => Some(Self::LoadModels(*service)),
             Self::LoadCredentialStatus => Some(Self::LoadCredentialStatus),
             Self::LoadSession(session_id) => Some(Self::LoadSession(*session_id)),
+            Self::LoadContext {
+                session_id,
+                service,
+                model_id,
+            } => Some(Self::LoadContext {
+                session_id: *session_id,
+                service: *service,
+                model_id: model_id.clone(),
+            }),
             Self::CreateSession {
                 mutation_request_id,
             } => Some(Self::CreateSession {
@@ -232,6 +248,7 @@ pub(super) enum RequestEvent {
     },
     CredentialStatusLoaded(OpenCodeCredentialStatus),
     SessionLoaded(SessionSnapshot),
+    ContextLoaded(SessionContextStatus),
     SessionCreated {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
@@ -454,6 +471,7 @@ async fn execute_credential(
         | RequestCommand::LoadModels(_)
         | RequestCommand::LoadCredentialStatus
         | RequestCommand::LoadSession(_)
+        | RequestCommand::LoadContext { .. }
         | RequestCommand::CreateSession { .. }
         | RequestCommand::SubmitInput { .. }
         | RequestCommand::ExecuteLocalCommand { .. }
@@ -488,6 +506,14 @@ async fn execute(
         RequestCommand::LoadSession(session_id) => load_session(client, *session_id)
             .await
             .map(RequestResult::Session),
+        RequestCommand::LoadContext {
+            session_id,
+            service,
+            model_id,
+        } => client
+            .session_context_status(*session_id, *service, model_id.clone())
+            .await
+            .map(RequestResult::Context),
         RequestCommand::CreateSession {
             mutation_request_id,
         } => client
@@ -693,6 +719,7 @@ enum RequestResult {
     },
     CredentialStatus(OpenCodeCredentialStatus),
     Session(SessionSnapshot),
+    Context(SessionContextStatus),
     SessionCreated {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
@@ -736,6 +763,7 @@ impl RequestResult {
             Self::Models { service, models } => RequestEvent::ModelsLoaded { service, models },
             Self::CredentialStatus(status) => RequestEvent::CredentialStatusLoaded(status),
             Self::Session(snapshot) => RequestEvent::SessionLoaded(snapshot),
+            Self::Context(context) => RequestEvent::ContextLoaded(context),
             Self::SessionCreated {
                 mutation_request_id,
                 session,
@@ -819,7 +847,8 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 RequestCommand::LoadModels(service) => Some(*service),
                 RequestCommand::LoadSessions
                 | RequestCommand::LoadCredentialStatus
-                | RequestCommand::LoadSession(_) => None,
+                | RequestCommand::LoadSession(_)
+                | RequestCommand::LoadContext { .. } => None,
                 RequestCommand::CreateSession { .. }
                 | RequestCommand::SubmitInput { .. }
                 | RequestCommand::ExecuteLocalCommand { .. }

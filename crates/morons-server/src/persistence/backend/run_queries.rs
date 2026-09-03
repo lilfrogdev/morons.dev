@@ -239,6 +239,51 @@ impl Backend {
         Ok(())
     }
 
+    pub(crate) fn session_context_status(
+        &self,
+        session_id: SessionId,
+        maximum_input_tokens: u32,
+        maximum_output_tokens: u32,
+    ) -> Result<crate::persistence::SessionContextStatus, PersistenceError> {
+        let exists: bool = self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sessions WHERE session_id = ?1)",
+            [&session_id.as_bytes()[..]],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Err(PersistenceError::SessionNotFound);
+        }
+        let latest_run_id = self
+            .connection
+            .query_row(
+                "SELECT run_id FROM run_accepted_facts
+                 WHERE session_id = ?1 ORDER BY fact_sequence DESC LIMIT 1",
+                [&session_id.as_bytes()[..]],
+                |row| row.get::<_, [u8; 16]>(0),
+            )
+            .optional()?
+            .map(RunId::from_bytes);
+        let (estimated_input_tokens, checkpoint) = match latest_run_id {
+            Some(run_id) => {
+                let context = self.load_run_context(run_id)?;
+                (context.estimated_input_tokens, context.checkpoint)
+            }
+            None => (1, None),
+        };
+        Ok(crate::persistence::SessionContextStatus {
+            estimated_input_tokens,
+            maximum_input_tokens,
+            maximum_output_tokens,
+            compaction_threshold_tokens: maximum_input_tokens.saturating_mul(7) / 10,
+            checkpoint_source_entry_high_water: checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.source_entry_high_water),
+            checkpoint_estimated_summary_tokens: checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.estimated_summary_tokens),
+        })
+    }
+
     pub(crate) fn load_run_context(&self, run_id: RunId) -> Result<RunContext, PersistenceError> {
         let run = load_required_run(&self.connection, run_id)?;
         if !matches!(
@@ -517,18 +562,21 @@ impl Backend {
             .ok_or(PersistenceError::ResourceLimit {
                 resource: crate::persistence::PersistenceResourceLimit::Context,
             })?;
+        let manual_compaction = manual_compaction_guidance(&canonical_entries, run.id);
         let compaction_plan = if run.context_policy_version == CONTEXT_POLICY_VERSION
-            && estimated_input_tokens
-                >= run
-                    .maximum_input_tokens
-                    .saturating_mul(7)
-                    .saturating_div(10)
+            && (manual_compaction.is_some()
+                || estimated_input_tokens
+                    >= run
+                        .maximum_input_tokens
+                        .saturating_mul(7)
+                        .saturating_div(10))
         {
             build_compaction_plan(
                 &canonical_entries,
                 checkpoint.as_ref(),
                 run.source_entry_high_water,
                 run.maximum_input_tokens,
+                manual_compaction.flatten(),
             )?
         } else {
             None
@@ -623,11 +671,33 @@ fn load_latest_checkpoint(
         .map_err(PersistenceError::from)
 }
 
+fn manual_compaction_guidance(
+    canonical_entries: &[TranscriptEntry],
+    run_id: RunId,
+) -> Option<Option<String>> {
+    let text = canonical_entries.iter().find_map(|entry| match entry {
+        TranscriptEntry::UserMessage {
+            run_id: entry_run_id,
+            text,
+            ..
+        } if *entry_run_id == run_id => Some(text.as_str()),
+        _ => None,
+    })?;
+    if text == "/compact" {
+        return Some(None);
+    }
+    text.strip_prefix("/compact ")
+        .map(str::trim)
+        .filter(|guidance| !guidance.is_empty())
+        .map(|guidance| Some(guidance.to_owned()))
+}
+
 fn build_compaction_plan(
     canonical_entries: &[TranscriptEntry],
     checkpoint: Option<&crate::persistence::ContextCheckpoint>,
     current_run_source: u64,
     maximum_input_tokens: u32,
+    user_guidance: Option<String>,
 ) -> Result<Option<crate::persistence::CompactionPlan>, PersistenceError> {
     let covered = checkpoint.map_or(0, |checkpoint| checkpoint.source_entry_high_water);
     let prior_users = canonical_entries
@@ -695,6 +765,7 @@ fn build_compaction_plan(
     })?;
     Ok(Some(crate::persistence::CompactionPlan {
         parent_checkpoint_id: checkpoint.map(|checkpoint| checkpoint.id),
+        user_guidance,
         source_entry_high_water,
         source_digest,
         entries,

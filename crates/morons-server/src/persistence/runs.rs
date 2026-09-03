@@ -396,6 +396,21 @@ impl SessionStore {
         .await
     }
 
+    pub(crate) async fn session_context_status(
+        &self,
+        session_id: SessionId,
+        maximum_input_tokens: u32,
+        maximum_output_tokens: u32,
+    ) -> Result<crate::persistence::SessionContextStatus, PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::ContextStatus {
+            session_id,
+            maximum_input_tokens,
+            maximum_output_tokens,
+            response,
+        })
+        .await
+    }
+
     pub(crate) async fn load_run_context(
         &self,
         run_id: RunId,
@@ -572,6 +587,13 @@ pub(super) enum RunWorkerRequest {
         cursor: Option<TranscriptCursor>,
         limit: u16,
         response: oneshot::Sender<Result<TranscriptPage, PersistenceError>>,
+    },
+    ContextStatus {
+        session_id: SessionId,
+        maximum_input_tokens: u32,
+        maximum_output_tokens: u32,
+        response:
+            oneshot::Sender<Result<crate::persistence::SessionContextStatus, PersistenceError>>,
     },
     LoadContext {
         run_id: RunId,
@@ -784,6 +806,18 @@ impl RunWorkerRequest {
                 response,
             } => {
                 let _ = response.send(backend.list_session_transcript(session_id, cursor, limit));
+            }
+            Self::ContextStatus {
+                session_id,
+                maximum_input_tokens,
+                maximum_output_tokens,
+                response,
+            } => {
+                let _ = response.send(backend.session_context_status(
+                    session_id,
+                    maximum_input_tokens,
+                    maximum_output_tokens,
+                ));
             }
             Self::LoadContext { run_id, response } => {
                 let _ = response.send(backend.load_run_context(run_id));

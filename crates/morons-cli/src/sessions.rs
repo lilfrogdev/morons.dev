@@ -20,9 +20,10 @@ use morons_protocol::{
     ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
     LocalCommandId, MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId, RunState, RunSummary,
-    ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
-    SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry, WorkspaceBlockReason,
-    WorkspaceState, WorkspaceSummary, read_server_message, write_client_message,
+    ServerMessage, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId,
+    SessionListCursor, SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry,
+    WorkspaceBlockReason, WorkspaceState, WorkspaceSummary, read_server_message,
+    write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -802,6 +803,42 @@ where
             return Err(ApplicationClientError::EventScopeMismatch);
         }
         Ok(SkillCatalog { skills, warnings })
+    }
+
+    pub async fn session_context_status(
+        &mut self,
+        session_id: SessionId,
+        service: OpenCodeService,
+        model_id: String,
+    ) -> Result<SessionContextStatus, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::GetSessionContext {
+                session_id,
+                service,
+                model_id: model_id.clone(),
+            })
+            .await?;
+        let ApplicationResponse::SessionContextFound { context } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        let valid = context.session_id == session_id
+            && context.service == service
+            && context.model_id == model_id
+            && context.context_policy_version > 0
+            && context.estimated_input_tokens > 0
+            && context.maximum_input_tokens > 0
+            && context.maximum_output_tokens > 0
+            && context.compaction_threshold_tokens > 0
+            && context.compaction_threshold_tokens <= context.maximum_input_tokens
+            && context
+                .checkpoint_estimated_summary_tokens
+                .is_some_and(|tokens| tokens > 0)
+                == context.checkpoint_source_entry_high_water.is_some();
+        if !valid {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(context)
     }
 
     pub async fn open_code_credential_status(
