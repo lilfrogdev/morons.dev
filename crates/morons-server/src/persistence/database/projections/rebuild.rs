@@ -200,6 +200,10 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
                 accepted_at_milliseconds
          FROM session_archive_requests WHERE state = 2
          UNION ALL
+         SELECT delivery_event_id, accepted_sequence, session_id, 20, 1,
+                accepted_at_milliseconds
+         FROM session_delete_requests WHERE state = 3
+         UNION ALL
          SELECT delivery_event_id, fact_sequence, session_id,
                 CASE entry_kind WHEN 1 THEN 2 WHEN 2 THEN 6 WHEN 3 THEN 12 ELSE 13 END,
                 1, created_at_milliseconds

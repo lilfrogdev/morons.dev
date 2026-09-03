@@ -22,8 +22,8 @@ use self::{
     types::{
         MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE,
         REQUEST_FINGERPRINT_BYTES, archive_session_fingerprint,
-        create_session_with_directory_fingerprint, rename_session_fingerprint,
-        validate_display_name, validate_working_directory_path,
+        create_session_with_directory_fingerprint, delete_session_fingerprint,
+        rename_session_fingerprint, validate_display_name, validate_working_directory_path,
     },
 };
 
@@ -38,8 +38,9 @@ pub use self::{
     types::{
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
         ServerStopResult, Session, SessionCatalogEvent, SessionCatalogEventCursor,
-        SessionCatalogEventPage, SessionId, SessionListCursor, SessionPage,
-        ToolUncertaintyAcknowledgement, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
+        SessionCatalogEventKind, SessionCatalogEventPage, SessionId, SessionListCursor,
+        SessionPage, ToolUncertaintyAcknowledgement, WorkspaceBlockReason, WorkspaceState,
+        WorkspaceSummary,
     },
 };
 
@@ -245,6 +246,81 @@ impl SessionStore {
         let (response_sender, response_receiver) = oneshot::channel();
         self.sender()?
             .send(WorkerRequest::CompleteSessionArchive {
+                request_id,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    #[cfg(test)]
+    pub async fn delete_session(
+        &self,
+        request_id: MutationRequestId,
+        session_id: SessionId,
+    ) -> Result<SessionId, PersistenceError> {
+        let complete = self.prepare_session_delete(request_id, session_id).await?;
+        if !complete {
+            self.clean_session_database(request_id).await?;
+            self.complete_session_delete(request_id).await
+        } else {
+            Ok(session_id)
+        }
+    }
+
+    pub(crate) async fn prepare_session_delete(
+        &self,
+        request_id: MutationRequestId,
+        session_id: SessionId,
+    ) -> Result<bool, PersistenceError> {
+        if request_id.is_zero() {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a mutation request identifier must not be all zeroes",
+            });
+        }
+        let fingerprint = delete_session_fingerprint(session_id);
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::PrepareSessionDelete {
+                request_id,
+                fingerprint,
+                session_id,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub(crate) async fn clean_session_database(
+        &self,
+        request_id: MutationRequestId,
+    ) -> Result<(), PersistenceError> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::CleanSessionDatabase {
+                request_id,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub(crate) async fn complete_session_delete(
+        &self,
+        request_id: MutationRequestId,
+    ) -> Result<SessionId, PersistenceError> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::CompleteSessionDelete {
                 request_id,
                 response: response_sender,
             })
@@ -506,6 +582,20 @@ enum WorkerRequest {
         request_id: MutationRequestId,
         response: oneshot::Sender<Result<Session, PersistenceError>>,
     },
+    PrepareSessionDelete {
+        request_id: MutationRequestId,
+        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
+        session_id: SessionId,
+        response: oneshot::Sender<Result<bool, PersistenceError>>,
+    },
+    CleanSessionDatabase {
+        request_id: MutationRequestId,
+        response: oneshot::Sender<Result<(), PersistenceError>>,
+    },
+    CompleteSessionDelete {
+        request_id: MutationRequestId,
+        response: oneshot::Sender<Result<SessionId, PersistenceError>>,
+    },
     Run(RunWorkerRequest),
     StopServer {
         request_id: MutationRequestId,
@@ -608,6 +698,32 @@ fn run_worker(
                 response,
             } => {
                 let result = backend.complete_session_archive(request_id);
+                force_event_notification = result.is_ok();
+                let _ = response.send(result);
+            }
+            WorkerRequest::PrepareSessionDelete {
+                request_id,
+                fingerprint,
+                session_id,
+                response,
+            } => {
+                let _ = response.send(backend.prepare_session_delete(
+                    request_id,
+                    fingerprint,
+                    session_id,
+                ));
+            }
+            WorkerRequest::CleanSessionDatabase {
+                request_id,
+                response,
+            } => {
+                let _ = response.send(backend.clean_session_database(request_id));
+            }
+            WorkerRequest::CompleteSessionDelete {
+                request_id,
+                response,
+            } => {
+                let result = backend.complete_session_delete(request_id);
                 force_event_notification = result.is_ok();
                 let _ = response.send(result);
             }

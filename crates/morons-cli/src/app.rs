@@ -32,6 +32,7 @@ pub(super) enum PendingOperation {
     SubmitInput,
     RenameSession,
     ArchiveSession,
+    DeleteSession,
     ExecuteLocalCommand,
     CancelRun,
     CancelLocalCommand,
@@ -70,6 +71,9 @@ pub(super) enum AppAction {
     SetSessionArchived {
         session_id: SessionId,
         archived: bool,
+    },
+    DeleteSession {
+        session_id: SessionId,
     },
     ShowContext {
         session_id: SessionId,
@@ -139,6 +143,10 @@ impl fmt::Debug for AppAction {
                 .debug_struct("SetSessionArchived")
                 .field("session_id", session_id)
                 .field("archived", archived)
+                .finish(),
+            Self::DeleteSession { session_id } => formatter
+                .debug_tuple("DeleteSession")
+                .field(session_id)
                 .finish(),
             Self::ShowContext {
                 session_id,
@@ -257,6 +265,7 @@ pub(super) struct AppState {
     pub(super) pending: Option<PendingOperation>,
     pub(super) pending_unknown: bool,
     pub(super) confirm_stop: bool,
+    pub(super) confirm_delete: Option<SessionId>,
     pub(super) confirm_uncertainty: bool,
     pub(super) transcript_scroll: u16,
     pub(super) skill_completion_index: usize,
@@ -282,6 +291,7 @@ impl AppState {
             pending: None,
             pending_unknown: false,
             confirm_stop: false,
+            confirm_delete: None,
             confirm_uncertainty: false,
             transcript_scroll: 0,
             skill_completion_index: 0,
@@ -488,6 +498,31 @@ impl AppState {
         })
     }
 
+    pub(super) fn session_deleted(&mut self, session_id: SessionId) -> Result<(), UiStateError> {
+        if self.confirm_delete == Some(session_id) {
+            self.confirm_delete = None;
+        }
+        if let Some(index) = self
+            .sessions
+            .iter()
+            .position(|session| session.summary.id == session_id)
+        {
+            self.sessions.remove(index);
+        }
+        self.selected_session = self
+            .selected_session
+            .min(self.sessions.len().saturating_sub(1));
+        mark_shared_directories(&mut self.sessions);
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.summary.id == session_id)
+        {
+            self.close_session();
+        }
+        Ok(())
+    }
+
     pub(super) fn add_session(&mut self, session: SessionSummary) -> Result<(), UiStateError> {
         if self
             .sessions
@@ -617,6 +652,7 @@ impl AppState {
                 }
                 Ok(())
             }
+            ApplicationEvent::SessionRemoved { session_id, .. } => self.session_deleted(session_id),
             ApplicationEvent::SessionTranscriptEntryCommitted {
                 session_id, entry, ..
             } => self.session_mut(session_id)?.append_transcript_entry(entry),

@@ -37,6 +37,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
     if app.confirm_uncertainty {
         render_uncertainty_confirmation(frame, area);
     }
+    if app.confirm_delete.is_some() {
+        render_delete_confirmation(frame, area);
+    }
     if let Some(dialog) = app.credential_dialog.as_ref() {
         render_credential_dialog(frame, area, dialog);
     }
@@ -383,7 +386,7 @@ fn render_model_disclosure(
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let help = match app.view {
         View::Sessions => {
-            "↑↓ select · Enter open · n new · r rename · a archive/unarchive · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
+            "↑↓ select · Enter open · n new · r rename · a archive · d delete archived · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
             "Enter send · @ skill · !/!! command · /context · /compact · Esc sessions · Ctrl+X cancel"
@@ -431,7 +434,7 @@ fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: Informat
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · r rename · a archive/unarchive in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             15,
         ),
@@ -448,6 +451,30 @@ fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: Informat
             .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: false }),
         popup,
+    );
+}
+
+fn render_delete_confirmation(frame: &mut Frame<'_>, area: Rect) {
+    let width = area.width.min(72);
+    let height = area.height.min(7);
+    let dialog = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, dialog);
+    frame.render_widget(
+        Paragraph::new(
+            "Delete this archived session's Morons-owned history and attachments?\nThe selected working directory will not be modified.\n\ny delete · n/Esc cancel",
+        )
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Delete archived session "),
+        ),
+        dialog,
     );
 }
 

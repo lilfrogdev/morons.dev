@@ -44,6 +44,20 @@ impl AppState {
                 _ => AppAction::None,
             };
         }
+        if let Some(session_id) = self.confirm_delete {
+            return match key.code {
+                KeyCode::Char('y') => {
+                    self.confirm_delete = None;
+                    AppAction::DeleteSession { session_id }
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.confirm_delete = None;
+                    self.set_status("Session deletion cancelled");
+                    AppAction::None
+                }
+                _ => AppAction::None,
+            };
+        }
         if self.confirm_uncertainty {
             return match key.code {
                 KeyCode::Char('y') => {
@@ -111,6 +125,7 @@ impl AppState {
             && self.view == View::Session
             && self.pending.is_none()
             && !self.confirm_stop
+            && self.confirm_delete.is_none()
             && !self.confirm_uncertainty
         {
             self.prompt.push_paste(paste);
@@ -352,6 +367,21 @@ impl AppState {
                     archived: !session.summary.archived,
                 })
                 .unwrap_or(AppAction::None),
+            KeyCode::Char('d') if self.pending.is_none() => {
+                if self
+                    .sessions
+                    .get(self.selected_session)
+                    .is_some_and(|session| session.summary.archived)
+                {
+                    self.confirm_delete = self.selected_session_id();
+                    self.set_status(
+                        "Confirm deleting Morons history and attachments; the working directory is never changed",
+                    );
+                } else {
+                    self.set_status("Archive a session before deleting it");
+                }
+                AppAction::None
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_session = self.selected_session.saturating_sub(1);
                 AppAction::None

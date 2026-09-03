@@ -176,6 +176,80 @@ impl StoragePaths {
         Ok(())
     }
 
+    pub(super) fn attachment_session_directory_overlaps(
+        &self,
+        session_id: &[u8; IDENTIFIER_BYTES],
+        selected_directory: &Path,
+    ) -> Result<bool, PathError> {
+        let session_directory = self.attachment_session_directory(session_id);
+        if !path_entry_exists(&session_directory)? {
+            return Ok(false);
+        }
+        validate_private_directory(&session_directory)?;
+        let direct_overlap = session_directory.starts_with(selected_directory)
+            || selected_directory.starts_with(&session_directory);
+        let canonical_session = fs::canonicalize(&session_directory)?;
+        let canonical_selected = fs::canonicalize(selected_directory).ok();
+        Ok(direct_overlap
+            || canonical_selected.is_some_and(|selected| {
+                canonical_session.starts_with(&selected) || selected.starts_with(&canonical_session)
+            }))
+    }
+
+    pub(super) fn remove_attachment_session_directory(
+        &self,
+        session_id: &[u8; IDENTIFIER_BYTES],
+    ) -> Result<(), PathError> {
+        let session_directory = self.attachment_session_directory(session_id);
+        if !path_entry_exists(&session_directory)? {
+            return Ok(());
+        }
+        validate_private_directory(&session_directory)?;
+        let mut files = Vec::new();
+        for entry in fs::read_dir(&session_directory)? {
+            let entry = entry?;
+            if files.len() >= MAX_ATTACHMENT_FILES {
+                return Err(PathError::InvalidState {
+                    reason: "an attachment directory contains too many files",
+                });
+            }
+            let file_name = entry.file_name();
+            let Some(file_name) = file_name.to_str() else {
+                return Err(PathError::InvalidState {
+                    reason: "an attachment directory contains a non-UTF-8 entry",
+                });
+            };
+            let Some(encoded) = file_name.strip_suffix(ATTACHMENT_FILE_SUFFIX) else {
+                return Err(PathError::InvalidState {
+                    reason: "an attachment directory contains unexpected state",
+                });
+            };
+            if decode_hex_identifier(encoded).is_none() {
+                return Err(PathError::InvalidState {
+                    reason: "an attachment directory contains an invalid file name",
+                });
+            }
+            validate_private_file(
+                &entry.path(),
+                Some(morons_image::MAX_NORMALIZED_IMAGE_BYTES as u64),
+            )?;
+            files.push(entry.path());
+        }
+        for file in files {
+            validate_private_file(&file, Some(morons_image::MAX_NORMALIZED_IMAGE_BYTES as u64))?;
+            fs::remove_file(file)?;
+        }
+        validate_private_directory(&session_directory)?;
+        if fs::read_dir(&session_directory)?.next().is_some() {
+            return Err(PathError::InvalidState {
+                reason: "an attachment directory changed during deletion",
+            });
+        }
+        fs::remove_dir(session_directory)?;
+        sync_directory(&self.attachment_directory)?;
+        Ok(())
+    }
+
     pub(super) fn attachment_file_ids(&self) -> Result<Vec<AttachmentFileId>, PathError> {
         let mut identifiers = Vec::new();
         let mut empty_directories = Vec::new();

@@ -281,6 +281,16 @@ impl RuntimeState {
                     "Unarchiving session"
                 });
             }
+            AppAction::DeleteSession { session_id } => {
+                let command = RequestCommand::DeleteSession {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    session_id,
+                };
+                self.start_mutation(command, PendingOperation::DeleteSession, commands)?;
+                self.app.set_status(
+                    "Deleting only Morons-owned session history, attachments, and temporary state",
+                );
+            }
             AppAction::ShowContext {
                 session_id,
                 service,
@@ -536,6 +546,21 @@ impl RuntimeState {
                     "Session unarchived"
                 });
             }
+            RequestEvent::SessionDeleted {
+                mutation_request_id,
+                session_id,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                if self.requested_session == Some(session_id) {
+                    self.requested_session = None;
+                    self.session_generation = self.session_generation.wrapping_add(1);
+                    abort_task(&mut self.session_subscription);
+                }
+                self.app.session_deleted(session_id)?;
+                self.app.set_status(
+                    "Session history and attachments deleted; working directory unchanged",
+                );
+            }
             RequestEvent::InputAccepted {
                 mutation_request_id,
                 accepted,
@@ -686,7 +711,16 @@ impl RuntimeState {
         _subscription_events: &mpsc::Sender<SubscriptionEvent>,
     ) -> Result<(), TerminalApplicationError> {
         match event {
-            SubscriptionEvent::Catalog(event) => self.app.apply_event(event)?,
+            SubscriptionEvent::Catalog(event) => {
+                if let morons_protocol::ApplicationEvent::SessionRemoved { session_id, .. } = &event
+                    && self.requested_session == Some(*session_id)
+                {
+                    self.requested_session = None;
+                    self.session_generation = self.session_generation.wrapping_add(1);
+                    abort_task(&mut self.session_subscription);
+                }
+                self.app.apply_event(event)?;
+            }
             SubscriptionEvent::Session { generation, event }
                 if generation == self.session_generation =>
             {

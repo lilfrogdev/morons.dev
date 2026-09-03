@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::Write as _,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -23,7 +24,8 @@ use crate::{
 
 use super::{
     MutationRequestId, PersistenceError, RunModelSelection, RunOpenCodeService,
-    SessionCatalogEventCursor, SessionId, SessionListCursor, SessionStore, database,
+    SessionCatalogEventCursor, SessionCatalogEventKind, SessionId, SessionListCursor, SessionStore,
+    database,
     paths::{StoragePaths, encode_hex},
     types::create_session_fingerprint,
 };
@@ -291,7 +293,7 @@ async fn sessions_are_idempotent_queryable_paginated_and_durable() {
         .await
         .expect("events after the snapshot should replay");
     assert_eq!(replay.events.len(), 1);
-    assert_eq!(replay.events[0].session, fourth.clone());
+    assert_eq!(replay.events[0].session(), Some(&fourth));
     assert_eq!(replay.events[0].cursor, replay.high_water);
 
     let complete_replay = store
@@ -303,7 +305,10 @@ async fn sessions_are_idempotent_queryable_paginated_and_durable() {
         complete_replay
             .events
             .iter()
-            .map(|event| event.session.id)
+            .map(|event| event
+                .session()
+                .expect("creation event should contain a session")
+                .id)
             .collect::<Vec<_>>(),
         vec![first.id, second.id, third.id, fourth.id]
     );
@@ -324,7 +329,7 @@ async fn sessions_are_idempotent_queryable_paginated_and_durable() {
         .await
         .expect("durable events should replay after restart");
     assert_eq!(replay_after_restart.events.len(), 1);
-    assert_eq!(replay_after_restart.events[0].session, fourth);
+    assert_eq!(replay_after_restart.events[0].session(), Some(&fourth));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -401,7 +406,7 @@ async fn session_renames_are_idempotent_durable_and_snapshot_consistent() {
         .await
         .expect("rename event should replay");
     assert_eq!(replay.events.len(), 1);
-    assert_eq!(replay.events[0].session, renamed);
+    assert_eq!(replay.events[0].session(), Some(&renamed));
     drop(store);
 
     let reopened = SessionStore::open_at(root.path()).expect("renamed session should reopen");
@@ -487,7 +492,12 @@ async fn session_archiving_is_idempotent_durable_and_snapshot_consistent() {
         .await
         .expect("archive event should replay");
     assert_eq!(replay.events.len(), 1);
-    assert!(replay.events[0].session.archived);
+    assert!(
+        replay.events[0]
+            .session()
+            .expect("archive event should contain a session")
+            .archived
+    );
     let restored = store
         .set_session_archived(MutationRequestId::from_bytes([0x54; 16]), created.id, false)
         .await
@@ -505,6 +515,253 @@ async fn session_archiving_is_idempotent_durable_and_snapshot_consistent() {
             .archived
     );
     assert_eq!(fs::read_to_string(&sentinel).unwrap(), "unchanged");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_deletion_is_idempotent_tombstoned_and_never_touches_the_selected_directory() {
+    let root = TestRoot::new("session-delete");
+    let selected = TestRoot::new("session-delete-selected");
+    let sentinel = selected.path().join("sentinel");
+    fs::write(&sentinel, "keep").expect("sentinel should be written");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let creation_request = MutationRequestId::from_bytes([0x58; 16]);
+    let session = store
+        .create_session_at(
+            creation_request,
+            Some("Delete me".to_owned()),
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let retained = store
+        .create_session_at(
+            MutationRequestId::from_bytes([0x59; 16]),
+            Some("Retained".to_owned()),
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("retained session should be created");
+    let delete_request = MutationRequestId::from_bytes([0x5b; 16]);
+    assert!(matches!(
+        store.delete_session(delete_request, session.id).await,
+        Err(PersistenceError::SessionNotArchived)
+    ));
+    store
+        .set_session_archived(MutationRequestId::from_bytes([0x5a; 16]), session.id, true)
+        .await
+        .expect("session should archive");
+    let before_delete = store
+        .list_sessions(None, 100)
+        .await
+        .expect("catalog snapshot should load");
+    assert_eq!(
+        store
+            .delete_session(delete_request, session.id)
+            .await
+            .expect("session should delete"),
+        session.id
+    );
+    assert!(
+        store
+            .get_session(session.id)
+            .await
+            .expect("deleted session query should succeed")
+            .is_none()
+    );
+    let sessions = store
+        .list_sessions(None, 100)
+        .await
+        .expect("catalog should remain readable")
+        .sessions;
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].id, retained.id);
+    let replay = store
+        .read_session_catalog_events(before_delete.catalog_cursor, 10)
+        .await
+        .expect("deletion should replay");
+    assert_eq!(replay.events.len(), 1);
+    assert!(matches!(
+        replay.events[0].kind,
+        SessionCatalogEventKind::Removed(removed) if removed == session.id
+    ));
+    assert_eq!(
+        store
+            .delete_session(delete_request, session.id)
+            .await
+            .expect("exact deletion should retry"),
+        session.id
+    );
+    assert!(matches!(
+        store.delete_session(delete_request, retained.id).await,
+        Err(PersistenceError::RequestConflict)
+    ));
+    assert!(matches!(
+        store
+            .create_session_at(
+                creation_request,
+                Some("Reused".to_owned()),
+                selected.path().to_string_lossy().into_owned(),
+            )
+            .await,
+        Err(PersistenceError::RequestConflict)
+    ));
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "keep");
+    drop(store);
+
+    let database_path = root.path().join("data").join("sessions.sqlite3");
+    let connection = Connection::open(&database_path).expect("database should remain readable");
+    for table in [
+        "sessions",
+        "session_run_states",
+        "session_created_facts",
+        "session_creation_requests",
+        "session_rename_requests",
+        "session_archive_requests",
+        "session_entries",
+        "run_input_requests",
+        "run_accepted_facts",
+        "run_state_facts",
+        "local_commands",
+        "context_checkpoints",
+        "image_attachments",
+        "tool_image_attachments",
+    ] {
+        let count: i64 = connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE session_id = ?1"),
+                [&session.id.as_bytes()[..]],
+                |row| row.get(0),
+            )
+            .expect("session-scoped cleanup should remain queryable");
+        assert_eq!(
+            count, 0,
+            "{table} should contain no deleted session records"
+        );
+    }
+    let tombstones: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM deleted_mutation_tombstones
+             WHERE delete_request_id = ?1",
+            [&delete_request.as_bytes()[..]],
+            |row| row.get(0),
+        )
+        .expect("idempotency tombstones should remain queryable");
+    assert!(tombstones >= 2);
+    connection
+        .execute("DELETE FROM delivery_events WHERE event_kind = 20", [])
+        .expect("rebuildable deletion event should be removable for repair test");
+    drop(connection);
+
+    let reopened = SessionStore::open_at(root.path()).expect("deleted state should reopen");
+    assert!(
+        reopened
+            .get_session(session.id)
+            .await
+            .expect("deleted session query should succeed")
+            .is_none()
+    );
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "keep");
+    let repaired = reopened
+        .read_session_catalog_events(SessionCatalogEventCursor::from_sequence(0), 100)
+        .await
+        .expect("deletion event projection should rebuild");
+    assert!(repaired.events.iter().any(|event| matches!(
+        &event.kind,
+        SessionCatalogEventKind::Removed(removed) if *removed == session.id
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_deletion_fails_before_mutation_when_selected_and_attachment_directories_overlap() {
+    let root = TestRoot::new("session-delete-overlap");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let selected = root.path().join("attachments");
+    let sentinel = selected.join("sentinel");
+    fs::write(&sentinel, "keep").expect("selected-directory sentinel should be written");
+    let session = store
+        .create_session_at(
+            MutationRequestId::from_bytes([0x66; 16]),
+            None,
+            selected.to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be available");
+    let (attachment_path, mut attachment) = paths
+        .create_attachment_file(session.id.as_bytes(), &[0x67; 16])
+        .expect("private attachment fixture should be created");
+    attachment
+        .write_all(b"orphan")
+        .expect("attachment fixture should be written");
+    attachment.sync_all().expect("attachment should sync");
+    drop(attachment);
+    store
+        .set_session_archived(MutationRequestId::from_bytes([0x68; 16]), session.id, true)
+        .await
+        .expect("session should archive");
+    assert!(matches!(
+        store
+            .delete_session(MutationRequestId::from_bytes([0x69; 16]), session.id)
+            .await,
+        Err(PersistenceError::InvalidInput { .. })
+    ));
+    assert_eq!(fs::read_to_string(sentinel).unwrap(), "keep");
+    assert!(attachment_path.exists());
+    assert!(
+        store
+            .get_session(session.id)
+            .await
+            .expect("session query should succeed")
+            .is_some()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_completes_prepared_and_database_cleaned_session_deletions() {
+    for (suffix, clean_database) in [("prepared", false), ("database-cleaned", true)] {
+        let root = TestRoot::new(&format!("session-delete-recovery-{suffix}"));
+        let selected = TestRoot::new(&format!("session-delete-recovery-selected-{suffix}"));
+        let sentinel = selected.path().join("sentinel");
+        fs::write(&sentinel, "keep").expect("sentinel should be written");
+        let session_id = {
+            let store = SessionStore::open_at(root.path()).expect("session store should open");
+            let session = store
+                .create_session_at(
+                    MutationRequestId::from_bytes([0x5c; 16]),
+                    None,
+                    selected.path().to_string_lossy().into_owned(),
+                )
+                .await
+                .expect("session should be created");
+            store
+                .set_session_archived(MutationRequestId::from_bytes([0x5d; 16]), session.id, true)
+                .await
+                .expect("session should archive");
+            let request_id = MutationRequestId::from_bytes([0x5e; 16]);
+            assert!(
+                !store
+                    .prepare_session_delete(request_id, session.id)
+                    .await
+                    .expect("deletion should prepare")
+            );
+            if clean_database {
+                store
+                    .clean_session_database(request_id)
+                    .await
+                    .expect("database cleanup should complete");
+            }
+            session.id
+        };
+        let reopened = SessionStore::open_at(root.path()).expect("deletion should recover");
+        assert!(
+            reopened
+                .get_session(session_id)
+                .await
+                .expect("session query should succeed")
+                .is_none()
+        );
+        assert_eq!(fs::read_to_string(&sentinel).unwrap(), "keep");
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -666,8 +923,31 @@ async fn session_commands_cross_the_application_and_transport_boundaries() {
             .list_sessions(None, 10)
             .await
             .expect("client should list sessions");
-        assert_eq!(page.sessions, vec![session]);
+        assert_eq!(page.sessions, vec![session.clone()]);
         assert_eq!(page.next_cursor, None);
+        let archived = client
+            .set_session_archived(
+                ProtocolMutationRequestId::from_bytes([0x19; 16]),
+                session.id,
+                true,
+            )
+            .await
+            .expect("client should archive the session");
+        assert!(archived.archived);
+        client
+            .delete_session(
+                ProtocolMutationRequestId::from_bytes([0x1a; 16]),
+                session.id,
+            )
+            .await
+            .expect("client should delete the archived session");
+        assert!(
+            client
+                .get_session(session.id)
+                .await
+                .expect("deleted session query should succeed")
+                .is_none()
+        );
     };
     let server_exchange = async {
         handle_local_owner_requests(&mut server_connection, &application)
@@ -740,7 +1020,42 @@ async fn session_subscription_replays_commits_after_a_gap_free_snapshot() {
             live_event,
             ApplicationEvent::SessionCreated {
                 cursor: subscription.cursor(),
-                session: created_while_subscribed,
+                session: created_while_subscribed.clone(),
+            }
+        );
+        let archived = commands
+            .set_session_archived(
+                ProtocolMutationRequestId::from_bytes([0x34; 16]),
+                created_while_subscribed.id,
+                true,
+            )
+            .await
+            .expect("subscribed session should archive");
+        assert_eq!(
+            subscription
+                .next_event()
+                .await
+                .expect("archive event should be delivered"),
+            ApplicationEvent::SessionChanged {
+                cursor: subscription.cursor(),
+                session: archived,
+            }
+        );
+        commands
+            .delete_session(
+                ProtocolMutationRequestId::from_bytes([0x35; 16]),
+                created_while_subscribed.id,
+            )
+            .await
+            .expect("subscribed session should delete");
+        assert_eq!(
+            subscription
+                .next_event()
+                .await
+                .expect("removal event should be delivered"),
+            ApplicationEvent::SessionRemoved {
+                cursor: subscription.cursor(),
+                session_id: created_while_subscribed.id,
             }
         );
         drop(subscription);
@@ -1199,7 +1514,7 @@ fn schema_version_one_migrates_to_version_twelve() {
         .expect("version one database should install");
 
     let connection = database::open(&paths).expect("version one database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let mutation_operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -1271,7 +1586,7 @@ fn schema_version_two_migrates_to_version_twelve() {
         .expect("version two database should install");
 
     let connection = database::open(&paths).expect("version two database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -1323,7 +1638,7 @@ fn schema_version_three_migrates_to_version_twelve() {
         .expect("version three database should install");
 
     let connection = database::open(&paths).expect("version three database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let stop_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'server_stop_requests'",
@@ -1368,7 +1683,7 @@ fn schema_version_four_migrates_to_version_twelve() {
         .expect("version four database should install");
 
     let connection = database::open(&paths).expect("version four database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let import_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1417,7 +1732,7 @@ fn schema_version_five_migrates_to_version_twelve() {
         .expect("version five database should install");
 
     let connection = database::open(&paths).expect("version five database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let tool_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'tool_calls'",
@@ -1462,7 +1777,7 @@ fn schema_version_six_migrates_to_version_twelve() {
         .expect("version six database should install");
 
     let connection = database::open(&paths).expect("version six database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let image_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1509,7 +1824,7 @@ fn schema_version_seven_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version seven database should install");
     let connection = database::open(&paths).expect("version seven database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let generation_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1557,7 +1872,7 @@ fn schema_version_eight_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version eight database should install");
     let connection = database::open(&paths).expect("version eight database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let column: String = connection
         .query_row(
             "SELECT name FROM pragma_table_info('run_accepted_facts')
@@ -1605,7 +1920,7 @@ fn schema_version_nine_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version nine database should install");
     let connection = database::open(&paths).expect("version nine database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let mode_version: String = connection
         .query_row(
             "SELECT name FROM pragma_table_info('repository_import_requests')
@@ -1654,7 +1969,7 @@ fn schema_version_ten_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version ten database should install");
     let connection = database::open(&paths).expect("version ten database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     for table in [
         "session_creation_requests",
         "session_created_facts",
@@ -1710,7 +2025,7 @@ fn schema_version_twelve_migrates_to_version_thirteen() {
         .install_database(&initialization_path)
         .expect("version twelve database should install");
     let connection = database::open(&paths).expect("version twelve database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
     let sql: String = connection
         .query_row(
             "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'tool_calls'",
@@ -1761,7 +2076,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     let connection =
         Connection::open(&database_path).expect("database should open for test change");
     connection
-        .execute_batch("PRAGMA user_version = 22;")
+        .execute_batch("PRAGMA user_version = 23;")
         .expect("test schema version should change");
     drop(connection);
 
@@ -1769,7 +2084,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
 
     let connection = Connection::open(database_path).expect("database should remain readable");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 23);
 }
 
 #[tokio::test(flavor = "current_thread")]

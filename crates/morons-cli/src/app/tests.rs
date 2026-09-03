@@ -596,6 +596,26 @@ fn session_browser_toggles_durable_archive_state() {
 }
 
 #[test]
+fn session_browser_requires_archived_confirmation_before_deletion() {
+    let (mut session, _) = fixture_session_and_run();
+    let session_id = session.id;
+    session.archived = true;
+    let mut app = AppState::new("test-server");
+    app.replace_sessions(vec![session])
+        .expect("session should be presented");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(app.confirm_delete, Some(session_id));
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+        AppAction::DeleteSession { session_id }
+    );
+    assert_eq!(app.confirm_delete, None);
+}
+
+#[test]
 fn input_action_debug_omits_prompt_text() {
     let action = AppAction::SubmitInput {
         session_id: SessionId::from_bytes([0x55; 16]),

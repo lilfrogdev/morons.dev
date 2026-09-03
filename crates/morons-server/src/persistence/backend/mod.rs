@@ -14,6 +14,7 @@ pub(super) mod run_queries;
 mod run_records;
 mod run_recovery;
 mod server_stop;
+mod session_delete;
 mod session_events;
 mod session_mutation;
 mod tool_execution;
@@ -49,6 +50,7 @@ impl Backend {
         backend.recover_local_commands()?;
         backend.recover_nonterminal_runs()?;
         backend.recover_session_archives()?;
+        backend.recover_session_deletes()?;
         Ok(backend)
     }
 }

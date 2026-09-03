@@ -105,6 +105,48 @@ fn session_archive_contract_has_stable_shapes() {
 }
 
 #[test]
+fn session_delete_contract_has_stable_shapes() {
+    let session_id = SessionId::from_bytes([0x1b; 16]);
+    let request = ApplicationRequest::DeleteSession {
+        mutation_request_id: MutationRequestId::from_bytes([0x1a; 16]),
+        session_id,
+    };
+    assert_eq!(
+        serde_json::to_value(request).expect("delete request should encode"),
+        json!({
+            "operation": "delete_session",
+            "mutation_request_id": "mut_1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+            "session_id": "ses_1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+        })
+    );
+    let response = ApplicationResponse::SessionDeleted { session_id };
+    assert_eq!(
+        serde_json::to_value(response).expect("delete response should encode"),
+        json!({
+            "result": "session_deleted",
+            "session_id": "ses_1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ApplicationError::SessionNotArchived)
+            .expect("delete precondition error should encode"),
+        json!({ "code": "session_not_archived" })
+    );
+    let event = ApplicationEvent::SessionRemoved {
+        cursor: SessionCatalogEventCursor::from_bytes(10_u64.to_be_bytes()),
+        session_id,
+    };
+    assert_eq!(
+        serde_json::to_value(event).expect("delete event should encode"),
+        json!({
+            "event": "session_removed",
+            "cursor": "scc1_000000000000000a",
+            "session_id": "ses_1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+        })
+    );
+}
+
+#[test]
 fn session_skill_catalog_has_stable_json_shapes() {
     let session_id = SessionId::from_bytes([0x18; 16]);
     let request = ApplicationRequest::ListSessionSkills { session_id };

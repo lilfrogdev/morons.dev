@@ -279,6 +279,23 @@ async fn archiving_stops_active_commands_without_touching_the_selected_directory
         rejected,
         Err(morons_protocol::ApplicationError::SessionArchived)
     ));
+    let deleted = application
+        .execute_for_local_owner(ApplicationRequest::DeleteSession {
+            mutation_request_id: ProtocolMutationRequestId::from_bytes([0x65; 16]),
+            session_id,
+        })
+        .await
+        .expect("archived command session should delete");
+    assert!(matches!(
+        deleted,
+        ApplicationOutcome::Response(ApplicationResponse::SessionDeleted {
+            session_id: deleted_id
+        }) if deleted_id == session_id
+    ));
+    assert_eq!(
+        fs::read_to_string(selected.path().join("sentinel")).unwrap(),
+        "keep"
+    );
     application.shutdown().await;
 }
 

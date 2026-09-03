@@ -108,6 +108,89 @@ async fn archived_sessions_reject_new_runs_before_transcript_commit() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn deleting_an_archived_session_removes_file_backed_images_only_from_morons_state() {
+    let root = TestRoot::new("delete-image-session");
+    let selected = TestRoot::new("delete-image-selected");
+    let sentinel = selected.path().join("sentinel");
+    fs::write(&sentinel, "keep").expect("sentinel should be written");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    configure_credential(&store).await;
+    let session = store
+        .create_session_at(
+            MutationRequestId::from_bytes([0x0e; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let image =
+        morons_image::normalize_rgba(2, 2, vec![0x44; 16]).expect("fixture image should normalize");
+    let orphan_bytes = image.bytes.clone();
+    let attachment = crate::persistence::PreparedImageAttachment {
+        display_name: "picture.png".to_owned(),
+        marker_start: 0,
+        media_type: image.media_type,
+        width: image.width,
+        height: image.height,
+        digest: Sha256::digest(&image.bytes).into(),
+        bytes: image.bytes,
+    };
+    let mut selection = model_selection();
+    selection.supports_image_input = true;
+    let accepted = store
+        .accept_session_input_with_skills(
+            MutationRequestId::from_bytes([0x0f; 16]),
+            session.id,
+            "[picture.png]".to_owned(),
+            selection,
+            crate::skills::RunSkillContext::default(),
+            vec![attachment],
+        )
+        .await
+        .expect("image-bearing run should be accepted");
+    let attachment_session_directory = fs::read_dir(root.path().join("attachments"))
+        .expect("attachment root should be readable")
+        .next()
+        .expect("attachment directory should exist")
+        .expect("attachment directory should be readable")
+        .path();
+    let orphan = attachment_session_directory.join("11111111111111111111111111111111.image");
+    fs::write(&orphan, orphan_bytes).expect("orphan fixture should be written");
+    #[cfg(unix)]
+    fs::set_permissions(&orphan, fs::Permissions::from_mode(0o600))
+        .expect("orphan fixture should be private");
+    store
+        .finish_run_stopped(accepted.run.id, None)
+        .await
+        .expect("run should stop before archiving");
+    store
+        .set_session_archived(MutationRequestId::from_bytes([0x10; 16]), session.id, true)
+        .await
+        .expect("session should archive");
+    store
+        .delete_session(MutationRequestId::from_bytes([0x11; 16]), session.id)
+        .await
+        .expect("session should delete");
+    assert_eq!(
+        fs::read_dir(root.path().join("attachments"))
+            .expect("attachment root should remain readable")
+            .count(),
+        0
+    );
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "keep");
+    drop(store);
+    let reopened = SessionStore::open_at(root.path()).expect("deleted store should reopen");
+    assert!(
+        reopened
+            .get_session(session.id)
+            .await
+            .expect("session query should succeed")
+            .is_none()
+    );
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "keep");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_input_is_atomic_idempotent_and_session_serialized() {
     let root = TestRoot::new("run-acceptance");
     let store = SessionStore::open_at(root.path()).expect("session store should open");

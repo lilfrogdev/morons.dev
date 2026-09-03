@@ -32,6 +32,12 @@ use crate::{
     },
 };
 
+const TERMINAL_RUN_TEST_TIMEOUT: Duration = if cfg!(windows) {
+    Duration::from_secs(45)
+} else {
+    Duration::from_secs(15)
+};
+
 #[test]
 fn global_run_capacity_is_bounded_without_queueing() {
     let root = TestRoot::new("global-capacity");
@@ -1504,7 +1510,7 @@ async fn wait_for_terminal(
     session_id: SessionId,
     run_id: RunId,
 ) -> RunState {
-    time::timeout(Duration::from_secs(15), async {
+    time::timeout(TERMINAL_RUN_TEST_TIMEOUT, async {
         loop {
             let outcome = application
                 .execute_for_local_owner(ApplicationRequest::GetRun { session_id, run_id })

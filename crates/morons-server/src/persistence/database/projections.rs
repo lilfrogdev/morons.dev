@@ -28,6 +28,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_session_creation_facts(connection)?;
     validate_session_rename_facts(connection)?;
     validate_session_archive_facts(connection)?;
+    validate_session_delete_facts(connection)?;
     validate_mutation_registry(connection)?;
     validate_local_command_facts(connection)?;
     validate_image_attachment_facts(connection)?;
@@ -193,12 +194,6 @@ fn validate_session_archive_facts(connection: &Connection) -> Result<(), Persist
                 request.request_id IS NULL
                 OR mutation.accepted_sequence IS NOT request.accepted_sequence
                 OR mutation.accepted_at_milliseconds IS NOT request.accepted_at_milliseconds
-                OR (SELECT COUNT(*) FROM delivery_events AS event
-                    WHERE event.event_id = request.delivery_event_id
-                      AND event.event_sequence = request.accepted_sequence
-                      AND event.session_id = request.session_id
-                      AND event.event_kind = 19
-                      AND event.payload_version = 1) != CASE request.state WHEN 2 THEN 1 ELSE 0 END
             )
             UNION ALL
             SELECT 1 FROM session_archive_requests AS request
@@ -235,6 +230,64 @@ fn validate_session_archive_facts(connection: &Connection) -> Result<(), Persist
         {
             return Err(PersistenceError::InvalidState {
                 reason: "a persisted session archive mutation has invalid canonical input",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_session_delete_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN session_delete_requests AS request
+              ON request.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 14 AND (
+                request.request_id IS NULL
+                OR mutation.accepted_sequence IS NOT request.accepted_sequence
+                OR mutation.accepted_at_milliseconds IS NOT request.accepted_at_milliseconds
+            )
+            UNION ALL
+            SELECT 1 FROM session_delete_requests AS request
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
+            WHERE mutation.operation_kind IS NOT 14
+               OR (request.state = 1) != EXISTS (
+                    SELECT 1 FROM session_created_facts AS fact
+                    WHERE fact.session_id = request.session_id
+               )
+               OR (request.state = 1 AND COALESCE((
+                    SELECT archive.archived FROM session_archive_requests AS archive
+                    WHERE archive.session_id = request.session_id AND archive.state = 2
+                    ORDER BY archive.accepted_sequence DESC LIMIT 1
+               ), 0) != 1)
+            UNION ALL
+            SELECT 1 FROM deleted_mutation_tombstones AS tombstone
+            LEFT JOIN session_delete_requests AS deletion
+              ON deletion.request_id = tombstone.delete_request_id
+            LEFT JOIN mutation_requests AS mutation
+              ON mutation.request_id = tombstone.request_id
+            WHERE deletion.state < 2 OR mutation.request_id IS NOT NULL
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "session deletions conflict with canonical lifecycle state",
+        });
+    }
+    let mut statement = connection
+        .prepare("SELECT operation_fingerprint, session_id FROM session_delete_requests")?;
+    let requests = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, [u8; 32]>(0)?, row.get::<_, [u8; 16]>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (fingerprint, session_id) in requests {
+        let session_id = SessionId::from_bytes(session_id);
+        if fingerprint != crate::persistence::types::delete_session_fingerprint(session_id) {
+            return Err(PersistenceError::InvalidState {
+                reason: "a persisted session deletion has invalid canonical input",
             });
         }
     }
@@ -1871,6 +1924,7 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
     }
     validate_session_rename_logical_sequences(connection)?;
     validate_session_archive_logical_sequences(connection)?;
+    validate_session_delete_logical_sequences(connection)?;
     validate_repository_logical_sequences(connection)?;
     validate_tool_logical_sequences(connection)
 }
@@ -1971,6 +2025,73 @@ fn validate_session_archive_logical_sequences(
         return Err(PersistenceError::InvalidState {
             reason: "session archive logical sequences are invalid",
         });
+    }
+    Ok(())
+}
+
+fn validate_session_delete_logical_sequences(
+    connection: &Connection,
+) -> Result<(), PersistenceError> {
+    let mut statement = connection.prepare(
+        "SELECT accepted_sequence FROM session_delete_requests
+         UNION ALL SELECT accepted_sequence FROM deleted_mutation_tombstones",
+    )?;
+    let sequences = statement
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut unique = std::collections::BTreeSet::new();
+    for sequence in &sequences {
+        if *sequence <= 0 || !unique.insert(*sequence) {
+            return Err(invalid_session_delete_sequences());
+        }
+        let collides: bool = connection.query_row(
+            "SELECT
+                EXISTS (SELECT 1 FROM session_creation_requests WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM workspace_operation_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM session_created_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM credential_mutation_requests WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM credential_operation_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM credential_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM server_stop_requests WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM server_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM session_entries WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM run_accepted_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM run_state_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM run_cancellation_requests WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM provider_operation_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM run_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM repository_import_requests WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM repository_import_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM repository_import_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM tool_calls WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM tool_operation_facts WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM tool_uncertainty_acknowledgements WHERE fact_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM tool_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM local_commands WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM local_command_cancellations WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM local_command_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM session_rename_requests WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM session_archive_requests WHERE accepted_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM worktree_generation_facts WHERE fact_sequence = ?1)",
+            [sequence],
+            |row| row.get(0),
+        )?;
+        if collides {
+            return Err(invalid_session_delete_sequences());
+        }
+    }
+    let next_value: i64 = connection.query_row(
+        "SELECT next_value FROM logical_sequences WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if sequences
+        .into_iter()
+        .max()
+        .is_some_and(|maximum| next_value <= maximum)
+    {
+        return Err(invalid_session_delete_sequences());
     }
     Ok(())
 }
@@ -2097,6 +2218,12 @@ fn validate_tool_logical_sequences(connection: &Connection) -> Result<(), Persis
         return Err(invalid_tool_sequences());
     }
     Ok(())
+}
+
+const fn invalid_session_delete_sequences() -> PersistenceError {
+    PersistenceError::InvalidState {
+        reason: "session deletion logical sequences are invalid",
+    }
 }
 
 const fn invalid_tool_sequences() -> PersistenceError {

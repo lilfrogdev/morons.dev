@@ -474,6 +474,7 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::RequestConflict => ApplicationError::RequestConflict,
         PersistenceError::SessionNotFound => ApplicationError::SessionNotFound,
         PersistenceError::SessionArchived => ApplicationError::SessionArchived,
+        PersistenceError::SessionNotArchived => ApplicationError::SessionNotArchived,
         PersistenceError::RunNotFound => ApplicationError::RunNotFound,
         PersistenceError::LocalCommandNotFound => ApplicationError::LocalCommandNotFound,
         PersistenceError::SessionBusy { active_run_id } => ApplicationError::SessionBusy {

@@ -46,7 +46,8 @@ On first launch, read and acknowledge the trusted-local authority notice. Config
 - `/context`: inspect approximate context use, limits, reserves, and the latest checkpoint
 - `/compact [instructions]`: manually summarize an eligible old context prefix
 - `r` in the session browser: rename the selected durable session
-- `a` in the session browser: archive or unarchive the selected idle session
+- `a` in the session browser: archive or unarchive the selected session
+- `d` in the session browser: delete an archived session's Morons-owned history and attachments after confirmation; the working directory is never changed
 - `Tab` / `Shift+Tab`: select models or complete skills
 - `Ctrl+V` (`Alt+V` on Windows): paste an image when available
 - `Ctrl+X`: cancel the selected session's active run or command
