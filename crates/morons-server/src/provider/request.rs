@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, fmt};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 
 use super::{
     OpenCodeModel, OpenCodeService, ProviderError, find_open_code_model, json::parse_strict_value,
@@ -26,6 +27,7 @@ const MAX_TOOL_RESULT_BYTES: usize = 512 * 1024;
 const MAX_REASONING_SUMMARIES: usize = 64;
 const MAX_REASONING_SUMMARY_BYTES: usize = 256 * 1024;
 const MAX_ENCRYPTED_REASONING_BYTES: usize = 512 * 1024;
+const OPENCODE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/opencode-session/v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,6 +172,7 @@ impl fmt::Debug for ProviderTool {
 }
 
 pub struct OpenCodeResponseRequest {
+    opencode_session_id: [u8; 16],
     model: &'static OpenCodeModel,
     estimated_input_tokens: u32,
     maximum_output_tokens: u32,
@@ -193,6 +196,7 @@ impl fmt::Debug for OpenCodeResponseRequest {
 
 impl OpenCodeResponseRequest {
     pub fn new(
+        conversation_id: [u8; 16],
         service: OpenCodeService,
         model_id: &str,
         estimated_input_tokens: u32,
@@ -202,7 +206,8 @@ impl OpenCodeResponseRequest {
     ) -> Result<Self, ProviderError> {
         let model =
             find_open_code_model(service, model_id).ok_or(ProviderError::UnsupportedModel)?;
-        if estimated_input_tokens == 0
+        if conversation_id.iter().all(|byte| *byte == 0)
+            || estimated_input_tokens == 0
             || estimated_input_tokens > model.maximum_input_tokens
             || maximum_output_tokens == 0
             || maximum_output_tokens > model.maximum_output_tokens
@@ -216,7 +221,14 @@ impl OpenCodeResponseRequest {
         }
         validate_input(&input, model)?;
         validate_tools(&tools, model)?;
+        let digest = Sha256::new()
+            .chain_update(OPENCODE_SESSION_FINGERPRINT_CONTEXT)
+            .chain_update(conversation_id)
+            .finalize();
+        let mut opencode_session_id = [0_u8; 16];
+        opencode_session_id.copy_from_slice(&digest[..16]);
         let request = Self {
+            opencode_session_id,
             model,
             estimated_input_tokens,
             maximum_output_tokens,
@@ -230,6 +242,17 @@ impl OpenCodeResponseRequest {
     #[must_use]
     pub const fn model(&self) -> &'static OpenCodeModel {
         self.model
+    }
+
+    pub(super) fn opencode_session_header(&self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut value = String::with_capacity(4 + self.opencode_session_id.len() * 2);
+        value.push_str("ses_");
+        for byte in self.opencode_session_id {
+            value.push(char::from(HEX[usize::from(byte >> 4)]));
+            value.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        value
     }
 
     pub(super) fn encode_body(&self) -> Result<Vec<u8>, ProviderError> {

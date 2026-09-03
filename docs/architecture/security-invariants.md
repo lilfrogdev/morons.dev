@@ -127,6 +127,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Credential status returns no key bytes, prefix, suffix, verifier, or credential-derived fingerprint.
 - Every run records the accepted credential generation, and a dispatch under a stale generation fails before network transmission.
 - Production provider and web-search requests use fixed reviewed HTTPS origins and paths, disabled redirects, normal certificate and hostname verification, and exact authorization-header scoping.
+- Every OpenCode Zen and Go inference request carries one stable `x-opencode-session` value derived from the durable Morons session identity. The value remains stable for that conversation across runs, compaction, and tool turns, differs across sessions, is not the raw local session locator, and is never attached to public catalog requests or emitted in logs, errors, persistence, or protocol responses.
 - Remote catalogs may narrow but never enlarge the reviewed model, protocol, capability, limit, route, or data-use manifest.
 - Provider requests, responses, streams, errors, usage, identifiers, tool arguments, attachments, and output are bounded, strictly decoded, and sanitized at application boundaries.
 - An inference request is never retried automatically after dispatch because it may already have incurred billing or another external effect.

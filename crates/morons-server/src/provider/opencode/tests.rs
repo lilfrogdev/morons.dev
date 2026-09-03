@@ -35,6 +35,7 @@ fn request() -> OpenCodeResponseRequest {
 
 fn request_for(service: OpenCodeService) -> OpenCodeResponseRequest {
     OpenCodeResponseRequest::new(
+        [0x41; 16],
         service,
         "gpt-5.6-luna",
         32,
@@ -184,6 +185,17 @@ async fn inference_uses_the_fixed_service_path_and_scopes_authorization() {
         captured.headers.get("accept").map(String::as_str),
         Some("text/event-stream")
     );
+    assert_eq!(
+        captured.headers.get("user-agent").map(String::as_str),
+        Some(concat!("morons-server/", env!("CARGO_PKG_VERSION")))
+    );
+    assert_eq!(
+        captured
+            .headers
+            .get("x-opencode-session")
+            .map(String::as_str),
+        Some("ses_a226742b98d72df1c38a2e7016096028")
+    );
     let body: Value = serde_json::from_slice(&captured.body).expect("request body should be JSON");
     assert_eq!(body["model"], "gpt-5.6-luna");
     server.await.expect("test server should finish");
@@ -200,9 +212,14 @@ async fn inference_uses_the_fixed_service_path_and_scopes_authorization() {
         )
         .await
         .expect("Go inference should complete");
+    let captured = captured.await.expect("Go request should be captured");
+    assert_eq!(captured.path, "/zen/go/v1/responses");
     assert_eq!(
-        captured.await.expect("Go request should be captured").path,
-        "/zen/go/v1/responses"
+        captured
+            .headers
+            .get("x-opencode-session")
+            .map(String::as_str),
+        Some("ses_a226742b98d72df1c38a2e7016096028")
     );
     server.await.expect("Go test server should finish");
 }
@@ -227,6 +244,7 @@ async fn public_catalog_requests_never_receive_authorization() {
     assert_eq!(captured.method, "GET");
     assert_eq!(captured.path, "/zen/v1/models");
     assert!(!captured.headers.contains_key("authorization"));
+    assert!(!captured.headers.contains_key("x-opencode-session"));
     assert!(captured.body.is_empty());
     server.await.expect("test server should finish");
 }
@@ -432,6 +450,7 @@ fn read_live_api_key() -> Zeroizing<Vec<u8>> {
 
 fn live_request(service: OpenCodeService, model: &str) -> OpenCodeResponseRequest {
     OpenCodeResponseRequest::new(
+        [0x42; 16],
         service,
         model,
         1_024,

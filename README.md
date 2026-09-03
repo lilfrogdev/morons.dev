@@ -63,6 +63,8 @@ Each session is durably bound to one absolute working directory. Switching sessi
 
 Canonical transcript history remains durable. Automatic and manual compaction create source-bound lossy summaries for provider context without deleting canonical messages or image attachments. `!!` content is never included in provider context or summaries.
 
+Every OpenCode Zen and Go inference request carries one stable, derived `x-opencode-session` identifier for the durable Morons session. It remains constant across that conversation's runs, compaction, and tool turns, differs across sessions, and is not sent on public model-catalog requests.
+
 ## Skills
 
 Morons reads standard `SKILL.md` directories from bundled, user, and project roots. Exact standalone `@name` tokens activate installed skills. Skills and their resources are untrusted instructions with the same tool authority as any other repository content.
