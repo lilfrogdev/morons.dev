@@ -62,12 +62,45 @@ fn session_rename_contract_has_stable_redacted_shapes() {
             id: session_id,
             display_name: Some("Renamed".to_owned()),
             working_directory: Some("/project".to_owned()),
+            archived: false,
             created_at_milliseconds: 3,
         },
     };
     assert_eq!(
         serde_json::to_value(event).expect("rename event should encode")["event"],
         "session_changed"
+    );
+}
+
+#[test]
+fn session_archive_contract_has_stable_shapes() {
+    let session_id = SessionId::from_bytes([0x19; 16]);
+    let request = ApplicationRequest::SetSessionArchived {
+        mutation_request_id: MutationRequestId::from_bytes([0x18; 16]),
+        session_id,
+        archived: true,
+    };
+    assert_eq!(
+        serde_json::to_value(request).expect("archive request should encode"),
+        json!({
+            "operation": "set_session_archived",
+            "mutation_request_id": "mut_18181818181818181818181818181818",
+            "session_id": "ses_19191919191919191919191919191919",
+            "archived": true,
+        })
+    );
+    let response = ApplicationResponse::SessionArchiveChanged {
+        session: SessionSummary {
+            id: session_id,
+            display_name: Some("Archived".to_owned()),
+            working_directory: Some("/project".to_owned()),
+            archived: true,
+            created_at_milliseconds: 4,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("archive response should encode")["result"],
+        "session_archive_changed"
     );
 }
 
@@ -467,6 +500,7 @@ fn application_response_has_stable_json_shape() {
             id: SessionId::from_bytes([0x22; 16]),
             display_name: None,
             working_directory: Some("/projects/example".to_owned()),
+            archived: false,
             created_at_milliseconds: 42,
         }],
         next_cursor: Some(SessionListCursor::from_bytes(list_cursor)),
@@ -482,6 +516,7 @@ fn application_response_has_stable_json_shape() {
                 "id": "ses_22222222222222222222222222222222",
                 "display_name": null,
                 "working_directory": "/projects/example",
+                "archived": false,
                 "created_at_milliseconds": 42,
             }],
             "next_cursor": "sc2_00000000000000090000000000000007",
@@ -498,6 +533,7 @@ fn transcript_snapshot_response_has_stable_json_shape() {
             id: session_id,
             display_name: None,
             working_directory: None,
+            archived: false,
             created_at_milliseconds: 42,
         },
         workspace: WorkspaceSummary {
@@ -523,6 +559,7 @@ fn transcript_snapshot_response_has_stable_json_shape() {
                 "id": "ses_23232323232323232323232323232323",
                 "display_name": null,
                 "working_directory": null,
+                "archived": false,
                 "created_at_milliseconds": 42,
             },
             "workspace": {
@@ -631,6 +668,7 @@ fn application_event_has_stable_json_shape() {
             id: SessionId::from_bytes([0x22; 16]),
             display_name: Some("Created".to_owned()),
             working_directory: Some("/projects/example".to_owned()),
+            archived: false,
             created_at_milliseconds: 42,
         },
     };
@@ -644,6 +682,7 @@ fn application_event_has_stable_json_shape() {
                 "id": "ses_22222222222222222222222222222222",
                 "display_name": "Created",
                 "working_directory": "/projects/example",
+                "archived": false,
                 "created_at_milliseconds": 42,
             },
         })

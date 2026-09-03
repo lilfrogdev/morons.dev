@@ -265,6 +265,22 @@ impl RuntimeState {
                 self.start_mutation(command, PendingOperation::RenameSession, commands)?;
                 self.app.set_status("Renaming session");
             }
+            AppAction::SetSessionArchived {
+                session_id,
+                archived,
+            } => {
+                let command = RequestCommand::SetSessionArchived {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    session_id,
+                    archived,
+                };
+                self.start_mutation(command, PendingOperation::ArchiveSession, commands)?;
+                self.app.set_status(if archived {
+                    "Archiving idle session"
+                } else {
+                    "Unarchiving session"
+                });
+            }
             AppAction::ShowContext {
                 session_id,
                 service,
@@ -506,6 +522,19 @@ impl RuntimeState {
                 self.finish_mutation(mutation_request_id)?;
                 self.app.rename_session_applied(session)?;
                 self.app.set_status("Session renamed");
+            }
+            RequestEvent::SessionArchiveChanged {
+                mutation_request_id,
+                session,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                let archived = session.archived;
+                self.app.session_archive_applied(session)?;
+                self.app.set_status(if archived {
+                    "Session archived; history remains available"
+                } else {
+                    "Session unarchived"
+                });
             }
             RequestEvent::InputAccepted {
                 mutation_request_id,

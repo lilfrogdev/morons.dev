@@ -42,6 +42,11 @@ pub(super) enum RequestCommand {
         session_id: SessionId,
         display_name: String,
     },
+    SetSessionArchived {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        archived: bool,
+    },
     SubmitInput {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
@@ -100,6 +105,10 @@ impl RequestCommand {
                 mutation_request_id,
                 ..
             }
+            | Self::SetSessionArchived {
+                mutation_request_id,
+                ..
+            }
             | Self::SubmitInput {
                 mutation_request_id,
                 ..
@@ -143,6 +152,7 @@ impl RequestCommand {
             Self::LoadContext { .. } => "session context status",
             Self::CreateSession { .. } => "session creation",
             Self::RenameSession { .. } => "session rename",
+            Self::SetSessionArchived { .. } => "session archive change",
             Self::SubmitInput { .. } => "message submission",
             Self::ExecuteLocalCommand { .. } => "local command",
             Self::CancelRun { .. } => "run cancellation",
@@ -189,6 +199,15 @@ impl RequestCommand {
                 mutation_request_id: *mutation_request_id,
                 session_id: *session_id,
                 display_name: display_name.clone(),
+            }),
+            Self::SetSessionArchived {
+                mutation_request_id,
+                session_id,
+                archived,
+            } => Some(Self::SetSessionArchived {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
+                archived: *archived,
             }),
             Self::SubmitInput {
                 mutation_request_id,
@@ -273,6 +292,10 @@ pub(super) enum RequestEvent {
         session: SessionSummary,
     },
     SessionRenamed {
+        mutation_request_id: MutationRequestId,
+        session: SessionSummary,
+    },
+    SessionArchiveChanged {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
     },
@@ -497,6 +520,7 @@ async fn execute_credential(
         | RequestCommand::LoadContext { .. }
         | RequestCommand::CreateSession { .. }
         | RequestCommand::RenameSession { .. }
+        | RequestCommand::SetSessionArchived { .. }
         | RequestCommand::SubmitInput { .. }
         | RequestCommand::ExecuteLocalCommand { .. }
         | RequestCommand::CancelRun { .. }
@@ -555,6 +579,17 @@ async fn execute(
             .rename_session(*mutation_request_id, *session_id, display_name.clone())
             .await
             .map(|session| RequestResult::SessionRenamed {
+                mutation_request_id: *mutation_request_id,
+                session,
+            }),
+        RequestCommand::SetSessionArchived {
+            mutation_request_id,
+            session_id,
+            archived,
+        } => client
+            .set_session_archived(*mutation_request_id, *session_id, *archived)
+            .await
+            .map(|session| RequestResult::SessionArchiveChanged {
                 mutation_request_id: *mutation_request_id,
                 session,
             }),
@@ -763,6 +798,10 @@ enum RequestResult {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
     },
+    SessionArchiveChanged {
+        mutation_request_id: MutationRequestId,
+        session: SessionSummary,
+    },
     InputAccepted {
         mutation_request_id: MutationRequestId,
         accepted: SessionInputAcceptance,
@@ -814,6 +853,13 @@ impl RequestResult {
                 mutation_request_id,
                 session,
             } => RequestEvent::SessionRenamed {
+                mutation_request_id,
+                session,
+            },
+            Self::SessionArchiveChanged {
+                mutation_request_id,
+                session,
+            } => RequestEvent::SessionArchiveChanged {
                 mutation_request_id,
                 session,
             },
@@ -897,6 +943,7 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 | RequestCommand::LoadContext { .. } => None,
                 RequestCommand::CreateSession { .. }
                 | RequestCommand::RenameSession { .. }
+                | RequestCommand::SetSessionArchived { .. }
                 | RequestCommand::SubmitInput { .. }
                 | RequestCommand::ExecuteLocalCommand { .. }
                 | RequestCommand::CancelRun { .. }

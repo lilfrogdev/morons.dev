@@ -31,6 +31,7 @@ pub(super) enum PendingOperation {
     CreateSession,
     SubmitInput,
     RenameSession,
+    ArchiveSession,
     ExecuteLocalCommand,
     CancelRun,
     CancelLocalCommand,
@@ -65,6 +66,10 @@ pub(super) enum AppAction {
     RenameSession {
         session_id: SessionId,
         display_name: String,
+    },
+    SetSessionArchived {
+        session_id: SessionId,
+        archived: bool,
     },
     ShowContext {
         session_id: SessionId,
@@ -126,6 +131,14 @@ impl fmt::Debug for AppAction {
                 .debug_struct("RenameSession")
                 .field("session_id", session_id)
                 .field("display_name_bytes", &display_name.len())
+                .finish(),
+            Self::SetSessionArchived {
+                session_id,
+                archived,
+            } => formatter
+                .debug_struct("SetSessionArchived")
+                .field("session_id", session_id)
+                .field("archived", archived)
                 .finish(),
             Self::ShowContext {
                 session_id,
@@ -458,6 +471,17 @@ impl AppState {
     ) -> Result<(), UiStateError> {
         self.clear_pending();
         self.rename_dialog = None;
+        self.apply_event(ApplicationEvent::SessionChanged {
+            cursor: morons_protocol::SessionCatalogEventCursor::beginning(),
+            session,
+        })
+    }
+
+    pub(super) fn session_archive_applied(
+        &mut self,
+        session: SessionSummary,
+    ) -> Result<(), UiStateError> {
+        self.clear_pending();
         self.apply_event(ApplicationEvent::SessionChanged {
             cursor: morons_protocol::SessionCatalogEventCursor::beginning(),
             session,

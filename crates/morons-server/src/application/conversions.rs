@@ -451,6 +451,7 @@ pub(super) fn to_session_summary(session: Session) -> SessionSummary {
         id: ProtocolSessionId::from_bytes(*session.id.as_bytes()),
         display_name: session.display_name,
         working_directory: session.working_directory,
+        archived: session.archived,
         created_at_milliseconds: session.created_at_milliseconds,
     }
 }
@@ -472,6 +473,7 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::InvalidInput { .. } => ApplicationError::InvalidRequest,
         PersistenceError::RequestConflict => ApplicationError::RequestConflict,
         PersistenceError::SessionNotFound => ApplicationError::SessionNotFound,
+        PersistenceError::SessionArchived => ApplicationError::SessionArchived,
         PersistenceError::RunNotFound => ApplicationError::RunNotFound,
         PersistenceError::LocalCommandNotFound => ApplicationError::LocalCommandNotFound,
         PersistenceError::SessionBusy { active_run_id } => ApplicationError::SessionBusy {

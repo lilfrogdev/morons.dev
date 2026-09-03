@@ -260,6 +260,11 @@ pub enum ApplicationRequest {
         session_id: SessionId,
         display_name: String,
     },
+    SetSessionArchived {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        archived: bool,
+    },
     ListSessions {
         cursor: Option<SessionListCursor>,
         limit: u16,
@@ -361,6 +366,16 @@ impl fmt::Debug for ApplicationRequest {
                 .field("mutation_request_id", mutation_request_id)
                 .field("session_id", session_id)
                 .field("display_name_bytes", &display_name.len())
+                .finish(),
+            Self::SetSessionArchived {
+                mutation_request_id,
+                session_id,
+                archived,
+            } => formatter
+                .debug_struct("SetSessionArchived")
+                .field("mutation_request_id", mutation_request_id)
+                .field("session_id", session_id)
+                .field("archived", archived)
                 .finish(),
             Self::ListSessions { cursor, limit } => formatter
                 .debug_struct("ListSessions")
@@ -506,6 +521,9 @@ pub enum ApplicationResponse {
         session: SessionSummary,
     },
     SessionRenamed {
+        session: SessionSummary,
+    },
+    SessionArchiveChanged {
         session: SessionSummary,
     },
     SessionsListed {
@@ -735,6 +753,7 @@ pub struct SessionSummary {
     pub id: SessionId,
     pub display_name: Option<String>,
     pub working_directory: Option<String>,
+    pub archived: bool,
     pub created_at_milliseconds: u64,
 }
 
@@ -771,6 +790,7 @@ pub enum ApplicationError {
     InvalidRequest,
     RequestConflict,
     SessionNotFound,
+    SessionArchived,
     RunNotFound,
     LocalCommandNotFound,
     SessionBusy {

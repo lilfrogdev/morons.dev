@@ -48,6 +48,7 @@ impl Backend {
         backend.recover_tool_operations()?;
         backend.recover_local_commands()?;
         backend.recover_nonterminal_runs()?;
+        backend.recover_session_archives()?;
         Ok(backend)
     }
 }

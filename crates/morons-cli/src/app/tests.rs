@@ -572,6 +572,30 @@ fn session_browser_rename_is_bounded_modal_and_redacted() {
 }
 
 #[test]
+fn session_browser_toggles_durable_archive_state() {
+    let (session, _) = fixture_session_and_run();
+    let session_id = session.id;
+    let mut app = AppState::new("test-server");
+    app.replace_sessions(vec![session])
+        .expect("session should be presented");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+        AppAction::SetSessionArchived {
+            session_id,
+            archived: true,
+        }
+    );
+    app.sessions[0].summary.archived = true;
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+        AppAction::SetSessionArchived {
+            session_id,
+            archived: false,
+        }
+    );
+}
+
+#[test]
 fn input_action_debug_omits_prompt_text() {
     let action = AppAction::SubmitInput {
         session_id: SessionId::from_bytes([0x55; 16]),
@@ -648,6 +672,7 @@ fn fixture_session_and_run() -> (SessionSummary, RunSummary) {
             id: session_id,
             display_name: Some("Test session".to_owned()),
             working_directory: None,
+            archived: false,
             created_at_milliseconds: 1,
         },
         run,

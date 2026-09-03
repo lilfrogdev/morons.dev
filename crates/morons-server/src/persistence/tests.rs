@@ -419,6 +419,141 @@ async fn session_renames_are_idempotent_durable_and_snapshot_consistent() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn session_archiving_is_idempotent_durable_and_snapshot_consistent() {
+    let root = TestRoot::new("session-archive");
+    let selected = TestRoot::new("session-archive-selected");
+    let sentinel = selected.path().join("must-remain.txt");
+    fs::write(&sentinel, "unchanged").expect("sentinel should be written");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    store
+        .create_session_at(
+            MutationRequestId::from_bytes([0x50; 16]),
+            Some("Leading".to_owned()),
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("leading session should be created");
+    let created = store
+        .create_session_at(
+            MutationRequestId::from_bytes([0x51; 16]),
+            Some("Subject".to_owned()),
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let snapshot = store
+        .list_sessions(None, 1)
+        .await
+        .expect("pre-archive snapshot should load");
+    let archived = store
+        .set_session_archived(MutationRequestId::from_bytes([0x52; 16]), created.id, true)
+        .await
+        .expect("session should archive");
+    assert!(archived.archived);
+    assert_eq!(archived.working_directory, created.working_directory);
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "unchanged");
+    assert_eq!(
+        store
+            .set_session_archived(MutationRequestId::from_bytes([0x52; 16]), created.id, true,)
+            .await
+            .expect("exact archive should retry"),
+        archived
+    );
+    assert!(matches!(
+        store
+            .set_session_archived(MutationRequestId::from_bytes([0x52; 16]), created.id, false,)
+            .await,
+        Err(PersistenceError::RequestConflict)
+    ));
+    assert!(matches!(
+        store
+            .accept_local_command(
+                MutationRequestId::from_bytes([0x53; 16]),
+                created.id,
+                "printf blocked".to_owned(),
+                true,
+            )
+            .await,
+        Err(PersistenceError::SessionArchived)
+    ));
+    let old_snapshot = store
+        .list_sessions(snapshot.next_cursor, 1)
+        .await
+        .expect("old snapshot should remain readable");
+    assert_eq!(old_snapshot.sessions.len(), 1);
+    assert!(!old_snapshot.sessions[0].archived);
+    let replay = store
+        .read_session_catalog_events(snapshot.catalog_cursor, 10)
+        .await
+        .expect("archive event should replay");
+    assert_eq!(replay.events.len(), 1);
+    assert!(replay.events[0].session.archived);
+    let restored = store
+        .set_session_archived(MutationRequestId::from_bytes([0x54; 16]), created.id, false)
+        .await
+        .expect("session should unarchive");
+    assert!(!restored.archived);
+    drop(store);
+
+    let reopened = SessionStore::open_at(root.path()).expect("session store should reopen");
+    assert!(
+        !reopened
+            .get_session(created.id)
+            .await
+            .expect("session should load")
+            .expect("session should exist")
+            .archived
+    );
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "unchanged");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn startup_completes_a_prepared_session_archive_without_external_effects() {
+    let root = TestRoot::new("prepared-session-archive");
+    let selected = TestRoot::new("prepared-session-archive-selected");
+    let sentinel = selected.path().join("sentinel");
+    fs::write(&sentinel, "keep").expect("sentinel should be written");
+    let session = {
+        let store = SessionStore::open_at(root.path()).expect("session store should open");
+        let session = store
+            .create_session_at(
+                MutationRequestId::from_bytes([0x55; 16]),
+                None,
+                selected.path().to_string_lossy().into_owned(),
+            )
+            .await
+            .expect("session should be created");
+        let (_, applied) = store
+            .prepare_session_archive(MutationRequestId::from_bytes([0x56; 16]), session.id, true)
+            .await
+            .expect("archive should prepare");
+        assert!(!applied);
+        assert!(matches!(
+            store
+                .accept_local_command(
+                    MutationRequestId::from_bytes([0x57; 16]),
+                    session.id,
+                    "printf blocked".to_owned(),
+                    true,
+                )
+                .await,
+            Err(PersistenceError::SessionArchived)
+        ));
+        session
+    };
+    let reopened = SessionStore::open_at(root.path()).expect("prepared archive should recover");
+    assert!(
+        reopened
+            .get_session(session.id)
+            .await
+            .expect("session should load")
+            .expect("session should exist")
+            .archived
+    );
+    assert_eq!(fs::read_to_string(sentinel).unwrap(), "keep");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn startup_does_not_inspect_obsolete_private_workspace_contents() {
     let root = TestRoot::new("obsolete-workspace-ignored");
     let session = {
@@ -1064,7 +1199,7 @@ fn schema_version_one_migrates_to_version_twelve() {
         .expect("version one database should install");
 
     let connection = database::open(&paths).expect("version one database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let mutation_operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -1136,7 +1271,7 @@ fn schema_version_two_migrates_to_version_twelve() {
         .expect("version two database should install");
 
     let connection = database::open(&paths).expect("version two database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -1188,7 +1323,7 @@ fn schema_version_three_migrates_to_version_twelve() {
         .expect("version three database should install");
 
     let connection = database::open(&paths).expect("version three database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let stop_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'server_stop_requests'",
@@ -1233,7 +1368,7 @@ fn schema_version_four_migrates_to_version_twelve() {
         .expect("version four database should install");
 
     let connection = database::open(&paths).expect("version four database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let import_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1282,7 +1417,7 @@ fn schema_version_five_migrates_to_version_twelve() {
         .expect("version five database should install");
 
     let connection = database::open(&paths).expect("version five database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let tool_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'tool_calls'",
@@ -1327,7 +1462,7 @@ fn schema_version_six_migrates_to_version_twelve() {
         .expect("version six database should install");
 
     let connection = database::open(&paths).expect("version six database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let image_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1374,7 +1509,7 @@ fn schema_version_seven_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version seven database should install");
     let connection = database::open(&paths).expect("version seven database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let generation_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1422,7 +1557,7 @@ fn schema_version_eight_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version eight database should install");
     let connection = database::open(&paths).expect("version eight database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let column: String = connection
         .query_row(
             "SELECT name FROM pragma_table_info('run_accepted_facts')
@@ -1470,7 +1605,7 @@ fn schema_version_nine_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version nine database should install");
     let connection = database::open(&paths).expect("version nine database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let mode_version: String = connection
         .query_row(
             "SELECT name FROM pragma_table_info('repository_import_requests')
@@ -1519,7 +1654,7 @@ fn schema_version_ten_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version ten database should install");
     let connection = database::open(&paths).expect("version ten database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     for table in [
         "session_creation_requests",
         "session_created_facts",
@@ -1575,7 +1710,7 @@ fn schema_version_twelve_migrates_to_version_thirteen() {
         .install_database(&initialization_path)
         .expect("version twelve database should install");
     let connection = database::open(&paths).expect("version twelve database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
     let sql: String = connection
         .query_row(
             "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'tool_calls'",
@@ -1626,7 +1761,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     let connection =
         Connection::open(&database_path).expect("database should open for test change");
     connection
-        .execute_batch("PRAGMA user_version = 21;")
+        .execute_batch("PRAGMA user_version = 22;")
         .expect("test schema version should change");
     drop(connection);
 
@@ -1634,7 +1769,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
 
     let connection = Connection::open(database_path).expect("database should remain readable");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 21);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 22);
 }
 
 #[tokio::test(flavor = "current_thread")]

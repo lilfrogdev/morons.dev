@@ -21,8 +21,9 @@ use self::{
     runs::RunWorkerRequest,
     types::{
         MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE,
-        REQUEST_FINGERPRINT_BYTES, create_session_with_directory_fingerprint,
-        rename_session_fingerprint, validate_display_name, validate_working_directory_path,
+        REQUEST_FINGERPRINT_BYTES, archive_session_fingerprint,
+        create_session_with_directory_fingerprint, rename_session_fingerprint,
+        validate_display_name, validate_working_directory_path,
     },
 };
 
@@ -184,6 +185,67 @@ impl SessionStore {
                 fingerprint,
                 session_id,
                 display_name,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    #[cfg(test)]
+    pub async fn set_session_archived(
+        &self,
+        request_id: MutationRequestId,
+        session_id: SessionId,
+        archived: bool,
+    ) -> Result<Session, PersistenceError> {
+        let (session, applied) = self
+            .prepare_session_archive(request_id, session_id, archived)
+            .await?;
+        if applied {
+            return Ok(session);
+        }
+        self.complete_session_archive(request_id).await
+    }
+
+    pub(crate) async fn prepare_session_archive(
+        &self,
+        request_id: MutationRequestId,
+        session_id: SessionId,
+        archived: bool,
+    ) -> Result<(Session, bool), PersistenceError> {
+        if request_id.is_zero() {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a mutation request identifier must not be all zeroes",
+            });
+        }
+        let fingerprint = archive_session_fingerprint(session_id, archived);
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::PrepareSessionArchive {
+                request_id,
+                fingerprint,
+                session_id,
+                archived,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub(crate) async fn complete_session_archive(
+        &self,
+        request_id: MutationRequestId,
+    ) -> Result<Session, PersistenceError> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::CompleteSessionArchive {
+                request_id,
                 response: response_sender,
             })
             .await
@@ -433,6 +495,17 @@ enum WorkerRequest {
         display_name: String,
         response: oneshot::Sender<Result<Session, PersistenceError>>,
     },
+    PrepareSessionArchive {
+        request_id: MutationRequestId,
+        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
+        session_id: SessionId,
+        archived: bool,
+        response: oneshot::Sender<Result<(Session, bool), PersistenceError>>,
+    },
+    CompleteSessionArchive {
+        request_id: MutationRequestId,
+        response: oneshot::Sender<Result<Session, PersistenceError>>,
+    },
     Run(RunWorkerRequest),
     StopServer {
         request_id: MutationRequestId,
@@ -485,6 +558,7 @@ fn run_worker(
     event_notifications: watch::Sender<u64>,
 ) {
     while let Some(request) = receiver.blocking_recv() {
+        let mut force_event_notification = false;
         match request {
             WorkerRequest::LocalCommand(request) => request.execute(&mut backend),
             WorkerRequest::CreateSession {
@@ -514,6 +588,28 @@ fn run_worker(
                     session_id,
                     display_name,
                 ));
+            }
+            WorkerRequest::PrepareSessionArchive {
+                request_id,
+                fingerprint,
+                session_id,
+                archived,
+                response,
+            } => {
+                let _ = response.send(backend.prepare_session_archive(
+                    request_id,
+                    fingerprint,
+                    session_id,
+                    archived,
+                ));
+            }
+            WorkerRequest::CompleteSessionArchive {
+                request_id,
+                response,
+            } => {
+                let result = backend.complete_session_archive(request_id);
+                force_event_notification = result.is_ok();
+                let _ = response.send(result);
             }
             WorkerRequest::Run(request) => request.execute(&mut backend),
             WorkerRequest::StopServer {
@@ -587,14 +683,20 @@ fn run_worker(
         }
         match backend.delivery_event_high_water() {
             Ok(high_water) => {
-                event_notifications.send_if_modified(|current| {
-                    if high_water > *current {
-                        *current = high_water;
-                        true
-                    } else {
-                        false
-                    }
-                });
+                if force_event_notification {
+                    // Archive acceptance reserves its catalog sequence before active work stops.
+                    // Completion can therefore add an event below the global delivery high water.
+                    event_notifications.send_replace(high_water);
+                } else {
+                    event_notifications.send_if_modified(|current| {
+                        if high_water > *current {
+                            *current = high_water;
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                }
             }
             Err(error) => eprintln!("delivery event notification failed: {error}"),
         }

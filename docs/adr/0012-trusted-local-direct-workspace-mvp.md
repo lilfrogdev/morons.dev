@@ -173,6 +173,8 @@ Direct local effects do not create the old workspace-generation uncertainty bloc
 
 The MVP retains one nonterminal top-level run per session, exact-run cancellation, background execution independent of client attachment, bounded subscriptions, complete assistant-message commits, and ephemeral text deltas. It prefers ordinary session and transcript records over extending full fact/projection machinery to every local operation.
 
+Archiving is an idempotent durable lifecycle mutation with a prepared and applied boundary. Preparing an archive blocks new model runs and local commands, durably requests cancellation of active work, terminates the session's temporary IPython runtime after work stops, and only then publishes the archived catalog state. Startup completes a prepared archive after normal command and run recovery without inspecting or modifying the selected directory. Unarchiving changes only Morons-owned session metadata.
+
 ## Implementation sequence
 
 The architecture reset is implemented in narrow changes:

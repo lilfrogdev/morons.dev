@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -43,6 +43,7 @@ const SCHEMA_V17: &str = include_str!("../schema_v17.sql");
 const SCHEMA_V18: &str = include_str!("../schema_v18.sql");
 const SCHEMA_V19: &str = include_str!("../schema_v19.sql");
 const SCHEMA_V20: &str = include_str!("../schema_v20.sql");
+const SCHEMA_V21: &str = include_str!("../schema_v21.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -107,6 +108,8 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("session_entries_user_by_run", "index"),
     ("session_rename_requests", "table"),
     ("session_rename_requests_by_session", "index"),
+    ("session_archive_requests", "table"),
+    ("session_archive_requests_by_session", "index"),
     ("session_run_states", "table"),
     ("sessions", "table"),
     ("sessions_by_creation", "index"),
@@ -184,6 +187,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V18)?;
     connection.execute_batch(SCHEMA_V19)?;
     connection.execute_batch(SCHEMA_V20)?;
+    connection.execute_batch(SCHEMA_V21)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -294,6 +298,7 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (18, SCHEMA_V18),
         (19, SCHEMA_V19),
         (20, SCHEMA_V20),
+        (21, SCHEMA_V21),
     ] {
         if version > schema_version {
             migrate_schema(connection, schema)?;

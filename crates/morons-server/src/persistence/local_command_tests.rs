@@ -225,6 +225,64 @@ async fn application_command_mode_executes_in_the_selected_directory_and_publish
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn archiving_stops_active_commands_without_touching_the_selected_directory() {
+    let state = TestRoot::new("archive-command-state");
+    let selected = TestRoot::new("archive-command-selected");
+    let sentinel = selected.path().join("sentinel");
+    fs::write(&sentinel, "keep").expect("sentinel should be written");
+    let store = SessionStore::open_for_test(state.path()).expect("session store should open");
+    let session = store
+        .create_session_at(
+            MutationRequestId::from_bytes([0x61; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let session_id = ProtocolSessionId::from_bytes(*session.id.as_bytes());
+    let application = ServerApplication::from_session_store(store);
+    application
+        .execute_for_local_owner(ApplicationRequest::ExecuteLocalCommand {
+            mutation_request_id: ProtocolMutationRequestId::from_bytes([0x62; 16]),
+            session_id,
+            command: "(sleep 2; printf leaked > leaked) & wait".to_owned(),
+            context_visible: true,
+        })
+        .await
+        .expect("local command should be accepted");
+    let outcome = application
+        .execute_for_local_owner(ApplicationRequest::SetSessionArchived {
+            mutation_request_id: ProtocolMutationRequestId::from_bytes([0x63; 16]),
+            session_id,
+            archived: true,
+        })
+        .await
+        .expect("archive should stop active work and complete");
+    assert!(matches!(
+        outcome,
+        ApplicationOutcome::Response(ApplicationResponse::SessionArchiveChanged {
+            session: morons_protocol::SessionSummary { archived: true, .. }
+        })
+    ));
+    time::sleep(Duration::from_millis(300)).await;
+    assert!(!selected.path().join("leaked").exists());
+    assert_eq!(fs::read_to_string(sentinel).unwrap(), "keep");
+    let rejected = application
+        .execute_for_local_owner(ApplicationRequest::ExecuteLocalCommand {
+            mutation_request_id: ProtocolMutationRequestId::from_bytes([0x64; 16]),
+            session_id,
+            command: "printf should-not-run".to_owned(),
+            context_visible: true,
+        })
+        .await;
+    assert!(matches!(
+        rejected,
+        Err(morons_protocol::ApplicationError::SessionArchived)
+    ));
+    application.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn local_command_cancellation_stops_descendants_and_commits_interruption() {
     let state = TestRoot::new("command-cancel-state");
     let selected = TestRoot::new("command-cancel-selected");

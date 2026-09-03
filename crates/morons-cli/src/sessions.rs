@@ -173,6 +173,7 @@ fn write_application_error(
             formatter.write_str("mutation request identifier conflicts with prior input")
         }
         ApplicationError::SessionNotFound => formatter.write_str("session was not found"),
+        ApplicationError::SessionArchived => formatter.write_str("session is archived"),
         ApplicationError::RunNotFound => formatter.write_str("run was not found"),
         ApplicationError::LocalCommandNotFound => {
             formatter.write_str("local command was not found")
@@ -464,6 +465,32 @@ where
         };
         if session.id != session_id
             || session.display_name.as_deref() != Some(&display_name)
+            || !valid_session_summary(&session)
+        {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(session)
+    }
+
+    pub async fn set_session_archived(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        archived: bool,
+    ) -> Result<SessionSummary, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::SetSessionArchived {
+                mutation_request_id,
+                session_id,
+                archived,
+            })
+            .await?;
+        let ApplicationResponse::SessionArchiveChanged { session } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        if session.id != session_id
+            || session.archived != archived
             || !valid_session_summary(&session)
         {
             self.usable = false;
