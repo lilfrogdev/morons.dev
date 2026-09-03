@@ -1,12 +1,35 @@
 use morons_protocol::{MAX_OPENCODE_API_KEY_BYTES, WorkspaceBlockReason};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::{AppAction, AppState, CredentialDialog, View};
+use super::{AppAction, AppState, CredentialDialog, InformationDialog, View};
 use crate::terminal::CredentialBuffer;
 
 impl AppState {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> AppAction {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            return AppAction::None;
+        }
+        if let Some(dialog) = self.information_dialog {
+            return match (dialog, key.code) {
+                (InformationDialog::TrustNotice, KeyCode::Enter) => {
+                    self.information_dialog = None;
+                    self.set_status(
+                        "Trusted-local mode acknowledged · press ? for safety and usage help",
+                    );
+                    AppAction::None
+                }
+                (InformationDialog::TrustNotice, KeyCode::Char('q') | KeyCode::Esc) => {
+                    AppAction::Quit
+                }
+                (InformationDialog::Help, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?')) => {
+                    self.information_dialog = None;
+                    AppAction::None
+                }
+                _ => AppAction::None,
+            };
+        }
+        if key.code == KeyCode::Char('?') {
+            self.information_dialog = Some(InformationDialog::Help);
             return AppAction::None;
         }
         if self.pending_unknown {
@@ -336,6 +359,11 @@ impl AppState {
             return AppAction::None;
         };
         let prompt = self.prompt.as_str();
+        if prompt == "/help" {
+            self.prompt.clear();
+            self.information_dialog = Some(InformationDialog::Help);
+            return AppAction::None;
+        }
         if prompt == "/context" {
             let Some(model) = self.selected_model() else {
                 self.set_status("No reviewed model is currently available");

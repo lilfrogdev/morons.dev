@@ -10,7 +10,8 @@ use ratatui::{
 };
 
 use super::{
-    AppState, CredentialDialog, PendingOperation, PresentedModel, SessionView, View, tool_label,
+    AppState, CredentialDialog, InformationDialog, PendingOperation, PresentedModel, SessionView,
+    View, tool_label,
 };
 use crate::terminal::SafeText;
 
@@ -38,6 +39,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
     }
     if let Some(dialog) = app.credential_dialog.as_ref() {
         render_credential_dialog(frame, area, dialog);
+    }
+    if let Some(dialog) = app.information_dialog {
+        render_information_dialog(frame, area, dialog);
     }
 }
 
@@ -359,6 +363,36 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     frame.render_widget(
         Paragraph::new(vec![Line::from(help), status]).style(Style::default().fg(Color::DarkGray)),
         area,
+    );
+}
+
+fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: InformationDialog) {
+    let (title, message, width, height) = match dialog {
+        InformationDialog::TrustNotice => (
+            " Trusted-local authority ",
+            "Morons is not a sandbox. The model can read, change, delete, or disclose anything available to your user account through file, Bash, Python, network, Git, credentials, and agent access. Cancellation cannot undo completed effects.\n\nFor containment, run the complete Morons application inside a container, VM, or restricted OS account.\n\nEnter acknowledge · q/Esc exit",
+            78,
+            12,
+        ),
+        InformationDialog::Help => (
+            " Help and safety ",
+            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            88,
+            15,
+        ),
+    };
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(area.width.min(width)) / 2,
+        y: area.y + area.height.saturating_sub(area.height.min(height)) / 2,
+        width: area.width.min(width),
+        height: area.height.min(height),
+    };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(message)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: false }),
+        popup,
     );
 }
 
