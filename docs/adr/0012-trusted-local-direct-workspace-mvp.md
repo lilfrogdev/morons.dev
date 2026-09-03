@@ -28,7 +28,7 @@ The application displays this posture during onboarding and makes it available i
 
 Morons does not add a user-facing PTY, interactive subprocess terminal, SSH server, raw server console, editor, marketplace runtime, arbitrary privileged proxy, or plugin execution framework. Shell commands are noninteractive operations with closed standard input and bounded captured output.
 
-Subagents are outside the MVP. A later decision may add independently bounded contexts and concurrent subagents that share the selected working directory. It must not reintroduce managed worktrees merely to provide subagent isolation.
+ADR 0013 adds bounded batched subagents to the MVP. They use independently bounded contexts, share the selected working directory, and do not reintroduce managed worktrees or imply subagent isolation.
 
 ### Direct working directories
 
@@ -59,7 +59,8 @@ The MVP model tool catalog contains exactly these small built-ins:
 - `edit`: apply bounded exact, unique, nonoverlapping text replacements;
 - `bash`: execute one bounded noninteractive shell command in the selected directory;
 - `web_search`: return bounded cited search results through a reviewed search adapter; and
-- `ipython`: execute a bounded cell in the session's persistent IPython kernel.
+- `ipython`: execute a bounded cell in the session's persistent IPython kernel; and
+- `task`: run one to three focused child agents concurrently with an explicit shared-context handoff.
 
 Tool names are stable provider-facing names. Inputs and results use strict bounded schemas. Tool output is committed before it is used in a later provider turn. Tool definitions, prompts, and model annotations are usability contracts, not security boundaries.
 
@@ -155,7 +156,7 @@ Tool and command results are bounded before entering history or context. `!!` co
 
 The Ratatui client provides `/context`, `/compact`, and `/compact <instructions>`. `/context` asks the server to estimate the current projection against the selected reviewed model, reports the input limit, seventy-percent threshold, reserved input and output capacity, and newest checkpoint, and updates the status-view context meter. A manual compaction is a durable server-owned model run: the slash text is retained in canonical owner history, an eligible old prefix is summarized even below the automatic threshold, optional instructions are bounded untrusted summary emphasis, and the selected model then continues the turn against the new checkpoint. At least the two newest prior user turns remain verbatim, so a session with no older complete prefix has nothing to summarize. Compaction thresholds and estimators are versioned server policy rather than user-tunable MVP settings.
 
-No embeddings, vector database, cross-session memory, automatic project memory, session branching, or subagent context exists in the MVP.
+No embeddings, vector database, cross-session memory, automatic project memory, or session branching exists in the MVP. ADR 0013's child contexts are ephemeral, explicit, parent-scoped handoffs rather than hidden or cross-session memory.
 
 ### Ordinary Git and development workflows
 
@@ -188,7 +189,8 @@ The architecture reset is implemented in narrow changes:
 5. add persistent session IPython and bounded `web_search`;
 6. add Agent Skills discovery, `@` invocation, and the bundled skill creator;
 7. add durable clipboard, drag-and-drop, path, and `read` image input plus provider multimodal mapping; and
-8. add automatic and manual context compaction and context status.
+8. add automatic and manual context compaction and context status; and
+9. add the bounded batched `task` subagent tool defined by ADR 0013.
 
 Each removal or addition receives the narrowest relevant unit, integration, platform, and security-boundary tests. Native release claims continue to require the target coverage selected in ADR 0007.
 

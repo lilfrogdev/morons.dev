@@ -958,6 +958,213 @@ async fn exact_skill_invocation_binds_full_instructions_while_catalog_stays_prog
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
+    let root = TestRoot::new("subagent-tool-loop");
+    let selected = TestRoot::new("subagent-tool-directory");
+    fs::write(selected.path().join("alpha.txt"), "alpha source\n")
+        .expect("subagent fixture file should be written");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x74; 16]),
+            0,
+            b"not-a-real-subagent-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session_at(
+            PersistenceMutationRequestId::from_bytes([0x75; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let (base, requests, provider_task) = spawn_subagent_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let session_id = SessionId::from_bytes(*session.id.as_bytes());
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x76; 16]),
+            session_id,
+            text: "Delegate two independent checks.".to_owned(),
+            attachments: Vec::new(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("subagent run should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run");
+    };
+    assert_eq!(
+        wait_for_terminal(&application, session_id, run.id).await,
+        RunState::Succeeded
+    );
+    provider_task
+        .await
+        .expect("subagent provider fixture should finish");
+    let requests = requests.await.expect("requests should be captured");
+    assert_eq!(requests.len(), 5);
+    assert!(requests[0].contains("\"name\":\"task\""));
+    assert!(
+        requests[1..3]
+            .iter()
+            .all(|request| request.contains("Shared context:"))
+    );
+    assert!(
+        requests[1..3]
+            .iter()
+            .all(|request| !request.contains("Delegate two independent checks."))
+    );
+    assert!(
+        requests[1..3]
+            .iter()
+            .all(|request| !request.contains("\"name\":\"task\""))
+    );
+    assert!(
+        requests[1..3]
+            .iter()
+            .all(|request| !request.contains("\"name\":\"ipython\""))
+    );
+    assert!(requests[3].contains("function_call_output"));
+    assert!(requests[3].contains("alpha source"));
+    assert!(requests[4].contains("alpha report"));
+    assert!(requests[4].contains("beta report"));
+    assert!(
+        requests[4]
+            .find("alpha report")
+            .zip(requests[4].find("beta report"))
+            .is_some_and(|(alpha, beta)| alpha < beta)
+    );
+    let headers = requests
+        .iter()
+        .map(|request| request_header(request, "x-opencode-session"))
+        .collect::<Vec<_>>();
+    let alpha_index = if requests[1].contains("alpha report") {
+        1
+    } else {
+        2
+    };
+    let beta_index = if alpha_index == 1 { 2 } else { 1 };
+    assert_eq!(headers[0], headers[4]);
+    assert_eq!(headers[alpha_index], headers[3]);
+    assert_ne!(headers[0], headers[alpha_index]);
+    assert_ne!(headers[0], headers[beta_index]);
+    assert_ne!(headers[alpha_index], headers[beta_index]);
+
+    let mut cursor = None;
+    let mut entries = Vec::new();
+    loop {
+        let outcome = application
+            .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+                session_id,
+                cursor,
+                limit: 1,
+            })
+            .await
+            .expect("subagent transcript should page");
+        let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+            entries: page,
+            next_cursor,
+            ..
+        }) = outcome
+        else {
+            panic!("transcript should return a page");
+        };
+        entries.extend(page);
+        let Some(next) = next_cursor else { break };
+        cursor = Some(next);
+    }
+    assert_eq!(entries.len(), 4);
+    assert!(matches!(
+        &entries[1],
+        morons_protocol::TranscriptEntry::ToolCall {
+            tool: morons_protocol::ToolKind::Task,
+            path,
+            ..
+        } if path == "2 subagent tasks"
+    ));
+    assert!(matches!(
+        &entries[2],
+        morons_protocol::TranscriptEntry::ToolResult {
+            tool: morons_protocol::ToolKind::Task,
+            status: morons_protocol::ToolResultStatus::Succeeded,
+            summary,
+            ..
+        } if summary.find("alpha report").zip(summary.find("beta report"))
+            .is_some_and(|(alpha, beta)| alpha < beta)
+    ));
+    application.shutdown().await;
+    drop(application);
+    SessionStore::open_for_test(root.path()).expect("durable subagent result should reopen");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_a_parent_run_stops_its_subagent_batch() {
+    let root = TestRoot::new("subagent-cancellation");
+    let selected = TestRoot::new("subagent-cancellation-directory");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x77; 16]),
+            0,
+            b"not-a-real-subagent-cancellation-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session_at(
+            PersistenceMutationRequestId::from_bytes([0x78; 16]),
+            None,
+            selected.path().to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("session should be created");
+    let (base, child_dispatched, provider_task) = spawn_stalled_subagent_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let session_id = SessionId::from_bytes(*session.id.as_bytes());
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x79; 16]),
+            session_id,
+            text: "Delegate a stalled check.".to_owned(),
+            attachments: Vec::new(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("subagent run should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run");
+    };
+    time::timeout(Duration::from_secs(5), child_dispatched)
+        .await
+        .expect("child should dispatch")
+        .expect("child dispatch should be observed");
+    application
+        .execute_for_local_owner(ApplicationRequest::CancelRun {
+            mutation_request_id: MutationRequestId::from_bytes([0x7a; 16]),
+            session_id,
+            run_id: run.id,
+        })
+        .await
+        .expect("parent cancellation should be accepted");
+    assert_eq!(
+        wait_for_terminal(&application, session_id, run.id).await,
+        RunState::Cancelled
+    );
+    provider_task
+        .await
+        .expect("stalled child provider fixture should finish");
+    application.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn direct_tool_loop_reads_edits_runs_bash_and_commits_durable_results() {
     let root = TestRoot::new("direct-tool-loop");
     let selected = TestRoot::new("direct-tool-directory");
@@ -1719,6 +1926,190 @@ async fn spawn_successful_provider() -> (
         complete_sender,
         server,
     )
+}
+
+async fn spawn_stalled_subagent_provider()
+-> (String, oneshot::Receiver<()>, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("stalled subagent provider should bind");
+    let address = listener
+        .local_addr()
+        .expect("stalled subagent provider should have an address");
+    let (dispatched_sender, dispatched_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let task_arguments = r#"{"context":"Wait for the scoped check.","tasks":[{"task":"Wait for provider output."}]}"#;
+        let task_output = format!(
+            "{{\"id\":\"fc_stalled_task\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_stalled_task\",\"name\":\"task\",\"arguments\":{}}}",
+            serde_json::to_string(task_arguments).expect("task arguments should encode")
+        );
+        let (mut parent, _) = listener.accept().await.expect("parent should connect");
+        let _ = read_http_request(&mut parent).await;
+        write_provider_output(&mut parent, "resp_stalled_parent", &task_output).await;
+
+        let (mut child, _) = listener.accept().await.expect("child should connect");
+        let request = String::from_utf8(read_http_request(&mut child).await)
+            .expect("child request should be UTF-8");
+        assert!(request.contains("Wait for provider output."));
+        let initial = "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_stalled_child\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"muse-spark-1.2\"}}\n\n";
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 1000000\r\nConnection: close\r\n\r\n";
+        child
+            .write_all(headers.as_bytes())
+            .await
+            .expect("stalled headers should write");
+        child
+            .write_all(initial.as_bytes())
+            .await
+            .expect("stalled event should write");
+        dispatched_sender
+            .send(())
+            .unwrap_or_else(|_| panic!("child dispatch should be observed"));
+        let mut byte = [0_u8; 1];
+        let read = time::timeout(Duration::from_secs(5), child.read(&mut byte))
+            .await
+            .expect("parent cancellation should close the child stream")
+            .expect("child stream read should succeed");
+        assert_eq!(read, 0);
+    });
+    (format!("http://{address}"), dispatched_receiver, server)
+}
+
+async fn spawn_subagent_provider() -> (
+    String,
+    oneshot::Receiver<Vec<String>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("subagent provider fixture should bind");
+    let address = listener
+        .local_addr()
+        .expect("subagent provider should have an address");
+    let (requests_sender, requests_receiver) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let task_arguments = r#"{"context":"Inspect independently and report only findings.","tasks":[{"name":"alpha","task":"Return the exact words alpha report."},{"name":"beta","task":"Return the exact words beta report."}]}"#;
+        let task_output = format!(
+            "{{\"id\":\"fc_task\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_task\",\"name\":\"task\",\"arguments\":{}}}",
+            serde_json::to_string(task_arguments).expect("task arguments should encode")
+        );
+        let mut captured = Vec::new();
+
+        let (mut parent, _) = listener.accept().await.expect("parent should connect");
+        captured.push(
+            String::from_utf8(read_http_request(&mut parent).await)
+                .expect("parent request should be UTF-8"),
+        );
+        write_provider_output(&mut parent, "resp_parent_task", &task_output).await;
+
+        let mut pending_children = Vec::new();
+        for child_number in 1..=2 {
+            let (mut child, _) = time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .expect("both children should dispatch before either response completes")
+                .expect("child should connect");
+            let request = String::from_utf8(read_http_request(&mut child).await)
+                .expect("child request should be UTF-8");
+            let output = if request.contains("alpha report") {
+                let arguments = r#"{"path":"alpha.txt","offset":1,"limit":10}"#;
+                format!(
+                    "{{\"id\":\"fc_child_read\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_child_read\",\"name\":\"read\",\"arguments\":{}}}",
+                    serde_json::to_string(arguments).expect("read arguments should encode")
+                )
+            } else if request.contains("beta report") {
+                format!(
+                    "{{\"id\":\"msg_child_{child_number}\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"beta report\",\"annotations\":[]}}]}}"
+                )
+            } else {
+                panic!("child request should contain one scoped assignment")
+            };
+            captured.push(request);
+            let body = provider_output_body(&format!("resp_child_{child_number}"), &output);
+            write_provider_headers(&mut child, body.len()).await;
+            pending_children.push((child, body));
+        }
+        for (mut child, body) in pending_children {
+            child
+                .write_all(body.as_bytes())
+                .await
+                .expect("child provider response should write");
+            child
+                .shutdown()
+                .await
+                .expect("child provider response should close");
+        }
+
+        let (mut child_final, _) = listener
+            .accept()
+            .await
+            .expect("child continuation should connect");
+        captured.push(
+            String::from_utf8(read_http_request(&mut child_final).await)
+                .expect("child continuation should be UTF-8"),
+        );
+        let alpha_output = "{\"id\":\"msg_child_alpha\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"alpha report\",\"annotations\":[]}]}";
+        write_provider_output(&mut child_final, "resp_child_alpha", alpha_output).await;
+
+        let (mut parent_final, _) = listener
+            .accept()
+            .await
+            .expect("parent continuation should connect");
+        captured.push(
+            String::from_utf8(read_http_request(&mut parent_final).await)
+                .expect("parent continuation should be UTF-8"),
+        );
+        let final_output = "{\"id\":\"msg_parent_final\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"Both checks completed.\",\"annotations\":[]}]}";
+        write_provider_output(&mut parent_final, "resp_parent_final", final_output).await;
+        requests_sender
+            .send(captured)
+            .unwrap_or_else(|_| panic!("subagent requests should be observed"));
+    });
+    (format!("http://{address}"), requests_receiver, server)
+}
+
+async fn write_provider_output(
+    stream: &mut tokio::net::TcpStream,
+    response_id: &str,
+    output: &str,
+) {
+    let body = provider_output_body(response_id, output);
+    write_provider_headers(stream, body.len()).await;
+    stream
+        .write_all(body.as_bytes())
+        .await
+        .expect("provider response should write");
+    stream
+        .shutdown()
+        .await
+        .expect("provider response should close");
+}
+
+fn provider_output_body(response_id: &str, output: &str) -> String {
+    format!(
+        "event: response.created\ndata: {{\"type\":\"response.created\",\"sequence_number\":0,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"status\":\"in_progress\",\"model\":\"muse-spark-1.2\"}}}}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{{\"id\":\"{response_id}\",\"object\":\"response\",\"model\":\"muse-spark-1.2\",\"status\":\"completed\",\"output\":[{output}],\"usage\":{{\"input_tokens\":8,\"input_tokens_details\":{{\"cached_tokens\":0}},\"output_tokens\":3,\"output_tokens_details\":{{\"reasoning_tokens\":0}},\"total_tokens\":11}}}}}}\n\ndata: [DONE]\n\n"
+    )
+}
+
+async fn write_provider_headers(stream: &mut tokio::net::TcpStream, content_length: usize) {
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+    );
+    stream
+        .write_all(headers.as_bytes())
+        .await
+        .expect("provider response headers should write");
+}
+
+fn request_header(request: &str, name: &str) -> String {
+    let prefix = format!("{}:", name.to_ascii_lowercase());
+    request
+        .lines()
+        .find_map(|line| {
+            let lowercase = line.to_ascii_lowercase();
+            lowercase
+                .strip_prefix(&prefix)
+                .map(|_| line[prefix.len()..].trim().to_owned())
+        })
+        .unwrap_or_else(|| panic!("request should contain {name}"))
 }
 
 async fn spawn_direct_tool_loop_provider() -> (

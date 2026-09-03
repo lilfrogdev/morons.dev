@@ -1259,6 +1259,7 @@ const fn tool_label(tool: morons_protocol::ToolKind) -> &'static str {
         morons_protocol::ToolKind::Bash => "bash",
         morons_protocol::ToolKind::WebSearch => "web_search",
         morons_protocol::ToolKind::Ipython => "ipython",
+        morons_protocol::ToolKind::Task => "task",
     }
 }
 

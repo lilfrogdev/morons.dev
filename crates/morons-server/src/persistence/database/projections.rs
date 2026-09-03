@@ -21,7 +21,7 @@ use crate::persistence::{
 };
 use crate::tools::{
     ToolErrorKind, ToolInput, ToolKind, ToolResult, recovery_plan_is_valid, tool_path_digest,
-    validate_canonical_input, validate_canonical_result,
+    validate_canonical_input, validate_canonical_result, validate_canonical_result_for_input,
 };
 
 pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError> {
@@ -1598,7 +1598,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                        AND image.state = 2
                  ))
                 OR
-                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7)
+                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8)
                  AND accepted.tool_limits_version = accepted.tool_catalog_version
                  AND accepted.execution_image_generation IS NULL
                  AND EXISTS (
@@ -1612,11 +1612,12 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
                OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
-               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7))
-               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7))
-               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7))
-               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7))
-               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7))
+               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7, 8))
+               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7, 8))
+               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7, 8))
+               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7, 8))
+               OR (call.tool_kind = 14 AND run.tool_catalog_version != 8)
+               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7, 8))
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id
@@ -1796,7 +1797,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             )
         } else if matches!(
             tool_kind,
-            ToolKind::Write | ToolKind::Edit | ToolKind::Bash | ToolKind::Ipython
+            ToolKind::Write | ToolKind::Edit | ToolKind::Bash | ToolKind::Ipython | ToolKind::Task
         ) {
             plan.is_none()
         } else if tool_kind.is_mutation() {
@@ -1812,7 +1813,8 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
     }
 
     let mut statement = connection.prepare(
-        "SELECT terminal.fact_kind, terminal.result_status, terminal.result_payload, call.tool_kind
+        "SELECT terminal.fact_kind, terminal.result_status, terminal.result_payload,
+                call.tool_kind, call.input_payload
          FROM tool_operation_facts AS terminal
          JOIN tool_calls AS call ON call.call_id = terminal.call_id
          WHERE terminal.fact_kind BETWEEN 3 AND 6",
@@ -1824,10 +1826,11 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                 row.get::<_, i64>(1)?,
                 row.get::<_, Vec<u8>>(2)?,
                 row.get::<_, i64>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    for (fact_kind, result_status, payload, tool_kind) in results {
+    for (fact_kind, result_status, payload, tool_kind, input_payload) in results {
         let result: ToolResult =
             serde_json::from_slice(&payload).map_err(|_| PersistenceError::InvalidState {
                 reason: "a canonical tool result has an invalid typed payload",
@@ -1835,7 +1838,12 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
         let tool_kind = ToolKind::from_record(tool_kind).ok_or(PersistenceError::InvalidState {
             reason: "a canonical tool result has an invalid tool kind",
         })?;
-        let valid = validate_canonical_result(tool_kind, &result)
+        let input: ToolInput =
+            serde_json::from_slice(&input_payload).map_err(|_| PersistenceError::InvalidState {
+                reason: "a canonical tool result has an invalid call input",
+            })?;
+        let valid = input.kind() == tool_kind
+            && validate_canonical_result_for_input(&input, &result)
             && match result {
                 ToolResult::Ok { .. } => fact_kind == 3 && result_status == 1,
                 ToolResult::Error {

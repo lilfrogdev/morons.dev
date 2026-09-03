@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as amended by ADR 0012
+Accepted as amended by ADRs 0012 and 0013
 
 ## Context
 
@@ -93,6 +93,8 @@ When a completed provider turn requests tools, the server:
 7. constructs the next provider turn from committed facts.
 
 A partial tool call, undeclared tool, duplicate provider call identifier, malformed arguments, excess call count, or unsupported result fails the run without dispatching that call. Tool output remains untrusted after execution and cannot bypass provider-input, transcript, or output limits.
+
+ADR 0013's `task` tool is one canonical outer tool operation whose bounded children execute concurrently inside that operation, like commands and descendants inside `bash`. Nested child provider turns and tool activity do not become independent parent transcript entries. Only the input-ordered bounded child reports and usage commit in the outer tool result. A crash or unknown executor outcome makes the dispatched outer operation uncertain and never replays nested activity.
 
 The server enforces fixed per-turn, per-run, and aggregate limits for provider calls, tool calls, context, output, time, and usage. Limit exhaustion stops controlled execution and produces a durable structured terminal outcome. Partial assistant output never becomes canonical history.
 
