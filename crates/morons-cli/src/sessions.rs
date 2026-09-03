@@ -19,9 +19,9 @@ const MAX_IMAGE_DISPLAY_NAME_BYTES: usize = 128;
 use morons_protocol::{
     ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
     LocalCommandId, MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId, RunState, RunSummary,
-    ServerMessage, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId,
-    SessionListCursor, SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry,
+    OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId, RunState,
+    RunSummary, ServerMessage, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor,
+    SessionId, SessionListCursor, SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry,
     read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -318,6 +318,14 @@ fn valid_skill_catalog(skills: &[SkillSummary], warnings: &[String]) -> bool {
             .all(|pair| pair[0].name.as_bytes() < pair[1].name.as_bytes())
 }
 
+fn valid_model_identifier(model_id: &str) -> bool {
+    !model_id.is_empty()
+        && model_id.len() <= MAX_MODEL_METADATA_BYTES
+        && model_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
+        })
+}
+
 fn valid_model_summaries(service: OpenCodeService, models: &[OpenCodeModelSummary]) -> bool {
     if models.len() > MAX_MODEL_SUMMARIES {
         return false;
@@ -325,13 +333,7 @@ fn valid_model_summaries(service: OpenCodeService, models: &[OpenCodeModelSummar
     let mut identifiers = BTreeSet::new();
     models.iter().all(|model| {
         model.service == service
-            && !model.id.is_empty()
-            && model.id.len() <= MAX_MODEL_METADATA_BYTES
-            && model.id.bytes().all(|byte| {
-                byte.is_ascii_lowercase()
-                    || byte.is_ascii_digit()
-                    || matches!(byte, b'.' | b'-' | b'_')
-            })
+            && valid_model_identifier(&model.id)
             && identifiers.insert(model.id.as_str())
             && !model.display_name.is_empty()
             && model.display_name.len() <= MAX_MODEL_METADATA_BYTES
@@ -799,6 +801,51 @@ where
             return Err(ApplicationClientError::EventScopeMismatch);
         }
         Ok(models)
+    }
+
+    pub async fn default_open_code_model(
+        &mut self,
+    ) -> Result<Option<OpenCodeModelSelection>, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::GetDefaultOpenCodeModel)
+            .await?;
+        let ApplicationResponse::DefaultOpenCodeModel { selection } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        if selection
+            .as_ref()
+            .is_some_and(|selection| !valid_model_identifier(&selection.model_id))
+        {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(selection)
+    }
+
+    pub async fn set_default_open_code_model(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        service: OpenCodeService,
+        model_id: String,
+    ) -> Result<OpenCodeModelSelection, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::SetDefaultOpenCodeModel {
+                mutation_request_id,
+                service,
+                model_id: model_id.clone(),
+            })
+            .await?;
+        let ApplicationResponse::DefaultOpenCodeModelUpdated { selection } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        if selection.service != service
+            || selection.model_id != model_id
+            || !valid_model_identifier(&selection.model_id)
+        {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(selection)
     }
 
     pub async fn list_session_skills(

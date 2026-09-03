@@ -287,6 +287,63 @@ async fn changed_credential_generation_fails_before_network_dispatch() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn default_model_selection_is_reviewed_idempotent_and_queryable() {
+    let root = TestRoot::new("default-model-application");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    let application = ServerApplication::from_session_store_for_test(store, "http://127.0.0.1:9");
+
+    let empty = application
+        .execute_for_local_owner(ApplicationRequest::GetDefaultOpenCodeModel)
+        .await
+        .expect("empty default query should succeed");
+    assert!(matches!(
+        empty,
+        ApplicationOutcome::Response(ApplicationResponse::DefaultOpenCodeModel { selection: None })
+    ));
+
+    let request = ApplicationRequest::SetDefaultOpenCodeModel {
+        mutation_request_id: MutationRequestId::from_bytes([0x61; 16]),
+        service: OpenCodeService::Go,
+        model_id: "grok-4.6".to_owned(),
+    };
+    for _ in 0..2 {
+        let selected = application
+            .execute_for_local_owner(request.clone())
+            .await
+            .expect("default selection should succeed");
+        assert!(matches!(
+            selected,
+            ApplicationOutcome::Response(ApplicationResponse::DefaultOpenCodeModelUpdated {
+                selection
+            }) if selection.service == OpenCodeService::Go && selection.model_id == "grok-4.6"
+        ));
+    }
+    let loaded = application
+        .execute_for_local_owner(ApplicationRequest::GetDefaultOpenCodeModel)
+        .await
+        .expect("selected default should be queried");
+    assert!(matches!(
+        loaded,
+        ApplicationOutcome::Response(ApplicationResponse::DefaultOpenCodeModel {
+            selection: Some(selection)
+        }) if selection.service == OpenCodeService::Go && selection.model_id == "grok-4.6"
+    ));
+
+    let unsupported = application
+        .execute_for_local_owner(ApplicationRequest::SetDefaultOpenCodeModel {
+            mutation_request_id: MutationRequestId::from_bytes([0x62; 16]),
+            service: OpenCodeService::Go,
+            model_id: "not-reviewed".to_owned(),
+        })
+        .await;
+    assert!(matches!(
+        unsupported,
+        Err(ApplicationError::UnsupportedModel)
+    ));
+    application.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn accepted_run_outlives_request_and_commits_complete_assistant() {
     let root = TestRoot::new("supervised-success");
     let store = SessionStore::open_for_test(root.path()).expect("session store should open");

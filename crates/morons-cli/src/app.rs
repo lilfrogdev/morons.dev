@@ -5,8 +5,8 @@ use std::{error::Error, fmt};
 
 use morons_protocol::{
     ApplicationEvent, LocalCommandId, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelSummary, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary,
-    SessionContextStatus, SessionId, SessionSummary, SkillSummary, TranscriptEntry,
+    OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService, RunFailureKind, RunId, RunState,
+    RunSummary, SessionContextStatus, SessionId, SessionSummary, SkillSummary, TranscriptEntry,
 };
 use ratatui::Frame;
 
@@ -19,6 +19,7 @@ const MAX_TRANSIENT_DELTA_BYTES: usize = 128 * 1024;
 const MAX_DRAFT_IMAGES: usize = 4;
 const MAX_DRAFT_IMAGE_BYTES: usize = 6 * 1024 * 1024;
 const MAX_IMAGE_DISPLAY_NAME_BYTES: usize = 128;
+const MAX_MODEL_SEARCH_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum View {
@@ -29,6 +30,7 @@ pub(super) enum View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PendingOperation {
     CreateSession,
+    SelectModel,
     SubmitInput,
     RenameSession,
     ArchiveSession,
@@ -44,6 +46,11 @@ pub(super) enum PendingOperation {
 pub(super) enum InformationDialog {
     TrustNotice,
     Help,
+}
+
+pub(super) struct ModelDialog {
+    pub(super) query: PromptBuffer,
+    pub(super) selected: usize,
 }
 
 pub(super) enum CredentialDialog {
@@ -76,6 +83,10 @@ pub(super) enum AppAction {
     },
     ShowContext {
         session_id: SessionId,
+        service: OpenCodeService,
+        model_id: String,
+    },
+    SetDefaultModel {
         service: OpenCodeService,
         model_id: String,
     },
@@ -150,6 +161,11 @@ impl fmt::Debug for AppAction {
             } => formatter
                 .debug_struct("ShowContext")
                 .field("session_id", session_id)
+                .field("service", service)
+                .field("model_id", model_id)
+                .finish(),
+            Self::SetDefaultModel { service, model_id } => formatter
+                .debug_struct("SetDefaultModel")
                 .field("service", service)
                 .field("model_id", model_id)
                 .finish(),
@@ -281,6 +297,52 @@ pub(super) const fn service_label(service: OpenCodeService) -> &'static str {
     }
 }
 
+const fn model_catalog_index(service: OpenCodeService) -> usize {
+    match service {
+        OpenCodeService::Zen => 0,
+        OpenCodeService::Go => 1,
+    }
+}
+
+fn model_search_score(model: &PresentedModel, query: &str) -> Option<u32> {
+    if query.trim().is_empty() {
+        return Some(0);
+    }
+    let service = service_label(model.model.service).to_lowercase();
+    let id = model.model.id.to_lowercase();
+    let display_name = model.model.display_name.to_lowercase();
+    let canonical = format!("{service}/{id}");
+    let search = format!("{service} {id} {canonical} {display_name}");
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .try_fold(0_u32, |score, term| {
+            let term_score = if term == service || term == id || term == canonical {
+                0
+            } else if id.starts_with(term) || canonical.starts_with(term) {
+                1
+            } else if id.contains(term) || canonical.contains(term) {
+                2
+            } else if display_name.contains(term) {
+                3
+            } else if search.contains(term) {
+                4
+            } else if is_character_subsequence(&search, term) {
+                16
+            } else {
+                return None;
+            };
+            score.checked_add(term_score)
+        })
+}
+
+fn is_character_subsequence(value: &str, query: &str) -> bool {
+    let mut characters = value.chars();
+    query
+        .chars()
+        .all(|expected| characters.by_ref().any(|character| character == expected))
+}
+
 struct DraftImage {
     upload: morons_protocol::ImageUpload,
     normalized_bytes: usize,
@@ -293,6 +355,9 @@ pub(super) struct AppState {
     pub(super) selected_session: usize,
     pub(super) models: Vec<PresentedModel>,
     pub(super) selected_model: Option<usize>,
+    pub(super) default_model: Option<OpenCodeModelSelection>,
+    pub(super) loaded_model_catalogs: [bool; 2],
+    pub(super) model_dialog: Option<ModelDialog>,
     pub(super) credential: Option<OpenCodeCredentialStatus>,
     pub(super) credential_dialog: Option<CredentialDialog>,
     pub(super) information_dialog: Option<InformationDialog>,
@@ -318,6 +383,9 @@ impl AppState {
             selected_session: 0,
             models: Vec::new(),
             selected_model: None,
+            default_model: None,
+            loaded_model_catalogs: [false; 2],
+            model_dialog: None,
             credential: None,
             credential_dialog: None,
             information_dialog: initial_information_dialog(),
@@ -387,6 +455,7 @@ impl AppState {
         self.view == View::Session
             && self.pending.is_none()
             && self.credential_dialog.is_none()
+            && self.model_dialog.is_none()
             && !self.confirm_stop
     }
 
@@ -584,20 +653,111 @@ impl AppState {
         if models.iter().any(|model| model.service != service) {
             return Err(UiStateError::ResourceScopeMismatch);
         }
-        let selected = self
-            .selected_model()
-            .map(|model| (model.model.service, model.model.id.as_str().to_owned()));
+        let selected = self.selected_model().map(|model| OpenCodeModelSelection {
+            service: model.model.service,
+            model_id: model.model.id.clone(),
+        });
         self.models.retain(|model| model.model.service != service);
         self.models
             .extend(models.into_iter().map(PresentedModel::new));
-        self.selected_model = selected
-            .and_then(|(service, id)| {
-                self.models.iter().position(|model| {
-                    model.model.available && model.model.service == service && model.model.id == id
-                })
+        self.loaded_model_catalogs[model_catalog_index(service)] = true;
+        self.selected_model = self
+            .default_model
+            .as_ref()
+            .and_then(|selection| self.available_model_index(selection))
+            .or_else(|| {
+                selected
+                    .as_ref()
+                    .and_then(|selection| self.available_model_index(selection))
             })
             .or_else(|| self.models.iter().position(|model| model.model.available));
+        let dialog_matches = self.model_dialog_matches().len();
+        if let Some(dialog) = self.model_dialog.as_mut() {
+            dialog.selected = dialog.selected.min(dialog_matches.saturating_sub(1));
+        }
         Ok(())
+    }
+
+    pub(super) fn install_default_model(&mut self, selection: Option<OpenCodeModelSelection>) {
+        self.default_model = selection;
+        if let Some(index) = self
+            .default_model
+            .as_ref()
+            .and_then(|selection| self.available_model_index(selection))
+        {
+            self.selected_model = Some(index);
+        } else if self
+            .selected_model()
+            .is_none_or(|model| !model.model.available)
+        {
+            self.selected_model = self.models.iter().position(|model| model.model.available);
+        }
+    }
+
+    pub(super) fn default_model_is_unavailable(&self) -> bool {
+        self.default_model.as_ref().is_some_and(|selection| {
+            self.loaded_model_catalogs[model_catalog_index(selection.service)]
+                && self.available_model_index(selection).is_none()
+        })
+    }
+
+    pub(super) fn open_model_dialog(&mut self, initial_query: &str) {
+        let mut query = PromptBuffer::default();
+        query.push_paste(initial_query);
+        let mut maximum = query.len_bytes().min(MAX_MODEL_SEARCH_BYTES);
+        while !query.as_str().is_char_boundary(maximum) {
+            maximum = maximum.saturating_sub(1);
+        }
+        let _ = query.truncate(maximum);
+        self.model_dialog = Some(ModelDialog { query, selected: 0 });
+        let matches = self.model_dialog_matches();
+        if matches.is_empty() {
+            self.set_status("No available reviewed models match this search");
+            return;
+        }
+        if initial_query.is_empty()
+            && let Some(selected_model) = self.selected_model
+            && let Some(position) = matches.iter().position(|index| *index == selected_model)
+            && let Some(dialog) = self.model_dialog.as_mut()
+        {
+            dialog.selected = position;
+        }
+        self.set_status("Search reviewed models; Enter saves the global default");
+    }
+
+    pub(super) fn model_dialog_matches(&self) -> Vec<usize> {
+        let query = self
+            .model_dialog
+            .as_ref()
+            .map(|dialog| dialog.query.as_str())
+            .unwrap_or_default();
+        let mut matches = self
+            .models
+            .iter()
+            .enumerate()
+            .filter(|(_, model)| model.model.available)
+            .filter_map(|(index, model)| {
+                model_search_score(model, query).map(|score| (score, index))
+            })
+            .collect::<Vec<_>>();
+        if !query.trim().is_empty() {
+            matches.sort_by_key(|(score, index)| {
+                (
+                    *score,
+                    usize::from(Some(*index) != self.selected_model),
+                    *index,
+                )
+            });
+        }
+        matches.into_iter().map(|(_, index)| index).collect()
+    }
+
+    fn available_model_index(&self, selection: &OpenCodeModelSelection) -> Option<usize> {
+        self.models.iter().position(|model| {
+            model.model.available
+                && model.model.service == selection.service
+                && model.model.id == selection.model_id
+        })
     }
 
     pub(super) fn open_session(
@@ -652,6 +812,7 @@ impl AppState {
     pub(super) fn close_session(&mut self) {
         self.view = View::Sessions;
         self.session = None;
+        self.model_dialog = None;
         self.prompt.clear();
         self.draft_images.clear();
         self.pending = None;
@@ -748,6 +909,10 @@ impl AppState {
     }
 
     pub(super) fn session_input_accepted(&mut self, run: RunSummary) -> Result<(), UiStateError> {
+        self.install_default_model(Some(OpenCodeModelSelection {
+            service: run.service,
+            model_id: run.model_id.clone(),
+        }));
         self.prompt.clear();
         self.draft_images.clear();
         self.reset_skill_completion();

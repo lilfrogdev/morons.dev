@@ -205,6 +205,12 @@ pub enum RunOpenCodeService {
     Go,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultModelSelection {
+    pub service: RunOpenCodeService,
+    pub model_id: String,
+}
+
 impl RunOpenCodeService {
     pub(super) const fn to_record(self) -> i64 {
         match self {

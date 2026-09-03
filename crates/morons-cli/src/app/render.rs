@@ -40,6 +40,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
     if let Some(dialog) = app.credential_dialog.as_ref() {
         render_credential_dialog(frame, area, dialog);
     }
+    if app.model_dialog.is_some() {
+        render_model_dialog(frame, area, app);
+    }
     if let Some(dialog) = app.information_dialog {
         render_information_dialog(frame, area, dialog);
     }
@@ -405,10 +408,10 @@ fn render_model_disclosure(
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let help = match app.view {
         View::Sessions => {
-            "↑↓ select · Enter open · n new · r rename · a archive · d delete archived · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
+            "↑↓ select · Enter open · n new · r rename · a archive · d delete archived · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
-            "Enter send · @ skill · !/!! command · /context · /compact · Esc sessions · Ctrl+X cancel"
+            "Enter send · @ skill · !/!! command · /model · /context · /compact · Esc sessions · Ctrl+X cancel"
         }
     };
     let status = Line::from(vec![
@@ -419,6 +422,99 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Paragraph::new(vec![Line::from(help), status]).style(Style::default().fg(Color::DarkGray)),
         area,
     );
+}
+
+fn render_model_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let Some(dialog) = app.model_dialog.as_ref() else {
+        return;
+    };
+    let width = area.width.min(88);
+    let height = area.height.min(18);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(3),
+        ])
+        .split(popup);
+    frame.render_widget(
+        Paragraph::new(
+            SafeText::from_untrusted(dialog.query.as_str())
+                .as_str()
+                .to_owned(),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Model search "),
+        ),
+        sections[0],
+    );
+
+    let matches = app.model_dialog_matches();
+    let selected = dialog.selected.min(matches.len().saturating_sub(1));
+    let visible_rows = usize::from(sections[1].height.saturating_sub(2)).max(1);
+    let start = selected
+        .saturating_sub(visible_rows / 2)
+        .min(matches.len().saturating_sub(visible_rows));
+    let items = matches
+        .iter()
+        .skip(start)
+        .take(visible_rows)
+        .filter_map(|index| app.models.get(*index))
+        .map(|model| {
+            let current = if app.selected_model().is_some_and(|selected| {
+                selected.model.service == model.model.service && selected.model.id == model.model.id
+            }) {
+                " ✓"
+            } else {
+                ""
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw(service_label(model.model.service)),
+                Span::raw(" · "),
+                Span::raw(model.id.first_line()),
+                Span::raw(" · "),
+                Span::raw(model.display_name.first_line()),
+                Span::styled(current, Style::default().fg(Color::Green)),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let list = if items.is_empty() {
+        List::new(vec![ListItem::new("No matching available models")])
+    } else {
+        List::new(items)
+    }
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Models · type to filter · ↑↓ choose · Enter save · Esc cancel "),
+    )
+    .highlight_style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )
+    .highlight_symbol("› ");
+    let mut state = ListState::default();
+    if !matches.is_empty() {
+        state.select(Some(selected.saturating_sub(start)));
+    }
+    frame.render_stateful_widget(list, sections[1], &mut state);
+
+    let selected_model = matches
+        .get(selected)
+        .and_then(|index| app.models.get(*index));
+    render_model_disclosure(frame, sections[2], selected_model, None);
 }
 
 fn render_rename_dialog(frame: &mut Frame<'_>, area: Rect, input: &str) {
@@ -453,7 +549,7 @@ fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: Informat
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /context inspect · /compact [instructions] summarize · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             15,
         ),

@@ -22,18 +22,19 @@ use self::{
     types::{
         MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE,
         REQUEST_FINGERPRINT_BYTES, archive_session_fingerprint,
-        create_session_with_directory_fingerprint, delete_session_fingerprint,
-        rename_session_fingerprint, validate_display_name, validate_working_directory_path,
+        create_session_with_directory_fingerprint, default_model_fingerprint,
+        delete_session_fingerprint, rename_session_fingerprint, validate_display_name,
+        validate_model_identifier, validate_working_directory_path,
     },
 };
 
 pub use self::{
     run_types::{
-        AcceptedLocalCommand, AcceptedRun, ImageAttachment, ImageAttachmentId,
-        LocalCommandCancellationResult, LocalCommandId, LocalCommandStatus, MessageId, Run,
-        RunCancellationResult, RunFailureKind, RunId, RunModelSelection, RunOpenCodeService,
-        RunState, SessionEvent, SessionEventCursor, SessionEventPage, SessionEventPayload,
-        ToolCallId, TranscriptCursor, TranscriptEntry, TranscriptPage,
+        AcceptedLocalCommand, AcceptedRun, DefaultModelSelection, ImageAttachment,
+        ImageAttachmentId, LocalCommandCancellationResult, LocalCommandId, LocalCommandStatus,
+        MessageId, Run, RunCancellationResult, RunFailureKind, RunId, RunModelSelection,
+        RunOpenCodeService, RunState, SessionEvent, SessionEventCursor, SessionEventPage,
+        SessionEventPayload, ToolCallId, TranscriptCursor, TranscriptEntry, TranscriptPage,
     },
     types::{
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
@@ -354,6 +355,46 @@ impl SessionStore {
             .map_err(|_| PersistenceError::WorkerStopped)?
     }
 
+    pub async fn default_model(&self) -> Result<Option<DefaultModelSelection>, PersistenceError> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::GetDefaultModel {
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub async fn set_default_model(
+        &self,
+        request_id: MutationRequestId,
+        selection: DefaultModelSelection,
+    ) -> Result<DefaultModelSelection, PersistenceError> {
+        if request_id.is_zero() {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a mutation request identifier must not be all zeroes",
+            });
+        }
+        validate_model_identifier(&selection.model_id)?;
+        let fingerprint = default_model_fingerprint(selection.service, &selection.model_id);
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::SetDefaultModel {
+                request_id,
+                fingerprint,
+                selection,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
     pub async fn open_code_credential_status(
         &self,
     ) -> Result<OpenCodeCredentialStatus, PersistenceError> {
@@ -601,6 +642,15 @@ enum WorkerRequest {
         host_epoch: [u8; 16],
         response: oneshot::Sender<Result<ServerStopResult, PersistenceError>>,
     },
+    GetDefaultModel {
+        response: oneshot::Sender<Result<Option<DefaultModelSelection>, PersistenceError>>,
+    },
+    SetDefaultModel {
+        request_id: MutationRequestId,
+        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
+        selection: DefaultModelSelection,
+        response: oneshot::Sender<Result<DefaultModelSelection, PersistenceError>>,
+    },
     GetOpenCodeCredentialStatus {
         response: oneshot::Sender<Result<OpenCodeCredentialStatus, PersistenceError>>,
     },
@@ -733,6 +783,18 @@ fn run_worker(
                 response,
             } => {
                 let _ = response.send(backend.request_server_stop(request_id, host_epoch));
+            }
+            WorkerRequest::GetDefaultModel { response } => {
+                let _ = response.send(backend.default_model());
+            }
+            WorkerRequest::SetDefaultModel {
+                request_id,
+                fingerprint,
+                selection,
+                response,
+            } => {
+                let _ =
+                    response.send(backend.set_default_model(request_id, fingerprint, selection));
             }
             WorkerRequest::GetOpenCodeCredentialStatus { response } => {
                 let _ = response.send(backend.open_code_credential_status());

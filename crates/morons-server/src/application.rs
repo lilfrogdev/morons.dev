@@ -26,8 +26,9 @@ use tokio::sync::{Mutex, watch};
 use crate::{
     command_supervisor::CommandSupervisor,
     persistence::{
-        PersistenceError, PreparedImageAttachment, RunModelSelection, SessionCatalogEventCursor,
-        SessionCatalogEventKind, SessionEventCursor, SessionEventPayload, SessionId, SessionStore,
+        DefaultModelSelection, PersistenceError, PreparedImageAttachment, RunModelSelection,
+        SessionCatalogEventCursor, SessionCatalogEventKind, SessionEventCursor,
+        SessionEventPayload, SessionId, SessionStore,
     },
     provider::{
         OpenCodeModelAvailability, OpenCodeProvider, OpenCodeService, ProviderError,
@@ -348,6 +349,41 @@ impl ServerApplication {
                     .ok_or(ApplicationError::Internal)?;
                 Ok(ApplicationOutcome::Response(
                     ApplicationResponse::OpenCodeModelsListed { service, models },
+                ))
+            }
+            ApplicationRequest::GetDefaultOpenCodeModel => {
+                let selection = self
+                    .sessions
+                    .default_model()
+                    .await
+                    .map_err(to_application_error)?
+                    .map(to_protocol_model_selection);
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::DefaultOpenCodeModel { selection },
+                ))
+            }
+            ApplicationRequest::SetDefaultOpenCodeModel {
+                mutation_request_id,
+                service,
+                model_id,
+            } => {
+                find_open_code_model(to_provider_service(service), &model_id)
+                    .ok_or(ApplicationError::UnsupportedModel)?;
+                let selection = self
+                    .sessions
+                    .set_default_model(
+                        to_persistence_mutation_id(mutation_request_id),
+                        DefaultModelSelection {
+                            service: to_persistence_service(service),
+                            model_id,
+                        },
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::DefaultOpenCodeModelUpdated {
+                        selection: to_protocol_model_selection(selection),
+                    },
                 ))
             }
             ApplicationRequest::ListSessionSkills { session_id } => {

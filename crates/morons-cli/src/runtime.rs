@@ -209,7 +209,7 @@ impl RuntimeState {
             credential_reconciliation_unknown: None,
             requested_session: None,
             session_generation: 0,
-            refresh_remaining: 4,
+            refresh_remaining: 5,
             request_worker,
             catalog_subscription: None,
             session_subscription: None,
@@ -227,7 +227,7 @@ impl RuntimeState {
             AppAction::Refresh => {
                 if self.refresh_remaining == 0 {
                     enqueue_initial_queries(commands)?;
-                    self.refresh_remaining = 4;
+                    self.refresh_remaining = 5;
                     if let Some(session_id) = self.requested_session {
                         send_command(commands, RequestCommand::LoadSession(session_id))?;
                     }
@@ -246,8 +246,12 @@ impl RuntimeState {
             }
             AppAction::OpenSession(session_id) => {
                 self.requested_session = Some(session_id);
+                if self.refresh_remaining == 0 {
+                    send_command(commands, RequestCommand::LoadDefaultModel)?;
+                }
                 send_command(commands, RequestCommand::LoadSession(session_id))?;
-                self.app.set_status("Loading session transcript");
+                self.app
+                    .set_status("Loading global default, session transcript, and skills");
             }
             AppAction::CloseSession => {
                 self.requested_session = None;
@@ -294,6 +298,15 @@ impl RuntimeState {
                 self.app.set_status(
                     "Deleting only Morons-owned session history, attachments, and temporary state",
                 );
+            }
+            AppAction::SetDefaultModel { service, model_id } => {
+                let command = RequestCommand::SetDefaultModel {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    service,
+                    model_id,
+                };
+                self.start_mutation(command, PendingOperation::SelectModel, commands)?;
+                self.app.set_status("Saving global default model");
             }
             AppAction::ShowContext {
                 session_id,
@@ -447,7 +460,42 @@ impl RuntimeState {
             RequestEvent::ModelsLoaded { service, models } => {
                 self.complete_refresh_query();
                 self.app.replace_models(service, models)?;
-                self.app.set_status("Reviewed model availability updated");
+                self.app
+                    .set_status(if self.app.default_model_is_unavailable() {
+                        "Saved default model is unavailable; using another reviewed model"
+                    } else {
+                        "Reviewed model availability updated"
+                    });
+            }
+            RequestEvent::DefaultModelLoaded(selection) => {
+                self.complete_refresh_query();
+                self.app.install_default_model(selection);
+                self.app
+                    .set_status(if self.app.default_model_is_unavailable() {
+                        "Saved default model is unavailable; using another reviewed model"
+                    } else {
+                        "Global default model loaded"
+                    });
+            }
+            RequestEvent::DefaultModelUpdated {
+                mutation_request_id,
+                selection,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                let service = selection.service;
+                let model_id = selection.model_id.clone();
+                self.app.install_default_model(Some(selection));
+                self.app.set_status(if self.app.default_model_is_unavailable() {
+                    format!(
+                        "Global default saved but unavailable · {} · {model_id}; using another reviewed model",
+                        crate::app::service_label(service)
+                    )
+                } else {
+                    format!(
+                        "Global default model saved · {} · {model_id}",
+                        crate::app::service_label(service)
+                    )
+                });
             }
             RequestEvent::CredentialStatusLoaded(status) => {
                 self.complete_refresh_query();
@@ -512,8 +560,12 @@ impl RuntimeState {
                 self.finish_mutation(mutation_request_id)?;
                 self.app.add_session(session.clone())?;
                 self.requested_session = Some(session.id);
+                if self.refresh_remaining == 0 {
+                    send_command(commands, RequestCommand::LoadDefaultModel)?;
+                }
                 send_command(commands, RequestCommand::LoadSession(session.id))?;
-                self.app.set_status("Session created");
+                self.app
+                    .set_status("Session created; loading global default");
             }
             RequestEvent::SessionRenamed {
                 mutation_request_id,
@@ -652,7 +704,10 @@ impl RuntimeState {
                 model_service,
                 error,
             } => {
-                if matches!(context, "session list" | "model list" | "credential status") {
+                if matches!(
+                    context,
+                    "session list" | "model list" | "default model" | "credential status"
+                ) {
                     self.complete_refresh_query();
                 }
                 if let Some(service) = model_service {
@@ -983,6 +1038,7 @@ fn enqueue_initial_queries(
     for command in [
         RequestCommand::LoadSessions,
         RequestCommand::LoadCredentialStatus,
+        RequestCommand::LoadDefaultModel,
         RequestCommand::LoadModels(OpenCodeService::Zen),
         RequestCommand::LoadModels(OpenCodeService::Go),
     ] {
@@ -1064,6 +1120,30 @@ mod tests {
             .expect("file URL should normalize");
         assert_eq!((captured.0.width, captured.0.height), (2, 1));
         fs::remove_dir_all(root).expect("test directory should be removed");
+    }
+
+    #[tokio::test]
+    async fn opening_a_session_reloads_the_global_default_first() {
+        let request_worker = tokio::spawn(async {});
+        let mut runtime = RuntimeState::new("test-server".to_owned(), request_worker);
+        runtime.refresh_remaining = 0;
+        let session_id = SessionId::from_bytes([0x43; 16]);
+        let (commands, mut command_receiver) = mpsc::channel(2);
+
+        assert!(
+            !runtime
+                .handle_action(AppAction::OpenSession(session_id), &commands)
+                .await
+                .expect("open action should succeed")
+        );
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(RequestCommand::LoadDefaultModel)
+        ));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(RequestCommand::LoadSession(selected)) if selected == session_id
+        ));
     }
 
     #[tokio::test]

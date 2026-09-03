@@ -46,7 +46,7 @@ pub(super) const fn to_provider_service(service: ProtocolOpenCodeService) -> Ope
     }
 }
 
-const fn to_protocol_service(service: RunOpenCodeService) -> ProtocolOpenCodeService {
+pub(super) const fn to_protocol_service(service: RunOpenCodeService) -> ProtocolOpenCodeService {
     match service {
         RunOpenCodeService::Zen => ProtocolOpenCodeService::Zen,
         RunOpenCodeService::Go => ProtocolOpenCodeService::Go,
@@ -202,6 +202,15 @@ pub(super) fn to_protocol_model_summary(
         training_use,
         retention,
     })
+}
+
+pub(super) fn to_protocol_model_selection(
+    selection: crate::persistence::DefaultModelSelection,
+) -> morons_protocol::OpenCodeModelSelection {
+    morons_protocol::OpenCodeModelSelection {
+        service: to_protocol_service(selection.service),
+        model_id: selection.model_id,
+    }
 }
 
 pub(super) const fn to_protocol_credential_status(
@@ -494,7 +503,8 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
                 PersistenceResourceLimit::Transcript
                 | PersistenceResourceLimit::LogicalSequence
                 | PersistenceResourceLimit::CredentialGeneration
-                | PersistenceResourceLimit::CredentialMutations,
+                | PersistenceResourceLimit::CredentialMutations
+                | PersistenceResourceLimit::ModelSelections,
         } => ApplicationError::ResourceLimit {
             resource: ResourceLimit::Storage,
         },

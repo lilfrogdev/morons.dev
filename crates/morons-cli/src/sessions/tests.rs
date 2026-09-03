@@ -1,9 +1,9 @@
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
     MessageId, MutationRequestId, OpenCodeModelCapabilities, OpenCodeModelRetention,
-    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary,
-    ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionSummary,
-    SkillSource, SkillSummary, read_client_message, write_server_message,
+    OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunId,
+    RunState, RunSummary, ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId,
+    SessionSummary, SkillSource, SkillSummary, read_client_message, write_server_message,
 };
 
 use super::{ApplicationClient, ApplicationClientError};
@@ -155,6 +155,74 @@ async fn client_lists_models_with_exact_service_scope() {
         )
         .await
         .expect("model response should be written");
+    };
+
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_queries_and_updates_the_exact_default_model() {
+    let (client_connection, mut server) = tokio::io::duplex(4096);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let mutation_request_id = MutationRequestId::from_bytes([0x26; 16]);
+    let selection = OpenCodeModelSelection {
+        service: OpenCodeService::Go,
+        model_id: "grok-4.6".to_owned(),
+    };
+
+    let expected = selection.clone();
+    let client_exchange = async {
+        assert_eq!(
+            client
+                .default_open_code_model()
+                .await
+                .expect("default query should succeed"),
+            None
+        );
+        assert_eq!(
+            client
+                .set_default_open_code_model(
+                    mutation_request_id,
+                    OpenCodeService::Go,
+                    "grok-4.6".to_owned(),
+                )
+                .await
+                .expect("default mutation should succeed"),
+            expected
+        );
+    };
+    let server_exchange = async {
+        assert_eq!(
+            read_request(&mut server, 1).await,
+            ApplicationRequest::GetDefaultOpenCodeModel
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::DefaultOpenCodeModel { selection: None },
+            ),
+        )
+        .await
+        .expect("default query response should be written");
+
+        assert_eq!(
+            read_request(&mut server, 2).await,
+            ApplicationRequest::SetDefaultOpenCodeModel {
+                mutation_request_id,
+                service: OpenCodeService::Go,
+                model_id: "grok-4.6".to_owned(),
+            }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                2,
+                ApplicationResponse::DefaultOpenCodeModelUpdated { selection },
+            ),
+        )
+        .await
+        .expect("default mutation response should be written");
     };
 
     tokio::join!(client_exchange, server_exchange);

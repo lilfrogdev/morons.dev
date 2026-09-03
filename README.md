@@ -43,12 +43,13 @@ On first launch, read and acknowledge the trusted-local authority notice. Config
 - `@name`: activate an installed Agent Skill
 - `!command`: execute bounded noninteractive Bash and include its command/result in later model context
 - `!!command`: execute Bash but exclude its command/result from model context
+- `/model [search]`: search available reviewed models and save one global default for every session
 - `/context`: inspect approximate context use, limits, reserves, and the latest checkpoint
 - `/compact [instructions]`: manually summarize an eligible old context prefix
 - `r` in the session browser: rename the selected durable session
 - `a` in the session browser: archive or unarchive the selected session
 - `d` in the session browser: delete an archived session's Morons-owned history and attachments after confirmation; the working directory is never changed
-- `Tab` / `Shift+Tab`: select models or complete skills
+- `Tab` / `Shift+Tab`: complete or navigate visible skill matches
 - `Ctrl+V` (`Alt+V` on Windows): paste an image when available
 - `Ctrl+X`: cancel the selected session's active run or command
 - `Esc`: return to the session browser without cancelling server-owned work
@@ -60,6 +61,8 @@ Commands are noninteractive: standard input is closed, no PTY is provided, and o
 ## Sessions and context
 
 Each session is durably bound to one absolute working directory. Switching sessions or closing the client does not cancel server-owned work. Multiple sessions may use the same directory, so their filesystem effects can race even though their histories are independent.
+
+The most recently selected or used reviewed model is the global default across sessions and client restarts. Opening an older session does not restore that session's historical model. If the saved default is unavailable, Morons uses another currently available reviewed model and reports the fallback.
 
 Canonical transcript history remains durable. Automatic and manual compaction create source-bound lossy summaries for provider context without deleting canonical messages or image attachments. `!!` content is never included in provider context or summaries.
 
