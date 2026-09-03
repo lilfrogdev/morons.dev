@@ -78,10 +78,20 @@ fn render_sessions(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .map(|session| {
             ListItem::new(vec![
                 Line::from(session.display_name.first_line()),
-                Line::from(Span::styled(
-                    session.working_directory.first_line(),
-                    Style::default().fg(Color::DarkGray),
-                )),
+                Line::from(vec![
+                    Span::styled(
+                        session.working_directory.first_line(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        if session.shared_directory {
+                            " · shared directory · race risk"
+                        } else {
+                            ""
+                        },
+                        Style::default().fg(Color::Yellow),
+                    ),
+                ]),
             ])
         })
         .collect();
@@ -294,8 +304,13 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
     let scroll = maximum_scroll.saturating_sub(scroll.min(maximum_scroll));
     let run_status = active_work_label(session);
     let workspace = workspace_label(session.workspace.state);
+    let shared = if session.shared_directory {
+        " · shared directory race risk"
+    } else {
+        ""
+    };
     let title = format!(
-        " {} · {run_status} · {workspace} ",
+        " {} · {run_status} · {workspace}{shared} ",
         session.display_name.first_line()
     );
     frame.render_widget(

@@ -522,9 +522,12 @@ fn uncertain_tool_effect_requires_explicit_acknowledgement_confirmation() {
 fn session_browser_presents_the_bound_working_directory() {
     let (mut session, _) = fixture_session_and_run();
     session.working_directory = Some("/projects/example".to_owned());
+    let mut other = session.clone();
+    other.id = SessionId::from_bytes([0x77; 16]);
+    other.display_name = Some("Same directory".to_owned());
     let mut app = AppState::new("test-server");
-    app.replace_sessions(vec![session])
-        .expect("session should be presented");
+    app.replace_sessions(vec![session, other])
+        .expect("sessions should be presented");
 
     let backend = TestBackend::new(100, 12);
     let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
@@ -539,6 +542,8 @@ fn session_browser_presents_the_bound_working_directory() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(rendered.contains("/projects/example"));
+    assert!(rendered.contains("shared directory"));
+    assert!(app.sessions.iter().all(|session| session.shared_directory));
 }
 
 #[test]
