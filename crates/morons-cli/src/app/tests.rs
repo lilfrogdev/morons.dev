@@ -547,6 +547,31 @@ fn session_browser_presents_the_bound_working_directory() {
 }
 
 #[test]
+fn session_browser_rename_is_bounded_modal_and_redacted() {
+    let (session, _) = fixture_session_and_run();
+    let session_id = session.id;
+    let mut app = AppState::new("test-server");
+    app.replace_sessions(vec![session])
+        .expect("session should be presented");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert!(app.rename_dialog.is_some());
+    app.handle_paste("Renamed session");
+    let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        action,
+        AppAction::RenameSession {
+            session_id: selected,
+            ref display_name,
+        } if selected == session_id && display_name == "Renamed session"
+    ));
+    assert!(!format!("{action:?}").contains("Renamed session"));
+    assert!(app.rename_dialog.is_none());
+}
+
+#[test]
 fn input_action_debug_omits_prompt_text() {
     let action = AppAction::SubmitInput {
         session_id: SessionId::from_bytes([0x55; 16]),

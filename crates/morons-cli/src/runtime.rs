@@ -253,6 +253,18 @@ impl RuntimeState {
                 self.app
                     .set_status("Session detached; server-owned runs continue");
             }
+            AppAction::RenameSession {
+                session_id,
+                display_name,
+            } => {
+                let command = RequestCommand::RenameSession {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    session_id,
+                    display_name,
+                };
+                self.start_mutation(command, PendingOperation::RenameSession, commands)?;
+                self.app.set_status("Renaming session");
+            }
             AppAction::ShowContext {
                 session_id,
                 service,
@@ -486,6 +498,14 @@ impl RuntimeState {
                 self.requested_session = Some(session.id);
                 send_command(commands, RequestCommand::LoadSession(session.id))?;
                 self.app.set_status("Session created");
+            }
+            RequestEvent::SessionRenamed {
+                mutation_request_id,
+                session,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                self.app.rename_session_applied(session)?;
+                self.app.set_status("Session renamed");
             }
             RequestEvent::InputAccepted {
                 mutation_request_id,

@@ -22,7 +22,7 @@ use self::{
     types::{
         MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE,
         REQUEST_FINGERPRINT_BYTES, create_session_with_directory_fingerprint,
-        validate_display_name, validate_working_directory_path,
+        rename_session_fingerprint, validate_display_name, validate_working_directory_path,
     },
 };
 
@@ -155,6 +155,35 @@ impl SessionStore {
                 fingerprint,
                 display_name,
                 working_directory,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub async fn rename_session(
+        &self,
+        request_id: MutationRequestId,
+        session_id: SessionId,
+        display_name: String,
+    ) -> Result<Session, PersistenceError> {
+        if request_id.is_zero() {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a mutation request identifier must not be all zeroes",
+            });
+        }
+        validate_display_name(Some(&display_name))?;
+        let fingerprint = rename_session_fingerprint(session_id, &display_name);
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::RenameSession {
+                request_id,
+                fingerprint,
+                session_id,
+                display_name,
                 response: response_sender,
             })
             .await
@@ -397,6 +426,13 @@ enum WorkerRequest {
         working_directory: String,
         response: oneshot::Sender<Result<Session, PersistenceError>>,
     },
+    RenameSession {
+        request_id: MutationRequestId,
+        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
+        session_id: SessionId,
+        display_name: String,
+        response: oneshot::Sender<Result<Session, PersistenceError>>,
+    },
     Run(RunWorkerRequest),
     StopServer {
         request_id: MutationRequestId,
@@ -463,6 +499,20 @@ fn run_worker(
                     fingerprint,
                     display_name,
                     working_directory,
+                ));
+            }
+            WorkerRequest::RenameSession {
+                request_id,
+                fingerprint,
+                session_id,
+                display_name,
+                response,
+            } => {
+                let _ = response.send(backend.rename_session(
+                    request_id,
+                    fingerprint,
+                    session_id,
+                    display_name,
                 ));
             }
             WorkerRequest::Run(request) => request.execute(&mut backend),

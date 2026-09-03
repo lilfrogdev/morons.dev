@@ -15,6 +15,7 @@ mod run_records;
 mod run_recovery;
 mod server_stop;
 mod session_events;
+mod session_mutation;
 mod tool_execution;
 mod workspace_creation;
 mod worktree_generation;

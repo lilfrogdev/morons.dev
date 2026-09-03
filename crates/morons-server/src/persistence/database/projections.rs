@@ -26,6 +26,7 @@ use crate::tools::{
 
 pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError> {
     validate_session_creation_facts(connection)?;
+    validate_session_rename_facts(connection)?;
     validate_mutation_registry(connection)?;
     validate_local_command_facts(connection)?;
     validate_image_attachment_facts(connection)?;
@@ -124,6 +125,57 @@ fn validate_session_creation_facts(connection: &Connection) -> Result<(), Persis
         {
             return Err(PersistenceError::InvalidState {
                 reason: "a persisted session creation request has invalid canonical input",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_session_rename_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid_registry: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN session_rename_requests AS request
+              ON request.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 12 AND (
+                request.request_id IS NULL
+                OR mutation.accepted_sequence IS NOT request.accepted_sequence
+                OR mutation.accepted_at_milliseconds IS NOT request.accepted_at_milliseconds
+            )
+            UNION ALL
+            SELECT 1 FROM session_rename_requests AS request
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = request.request_id
+            WHERE mutation.operation_kind IS NOT 12
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid_registry {
+        return Err(PersistenceError::InvalidState {
+            reason: "session renames conflict with the mutation registry",
+        });
+    }
+    let mut statement = connection.prepare(
+        "SELECT operation_fingerprint, session_id, display_name
+         FROM session_rename_requests",
+    )?;
+    let requests = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, [u8; 32]>(0)?,
+                row.get::<_, [u8; 16]>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (fingerprint, session_id, display_name) in requests {
+        let session_id = SessionId::from_bytes(session_id);
+        if validate_display_name(Some(&display_name)).is_err()
+            || fingerprint
+                != crate::persistence::types::rename_session_fingerprint(session_id, &display_name)
+        {
+            return Err(PersistenceError::InvalidState {
+                reason: "a persisted session rename has invalid canonical input",
             });
         }
     }
@@ -1758,8 +1810,58 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
             reason: "canonical logical sequences are invalid",
         });
     }
+    validate_session_rename_logical_sequences(connection)?;
     validate_repository_logical_sequences(connection)?;
     validate_tool_logical_sequences(connection)
+}
+
+fn validate_session_rename_logical_sequences(
+    connection: &Connection,
+) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM session_rename_requests AS rename
+            WHERE rename.accepted_sequence <= 0
+               OR EXISTS (SELECT 1 FROM session_creation_requests WHERE accepted_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM workspace_operation_facts WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM session_created_facts WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM audit_facts WHERE audit_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM credential_mutation_requests WHERE accepted_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM credential_operation_facts WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM credential_audit_facts WHERE audit_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM server_stop_requests WHERE accepted_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM server_audit_facts WHERE audit_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM session_entries WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM run_accepted_facts WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM run_state_facts WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM run_cancellation_requests WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM provider_operation_facts WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM run_audit_facts WHERE audit_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM repository_import_requests WHERE accepted_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM repository_import_facts WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM repository_import_audit_facts WHERE audit_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM tool_calls WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM tool_operation_facts WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM tool_uncertainty_acknowledgements WHERE fact_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM tool_audit_facts WHERE audit_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM local_commands WHERE accepted_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM local_command_cancellations WHERE accepted_sequence = rename.accepted_sequence)
+               OR EXISTS (SELECT 1 FROM local_command_audit_facts WHERE audit_sequence = rename.accepted_sequence)
+            UNION ALL
+            SELECT 1 FROM logical_sequences
+            WHERE next_value <= COALESCE((
+                SELECT MAX(accepted_sequence) FROM session_rename_requests
+            ), 0)
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "session rename logical sequences are invalid",
+        });
+    }
+    Ok(())
 }
 
 fn validate_repository_logical_sequences(connection: &Connection) -> Result<(), PersistenceError> {
@@ -1799,7 +1901,8 @@ fn validate_repository_logical_sequences(connection: &Connection) -> Result<(), 
              OR EXISTS (SELECT 1 FROM tool_audit_facts WHERE audit_sequence = ?1)
              OR EXISTS (SELECT 1 FROM local_commands WHERE accepted_sequence = ?1)
              OR EXISTS (SELECT 1 FROM local_command_cancellations WHERE accepted_sequence = ?1)
-             OR EXISTS (SELECT 1 FROM local_command_audit_facts WHERE audit_sequence = ?1)",
+             OR EXISTS (SELECT 1 FROM local_command_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM session_rename_requests WHERE accepted_sequence = ?1)",
             [sequence],
             |row| row.get(0),
         )?;
@@ -1859,7 +1962,8 @@ fn validate_tool_logical_sequences(connection: &Connection) -> Result<(), Persis
              OR EXISTS (SELECT 1 FROM repository_import_audit_facts WHERE audit_sequence = ?1)
              OR EXISTS (SELECT 1 FROM local_commands WHERE accepted_sequence = ?1)
              OR EXISTS (SELECT 1 FROM local_command_cancellations WHERE accepted_sequence = ?1)
-             OR EXISTS (SELECT 1 FROM local_command_audit_facts WHERE audit_sequence = ?1)",
+             OR EXISTS (SELECT 1 FROM local_command_audit_facts WHERE audit_sequence = ?1)
+             OR EXISTS (SELECT 1 FROM session_rename_requests WHERE accepted_sequence = ?1)",
             [sequence],
             |row| row.get(0),
         )?;

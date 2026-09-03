@@ -22,6 +22,7 @@ pub(super) const MAX_SESSION_EVENT_PAGE_SIZE: u16 = 100;
 const MAX_SESSION_NAME_BYTES: usize = 256;
 const CREATE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v1\0";
 const CREATE_SESSION_WITH_DIRECTORY_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/create-session/v2\0";
+const RENAME_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/rename-session/v1\0";
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
 const SUBMIT_SESSION_INPUT_WITH_IMAGES_FINGERPRINT_CONTEXT: &[u8] =
     b"morons.dev/submit-session-input/v2\0";
@@ -151,6 +152,7 @@ pub struct SessionPage {
 pub struct SessionCatalogEvent {
     pub cursor: SessionCatalogEventCursor,
     pub session: Session,
+    pub created: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -586,6 +588,18 @@ pub(super) fn create_session_fingerprint(
     let mut digest = Sha256::new();
     digest.update(CREATE_SESSION_FINGERPRINT_CONTEXT);
     update_optional_name(&mut digest, display_name);
+    digest.finalize().into()
+}
+
+pub(super) fn rename_session_fingerprint(
+    session_id: SessionId,
+    display_name: &str,
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(RENAME_SESSION_FINGERPRINT_CONTEXT);
+    digest.update(session_id.as_bytes());
+    digest.update((display_name.len() as u64).to_be_bytes());
+    digest.update(display_name.as_bytes());
     digest.finalize().into()
 }
 

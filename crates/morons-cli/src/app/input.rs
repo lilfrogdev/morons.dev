@@ -4,6 +4,8 @@ use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyMo
 use super::{AppAction, AppState, CredentialDialog, InformationDialog, View};
 use crate::terminal::CredentialBuffer;
 
+const MAX_SESSION_NAME_BYTES: usize = 256;
+
 impl AppState {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> AppAction {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
@@ -31,6 +33,9 @@ impl AppState {
         if key.code == KeyCode::Char('?') {
             self.information_dialog = Some(InformationDialog::Help);
             return AppAction::None;
+        }
+        if self.rename_dialog.is_some() {
+            return self.handle_rename_key(key.code, key.modifiers);
         }
         if self.pending_unknown {
             return match key.code {
@@ -89,6 +94,13 @@ impl AppState {
     }
 
     pub(crate) fn handle_paste(&mut self, paste: &str) {
+        if let Some(input) = self.rename_dialog.as_mut() {
+            input.push_paste(paste);
+            if input.len_bytes() > MAX_SESSION_NAME_BYTES {
+                self.set_status("Session names accept at most 256 UTF-8 bytes");
+            }
+            return;
+        }
         if let Some(CredentialDialog::Enter { input, .. }) = self.credential_dialog.as_mut() {
             if !input.push_paste(paste) {
                 self.set_status(credential_input_constraint());
@@ -149,6 +161,54 @@ impl AppState {
                         })
                 })
                 .unwrap_or(AppAction::None),
+            _ => AppAction::None,
+        }
+    }
+
+    fn handle_rename_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> AppAction {
+        match code {
+            KeyCode::Esc => {
+                self.rename_dialog = None;
+                self.set_status("Session rename cancelled");
+                AppAction::None
+            }
+            KeyCode::Backspace => {
+                if let Some(input) = self.rename_dialog.as_mut() {
+                    input.backspace();
+                }
+                AppAction::None
+            }
+            KeyCode::Enter => {
+                let Some(session_id) = self.selected_session_id() else {
+                    self.rename_dialog = None;
+                    return AppAction::None;
+                };
+                let Some(input) = self.rename_dialog.as_ref() else {
+                    return AppAction::None;
+                };
+                let display_name = input.as_str().trim();
+                if display_name.is_empty() || display_name.len() > MAX_SESSION_NAME_BYTES {
+                    self.set_status("Enter a session name of at most 256 UTF-8 bytes");
+                    return AppAction::None;
+                }
+                let display_name = display_name.to_owned();
+                self.rename_dialog = None;
+                AppAction::RenameSession {
+                    session_id,
+                    display_name,
+                }
+            }
+            KeyCode::Char(character)
+                if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                if let Some(input) = self.rename_dialog.as_mut() {
+                    let _ = input.push_character(character);
+                    if input.len_bytes() > MAX_SESSION_NAME_BYTES {
+                        self.set_status("Session names accept at most 256 UTF-8 bytes");
+                    }
+                }
+                AppAction::None
+            }
             _ => AppAction::None,
         }
     }
@@ -279,6 +339,11 @@ impl AppState {
         match code {
             KeyCode::Char('q') if self.pending.is_none() => AppAction::Quit,
             KeyCode::Char('n') if self.pending.is_none() => AppAction::CreateSession,
+            KeyCode::Char('r') if self.pending.is_none() && !self.sessions.is_empty() => {
+                self.rename_dialog = Some(crate::terminal::PromptBuffer::default());
+                self.set_status("Enter a new name for the selected session");
+                AppAction::None
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.selected_session = self.selected_session.saturating_sub(1);
                 AppAction::None

@@ -43,6 +43,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
     if let Some(dialog) = app.information_dialog {
         render_information_dialog(frame, area, dialog);
     }
+    if let Some(input) = app.rename_dialog.as_ref() {
+        render_rename_dialog(frame, area, input.as_str());
+    }
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -365,7 +368,7 @@ fn render_model_disclosure(
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let help = match app.view {
         View::Sessions => {
-            "↑↓ select · Enter open · n new · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
+            "↑↓ select · Enter open · n new · r rename · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
             "Enter send · @ skill · !/!! command · /context · /compact · Esc sessions · Ctrl+X cancel"
@@ -381,6 +384,28 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     );
 }
 
+fn render_rename_dialog(frame: &mut Frame<'_>, area: Rect, input: &str) {
+    let width = area.width.min(68);
+    let height = area.height.min(5);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(SafeText::from_untrusted(input).as_str().to_owned())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Rename session · Enter save · Esc cancel "),
+            )
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
 fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: InformationDialog) {
     let (title, message, width, height) = match dialog {
         InformationDialog::TrustNotice => (
@@ -391,7 +416,7 @@ fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: Informat
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · r rename in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             15,
         ),

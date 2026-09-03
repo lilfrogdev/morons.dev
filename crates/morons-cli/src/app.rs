@@ -30,6 +30,7 @@ pub(super) enum View {
 pub(super) enum PendingOperation {
     CreateSession,
     SubmitInput,
+    RenameSession,
     ExecuteLocalCommand,
     CancelRun,
     CancelLocalCommand,
@@ -61,6 +62,10 @@ pub(super) enum AppAction {
     CreateSession,
     OpenSession(SessionId),
     CloseSession,
+    RenameSession {
+        session_id: SessionId,
+        display_name: String,
+    },
     ShowContext {
         session_id: SessionId,
         service: OpenCodeService,
@@ -114,6 +119,14 @@ impl fmt::Debug for AppAction {
                 .field(session_id)
                 .finish(),
             Self::CloseSession => formatter.write_str("CloseSession"),
+            Self::RenameSession {
+                session_id,
+                display_name,
+            } => formatter
+                .debug_struct("RenameSession")
+                .field("session_id", session_id)
+                .field("display_name_bytes", &display_name.len())
+                .finish(),
             Self::ShowContext {
                 session_id,
                 service,
@@ -223,6 +236,7 @@ pub(super) struct AppState {
     pub(super) credential: Option<OpenCodeCredentialStatus>,
     pub(super) credential_dialog: Option<CredentialDialog>,
     pub(super) information_dialog: Option<InformationDialog>,
+    pub(super) rename_dialog: Option<PromptBuffer>,
     pub(super) view: View,
     pub(super) session: Option<SessionView>,
     pub(super) prompt: PromptBuffer,
@@ -247,6 +261,7 @@ impl AppState {
             credential: None,
             credential_dialog: None,
             information_dialog: initial_information_dialog(),
+            rename_dialog: None,
             view: View::Sessions,
             session: None,
             prompt: PromptBuffer::default(),
@@ -437,6 +452,18 @@ impl AppState {
         Ok(())
     }
 
+    pub(super) fn rename_session_applied(
+        &mut self,
+        session: SessionSummary,
+    ) -> Result<(), UiStateError> {
+        self.clear_pending();
+        self.rename_dialog = None;
+        self.apply_event(ApplicationEvent::SessionChanged {
+            cursor: morons_protocol::SessionCatalogEventCursor::beginning(),
+            session,
+        })
+    }
+
     pub(super) fn add_session(&mut self, session: SessionSummary) -> Result<(), UiStateError> {
         if self
             .sessions
@@ -543,6 +570,29 @@ impl AppState {
     pub(super) fn apply_event(&mut self, event: ApplicationEvent) -> Result<(), UiStateError> {
         match event {
             ApplicationEvent::SessionCreated { session, .. } => self.add_session(session),
+            ApplicationEvent::SessionChanged { session, .. } => {
+                let existing = self
+                    .sessions
+                    .iter_mut()
+                    .find(|existing| existing.summary.id == session.id)
+                    .ok_or(UiStateError::ResourceScopeMismatch)?;
+                *existing = PresentedSession::new(session.clone());
+                mark_shared_directories(&mut self.sessions);
+                if let Some(open) = self
+                    .session
+                    .as_mut()
+                    .filter(|open| open.summary.id == session.id)
+                {
+                    open.display_name = SafeText::from_untrusted(
+                        session
+                            .display_name
+                            .as_deref()
+                            .unwrap_or("Untitled session"),
+                    );
+                    open.summary = session;
+                }
+                Ok(())
+            }
             ApplicationEvent::SessionTranscriptEntryCommitted {
                 session_id, entry, ..
             } => self.session_mut(session_id)?.append_transcript_entry(entry),

@@ -255,6 +255,11 @@ pub enum ApplicationRequest {
     GetSession {
         session_id: SessionId,
     },
+    RenameSession {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        display_name: String,
+    },
     ListSessions {
         cursor: Option<SessionListCursor>,
         limit: u16,
@@ -346,6 +351,16 @@ impl fmt::Debug for ApplicationRequest {
             Self::GetSession { session_id } => formatter
                 .debug_struct("GetSession")
                 .field("session_id", session_id)
+                .finish(),
+            Self::RenameSession {
+                mutation_request_id,
+                session_id,
+                display_name,
+            } => formatter
+                .debug_struct("RenameSession")
+                .field("mutation_request_id", mutation_request_id)
+                .field("session_id", session_id)
+                .field("display_name_bytes", &display_name.len())
                 .finish(),
             Self::ListSessions { cursor, limit } => formatter
                 .debug_struct("ListSessions")
@@ -490,6 +505,9 @@ pub enum ApplicationResponse {
     SessionFound {
         session: SessionSummary,
     },
+    SessionRenamed {
+        session: SessionSummary,
+    },
     SessionsListed {
         sessions: Vec<SessionSummary>,
         next_cursor: Option<SessionListCursor>,
@@ -566,6 +584,10 @@ pub enum ApplicationEvent {
         cursor: SessionCatalogEventCursor,
         session: SessionSummary,
     },
+    SessionChanged {
+        cursor: SessionCatalogEventCursor,
+        session: SessionSummary,
+    },
     SessionTranscriptEntryCommitted {
         cursor: SessionEventCursor,
         session_id: SessionId,
@@ -599,7 +621,9 @@ impl ApplicationEvent {
     #[must_use]
     pub const fn session_catalog_cursor(&self) -> Option<SessionCatalogEventCursor> {
         match self {
-            Self::SessionCreated { cursor, .. } => Some(*cursor),
+            Self::SessionCreated { cursor, .. } | Self::SessionChanged { cursor, .. } => {
+                Some(*cursor)
+            }
             Self::SessionTranscriptEntryCommitted { .. }
             | Self::SessionRunChanged { .. }
             | Self::SessionLocalCommandChanged { .. }
@@ -615,7 +639,9 @@ impl ApplicationEvent {
             | Self::SessionRunChanged { cursor, .. }
             | Self::SessionLocalCommandChanged { cursor, .. }
             | Self::SessionWorkspaceChanged { cursor, .. } => Some(*cursor),
-            Self::SessionCreated { .. } | Self::SessionAssistantDelta { .. } => None,
+            Self::SessionCreated { .. }
+            | Self::SessionChanged { .. }
+            | Self::SessionAssistantDelta { .. } => None,
         }
     }
 }
@@ -625,6 +651,11 @@ impl fmt::Debug for ApplicationEvent {
         match self {
             Self::SessionCreated { cursor, session } => formatter
                 .debug_struct("SessionCreated")
+                .field("cursor", cursor)
+                .field("session", session)
+                .finish(),
+            Self::SessionChanged { cursor, session } => formatter
+                .debug_struct("SessionChanged")
                 .field("cursor", cursor)
                 .field("session", session)
                 .finish(),
