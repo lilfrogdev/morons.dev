@@ -1024,7 +1024,7 @@ fn normalize_tool_provider_turn(
     for item in outcome.output {
         match item {
             ProviderOutputItem::AssistantMessage(message)
-                if message.phase == Some(ProviderMessagePhase::Commentary)
+                if matches!(message.phase, None | Some(ProviderMessagePhase::Commentary))
                     && !saw_call
                     && !message.text.is_empty()
                     && commentary.is_none() =>

@@ -99,7 +99,7 @@ async fn model_catalog_query_returns_only_reviewed_server_metadata() {
 }
 
 #[test]
-fn tool_turn_validation_rejects_the_entire_unknown_or_contradictory_response() {
+fn tool_turn_validation_accepts_unphased_commentary_and_rejects_invalid_output() {
     let usage = ProviderUsage {
         input_tokens: 1,
         cached_input_tokens: 0,
@@ -122,6 +122,36 @@ fn tool_turn_validation_rejects_the_entire_unknown_or_contradictory_response() {
         super::normalize_provider_turn(unknown, crate::tools::TOOL_CATALOG_VERSION),
         Err(RunFailureKind::InvalidProviderOutput)
     ));
+
+    let unphased_commentary = ProviderOutcome {
+        provider_response_id: "resp_unphased_commentary".to_owned(),
+        output: vec![
+            ProviderOutputItem::AssistantMessage(ProviderAssistantMessage {
+                provider_item_id: "msg_commentary".to_owned(),
+                phase: None,
+                text: "I will read the file.".to_owned(),
+                refusal: false,
+            }),
+            ProviderOutputItem::ToolCall(ProviderToolCall {
+                provider_item_id: Some("fc_read".to_owned()),
+                provider_call_id: "call_read".to_owned(),
+                name: "read".to_owned(),
+                arguments: r#"{"path":"note.txt"}"#.to_owned(),
+            }),
+        ],
+        usage,
+    };
+    let normalized =
+        super::normalize_provider_turn(unphased_commentary, crate::tools::TOOL_CATALOG_VERSION)
+            .expect("unphased text before a tool call should be treated as commentary");
+    let super::NormalizedTurn::Tools { turn, .. } = normalized else {
+        panic!("tool output should normalize as a tool turn");
+    };
+    assert!(matches!(
+        turn.commentary,
+        Some((ref text, false)) if text == "I will read the file."
+    ));
+    assert_eq!(turn.calls.len(), 1);
 
     let contradictory = ProviderOutcome {
         provider_response_id: "resp_contradictory".to_owned(),

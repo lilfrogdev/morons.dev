@@ -199,7 +199,7 @@ fn parse_input(
 ) -> Result<ToolInput, ToolCallValidationError> {
     match name {
         "read" => {
-            require_fields(&value, &["path", "offset", "limit"])?;
+            require_read_fields(&value)?;
             let arguments: Read = decode(value)?;
             if arguments.offset == 0 || arguments.limit == 0 || arguments.limit > MAX_READ_LINES {
                 return Err(ToolCallValidationError::InvalidProviderOutput);
@@ -463,6 +463,20 @@ fn object_schema(properties: Value, required: &[&str]) -> Value {
     })
 }
 
+fn require_read_fields(value: &Value) -> Result<(), ToolCallValidationError> {
+    let object = value
+        .as_object()
+        .ok_or(ToolCallValidationError::InvalidProviderOutput)?;
+    if !object.contains_key("path")
+        || object
+            .keys()
+            .any(|field| !matches!(field.as_str(), "path" | "offset" | "limit"))
+    {
+        return Err(ToolCallValidationError::InvalidProviderOutput);
+    }
+    Ok(())
+}
+
 fn require_fields(value: &Value, fields: &[&str]) -> Result<(), ToolCallValidationError> {
     let object = value
         .as_object()
@@ -500,8 +514,18 @@ const fn invalid(_: super::ToolErrorKind) -> ToolCallValidationError {
 #[serde(deny_unknown_fields)]
 struct Read {
     path: String,
+    #[serde(default = "default_read_offset")]
     offset: u32,
+    #[serde(default = "default_read_limit")]
     limit: u16,
+}
+
+const fn default_read_offset() -> u32 {
+    1
+}
+
+const fn default_read_limit() -> u16 {
+    MAX_READ_LINES
 }
 
 #[derive(Deserialize)]
@@ -691,9 +715,48 @@ mod tests {
             .is_err()
         );
 
+        let defaulted_read = parse_provider_calls(
+            vec![call("read", r#"{"path":"src/lib.rs"}"#)],
+            TOOL_CATALOG_VERSION,
+        )
+        .expect("omitted read pagination should use bounded defaults");
+        assert!(matches!(
+            defaulted_read[0].input,
+            ToolInput::Read {
+                offset: 1,
+                limit: MAX_READ_LINES,
+                ..
+            }
+        ));
+        let partially_defaulted_read = parse_provider_calls(
+            vec![call("read", r#"{"path":"src/lib.rs","offset":2}"#)],
+            TOOL_CATALOG_VERSION,
+        )
+        .expect("an omitted read limit should use its bounded default");
+        assert!(matches!(
+            partially_defaulted_read[0].input,
+            ToolInput::Read {
+                offset: 2,
+                limit: MAX_READ_LINES,
+                ..
+            }
+        ));
+        let defaulted_offset = parse_provider_calls(
+            vec![call("read", r#"{"path":"src/lib.rs","limit":10}"#)],
+            TOOL_CATALOG_VERSION,
+        )
+        .expect("an omitted read offset should use its bounded default");
+        assert!(matches!(
+            defaulted_offset[0].input,
+            ToolInput::Read {
+                offset: 1,
+                limit: 10,
+                ..
+            }
+        ));
         for arguments in [
             r#"{"path":"src/lib.rs","offset":1,"limit":10,"extra":true}"#,
-            r#"{"path":"src/lib.rs","offset":1}"#,
+            r#"{"offset":1,"limit":10}"#,
             r#"{"path":"src/lib.rs","path":"other","offset":1,"limit":10}"#,
         ] {
             assert!(
