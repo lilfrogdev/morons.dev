@@ -425,6 +425,7 @@ impl AppState {
             .get(self.selected_session)
             .map(|session| session.summary.id);
         self.sessions = sessions.into_iter().map(PresentedSession::new).collect();
+        mark_shared_directories(&mut self.sessions);
         self.selected_session = selected_id
             .and_then(|selected_id| {
                 self.sessions
@@ -448,6 +449,7 @@ impl AppState {
             return Err(UiStateError::ResourceLimitExceeded);
         }
         self.sessions.push(PresentedSession::new(session));
+        mark_shared_directories(&mut self.sessions);
         self.selected_session = self.sessions.len() - 1;
         Ok(())
     }
@@ -485,7 +487,19 @@ impl AppState {
         active_run_id: Option<RunId>,
         active_command_id: Option<LocalCommandId>,
     ) -> Result<(), UiStateError> {
-        let session = SessionView::new(
+        let shared_directory = summary
+            .working_directory
+            .as_deref()
+            .is_some_and(|directory| {
+                self.sessions
+                    .iter()
+                    .filter(|session| {
+                        session.summary.working_directory.as_deref() == Some(directory)
+                    })
+                    .count()
+                    > 1
+            });
+        let mut session = SessionView::new(
             summary,
             workspace,
             entries,
@@ -494,6 +508,7 @@ impl AppState {
             active_command_id,
             Vec::new(),
         )?;
+        session.shared_directory = shared_directory;
         self.session = Some(session);
         self.view = View::Session;
         self.prompt.clear();
@@ -681,6 +696,12 @@ impl AppState {
             .map(|session| session.summary.id)
     }
 
+    pub(super) fn selected_directory_is_shared(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.shared_directory)
+    }
+
     pub(super) fn selected_model(&self) -> Option<&PresentedModel> {
         self.selected_model.and_then(|index| self.models.get(index))
     }
@@ -697,6 +718,7 @@ pub(super) struct PresentedSession {
     pub(super) summary: SessionSummary,
     pub(super) display_name: SafeText,
     pub(super) working_directory: SafeText,
+    pub(super) shared_directory: bool,
 }
 
 impl PresentedSession {
@@ -717,6 +739,7 @@ impl PresentedSession {
             summary,
             display_name,
             working_directory,
+            shared_directory: false,
         }
     }
 }
@@ -766,6 +789,7 @@ pub(super) struct SessionView {
     pub(super) skills: Vec<PresentedSkill>,
     pub(super) transient: Option<TransientAssistant>,
     pub(super) context_status: Option<SessionContextStatus>,
+    pub(super) shared_directory: bool,
 }
 
 impl SessionView {
@@ -815,6 +839,7 @@ impl SessionView {
             skills: skills.into_iter().map(PresentedSkill::new).collect(),
             transient: None,
             context_status: None,
+            shared_directory: false,
         })
     }
 
@@ -1073,6 +1098,21 @@ impl fmt::Debug for TransientAssistant {
             .field("refusal", &self.refusal)
             .field("truncated", &self.truncated)
             .finish()
+    }
+}
+
+fn mark_shared_directories(sessions: &mut [PresentedSession]) {
+    for index in 0..sessions.len() {
+        sessions[index].shared_directory = sessions[index]
+            .summary
+            .working_directory
+            .as_deref()
+            .is_some_and(|directory| {
+                sessions.iter().enumerate().any(|(other_index, other)| {
+                    other_index != index
+                        && other.summary.working_directory.as_deref() == Some(directory)
+                })
+            });
     }
 }
 

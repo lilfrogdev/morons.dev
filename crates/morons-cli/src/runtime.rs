@@ -462,14 +462,19 @@ impl RuntimeState {
                 let skill_warning = snapshot.skill_warnings.first().cloned();
                 let additional_warnings = snapshot.skill_warnings.len().saturating_sub(1);
                 self.install_session_snapshot(snapshot, subscription_events)?;
-                self.app.set_status(match skill_warning {
-                    None => "Session transcript and skills are current".to_owned(),
-                    Some(warning) if additional_warnings == 0 => {
+                let shared = self.app.selected_directory_is_shared();
+                self.app.set_status(match (skill_warning, shared) {
+                    (None, false) => "Session transcript and skills are current".to_owned(),
+                    (None, true) => "Warning: another session uses this directory; filesystem effects may race".to_owned(),
+                    (Some(warning), false) if additional_warnings == 0 => {
                         format!("Skill warning: {warning}")
                     }
-                    Some(warning) => {
+                    (Some(warning), false) => {
                         format!("Skill warning: {warning} (+{additional_warnings} more)")
                     }
+                    (Some(warning), true) => format!(
+                        "Shared-directory race warning · skill warning: {warning} (+{additional_warnings} more)"
+                    ),
                 });
             }
             RequestEvent::SessionCreated {
