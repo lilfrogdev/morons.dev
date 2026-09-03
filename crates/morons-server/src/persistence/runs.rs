@@ -122,6 +122,66 @@ impl SessionStore {
         .await
     }
 
+    pub(crate) async fn prepare_auto_compaction(
+        &self,
+        run_id: RunId,
+        plan: &crate::persistence::CompactionPlan,
+    ) -> Result<crate::persistence::CompactionOperationId, PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::PrepareCompaction {
+            run_id,
+            plan: plan.clone(),
+            response,
+        })
+        .await
+    }
+
+    pub(crate) async fn mark_compaction_dispatched(
+        &self,
+        run_id: RunId,
+        operation_id: crate::persistence::CompactionOperationId,
+    ) -> Result<(), PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::MarkCompactionDispatched {
+            run_id,
+            operation_id,
+            response,
+        })
+        .await
+    }
+
+    pub(crate) async fn complete_compaction(
+        &self,
+        run_id: RunId,
+        operation_id: crate::persistence::CompactionOperationId,
+        service: RunOpenCodeService,
+        model_id: String,
+        summary: String,
+    ) -> Result<crate::persistence::ContextCheckpoint, PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::CompleteCompaction {
+            run_id,
+            operation_id,
+            service,
+            model_id,
+            summary,
+            response,
+        })
+        .await
+    }
+
+    pub(crate) async fn fail_compaction(
+        &self,
+        run_id: RunId,
+        operation_id: crate::persistence::CompactionOperationId,
+        uncertain: bool,
+    ) -> Result<(), PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::FailCompaction {
+            run_id,
+            operation_id,
+            uncertain,
+            response,
+        })
+        .await
+    }
+
     pub(crate) async fn activate_run(
         &self,
         run_id: RunId,
@@ -404,6 +464,31 @@ pub(super) enum RunWorkerRequest {
         attachments: Vec<crate::persistence::PreparedImageAttachment>,
         response: oneshot::Sender<Result<AcceptedRun, PersistenceError>>,
     },
+    PrepareCompaction {
+        run_id: RunId,
+        plan: crate::persistence::CompactionPlan,
+        response:
+            oneshot::Sender<Result<crate::persistence::CompactionOperationId, PersistenceError>>,
+    },
+    MarkCompactionDispatched {
+        run_id: RunId,
+        operation_id: crate::persistence::CompactionOperationId,
+        response: oneshot::Sender<Result<(), PersistenceError>>,
+    },
+    CompleteCompaction {
+        run_id: RunId,
+        operation_id: crate::persistence::CompactionOperationId,
+        service: RunOpenCodeService,
+        model_id: String,
+        summary: String,
+        response: oneshot::Sender<Result<crate::persistence::ContextCheckpoint, PersistenceError>>,
+    },
+    FailCompaction {
+        run_id: RunId,
+        operation_id: crate::persistence::CompactionOperationId,
+        uncertain: bool,
+        response: oneshot::Sender<Result<(), PersistenceError>>,
+    },
     Activate {
         run_id: RunId,
         response: oneshot::Sender<Result<ActivationOutcome, PersistenceError>>,
@@ -525,6 +610,44 @@ impl RunWorkerRequest {
                         attachments,
                     },
                 ));
+            }
+            Self::PrepareCompaction {
+                run_id,
+                plan,
+                response,
+            } => {
+                let _ = response.send(backend.prepare_auto_compaction(run_id, &plan));
+            }
+            Self::MarkCompactionDispatched {
+                run_id,
+                operation_id,
+                response,
+            } => {
+                let _ = response.send(backend.mark_compaction_dispatched(run_id, operation_id));
+            }
+            Self::CompleteCompaction {
+                run_id,
+                operation_id,
+                service,
+                model_id,
+                summary,
+                response,
+            } => {
+                let _ = response.send(backend.complete_compaction(
+                    run_id,
+                    operation_id,
+                    service,
+                    &model_id,
+                    summary,
+                ));
+            }
+            Self::FailCompaction {
+                run_id,
+                operation_id,
+                uncertain,
+                response,
+            } => {
+                let _ = response.send(backend.fail_compaction(run_id, operation_id, uncertain));
             }
             Self::Activate { run_id, response } => {
                 let _ = response.send(backend.activate_run(run_id));

@@ -169,7 +169,7 @@ impl Backend {
             });
         }
 
-        let estimated_input_tokens = estimate_context_tokens(
+        let (estimated_input_tokens, accepted_checkpoint_id) = estimate_context_tokens(
             &transaction,
             session_id,
             entry_high_water,
@@ -274,6 +274,12 @@ impl Backend {
                 execution_image_generation.as_ref().map(|id| &id[..]),
             ],
         )?;
+        if let Some(checkpoint_id) = accepted_checkpoint_id {
+            transaction.execute(
+                "INSERT INTO run_accepted_checkpoints (run_id, checkpoint_id) VALUES (?1, ?2)",
+                params![&run_id.as_bytes()[..], &checkpoint_id[..]],
+            )?;
+        }
         insert_run_skills(&transaction, run_id, &skills)?;
         transaction.execute(
             "INSERT INTO session_entries (
@@ -568,7 +574,28 @@ fn estimate_context_tokens(
     session_id: crate::persistence::SessionId,
     entry_high_water: u64,
     size: NewContextSize,
-) -> Result<u32, PersistenceError> {
+) -> Result<(u32, Option<[u8; 16]>), PersistenceError> {
+    let checkpoint = transaction
+        .query_row(
+            "SELECT checkpoint_id, source_entry_high_water, length(CAST(summary AS BLOB))
+             FROM context_checkpoints
+             WHERE session_id = ?1 AND source_entry_high_water <= ?2
+             ORDER BY source_entry_high_water DESC LIMIT 1",
+            params![
+                &session_id.as_bytes()[..],
+                sequence_to_sql(entry_high_water)?
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, [u8; 16]>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let checkpoint_high_water = checkpoint.as_ref().map_or(0, |checkpoint| checkpoint.1);
+    let checkpoint_bytes = checkpoint.as_ref().map_or(0, |checkpoint| checkpoint.2);
     let (entry_count, text_bytes) = transaction.query_row(
         "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM (
              SELECT COALESCE(length(CAST(entry.text AS BLOB)),
@@ -579,18 +606,26 @@ fn estimate_context_tokens(
              LEFT JOIN tool_operation_facts AS result
                ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
              WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2
+               AND entry.entry_sequence > ?3
              UNION ALL
              SELECT length(CAST(command.command_text AS BLOB)) + length(command.result_payload)
              FROM local_commands AS command
              WHERE command.session_id = ?1 AND command.entry_sequence <= ?2
+               AND command.entry_sequence > ?3
                AND command.context_visible = 1 AND command.state BETWEEN 3 AND 5
          )",
         params![
             &session_id.as_bytes()[..],
-            sequence_to_sql(entry_high_water)?
+            sequence_to_sql(entry_high_water)?,
+            checkpoint_high_water,
         ],
         |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
     )?;
+    let entry_count = entry_count
+        .checked_add(i64::from(checkpoint.is_some()))
+        .ok_or(PersistenceError::ResourceLimit {
+            resource: PersistenceResourceLimit::Context,
+        })?;
     let entry_count = u64::try_from(entry_count).map_err(|_| PersistenceError::InvalidState {
         reason: "the session context entry count is invalid",
     })?;
@@ -604,6 +639,12 @@ fn estimate_context_tokens(
             resource: PersistenceResourceLimit::Context,
         });
     }
+    let text_bytes =
+        text_bytes
+            .checked_add(checkpoint_bytes)
+            .ok_or(PersistenceError::ResourceLimit {
+                resource: PersistenceResourceLimit::Context,
+            })?;
     let text_bytes = u64::try_from(text_bytes).map_err(|_| PersistenceError::InvalidState {
         reason: "the session context byte count is invalid",
     })?;
@@ -625,7 +666,7 @@ fn estimate_context_tokens(
             resource: PersistenceResourceLimit::Context,
         });
     }
-    Ok(estimate)
+    Ok((estimate, checkpoint.map(|checkpoint| checkpoint.0)))
 }
 
 fn session_has_image_context(
@@ -633,10 +674,20 @@ fn session_has_image_context(
     session_id: crate::persistence::SessionId,
 ) -> Result<bool, PersistenceError> {
     Ok(connection.query_row(
-        "SELECT EXISTS (
-            SELECT 1 FROM image_attachments WHERE session_id = ?1
+        "WITH checkpoint(high_water) AS (
+            SELECT COALESCE(MAX(source_entry_high_water), 0)
+            FROM context_checkpoints WHERE session_id = ?1
+         )
+         SELECT EXISTS (
+            SELECT 1 FROM image_attachments AS attachment
+            JOIN session_entries AS entry ON entry.message_id = attachment.user_message_id
+            WHERE attachment.session_id = ?1
+              AND entry.entry_sequence > (SELECT high_water FROM checkpoint)
             UNION ALL
-            SELECT 1 FROM tool_image_attachments WHERE session_id = ?1
+            SELECT 1 FROM tool_image_attachments AS attachment
+            JOIN session_entries AS entry ON entry.tool_call_id = attachment.call_id
+            WHERE attachment.session_id = ?1 AND entry.entry_kind = 4
+              AND entry.entry_sequence > (SELECT high_water FROM checkpoint)
         )",
         [&session_id.as_bytes()[..]],
         |row| row.get(0),

@@ -973,7 +973,7 @@ fn schema_version_one_migrates_to_version_twelve() {
         .expect("version one database should install");
 
     let connection = database::open(&paths).expect("version one database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let mutation_operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -1045,7 +1045,7 @@ fn schema_version_two_migrates_to_version_twelve() {
         .expect("version two database should install");
 
     let connection = database::open(&paths).expect("version two database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -1097,7 +1097,7 @@ fn schema_version_three_migrates_to_version_twelve() {
         .expect("version three database should install");
 
     let connection = database::open(&paths).expect("version three database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let stop_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'server_stop_requests'",
@@ -1142,7 +1142,7 @@ fn schema_version_four_migrates_to_version_twelve() {
         .expect("version four database should install");
 
     let connection = database::open(&paths).expect("version four database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let import_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1191,7 +1191,7 @@ fn schema_version_five_migrates_to_version_twelve() {
         .expect("version five database should install");
 
     let connection = database::open(&paths).expect("version five database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let tool_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'tool_calls'",
@@ -1236,7 +1236,7 @@ fn schema_version_six_migrates_to_version_twelve() {
         .expect("version six database should install");
 
     let connection = database::open(&paths).expect("version six database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let image_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1283,7 +1283,7 @@ fn schema_version_seven_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version seven database should install");
     let connection = database::open(&paths).expect("version seven database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let generation_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -1331,7 +1331,7 @@ fn schema_version_eight_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version eight database should install");
     let connection = database::open(&paths).expect("version eight database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let column: String = connection
         .query_row(
             "SELECT name FROM pragma_table_info('run_accepted_facts')
@@ -1379,7 +1379,7 @@ fn schema_version_nine_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version nine database should install");
     let connection = database::open(&paths).expect("version nine database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let mode_version: String = connection
         .query_row(
             "SELECT name FROM pragma_table_info('repository_import_requests')
@@ -1428,7 +1428,7 @@ fn schema_version_ten_migrates_to_version_twelve() {
         .install_database(&initialization_path)
         .expect("version ten database should install");
     let connection = database::open(&paths).expect("version ten database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     for table in [
         "session_creation_requests",
         "session_created_facts",
@@ -1484,7 +1484,7 @@ fn schema_version_twelve_migrates_to_version_thirteen() {
         .install_database(&initialization_path)
         .expect("version twelve database should install");
     let connection = database::open(&paths).expect("version twelve database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 18);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
     let sql: String = connection
         .query_row(
             "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'tool_calls'",
@@ -1535,7 +1535,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     let connection =
         Connection::open(&database_path).expect("database should open for test change");
     connection
-        .execute_batch("PRAGMA user_version = 19;")
+        .execute_batch("PRAGMA user_version = 20;")
         .expect("test schema version should change");
     drop(connection);
 
@@ -1543,7 +1543,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
 
     let connection = Connection::open(database_path).expect("database should remain readable");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 19);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 20);
 }
 
 #[tokio::test(flavor = "current_thread")]

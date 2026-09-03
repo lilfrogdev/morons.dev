@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 19;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -41,6 +41,7 @@ const SCHEMA_V15: &str = include_str!("../schema_v15.sql");
 const SCHEMA_V16: &str = include_str!("../schema_v16.sql");
 const SCHEMA_V17: &str = include_str!("../schema_v17.sql");
 const SCHEMA_V18: &str = include_str!("../schema_v18.sql");
+const SCHEMA_V19: &str = include_str!("../schema_v19.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -48,6 +49,9 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("credential_audit_facts", "table"),
     ("credential_mutation_requests", "table"),
     ("credential_mutation_requests_by_state", "index"),
+    ("compaction_operations", "table"),
+    ("context_checkpoints", "table"),
+    ("context_checkpoints_by_session", "index"),
     ("credential_operation_facts", "table"),
     ("delivery_events", "table"),
     ("delivery_events_by_session", "index"),
@@ -76,6 +80,7 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("repository_import_requests", "table"),
     ("repository_import_requests_by_state", "index"),
     ("run_accepted_facts", "table"),
+    ("run_accepted_checkpoints", "table"),
     ("run_accepted_facts_by_session", "index"),
     ("run_audit_facts", "table"),
     ("run_audit_facts_by_operation", "index"),
@@ -174,6 +179,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V16)?;
     connection.execute_batch(SCHEMA_V17)?;
     connection.execute_batch(SCHEMA_V18)?;
+    connection.execute_batch(SCHEMA_V19)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -282,6 +288,7 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (16, SCHEMA_V16),
         (17, SCHEMA_V17),
         (18, SCHEMA_V18),
+        (19, SCHEMA_V19),
     ] {
         if version > schema_version {
             migrate_schema(connection, schema)?;
