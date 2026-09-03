@@ -441,6 +441,37 @@ where
         Ok(session)
     }
 
+    pub async fn rename_session(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        display_name: String,
+    ) -> Result<SessionSummary, ApplicationClientError> {
+        if display_name.is_empty() || display_name.len() > MAX_SESSION_DISPLAY_NAME_BYTES {
+            return Err(ApplicationClientError::Application(
+                ApplicationError::InvalidRequest,
+            ));
+        }
+        let response = self
+            .request(ApplicationRequest::RenameSession {
+                mutation_request_id,
+                session_id,
+                display_name: display_name.clone(),
+            })
+            .await?;
+        let ApplicationResponse::SessionRenamed { session } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        if session.id != session_id
+            || session.display_name.as_deref() != Some(&display_name)
+            || !valid_session_summary(&session)
+        {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(session)
+    }
+
     pub async fn submit_session_input(
         &mut self,
         mutation_request_id: MutationRequestId,

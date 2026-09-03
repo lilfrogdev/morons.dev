@@ -42,6 +42,7 @@ where
                 if matches!(
                     &event,
                     ApplicationEvent::SessionCreated { session, .. }
+                        | ApplicationEvent::SessionChanged { session, .. }
                         if !valid_session_summary(session)
                 ) {
                     self.usable = false;
@@ -219,7 +220,9 @@ where
                 self.delta_sequence = *sequence;
                 Ok(())
             }
-            ApplicationEvent::SessionCreated { .. } => Err(self.event_scope_mismatch()),
+            ApplicationEvent::SessionCreated { .. } | ApplicationEvent::SessionChanged { .. } => {
+                Err(self.event_scope_mismatch())
+            }
         }
     }
 

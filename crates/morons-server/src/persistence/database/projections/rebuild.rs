@@ -24,6 +24,7 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             UNION ALL SELECT session_id, fact_sequence FROM tool_uncertainty_acknowledgements
             UNION ALL SELECT session_id, updated_sequence FROM local_commands
             UNION ALL SELECT session_id, accepted_sequence FROM local_command_cancellations
+            UNION ALL SELECT session_id, accepted_sequence FROM session_rename_requests
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
@@ -35,7 +36,11 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
          SELECT
             fact.session_id,
             fact.workspace_id,
-            fact.display_name,
+            COALESCE((
+                SELECT rename.display_name FROM session_rename_requests AS rename
+                WHERE rename.session_id = fact.session_id
+                ORDER BY rename.accepted_sequence DESC LIMIT 1
+            ), fact.display_name),
             fact.working_directory,
             fact.accepted_sequence,
             updates.updated_sequence,
@@ -146,6 +151,7 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             UNION ALL SELECT session_id, fact_sequence FROM tool_uncertainty_acknowledgements
             UNION ALL SELECT session_id, updated_sequence FROM local_commands
             UNION ALL SELECT session_id, accepted_sequence FROM local_command_cancellations
+            UNION ALL SELECT session_id, accepted_sequence FROM session_rename_requests
          ), latest_updates AS (
             SELECT session_id, MAX(sequence) AS updated_sequence
             FROM canonical_updates GROUP BY session_id
@@ -178,6 +184,10 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
          SELECT delivery_event_id, fact_sequence, session_id, 1, 1,
                 created_at_milliseconds
          FROM session_created_facts
+         UNION ALL
+         SELECT delivery_event_id, accepted_sequence, session_id, 18, 1,
+                accepted_at_milliseconds
+         FROM session_rename_requests
          UNION ALL
          SELECT delivery_event_id, fact_sequence, session_id,
                 CASE entry_kind WHEN 1 THEN 2 WHEN 2 THEN 6 WHEN 3 THEN 12 ELSE 13 END,

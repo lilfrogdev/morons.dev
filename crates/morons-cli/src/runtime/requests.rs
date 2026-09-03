@@ -37,6 +37,11 @@ pub(super) enum RequestCommand {
     CreateSession {
         mutation_request_id: MutationRequestId,
     },
+    RenameSession {
+        mutation_request_id: MutationRequestId,
+        session_id: SessionId,
+        display_name: String,
+    },
     SubmitInput {
         mutation_request_id: MutationRequestId,
         session_id: SessionId,
@@ -91,6 +96,10 @@ impl RequestCommand {
             Self::CreateSession {
                 mutation_request_id,
             }
+            | Self::RenameSession {
+                mutation_request_id,
+                ..
+            }
             | Self::SubmitInput {
                 mutation_request_id,
                 ..
@@ -133,6 +142,7 @@ impl RequestCommand {
             Self::LoadSession(_) => "session transcript and skills",
             Self::LoadContext { .. } => "session context status",
             Self::CreateSession { .. } => "session creation",
+            Self::RenameSession { .. } => "session rename",
             Self::SubmitInput { .. } => "message submission",
             Self::ExecuteLocalCommand { .. } => "local command",
             Self::CancelRun { .. } => "run cancellation",
@@ -170,6 +180,15 @@ impl RequestCommand {
                 mutation_request_id,
             } => Some(Self::CreateSession {
                 mutation_request_id: *mutation_request_id,
+            }),
+            Self::RenameSession {
+                mutation_request_id,
+                session_id,
+                display_name,
+            } => Some(Self::RenameSession {
+                mutation_request_id: *mutation_request_id,
+                session_id: *session_id,
+                display_name: display_name.clone(),
             }),
             Self::SubmitInput {
                 mutation_request_id,
@@ -250,6 +269,10 @@ pub(super) enum RequestEvent {
     SessionLoaded(SessionSnapshot),
     ContextLoaded(SessionContextStatus),
     SessionCreated {
+        mutation_request_id: MutationRequestId,
+        session: SessionSummary,
+    },
+    SessionRenamed {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
     },
@@ -473,6 +496,7 @@ async fn execute_credential(
         | RequestCommand::LoadSession(_)
         | RequestCommand::LoadContext { .. }
         | RequestCommand::CreateSession { .. }
+        | RequestCommand::RenameSession { .. }
         | RequestCommand::SubmitInput { .. }
         | RequestCommand::ExecuteLocalCommand { .. }
         | RequestCommand::CancelRun { .. }
@@ -520,6 +544,17 @@ async fn execute(
             .create_session(*mutation_request_id, None)
             .await
             .map(|session| RequestResult::SessionCreated {
+                mutation_request_id: *mutation_request_id,
+                session,
+            }),
+        RequestCommand::RenameSession {
+            mutation_request_id,
+            session_id,
+            display_name,
+        } => client
+            .rename_session(*mutation_request_id, *session_id, display_name.clone())
+            .await
+            .map(|session| RequestResult::SessionRenamed {
                 mutation_request_id: *mutation_request_id,
                 session,
             }),
@@ -724,6 +759,10 @@ enum RequestResult {
         mutation_request_id: MutationRequestId,
         session: SessionSummary,
     },
+    SessionRenamed {
+        mutation_request_id: MutationRequestId,
+        session: SessionSummary,
+    },
     InputAccepted {
         mutation_request_id: MutationRequestId,
         accepted: SessionInputAcceptance,
@@ -768,6 +807,13 @@ impl RequestResult {
                 mutation_request_id,
                 session,
             } => RequestEvent::SessionCreated {
+                mutation_request_id,
+                session,
+            },
+            Self::SessionRenamed {
+                mutation_request_id,
+                session,
+            } => RequestEvent::SessionRenamed {
                 mutation_request_id,
                 session,
             },
@@ -850,6 +896,7 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 | RequestCommand::LoadSession(_)
                 | RequestCommand::LoadContext { .. } => None,
                 RequestCommand::CreateSession { .. }
+                | RequestCommand::RenameSession { .. }
                 | RequestCommand::SubmitInput { .. }
                 | RequestCommand::ExecuteLocalCommand { .. }
                 | RequestCommand::CancelRun { .. }

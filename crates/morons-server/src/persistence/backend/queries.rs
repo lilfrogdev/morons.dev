@@ -41,18 +41,27 @@ impl Backend {
         let query_limit = i64::from(limit) + 1;
         let mut statement = self.connection.prepare(
             "SELECT
-                session.session_id,
-                session.workspace_id,
-                session.display_name,
-                session.working_directory,
-                session.created_sequence,
-                session.updated_sequence,
-                session.created_at_milliseconds
-            FROM sessions AS session
-            INNER JOIN session_created_facts AS fact ON fact.session_id = session.session_id
+                fact.session_id,
+                fact.workspace_id,
+                COALESCE((
+                    SELECT rename.display_name FROM session_rename_requests AS rename
+                    WHERE rename.session_id = fact.session_id
+                      AND rename.accepted_sequence <= ?1
+                    ORDER BY rename.accepted_sequence DESC LIMIT 1
+                ), fact.display_name),
+                fact.working_directory,
+                fact.accepted_sequence,
+                MAX(fact.fact_sequence, COALESCE((
+                    SELECT MAX(rename.accepted_sequence)
+                    FROM session_rename_requests AS rename
+                    WHERE rename.session_id = fact.session_id
+                      AND rename.accepted_sequence <= ?1
+                ), 0)),
+                fact.created_at_milliseconds
+            FROM session_created_facts AS fact
             WHERE fact.fact_sequence <= ?1
-              AND session.created_sequence > ?2
-            ORDER BY session.created_sequence, session.session_id
+              AND fact.accepted_sequence > ?2
+            ORDER BY fact.accepted_sequence, fact.session_id
             LIMIT ?3",
         )?;
         let mut sessions = statement
@@ -99,18 +108,29 @@ impl Backend {
         let mut statement = self.connection.prepare(
             "SELECT
                 event.event_sequence,
+                event.event_kind,
                 fact.session_id,
                 fact.workspace_id,
-                fact.display_name,
+                COALESCE((
+                    SELECT rename.display_name FROM session_rename_requests AS rename
+                    WHERE rename.session_id = fact.session_id
+                      AND rename.accepted_sequence <= event.event_sequence
+                    ORDER BY rename.accepted_sequence DESC LIMIT 1
+                ), fact.display_name),
                 fact.working_directory,
                 fact.accepted_sequence,
-                fact.fact_sequence,
+                MAX(fact.fact_sequence, COALESCE((
+                    SELECT MAX(rename.accepted_sequence)
+                    FROM session_rename_requests AS rename
+                    WHERE rename.session_id = fact.session_id
+                      AND rename.accepted_sequence <= event.event_sequence
+                ), 0)),
                 fact.created_at_milliseconds
             FROM delivery_events AS event
-            INNER JOIN session_created_facts AS fact ON fact.delivery_event_id = event.event_id
+            INNER JOIN session_created_facts AS fact ON fact.session_id = event.session_id
             WHERE event.event_sequence > ?1
               AND event.event_sequence <= ?2
-              AND event.event_kind = 1
+              AND event.event_kind IN (1, 18)
               AND event.payload_version = 1
             ORDER BY event.event_sequence
             LIMIT ?3",
@@ -127,7 +147,8 @@ impl Backend {
                         cursor: SessionCatalogEventCursor::from_sequence(
                             nonnegative_integer_from_row(row, 0)?,
                         ),
-                        session: session_from_row_at(row, 1)?,
+                        session: session_from_row_at(row, 2)?,
+                        created: row.get::<_, i64>(1)? == 1,
                     })
                 },
             )?
@@ -152,7 +173,7 @@ fn session_catalog_high_water(backend: &Backend) -> Result<u64, PersistenceError
     let sequence = backend.connection.query_row(
         "SELECT COALESCE(MAX(event_sequence), 0)
          FROM delivery_events
-         WHERE event_kind = 1 AND payload_version = 1",
+         WHERE event_kind IN (1, 18) AND payload_version = 1",
         [],
         |row| row.get::<_, i64>(0),
     )?;

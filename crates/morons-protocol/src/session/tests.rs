@@ -39,6 +39,39 @@ fn application_request_has_stable_json_shape() {
 }
 
 #[test]
+fn session_rename_contract_has_stable_redacted_shapes() {
+    let session_id = SessionId::from_bytes([0x17; 16]);
+    let request = ApplicationRequest::RenameSession {
+        mutation_request_id: MutationRequestId::from_bytes([0x16; 16]),
+        session_id,
+        display_name: "Sensitive project".to_owned(),
+    };
+    assert!(!format!("{request:?}").contains("Sensitive project"));
+    assert_eq!(
+        serde_json::to_value(request).expect("rename request should encode"),
+        json!({
+            "operation": "rename_session",
+            "mutation_request_id": "mut_16161616161616161616161616161616",
+            "session_id": "ses_17171717171717171717171717171717",
+            "display_name": "Sensitive project",
+        })
+    );
+    let event = ApplicationEvent::SessionChanged {
+        cursor: SessionCatalogEventCursor::from_bytes(9_u64.to_be_bytes()),
+        session: SessionSummary {
+            id: session_id,
+            display_name: Some("Renamed".to_owned()),
+            working_directory: Some("/project".to_owned()),
+            created_at_milliseconds: 3,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(event).expect("rename event should encode")["event"],
+        "session_changed"
+    );
+}
+
+#[test]
 fn session_skill_catalog_has_stable_json_shapes() {
     let session_id = SessionId::from_bytes([0x18; 16]);
     let request = ApplicationRequest::ListSessionSkills { session_id };

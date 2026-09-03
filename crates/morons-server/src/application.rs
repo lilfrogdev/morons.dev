@@ -153,6 +153,26 @@ impl ServerApplication {
                     None => Err(ApplicationError::SessionNotFound),
                 }
             }
+            ApplicationRequest::RenameSession {
+                mutation_request_id,
+                session_id,
+                display_name,
+            } => {
+                let session = self
+                    .sessions
+                    .rename_session(
+                        to_persistence_mutation_id(mutation_request_id),
+                        to_persistence_session_id(session_id),
+                        display_name,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::SessionRenamed {
+                        session: to_session_summary(session),
+                    },
+                ))
+            }
             ApplicationRequest::ListSessions { cursor, limit } => {
                 let page = self
                     .sessions
@@ -688,12 +708,22 @@ impl ServerApplication {
         Ok(page
             .events
             .into_iter()
-            .map(|event| DeliveredSessionCatalogEvent {
-                cursor: event.cursor,
-                event: ApplicationEvent::SessionCreated {
-                    cursor: to_protocol_catalog_cursor(event.cursor),
-                    session: to_session_summary(event.session),
-                },
+            .map(|event| {
+                let created = event.created;
+                DeliveredSessionCatalogEvent {
+                    cursor: event.cursor,
+                    event: if created {
+                        ApplicationEvent::SessionCreated {
+                            cursor: to_protocol_catalog_cursor(event.cursor),
+                            session: to_session_summary(event.session),
+                        }
+                    } else {
+                        ApplicationEvent::SessionChanged {
+                            cursor: to_protocol_catalog_cursor(event.cursor),
+                            session: to_session_summary(event.session),
+                        }
+                    },
+                }
             })
             .collect())
     }
