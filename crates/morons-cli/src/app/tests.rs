@@ -1,8 +1,9 @@
 use morons_protocol::{
     ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
-    OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, SessionContextStatus,
-    SessionEventCursor, SessionId, SessionSummary, SkillSource, SkillSummary, TranscriptEntry,
+    OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary,
+    SessionContextStatus, SessionEventCursor, SessionId, SessionSummary, SkillSource, SkillSummary,
+    TranscriptEntry,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -84,6 +85,128 @@ fn rendering_strips_terminal_and_bidirectional_controls() {
     assert!(!rendered.contains('\u{1b}'));
     assert!(!rendered.contains('\u{202e}'));
     assert!(rendered.contains("safe]8;;https://example.invalidlink]8;;txt"));
+}
+
+#[test]
+fn restored_failed_run_is_rendered_after_its_last_transcript_entry() {
+    let (session, mut run) = fixture_session_and_run();
+    run.state = RunState::Failed;
+    run.failure = Some(RunFailureKind::ProviderRejected);
+    let mut app = AppState::new("test-server");
+    app.open_session(
+        session,
+        vec![TranscriptEntry::UserMessage {
+            id: run.user_message_id,
+            run_id: run.id,
+            text: "hello".to_owned(),
+            attachments: Vec::new(),
+            created_at_milliseconds: 1,
+        }],
+        vec![run],
+        None,
+        None,
+    )
+    .expect("failed session should open");
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("failed session should render");
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    let user = rendered.find("hello").expect("user message should render");
+    let outcome = rendered
+        .find("Run failed · Zen · grok-4.6")
+        .expect("terminal outcome should render");
+    assert!(user < outcome);
+    assert_eq!(rendered.matches("Run failed").count(), 1);
+    assert!(rendered.contains("Provider rejected the request"));
+}
+
+#[test]
+fn live_failed_run_updates_status_with_safe_durable_classification() {
+    let (session, run) = fixture_session_and_run();
+    let mut app = AppState::new("test-server");
+    app.open_session(
+        session,
+        vec![TranscriptEntry::UserMessage {
+            id: run.user_message_id,
+            run_id: run.id,
+            text: "use a tool".to_owned(),
+            attachments: Vec::new(),
+            created_at_milliseconds: 1,
+        }],
+        vec![run.clone()],
+        Some(run.id),
+        None,
+    )
+    .expect("active session should open");
+    let mut failed = run;
+    failed.state = RunState::Failed;
+    failed.failure = Some(RunFailureKind::InvalidProviderOutput);
+
+    app.apply_event(ApplicationEvent::SessionRunChanged {
+        cursor: session_cursor(failed.session_id, 2),
+        run: failed,
+    })
+    .expect("failed transition should apply");
+
+    assert_eq!(
+        app.status.as_str(),
+        "Run failed · Zen · grok-4.6: Model output was invalid"
+    );
+    let view = app.session.as_ref().expect("session should remain open");
+    assert!(view.active_run_id.is_none());
+    assert_eq!(view.runs[0].state, RunState::Failed);
+}
+
+#[test]
+fn terminal_run_presentations_cover_non_success_outcomes_only() {
+    let (_, mut run) = fixture_session_and_run();
+    for (state, failure, heading, detail) in [
+        (
+            RunState::Failed,
+            Some(RunFailureKind::CredentialNotConfigured),
+            "Run failed",
+            "OpenCode credential is not configured",
+        ),
+        (
+            RunState::Cancelled,
+            None,
+            "Run cancelled",
+            "Cancellation completed",
+        ),
+        (
+            RunState::Interrupted,
+            None,
+            "Run interrupted",
+            "Run stopped before completion",
+        ),
+        (
+            RunState::Uncertain,
+            None,
+            "Run outcome uncertain",
+            "An external effect may have occurred; inspect the working directory",
+        ),
+    ] {
+        run.state = state;
+        run.failure = failure;
+        let presentation =
+            terminal_run_presentation(&run).expect("terminal outcome should be presented");
+        assert_eq!(presentation.heading, heading);
+        assert_eq!(presentation.detail, detail);
+    }
+
+    run.state = RunState::Succeeded;
+    run.failure = None;
+    assert!(terminal_run_presentation(&run).is_none());
 }
 
 #[test]

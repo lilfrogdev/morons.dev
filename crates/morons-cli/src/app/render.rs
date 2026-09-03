@@ -1,6 +1,6 @@
-use morons_protocol::{
-    OpenCodeModelRetention, OpenCodeModelTrainingUse, OpenCodeService, RunState,
-};
+use std::collections::HashMap;
+
+use morons_protocol::{OpenCodeModelRetention, OpenCodeModelTrainingUse, RunId, RunState};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -11,7 +11,7 @@ use ratatui::{
 
 use super::{
     AppState, CredentialDialog, InformationDialog, PendingOperation, PresentedModel, SessionView,
-    View,
+    View, service_label, terminal_run_presentation,
 };
 use crate::terminal::SafeText;
 
@@ -251,8 +251,25 @@ const fn skill_source_label(source: morons_protocol::SkillSource) -> &'static st
 }
 
 fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, scroll: u16) {
+    let last_entry_by_run = session
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| entry.run_id.map(|run_id| (run_id, index)))
+        .collect::<HashMap<RunId, usize>>();
+    let terminal_run_by_last_entry = session
+        .runs
+        .iter()
+        .filter(|run| terminal_run_presentation(run).is_some())
+        .filter_map(|run| {
+            last_entry_by_run
+                .get(&run.id)
+                .copied()
+                .map(|index| (index, run))
+        })
+        .collect::<HashMap<usize, _>>();
     let mut lines = Vec::new();
-    for entry in &session.entries {
+    for (index, entry) in session.entries.iter().enumerate() {
         let role_style = if entry.role == "You" {
             Style::default()
                 .fg(Color::Cyan)
@@ -269,6 +286,9 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
         lines.push(Line::from(Span::styled(entry.role, role_style)));
         extend_safe_lines(&mut lines, &entry.text);
         lines.push(Line::default());
+        if let Some(run) = terminal_run_by_last_entry.get(&index) {
+            extend_terminal_run_outcome(&mut lines, run);
+        }
     }
     if let Some(transient) = session.transient.as_ref() {
         let label = if transient.refusal {
@@ -316,6 +336,30 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
             .scroll((scroll, 0)),
         area,
     );
+}
+
+fn extend_terminal_run_outcome(lines: &mut Vec<Line<'_>>, run: &morons_protocol::RunSummary) {
+    let Some(presentation) = terminal_run_presentation(run) else {
+        return;
+    };
+    let model_id = SafeText::from_untrusted(&run.model_id);
+    let heading_style = if run.state == RunState::Failed {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(presentation.heading, heading_style),
+        Span::raw(format!(
+            " · {} · {}",
+            service_label(run.service),
+            model_id.first_line()
+        )),
+    ]));
+    lines.push(Line::from(presentation.detail));
+    lines.push(Line::default());
 }
 
 fn render_model_disclosure(
@@ -555,13 +599,6 @@ fn active_work_label(session: &SessionView) -> &'static str {
             | RunState::Interrupted => "idle",
             RunState::Uncertain => "local effect uncertain",
         })
-}
-
-const fn service_label(service: OpenCodeService) -> &'static str {
-    match service {
-        OpenCodeService::Zen => "Zen",
-        OpenCodeService::Go => "Go",
-    }
 }
 
 const fn training_label(training: OpenCodeModelTrainingUse) -> &'static str {

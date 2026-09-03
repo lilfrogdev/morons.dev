@@ -5,8 +5,8 @@ use std::{error::Error, fmt};
 
 use morons_protocol::{
     ApplicationEvent, LocalCommandId, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelSummary, OpenCodeService, RunId, RunState, RunSummary, SessionContextStatus,
-    SessionId, SessionSummary, SkillSummary, TranscriptEntry,
+    OpenCodeModelSummary, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary,
+    SessionContextStatus, SessionId, SessionSummary, SkillSummary, TranscriptEntry,
 };
 use ratatui::Frame;
 
@@ -229,6 +229,57 @@ impl fmt::Display for UiStateError {
 }
 
 impl Error for UiStateError {}
+
+#[derive(Clone, Copy)]
+pub(super) struct TerminalRunPresentation {
+    pub(super) heading: &'static str,
+    pub(super) detail: &'static str,
+}
+
+pub(super) const fn terminal_run_presentation(run: &RunSummary) -> Option<TerminalRunPresentation> {
+    let (heading, detail) = match run.state {
+        RunState::Failed => (
+            "Run failed",
+            match run.failure {
+                Some(RunFailureKind::CredentialChanged) => {
+                    "Credential changed before provider dispatch"
+                }
+                Some(RunFailureKind::CredentialNotConfigured) => {
+                    "OpenCode credential is not configured"
+                }
+                Some(RunFailureKind::AuthenticationOrEntitlement) => {
+                    "Authentication or account entitlement was rejected"
+                }
+                Some(RunFailureKind::RateLimited) => "Provider rate limit reached",
+                Some(RunFailureKind::ProviderUnavailable) => "Provider is unavailable",
+                Some(RunFailureKind::ProviderRejected) => "Provider rejected the request",
+                Some(RunFailureKind::ProviderProtocol) => {
+                    "Provider response violated the expected protocol"
+                }
+                Some(RunFailureKind::InvalidProviderOutput) => "Model output was invalid",
+                Some(RunFailureKind::ToolExecution) => "Tool execution failed",
+                Some(RunFailureKind::ResourceLimit) => "Run exceeded a resource limit",
+                Some(RunFailureKind::Internal) => "Morons encountered an internal failure",
+                None => "Failure reason is unavailable",
+            },
+        ),
+        RunState::Cancelled => ("Run cancelled", "Cancellation completed"),
+        RunState::Interrupted => ("Run interrupted", "Run stopped before completion"),
+        RunState::Uncertain => (
+            "Run outcome uncertain",
+            "An external effect may have occurred; inspect the working directory",
+        ),
+        RunState::Accepted | RunState::Active | RunState::Succeeded => return None,
+    };
+    Some(TerminalRunPresentation { heading, detail })
+}
+
+pub(super) const fn service_label(service: OpenCodeService) -> &'static str {
+    match service {
+        OpenCodeService::Zen => "Zen",
+        OpenCodeService::Go => "Go",
+    }
+}
 
 struct DraftImage {
     upload: morons_protocol::ImageUpload,
@@ -640,9 +691,23 @@ impl AppState {
                 session_id, entry, ..
             } => self.session_mut(session_id)?.append_transcript_entry(entry),
             ApplicationEvent::SessionRunChanged { run, .. } => {
+                let presentation = terminal_run_presentation(&run);
+                let status = presentation.map(|presentation| {
+                    format!(
+                        "{} · {} · {}: {}",
+                        presentation.heading,
+                        service_label(run.service),
+                        run.model_id,
+                        presentation.detail
+                    )
+                });
                 let session = self.session_mut(run.session_id)?;
                 session.context_status = None;
-                session.apply_run(run)
+                session.apply_run(run)?;
+                if let Some(status) = status {
+                    self.set_status(status);
+                }
+                Ok(())
             }
             ApplicationEvent::SessionLocalCommandChanged {
                 session_id,
@@ -1025,6 +1090,7 @@ impl SessionView {
 
 pub(super) struct PresentedTranscriptEntry {
     pub(super) id: MessageId,
+    pub(super) run_id: Option<RunId>,
     command_id: Option<LocalCommandId>,
     pub(super) role: &'static str,
     pub(super) text: SafeText,
@@ -1034,24 +1100,39 @@ pub(super) struct PresentedTranscriptEntry {
 impl PresentedTranscriptEntry {
     fn new(entry: TranscriptEntry) -> Self {
         match entry {
-            TranscriptEntry::UserMessage { id, text, .. } => Self {
+            TranscriptEntry::UserMessage {
+                id, run_id, text, ..
+            } => Self {
                 id,
+                run_id: Some(run_id),
                 command_id: None,
                 role: "You",
                 text: SafeText::from_untrusted(&text),
                 refusal: false,
             },
             TranscriptEntry::AssistantMessage {
-                id, text, refusal, ..
+                id,
+                run_id,
+                text,
+                refusal,
+                ..
             } => Self {
                 id,
+                run_id: Some(run_id),
                 command_id: None,
                 role: "Assistant",
                 text: SafeText::from_untrusted(&text),
                 refusal,
             },
-            TranscriptEntry::ToolCall { id, tool, path, .. } => Self {
+            TranscriptEntry::ToolCall {
                 id,
+                run_id,
+                tool,
+                path,
+                ..
+            } => Self {
+                id,
+                run_id: Some(run_id),
                 command_id: None,
                 role: "Tool call",
                 text: SafeText::from_untrusted(&format!("{} · {path}", tool_label(tool))),
@@ -1059,12 +1140,14 @@ impl PresentedTranscriptEntry {
             },
             TranscriptEntry::ToolResult {
                 id,
+                run_id,
                 tool,
                 status,
                 summary,
                 ..
             } => Self {
                 id,
+                run_id: Some(run_id),
                 command_id: None,
                 role: "Tool result",
                 text: SafeText::from_untrusted(&format!(
@@ -1086,6 +1169,7 @@ impl PresentedTranscriptEntry {
                 ..
             } => Self {
                 id,
+                run_id: None,
                 command_id: Some(command_id),
                 role: if context_visible {
                     "Command !"
