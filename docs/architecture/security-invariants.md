@@ -26,7 +26,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 
 ## Local tools and process lifecycle
 
-- The MVP model tool catalog contains only `read`, `write`, `edit`, `bash`, `web_search`, and `ipython`.
+- The MVP model tool catalog contains only `read`, `write`, `edit`, `bash`, `web_search`, `ipython`, and `task`.
 - Tool names, inputs, results, counts, text, paths, collection sizes, and encoded payloads are independently bounded and strictly decoded.
 - `read` returns bounded text or a normalized bounded image. `write` and `edit` apply directly to the requested filesystem target and report only the result Morons can establish.
 - `edit` requires exact, unique, nonoverlapping replacements and fails rather than guessing at an ambiguous mutation.
@@ -41,6 +41,19 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Standard input remains closed for model-selected and command-mode subprocesses. Morons exposes no user-facing subprocess PTY, interactive terminal, terminal emulator, or SSH surface.
 - The persistent IPython kernel is one temporary runtime per active session, launched through the configured Python runtime's `jupyter_client` and `ipykernel`. At most four kernels remain live; least-recently-used idle kernels are evicted. Kernel memory is never authoritative and may be lost on cancellation, limit exhaustion, eviction, failure, or restart.
 - Python helper calls into Morons must map to the same concrete bounded built-in tools; the helper must not expose a generic privileged server API.
+
+## Subagents
+
+- `task` accepts one explicit bounded shared context and one to three bounded self-contained assignments. It is the only subagent admission surface.
+- Children use the parent's exact reviewed service, model, credential generation, and selected directory. They cannot select an endpoint, provider, credential, model, directory, or additional capability.
+- A child receives only fixed server instructions, the selected directory, shared context, and its assignment. Parent history, compaction checkpoints, images, reasoning continuation, active skill bodies, IPython memory, and sibling context are not inherited implicitly.
+- Children receive only `read`, `write`, `edit`, `bash`, and `web_search`. They receive neither `task` nor `ipython`, so recursion depth is one and temporary kernel state is not shared.
+- Up to three siblings in one call execute concurrently under a global four-child limit. They share the real selected directory and may race; assignment guidance is not isolation or a security boundary.
+- The parent tool loop blocks until every child terminates. There is no background child registry, messaging channel, idle revival, hidden result injection, or independently resumable child session.
+- Each child has independent provider-turn, tool-call, mutation, context, output, wall-clock, and usage bounds. Results return in assignment order and include bounded reports and usage.
+- Each child has a stable opaque OpenCode conversation identifier distinct from its parent and siblings. It is derived from parent session and canonical task-call identity, never exposed, and follows all existing inference-header redaction rules.
+- The canonical parent `task` call and terminal result are the durable effect boundary. Nested activity is never replayed. A crash after dispatch makes the outer operation uncertain and recovery performs no child provider, process, web, or filesystem effect.
+- Parent cancellation and task timeout fan out to every running or waiting child, and completion is not reported until controlled children and descendants stop. Completed effects are not rolled back.
 
 ## Command mode
 
@@ -79,7 +92,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 
 - The complete bounded canonical transcript remains durable. Context compaction never deletes, mutates, or replaces canonical messages, attachment references, tool calls, tool results, or local-command entries.
 - Provider context is reconstructed through a deterministic versioned server-owned policy and never depends on provider-hosted conversation retention.
-- Every provider dispatch binds an exact canonical source-entry high water, selected model, context-policy version, limits, and active skill set.
+- Every root provider dispatch binds an exact canonical source-entry high water, selected model, context-policy version, limits, and active skill set. Each task-child dispatch instead binds the committed parent run selection, canonical outer task-call identity, child index, explicit shared context, assignment, and child limits.
 - Provider response identifiers and opaque continuation data are transient run state. Only continuation required by one live tool loop may remain in bounded trusted memory.
 - A compaction checkpoint covers an exact ordered source prefix, records its digest and high water, and contains a bounded model-generated summary. Invalid coverage or lineage is never used.
 - Context assembly retains current developer instructions, tool contracts, project instructions, active skill instructions, the newest valid summary, and an uncompacted recent tail in canonical order.
@@ -88,7 +101,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Old image bytes covered by compaction remain durable session attachments but are not resent automatically. Their relevant observations belong in the summary.
 - Context summaries are lossy untrusted model output. They never authorize an operation, establish filesystem state, override developer instructions, or become canonical history.
 - `!!` commands, transient child environments, terminal-only state, provider errors, partial assistant text, and IPython memory are excluded from summaries.
-- No hidden memory crosses sessions. Embeddings, vector storage, automatic project memory, and subagent contexts are outside the MVP.
+- No hidden memory crosses sessions. Embeddings, vector storage, and automatic project memory are outside the MVP. A `task` child receives only its explicit ephemeral parent-scoped handoff and returns only a bounded canonical report.
 
 ## Local IPC trust boundary
 
@@ -127,7 +140,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Credential status returns no key bytes, prefix, suffix, verifier, or credential-derived fingerprint.
 - Every run records the accepted credential generation, and a dispatch under a stale generation fails before network transmission.
 - Production provider and web-search requests use fixed reviewed HTTPS origins and paths, disabled redirects, normal certificate and hostname verification, and exact authorization-header scoping.
-- Every OpenCode Zen and Go inference request carries one stable `x-opencode-session` value derived from the durable Morons session identity. The value remains stable for that conversation across runs, compaction, and tool turns, differs across sessions, is not the raw local session locator, and is never attached to public catalog requests or emitted in logs, errors, persistence, or protocol responses.
+- Every OpenCode Zen and Go inference request carries one stable `x-opencode-session` value derived from a Morons-owned conversation identity. A root value remains stable across runs, compaction, and tool turns in its durable session. Each task child receives a distinct value stable across that child's turns and derived from the parent session, canonical task-call identity, and child index. Values differ across unrelated conversations, are not raw local locators, and are never attached to public catalog requests or emitted in logs, errors, persistence, or protocol responses.
 - Remote catalogs may narrow but never enlarge the reviewed model, protocol, capability, limit, route, or data-use manifest.
 - Provider requests, responses, streams, errors, usage, identifiers, tool arguments, attachments, and output are bounded, strictly decoded, and sanitized at application boundaries.
 - An inference request is never retried automatically after dispatch because it may already have incurred billing or another external effect.

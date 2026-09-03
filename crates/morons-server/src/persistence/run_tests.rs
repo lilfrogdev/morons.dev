@@ -852,6 +852,127 @@ async fn cancellation_is_exact_durable_and_stops_before_dispatch() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn startup_never_replays_a_dispatched_subagent_batch() {
+    let root = TestRoot::new("subagent-run-recovery");
+    let session_id;
+    let run_id;
+    {
+        let store = SessionStore::open_at(root.path()).expect("session store should open");
+        configure_credential(&store).await;
+        let session = store
+            .create_session(MutationRequestId::from_bytes([0x3a; 16]), None)
+            .await
+            .expect("session should be created");
+        let accepted = store
+            .accept_session_input(
+                MutationRequestId::from_bytes([0x3b; 16]),
+                session.id,
+                "delegate work".to_owned(),
+                model_selection(),
+            )
+            .await
+            .expect("input should be accepted");
+        store
+            .activate_run(accepted.run.id)
+            .await
+            .expect("run should activate");
+        let context = store
+            .load_run_context(accepted.run.id)
+            .await
+            .expect("run context should load");
+        let provider_operation_id = match store
+            .prepare_provider_operation(
+                accepted.run.id,
+                context.current_entry_high_water,
+                context.estimated_input_tokens,
+            )
+            .await
+            .expect("provider operation should prepare")
+        {
+            PrepareOperationOutcome::Prepared(operation_id) => operation_id,
+            other => panic!("unexpected preparation outcome: {other:?}"),
+        };
+        assert_eq!(
+            store
+                .mark_provider_dispatched(accepted.run.id, provider_operation_id)
+                .await
+                .expect("provider operation should dispatch"),
+            DispatchOutcome::Dispatched
+        );
+        let committed = store
+            .complete_provider_tool_turn(
+                accepted.run.id,
+                provider_operation_id,
+                super::CompletedToolTurn {
+                    provider_response_id: "resp_subagent_recovery".to_owned(),
+                    usage: ProviderUsage {
+                        input_tokens: 10,
+                        cached_input_tokens: 0,
+                        cache_write_input_tokens: 0,
+                        output_tokens: 2,
+                        reasoning_output_tokens: 0,
+                        total_tokens: 12,
+                    },
+                    commentary: None,
+                    calls: vec![crate::tools::ValidatedProviderCall {
+                        provider_call_id: "provider_task_recovery".to_owned(),
+                        input: crate::tools::ToolInput::Task {
+                            context: "shared context".to_owned(),
+                            tasks: vec![crate::tools::SubagentTask {
+                                name: Some("worker".to_owned()),
+                                task: "inspect state".to_owned(),
+                            }],
+                        },
+                    }],
+                },
+            )
+            .await
+            .expect("task call should commit");
+        let call = &committed.calls[0];
+        store
+            .prepare_tool_operation(accepted.run.id, call.call_id, call.operation_id, None)
+            .await
+            .expect("task operation should prepare");
+        store
+            .mark_tool_dispatched(accepted.run.id, call.call_id, call.operation_id)
+            .await
+            .expect("task operation should dispatch");
+        session_id = session.id;
+        run_id = accepted.run.id;
+    }
+
+    let store = SessionStore::open_at(root.path()).expect("recovery should complete");
+    let run = store
+        .get_run(session_id, run_id)
+        .await
+        .expect("run query should succeed")
+        .expect("run should remain");
+    assert_eq!(run.state, RunState::Uncertain);
+    let mut cursor = None;
+    let mut entries = Vec::new();
+    loop {
+        let page = store
+            .list_session_transcript(session_id, cursor, 1)
+            .await
+            .expect("transcript should page");
+        entries.extend(page.entries);
+        let Some(next) = page.next_cursor else { break };
+        cursor = Some(next);
+    }
+    assert!(matches!(
+        entries.last(),
+        Some(TranscriptEntry::ToolResult {
+            tool: crate::tools::ToolKind::Task,
+            result: crate::tools::ToolResult::Error {
+                error: crate::tools::ToolErrorKind::Uncertain,
+                ..
+            },
+            ..
+        })
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn startup_interrupts_nonterminal_runs_without_redispatch() {
     let root = TestRoot::new("run-recovery");
     let run_id;

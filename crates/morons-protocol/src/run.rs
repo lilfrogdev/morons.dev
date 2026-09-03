@@ -385,6 +385,7 @@ pub enum ToolKind {
     Bash,
     WebSearch,
     Ipython,
+    Task,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -738,6 +739,18 @@ mod tests {
         };
         assert!(!format!("{call:?}").contains("sensitive/repository/path"));
         assert!(!format!("{result:?}").contains("sensitive repository result"));
+    }
+
+    #[test]
+    fn task_tool_kind_has_a_stable_wire_name() {
+        assert_eq!(
+            serde_json::to_string(&ToolKind::Task).expect("tool kind should encode"),
+            "\"task\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ToolKind>("\"task\"").expect("tool kind should decode"),
+            ToolKind::Task
+        );
     }
 
     #[test]

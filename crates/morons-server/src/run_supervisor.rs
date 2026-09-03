@@ -1,3 +1,5 @@
+mod subagent;
+
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -14,12 +16,13 @@ use tokio::{
     time,
 };
 
+use self::subagent::SubagentExecutor;
 use crate::{
     application::events::{AssistantDelta, SessionEventHub},
     persistence::{
         CompletedAssistant, CompletedToolTurn, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
         PersistenceError, PrepareOperationOutcome, ProviderOperationFailureState, ProviderUsage,
-        RunFailureKind, RunId, RunOpenCodeService, SessionStore, TranscriptEntry,
+        Run, RunFailureKind, RunId, RunOpenCodeService, SessionStore, TranscriptEntry,
     },
     provider::{
         OpenCodeProvider, OpenCodeResponseRequest, OpenCodeService, ProviderCancellation,
@@ -29,8 +32,9 @@ use crate::{
     },
     tools::{
         BashToolExecutor, DirectToolExecutor, IpythonSupervisor, TOOL_CATALOG_VERSION,
-        ToolCallValidationError, ToolKind, ToolResult, WebSearchToolExecutor,
-        developer_instruction, parse_provider_calls, provider_tools,
+        ToolCallValidationError, ToolKind, ToolResult, ValidatedProviderCall,
+        WebSearchToolExecutor, developer_instruction, parse_provider_calls,
+        parse_subagent_provider_calls, provider_tools,
     },
 };
 
@@ -44,8 +48,9 @@ pub(crate) struct RunSupervisor {
     permits: Arc<Semaphore>,
     stopping: AtomicBool,
     session_events: Arc<SessionEventHub>,
-    web_search: WebSearchToolExecutor,
+    web_search: Arc<WebSearchToolExecutor>,
     ipython: Arc<IpythonSupervisor>,
+    subagents: SubagentExecutor,
     state: Mutex<SupervisorState>,
 }
 
@@ -107,6 +112,8 @@ impl RunSupervisor {
         web_search: WebSearchToolExecutor,
         ipython: Arc<IpythonSupervisor>,
     ) -> Arc<Self> {
+        let web_search = Arc::new(web_search);
+        let subagents = SubagentExecutor::new(Arc::clone(&provider), Arc::clone(&web_search));
         Arc::new(Self {
             sessions,
             provider,
@@ -115,6 +122,7 @@ impl RunSupervisor {
             session_events,
             web_search,
             ipython,
+            subagents,
             state: Mutex::new(SupervisorState {
                 controls: HashMap::new(),
                 tasks: JoinSet::new(),
@@ -420,8 +428,7 @@ impl RunSupervisor {
                         .ok_or(PersistenceError::WorkingDirectoryUnavailable)?;
                     let terminal = self
                         .execute_tool_calls(
-                            context.run.session_id,
-                            run_id,
+                            &context.run,
                             PathBuf::from(working_directory),
                             committed.calls,
                             find_open_code_model(
@@ -524,13 +531,14 @@ impl RunSupervisor {
 
     async fn execute_tool_calls(
         &self,
-        session_id: crate::persistence::SessionId,
-        run_id: RunId,
+        run: &Run,
         working_directory: PathBuf,
         calls: Vec<crate::persistence::CommittedToolCall>,
         supports_image_input: bool,
         cancellation: &ProviderCancellation,
     ) -> Result<bool, PersistenceError> {
+        let run_id = run.id;
+        let session_id = run.session_id;
         for call in calls {
             self.sessions
                 .prepare_tool_operation(run_id, call.call_id, call.operation_id, None)
@@ -555,7 +563,17 @@ impl RunSupervisor {
             let execution_cancellation = cancellation.clone();
             let tool = call.input.kind();
             let mutation = tool.is_mutation();
-            let result = if tool == ToolKind::WebSearch {
+            let result = if tool == ToolKind::Task {
+                self.subagents
+                    .execute(
+                        run,
+                        call.call_id,
+                        execution_directory,
+                        &execution_input,
+                        &execution_cancellation,
+                    )
+                    .await
+            } else if tool == ToolKind::WebSearch {
                 self.web_search
                     .execute(&execution_input, &execution_cancellation)
                     .await
@@ -972,15 +990,32 @@ fn normalize_provider_turn(
     outcome: ProviderOutcome,
     tool_catalog_version: u16,
 ) -> Result<NormalizedTurn, RunFailureKind> {
+    normalize_tool_provider_turn(outcome, |calls| {
+        if tool_catalog_version != TOOL_CATALOG_VERSION {
+            return Err(ToolCallValidationError::InvalidProviderOutput);
+        }
+        parse_provider_calls(calls, tool_catalog_version)
+    })
+}
+
+fn normalize_subagent_provider_turn(
+    outcome: ProviderOutcome,
+) -> Result<NormalizedTurn, RunFailureKind> {
+    normalize_tool_provider_turn(outcome, parse_subagent_provider_calls)
+}
+
+fn normalize_tool_provider_turn(
+    outcome: ProviderOutcome,
+    parse_calls: impl FnOnce(
+        Vec<ProviderToolCall>,
+    ) -> Result<Vec<ValidatedProviderCall>, ToolCallValidationError>,
+) -> Result<NormalizedTurn, RunFailureKind> {
     let has_tool_calls = outcome
         .output
         .iter()
         .any(|item| matches!(item, ProviderOutputItem::ToolCall(_)));
     if !has_tool_calls {
         return completed_assistant(outcome).map(NormalizedTurn::Final);
-    }
-    if tool_catalog_version != TOOL_CATALOG_VERSION {
-        return Err(RunFailureKind::InvalidProviderOutput);
     }
     let mut commentary = None;
     let mut calls = Vec::<ProviderToolCall>::new();
@@ -1012,10 +1047,7 @@ fn normalize_provider_turn(
             }
         }
     }
-    let calls = parse_provider_calls(calls, tool_catalog_version).map_err(|error| match error {
-        ToolCallValidationError::InvalidProviderOutput => RunFailureKind::InvalidProviderOutput,
-        ToolCallValidationError::ResourceLimit => RunFailureKind::ResourceLimit,
-    })?;
+    let calls = parse_calls(calls).map_err(map_tool_validation)?;
     Ok(NormalizedTurn::Tools {
         turn: CompletedToolTurn {
             provider_response_id: outcome.provider_response_id,
@@ -1032,6 +1064,13 @@ fn normalize_provider_turn(
         },
         reasoning,
     })
+}
+
+const fn map_tool_validation(error: ToolCallValidationError) -> RunFailureKind {
+    match error {
+        ToolCallValidationError::InvalidProviderOutput => RunFailureKind::InvalidProviderOutput,
+        ToolCallValidationError::ResourceLimit => RunFailureKind::ResourceLimit,
+    }
 }
 
 fn completed_assistant(outcome: ProviderOutcome) -> Result<CompletedAssistant, RunFailureKind> {

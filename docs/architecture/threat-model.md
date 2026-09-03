@@ -20,7 +20,7 @@ The final category is user-owned authority that Morons deliberately grants to lo
 - Session, run, message, mutation, model, cursor, path, command, cell, query, and attachment inputs
 - Endpoint, registration, database, backup, attachment, and selected-directory filesystem state
 - Repository files, names, links, metadata, configuration, dependencies, hooks, and concurrent changes
-- Model output, reasoning, tool names, arguments, paths, and generated commands
+- Model output, reasoning, tool names, arguments, paths, generated commands, subagent shared context, assignments, and reports
 - Skills, their Markdown instructions, scripts, references, and assets
 - Web search results and fetched external content
 - Clipboard data, drag-and-drop paths, image bytes, metadata, filenames, and decoder behavior
@@ -78,6 +78,11 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Snapshot/subscription races omit events, and unbounded subscribers exhaust memory.
 - A client forges assistant messages, tool calls, tool results, run transitions, or terminal outcomes.
 - Concurrent input creates more than one top-level run in a session or bypasses global capacity.
+- A task batch exceeds child, depth, provider-turn, tool-call, mutation, context, output, time, or global concurrency limits.
+- A child implicitly receives parent history, skills, images, kernel memory, sibling state, or another session's context.
+- A child recursively delegates, selects another provider or model, or continues after the parent task has reported completion.
+- Concurrent children race on the shared selected directory and overwrite or invalidate one another's observations.
+- A child result is injected out of assignment order, omitted, duplicated, or treated as durable before the outer task result commits.
 - Switching or closing a client implicitly cancels background work.
 - Session deletion follows a selected-directory or attachment path and deletes user files.
 - A missing or moved working directory is silently retargeted.
@@ -114,7 +119,8 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Provider response identifiers become authoritative conversation state and make local recovery depend on external retention.
 - A context-bearing command, tool, skill, or image unintentionally sends sensitive local content to a provider.
 - A malformed web query, redirect, proxy setting, or response causes the Brave Search credential to be sent outside its fixed reviewed endpoint, or the credential is persisted, logged, audited, rendered, or included in model context. The environment-supplied credential remains deliberately visible to same-user child execution.
-- A missing or rotating `x-opencode-session` value defeats OpenCode routing and prompt-cache affinity, while reusing one value across unrelated sessions creates unintended correlation and traffic concentration.
+- A missing or rotating `x-opencode-session` value defeats OpenCode routing and prompt-cache affinity, while reusing one value across unrelated root or child conversations creates unintended correlation and traffic concentration.
+- Concurrent child inference multiplies provider usage, exceeds expected spend, or lets credential replacement race a later child turn.
 
 ## Skills and prompt threats
 
@@ -168,6 +174,10 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 
 - Disclose the trusted-local authority model prominently and require external containment for users who need isolation.
 - Keep the tool catalog fixed and small while applying strict schema, count, byte, time, and output bounds.
+- Admit subagents only through the closed batched `task` schema; cap a batch at three children, global execution at four children, recursion at one level, and each child independently by provider turns, tool calls, mutations, context, output, and time.
+- Give children only fixed instructions, selected-directory metadata, explicit shared context, and one assignment; do not inherit parent transcript, checkpoints, images, active skill bodies, reasoning continuation, IPython memory, or sibling context.
+- Block the parent until all children terminate, preserve input-order results, and provide no background registry, revival, messaging, or hidden result-injection path.
+- Treat the outer canonical task operation as the durable no-replay boundary and fan parent cancellation out through child provider, web, shell, and process-tree execution.
 - Use exact unique replacements for `edit` and report direct filesystem errors without claiming rollback.
 - Run commands without a PTY or standard input, drain bounded streams concurrently, and terminate complete owned process trees on cancellation or limits.
 - Treat process supervision as lifecycle control only and never describe it as confinement.
@@ -180,7 +190,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Authorize operating-system peers before application exchange and require randomized endpoints, owner-only control state, a lifetime host lock, and role-separated HMAC proofs.
 - Start only the exact packaged companion without a shell or untrusted executable-path selection.
 - Keep provider and web-search routes fixed in reviewed code, disable redirects, scope authorization headers exactly, strictly decode bounded remote responses, and never retry dispatched inference or web search automatically.
-- Derive one opaque `x-opencode-session` value per durable Morons session, preserve it across every inference turn in that conversation, rotate it across sessions, omit it from catalog requests, and never log or persist the derived header.
+- Derive one opaque `x-opencode-session` value per Morons conversation: preserve a root value across its durable session, derive a distinct stable value for each canonical task child, rotate values across unrelated conversations, omit them from catalog requests, and never log or persist a derived header.
 - Store Morons-managed credentials outside SQLite and never intentionally include them in child environments, prompts, provider payload bodies, errors, logs, or audit facts.
 - Use one bounded storage worker, transactional canonical-entry and projection commits, ordered migrations, online SQLite backup, quotas, and startup recovery that performs no external effect.
 - Scope subscriptions and cursors to sessions, compose snapshots and replay at one high water, and disconnect slow consumers.
@@ -193,7 +203,9 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - No application-level design can keep owner-readable Morons state confidential from arbitrary processes running as the same user without an additional operating-system boundary.
 - Same-user processes may interfere with sessions, files, IPC, child processes, attachments, or credential state.
 - Cancellation and process-tree termination cannot undo filesystem changes, network requests, commits, pushes, publications, or processes that escaped ownership before termination.
-- Concurrent sessions and ordinary user tools can race in the same working directory and invalidate prior observations.
+- Concurrent sessions, task children, and ordinary user tools can race in the same working directory and invalidate prior observations or overwrite changes.
+- Batched subagents can multiply provider cost and local side effects; hard application limits do not replace provider account budgets or user review.
+- Child internal turns are not independently durable or resumable. A crash preserves only the outer uncertain task boundary and may leave provider usage or local effects without a child report.
 - SQLite cannot atomically commit direct filesystem, process, provider, Git, or network effects.
 - Context compaction is lossy and may omit relevant detail or preserve malicious instructions; canonical history remains available but is not all resent to the model.
 - Old image pixels are not automatically resent after compaction, so exact later visual analysis may require reattachment.

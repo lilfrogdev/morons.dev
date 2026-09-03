@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 pub(crate) use bash::BashToolExecutor;
 pub(crate) use catalog::{
     LEGACY_SANDBOX_TOOL_CATALOG_VERSION, TOOL_CATALOG_VERSION, ToolCallValidationError,
-    developer_instruction, parse_provider_calls, provider_tools, validate_canonical_input,
+    developer_instruction, parse_provider_calls, parse_subagent_provider_calls, provider_tools,
+    subagent_provider_tools, validate_canonical_input,
 };
 pub(crate) use direct::DirectToolExecutor;
 pub(crate) use ipython::{IpythonSupervisor, validate_ipython_cell};
@@ -22,7 +23,7 @@ pub(crate) use path::{ToolPath, WorktreePath};
 pub(crate) use web_search::WebSearchToolExecutor;
 pub(crate) use worktree::recovery_plan_is_valid;
 
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 7;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 8;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
@@ -55,6 +56,15 @@ pub(crate) const MAX_WEB_SEARCH_SNIPPET_BYTES: usize = 4 * 1024;
 pub(crate) const MAX_WEB_SEARCH_BODY_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_REPLACEMENTS: usize = 32;
 pub(crate) const MAX_REPLACEMENT_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_SUBAGENT_TASKS: usize = 3;
+pub(crate) const MAX_SUBAGENT_CONTEXT_BYTES: usize = 32 * 1024;
+pub(crate) const MAX_SUBAGENT_ASSIGNMENT_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_SUBAGENT_NAME_BYTES: usize = 64;
+pub(crate) const MAX_SUBAGENT_OUTPUT_BYTES: usize = 32 * 1024;
+pub(crate) const MAX_SUBAGENT_PROVIDER_TURNS: u16 = 8;
+pub(crate) const MAX_SUBAGENT_TOOL_CALLS: u16 = 24;
+pub(crate) const MAX_SUBAGENT_MUTATIONS: u16 = 8;
+pub(crate) const MAX_TASK_CALLS_PER_RUN: u32 = 2;
 const TOOL_PATH_DIGEST_CONTEXT: &[u8] = b"morons.dev/tool-path/v1\0";
 
 pub(crate) fn tool_path_digest(path: &str) -> [u8; 32] {
@@ -82,6 +92,7 @@ pub(crate) enum ToolKind {
     Bash,
     WebSearch,
     Ipython,
+    Task,
 }
 
 impl ToolKind {
@@ -100,6 +111,7 @@ impl ToolKind {
             Self::Bash => "bash",
             Self::WebSearch => "web_search",
             Self::Ipython => "ipython",
+            Self::Task => "task",
         }
     }
 
@@ -118,6 +130,7 @@ impl ToolKind {
             Self::Bash => 11,
             Self::WebSearch => 12,
             Self::Ipython => 13,
+            Self::Task => 14,
         }
     }
 
@@ -136,6 +149,7 @@ impl ToolKind {
             11 => Some(Self::Bash),
             12 => Some(Self::WebSearch),
             13 => Some(Self::Ipython),
+            14 => Some(Self::Task),
             _ => None,
         }
     }
@@ -151,6 +165,7 @@ impl ToolKind {
                 | Self::Edit
                 | Self::Bash
                 | Self::Ipython
+                | Self::Task
         )
     }
 }
@@ -210,6 +225,10 @@ pub(crate) enum ToolInput {
     Ipython {
         cell: String,
     },
+    Task {
+        context: String,
+        tasks: Vec<SubagentTask>,
+    },
 }
 
 impl ToolInput {
@@ -228,6 +247,7 @@ impl ToolInput {
             Self::Bash { .. } => ToolKind::Bash,
             Self::WebSearch { .. } => ToolKind::WebSearch,
             Self::Ipython { .. } => ToolKind::Ipython,
+            Self::Task { .. } => ToolKind::Task,
         }
     }
 
@@ -249,6 +269,18 @@ impl ToolInput {
             Self::Bash { command } => command,
             Self::WebSearch { query } => query,
             Self::Ipython { cell } => cell,
+            Self::Task { context, .. } => context,
+        }
+    }
+
+    pub(crate) fn presentation_text(&self) -> String {
+        match self {
+            Self::Task { tasks, .. } => format!(
+                "{} subagent task{}",
+                tasks.len(),
+                if tasks.len() == 1 { "" } else { "s" }
+            ),
+            _ => self.path_text().to_owned(),
         }
     }
 
@@ -316,6 +348,9 @@ impl ToolInput {
             Self::Bash { command } => serde_json::to_string(&BashArguments { command }),
             Self::WebSearch { query } => serde_json::to_string(&WebSearchArguments { query }),
             Self::Ipython { cell } => serde_json::to_string(&IpythonArguments { cell }),
+            Self::Task { context, tasks } => {
+                serde_json::to_string(&TaskArguments { context, tasks })
+            }
         }
     }
 }
@@ -365,6 +400,63 @@ struct WebSearchArguments<'a> {
 #[derive(Serialize)]
 struct IpythonArguments<'a> {
     cell: &'a str,
+}
+
+#[derive(Serialize)]
+struct TaskArguments<'a> {
+    context: &'a str,
+    tasks: &'a [SubagentTask],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubagentTask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub task: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SubagentStatus {
+    Succeeded,
+    Failed,
+    ResourceLimit,
+}
+
+impl SubagentStatus {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::ResourceLimit => "resource limit",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubagentUsage {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_output_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SubagentResult {
+    pub index: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub status: SubagentStatus,
+    pub output: String,
+    pub provider_turns: u16,
+    pub tool_calls: u16,
+    pub tool_mutations: u16,
+    pub usage: SubagentUsage,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -505,7 +597,7 @@ impl ToolErrorKind {
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
             Self::NotDispatched => "not dispatched",
-            Self::Uncertain => "workspace effect is uncertain",
+            Self::Uncertain => "local effect is uncertain",
             Self::Filesystem => "filesystem operation failed",
             Self::Network => "network request failed",
             Self::InvalidResponse => "search service returned an invalid response",
@@ -596,6 +688,9 @@ pub(crate) enum ToolOutput {
         stderr: String,
         display: String,
     },
+    Task {
+        results: Vec<SubagentResult>,
+    },
 }
 
 impl ToolOutput {
@@ -614,6 +709,7 @@ impl ToolOutput {
             Self::Bash { .. } => ToolKind::Bash,
             Self::WebSearch { .. } => ToolKind::WebSearch,
             Self::Ipython { .. } => ToolKind::Ipython,
+            Self::Task { .. } => ToolKind::Task,
         }
     }
 
@@ -723,6 +819,35 @@ impl ToolOutput {
                         summary.push_str(":\n");
                         summary.push_str(output);
                     }
+                }
+                summary
+            }
+            Self::Task { results } => {
+                let succeeded = results
+                    .iter()
+                    .filter(|result| result.status == SubagentStatus::Succeeded)
+                    .count();
+                let mut summary = format!(
+                    "completed {} subagent{} ({succeeded} succeeded)",
+                    results.len(),
+                    if results.len() == 1 { "" } else { "s" }
+                );
+                for result in results {
+                    summary.push_str("\n\nsubagent ");
+                    summary.push_str(&result.index.to_string());
+                    if let Some(name) = &result.name {
+                        summary.push_str(" (");
+                        summary.push_str(name);
+                        summary.push(')');
+                    }
+                    summary.push_str(&format!(
+                        ": {}; {} provider turn(s), {} tool call(s), {} total token(s)\n",
+                        result.status.label(),
+                        result.provider_turns,
+                        result.tool_calls,
+                        result.usage.total_tokens
+                    ));
+                    summary.push_str(&result.output);
                 }
                 summary
             }
@@ -925,7 +1050,53 @@ pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> 
         ToolResult::Ok {
             output: output @ ToolOutput::Ipython { .. },
         } => validate_ipython_output(output),
+        ToolResult::Ok {
+            output: ToolOutput::Task { results },
+        } => validate_subagent_results(results),
         ToolResult::Ok { output } => validate_bash_output(output, true),
+    }
+}
+
+pub(crate) fn valid_subagent_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_SUBAGENT_NAME_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn validate_subagent_results(results: &[SubagentResult]) -> bool {
+    !results.is_empty()
+        && results.len() <= MAX_SUBAGENT_TASKS
+        && results.iter().enumerate().all(|(index, result)| {
+            result.index == u16::try_from(index + 1).unwrap_or(u16::MAX)
+                && result.name.as_deref().is_none_or(valid_subagent_name)
+                && result.output.len() <= MAX_SUBAGENT_OUTPUT_BYTES
+                && result.provider_turns <= MAX_SUBAGENT_PROVIDER_TURNS
+                && result.tool_calls <= MAX_SUBAGENT_TOOL_CALLS
+                && result.tool_mutations <= MAX_SUBAGENT_MUTATIONS
+        })
+}
+
+pub(crate) fn validate_canonical_result_for_input(input: &ToolInput, result: &ToolResult) -> bool {
+    if !validate_canonical_result(input.kind(), result) {
+        return false;
+    }
+    match (input, result) {
+        (
+            ToolInput::Task { tasks, .. },
+            ToolResult::Ok {
+                output: ToolOutput::Task { results },
+            },
+        ) => {
+            tasks.len() == results.len()
+                && tasks
+                    .iter()
+                    .zip(results)
+                    .all(|(task, result)| task.name == result.name)
+        }
+        (ToolInput::Task { .. }, ToolResult::Ok { .. }) => false,
+        _ => true,
     }
 }
 

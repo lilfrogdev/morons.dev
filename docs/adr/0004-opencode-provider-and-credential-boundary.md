@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as amended by ADR 0012
+Accepted as amended by ADRs 0012 and 0013
 
 ## Context
 
@@ -49,9 +49,9 @@ Model pricing, availability, retention, and provider policy can change independe
 
 Provider invocation belongs to a concrete server-owned OpenCode module. It maps OpenCode wire data into provider-neutral run, message, tool-call, usage, and error domain types at the application and persistence boundaries.
 
-Every provider operation durably identifies the selected OpenCode service, exact model identifier, supported protocol revision, normalized non-secret request options, context-construction policy version, and server-enforced limits. Request fingerprints exclude the API key and all credential-derived material.
+Every root and compaction provider operation durably identifies the selected OpenCode service, exact model identifier, supported protocol revision, normalized non-secret request options, context-construction policy version, and server-enforced limits. Request fingerprints exclude the API key and all credential-derived material. ADR 0013 child turns bind the same committed parent run selection and limits plus a canonical outer task-call identity and child index; their bounded aggregate usage and terminal reports commit in the outer task result rather than as independent parent provider-operation facts.
 
-The server commits accepted user input and the run identity before dispatching a provider request. Each billable provider request uses the prepared, dispatched, outcome, and uncertainty boundaries from ADR 0003. The server stores validated normalized outcomes, completed assistant messages, tool-call facts, bounded usage, and a bounded provider request identifier when useful for diagnosis. It does not persist raw request bodies, response bodies, headers, SSE records, or provider SDK objects.
+The server commits accepted user input and the run identity before dispatching a provider request. Root and compaction requests use the prepared, dispatched, outcome, and uncertainty boundaries from ADR 0003. A task child's billable requests occur only after the canonical outer task operation is prepared and dispatched. That outer operation is their no-replay and uncertainty boundary, analogous to external activity performed by a dispatched Bash command. The server stores validated normalized root outcomes and bounded task-child aggregate usage and reports. It does not persist raw request bodies, response bodies, headers, SSE records, provider SDK objects, or child internal transcripts.
 
 Provider response identifiers and opaque continuation data are temporary run state, not session authority. Morons does not depend on provider-hosted conversation state for restart recovery and does not automatically resume an interrupted provider call. Context for a new run is constructed from canonical Morons history. Opaque data required only while continuing a live Responses tool loop remains bounded in trusted server memory and is discarded when the run terminates.
 
@@ -89,7 +89,7 @@ Input acceptance records the current non-secret credential generation. Credentia
 
 ### Outbound provider boundary
 
-Only trusted server code can attach the OpenCode credential to an inference request. Production code constructs the origin and path from the selected service; protocol messages, repository content, model output, configuration files, and catalog responses cannot supply or override them. Every Zen and Go inference request includes OpenCode's required `x-opencode-session` header. Trusted code derives one opaque provider-specific identifier from the durable Morons session identity: it remains unchanged across all runs, compaction requests, and tool-loop turns in that conversation, differs across sessions, and is never attached to public catalog requests. The raw local session locator is not sent as the header value.
+Only trusted server code can attach the OpenCode credential to an inference request. Production code constructs the origin and path from the selected service; protocol messages, repository content, model output, configuration files, and catalog responses cannot supply or override them. Every Zen and Go inference request includes OpenCode's required `x-opencode-session` header. Trusted code derives an opaque provider-specific identifier for each Morons-owned conversation. A root identifier is derived from the durable Morons session identity and remains unchanged across all runs, compaction requests, and tool-loop turns in that conversation. ADR 0013 child conversations derive distinct stable identifiers from the parent session, canonical task-call identity, and child index. Identifiers differ across unrelated root and child conversations and are never attached to public catalog requests. Raw local locators are not sent as header values.
 
 The HTTP client requires HTTPS with normal certificate and hostname verification, disables redirects, and does not import proxy, certificate, credential, or endpoint configuration from repository files or process environments. The authorization header is attached only to the exact fixed inference origin and is never attached to catalog requests when the documented catalog is public.
 

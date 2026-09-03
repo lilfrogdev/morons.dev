@@ -403,13 +403,13 @@ fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: Informat
     let (title, message, width, height) = match dialog {
         InformationDialog::TrustNotice => (
             " Trusted-local authority ",
-            "Morons is not a sandbox. The model can read, change, delete, or disclose anything available to your user account through file, Bash, Python, network, Git, credentials, and agent access. Cancellation cannot undo completed effects.\n\nFor containment, run the complete Morons application inside a container, VM, or restricted OS account.\n\nEnter acknowledge · q/Esc exit",
+            "Morons is not a sandbox. The model can read, change, delete, or disclose anything available to your user account through file, Bash, Python, network, Git, credentials, and subagents. Parallel subagents share the selected directory and may race. Cancellation cannot undo completed effects.\n\nFor containment, run the complete Morons application inside a container, VM, or restricted OS account.\n\nEnter acknowledge · q/Esc exit",
             78,
-            12,
+            14,
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /context inspect · /compact [instructions] summarize · Tab model/skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             15,
         ),

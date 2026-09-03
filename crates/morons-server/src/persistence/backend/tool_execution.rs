@@ -24,9 +24,9 @@ use crate::{
         },
     },
     tools::{
-        MAX_TOOL_CALLS_PER_RUN, MAX_TOOL_MUTATIONS_PER_RUN, MAX_TOOL_PAYLOAD_BYTES,
-        MAX_TOOL_RESULT_BYTES_PER_RUN, ToolErrorKind, ToolInput, ToolKind, ToolOutput, ToolResult,
-        tool_path_digest,
+        MAX_TASK_CALLS_PER_RUN, MAX_TOOL_CALLS_PER_RUN, MAX_TOOL_MUTATIONS_PER_RUN,
+        MAX_TOOL_PAYLOAD_BYTES, MAX_TOOL_RESULT_BYTES_PER_RUN, ToolErrorKind, ToolInput, ToolKind,
+        ToolOutput, ToolResult, tool_path_digest,
     },
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
@@ -93,6 +93,24 @@ impl Backend {
             .checked_add(u32::try_from(turn.calls.len()).map_err(|_| limit())?)
             .filter(|count| *count <= MAX_TOOL_CALLS_PER_RUN)
             .ok_or_else(limit)?;
+        let existing_task_calls: u32 = transaction.query_row(
+            "SELECT COUNT(*) FROM tool_calls WHERE run_id = ?1 AND tool_kind = ?2",
+            params![&run.id.as_bytes()[..], ToolKind::Task.to_record()],
+            |row| row.get(0),
+        )?;
+        let incoming_task_calls = u32::try_from(
+            turn.calls
+                .iter()
+                .filter(|call| call.input.kind() == ToolKind::Task)
+                .count(),
+        )
+        .map_err(|_| limit())?;
+        if existing_task_calls
+            .checked_add(incoming_task_calls)
+            .is_none_or(|count| count > MAX_TASK_CALLS_PER_RUN)
+        {
+            return Err(limit());
+        }
         let mutations = turn
             .calls
             .iter()

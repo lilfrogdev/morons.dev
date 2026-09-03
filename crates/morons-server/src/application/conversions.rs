@@ -320,7 +320,7 @@ pub(super) fn to_protocol_transcript_entry(entry: TranscriptEntry) -> ProtocolTr
             run_id: to_protocol_run_id(run_id),
             call_id: ProtocolToolCallId::from_bytes(*call_id.as_bytes()),
             tool: to_protocol_tool_kind(input.kind()),
-            path: input.path_text().to_owned(),
+            path: input.presentation_text(),
             created_at_milliseconds,
         },
         TranscriptEntry::ToolResult {
@@ -395,6 +395,7 @@ const fn to_protocol_tool_kind(tool: crate::tools::ToolKind) -> ProtocolToolKind
         crate::tools::ToolKind::Bash => ProtocolToolKind::Bash,
         crate::tools::ToolKind::WebSearch => ProtocolToolKind::WebSearch,
         crate::tools::ToolKind::Ipython => ProtocolToolKind::Ipython,
+        crate::tools::ToolKind::Task => ProtocolToolKind::Task,
     }
 }
 
