@@ -84,7 +84,7 @@ fn rendering_strips_terminal_and_bidirectional_controls() {
 
     assert!(!rendered.contains('\u{1b}'));
     assert!(!rendered.contains('\u{202e}'));
-    assert!(rendered.contains("safe]8;;https://example.invalidlink]8;;txt"));
+    assert!(rendered.contains("safelinktxt"));
 }
 
 #[test]

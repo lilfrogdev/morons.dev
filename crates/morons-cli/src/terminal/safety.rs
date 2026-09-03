@@ -25,7 +25,23 @@ impl SafeText {
         let mut lines = 1_usize;
         let mut truncated = false;
 
-        for character in input.chars() {
+        let mut characters = input.chars().peekable();
+        while let Some(character) = characters.next() {
+            match character {
+                '\u{001b}' => {
+                    consume_escape_sequence(&mut characters);
+                    continue;
+                }
+                '\u{009b}' => {
+                    consume_csi_sequence(&mut characters);
+                    continue;
+                }
+                '\u{0090}' | '\u{0098}' | '\u{009d}' | '\u{009e}' | '\u{009f}' => {
+                    consume_control_string(&mut characters);
+                    continue;
+                }
+                _ => {}
+            }
             if is_bidirectional_control(character) {
                 continue;
             }
@@ -301,6 +317,70 @@ impl fmt::Debug for CredentialBuffer {
     }
 }
 
+fn consume_escape_sequence(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match characters.peek().copied() {
+        Some('[') => {
+            characters.next();
+            consume_csi_sequence(characters);
+        }
+        Some('P' | 'X' | ']' | '^' | '_') => {
+            characters.next();
+            consume_control_string(characters);
+        }
+        Some('\u{0020}'..='\u{002f}') => {
+            while characters
+                .peek()
+                .is_some_and(|character| matches!(*character, '\u{0020}'..='\u{002f}'))
+            {
+                characters.next();
+            }
+            if characters
+                .peek()
+                .is_some_and(|character| matches!(*character, '\u{0030}'..='\u{007e}'))
+            {
+                characters.next();
+            }
+        }
+        Some('\u{0030}'..='\u{007e}') => {
+            characters.next();
+        }
+        Some(_) | None => {}
+    }
+}
+
+fn consume_csi_sequence(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while characters.peek().is_some_and(|character| {
+        matches!(
+            *character,
+            '\u{0030}'..='\u{003f}' | '\u{0020}'..='\u{002f}'
+        )
+    }) {
+        characters.next();
+    }
+    if characters
+        .peek()
+        .is_some_and(|character| matches!(*character, '\u{0040}'..='\u{007e}'))
+    {
+        characters.next();
+    }
+}
+
+fn consume_control_string(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    while let Some(character) = characters.next() {
+        if matches!(character, '\u{0007}' | '\u{009c}') {
+            return;
+        }
+        if character == '\u{001b}'
+            && characters
+                .peek()
+                .is_some_and(|character| *character == '\\')
+        {
+            characters.next();
+            return;
+        }
+    }
+}
+
 fn push_bounded(text: &mut String, character: char, scalars: &mut usize) -> bool {
     if *scalars >= MAX_PRESENTED_TEXT_SCALARS
         || text
@@ -335,7 +415,7 @@ mod tests {
         let input = "safe\u{1b}]52;c;clipboard\u{7}\u{202e}txt\u{2066}\nnext\tcolumn";
         let safe = SafeText::from_untrusted(input);
 
-        assert_eq!(safe.as_str(), "safe]52;c;clipboardtxt\nnext    column");
+        assert_eq!(safe.as_str(), "safetxt\nnext    column");
         assert!(
             !safe
                 .as_str()
@@ -343,6 +423,23 @@ mod tests {
                 .any(|character| character != '\n' && character.is_control())
         );
         assert!(!safe.as_str().chars().any(is_bidirectional_control));
+    }
+
+    #[test]
+    fn terminal_sequences_are_removed_without_visible_fragments() {
+        let input = concat!(
+            "plain ",
+            "\u{1b}[31mred\u{1b}[0m ",
+            "\u{1b}]8;;https://example.invalid\u{7}link\u{1b}]8;;\u{7} ",
+            "\u{1b}Pignored\u{1b}\\",
+            "tail ",
+            "\u{009b}1mbold\u{009b}0m"
+        );
+
+        assert_eq!(
+            SafeText::from_untrusted(input).as_str(),
+            "plain red link tail bold"
+        );
     }
 
     #[test]
