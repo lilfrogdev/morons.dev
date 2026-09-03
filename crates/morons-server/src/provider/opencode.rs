@@ -30,6 +30,7 @@ const ZEN_CATALOG_URI: &str = "https://opencode.ai/zen/v1/models";
 const GO_INFERENCE_URI: &str = "https://opencode.ai/zen/go/v1/responses";
 const GO_CATALOG_URI: &str = "https://opencode.ai/zen/go/v1/models";
 const USER_AGENT_VALUE: &str = concat!("morons-server/", env!("CARGO_PKG_VERSION"));
+const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -246,6 +247,7 @@ impl OpenCodeClient {
             .header(ACCEPT, "text/event-stream")
             .header(AUTHORIZATION, authorization)
             .header(CONTENT_TYPE, "application/json")
+            .header(OPENCODE_SESSION_HEADER, request.opencode_session_header())
             .header(USER_AGENT, USER_AGENT_VALUE)
             .body(Full::new(Bytes::from(body)))
             .map_err(|_| ProviderError::Transport)?;

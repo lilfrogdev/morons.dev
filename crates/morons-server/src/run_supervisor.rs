@@ -698,6 +698,7 @@ fn build_compaction_request(
             .unwrap_or(u32::MAX)
     });
     OpenCodeResponseRequest::new(
+        *context.run.session_id.as_bytes(),
         to_provider_service(context.run.service),
         &context.run.model_id,
         plan.estimated_input_tokens
@@ -864,6 +865,7 @@ fn build_provider_request(
         return Err(ProviderError::InvalidRequest);
     }
     OpenCodeResponseRequest::new(
+        *context.run.session_id.as_bytes(),
         to_provider_service(context.run.service),
         &context.run.model_id,
         context.estimated_input_tokens,
