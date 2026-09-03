@@ -5,8 +5,8 @@ use std::{error::Error, fmt};
 
 use morons_protocol::{
     ApplicationEvent, LocalCommandId, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelSummary, OpenCodeService, RunId, RunState, RunSummary, SessionId, SessionSummary,
-    SkillSummary, TranscriptEntry, WorkspaceSummary,
+    OpenCodeModelSummary, OpenCodeService, RunId, RunState, RunSummary, SessionContextStatus,
+    SessionId, SessionSummary, SkillSummary, TranscriptEntry, WorkspaceSummary,
 };
 use ratatui::Frame;
 
@@ -55,6 +55,11 @@ pub(super) enum AppAction {
     CreateSession,
     OpenSession(SessionId),
     CloseSession,
+    ShowContext {
+        session_id: SessionId,
+        service: OpenCodeService,
+        model_id: String,
+    },
     SubmitInput {
         session_id: SessionId,
         text: String,
@@ -103,6 +108,16 @@ impl fmt::Debug for AppAction {
                 .field(session_id)
                 .finish(),
             Self::CloseSession => formatter.write_str("CloseSession"),
+            Self::ShowContext {
+                session_id,
+                service,
+                model_id,
+            } => formatter
+                .debug_struct("ShowContext")
+                .field("session_id", session_id)
+                .field("service", service)
+                .field("model_id", model_id)
+                .finish(),
             Self::SubmitInput {
                 session_id,
                 text,
@@ -509,7 +524,9 @@ impl AppState {
                 session_id, entry, ..
             } => self.session_mut(session_id)?.append_transcript_entry(entry),
             ApplicationEvent::SessionRunChanged { run, .. } => {
-                self.session_mut(run.session_id)?.apply_run(run)
+                let session = self.session_mut(run.session_id)?;
+                session.context_status = None;
+                session.apply_run(run)
             }
             ApplicationEvent::SessionLocalCommandChanged {
                 session_id,
@@ -559,7 +576,9 @@ impl AppState {
         self.draft_images.clear();
         self.reset_skill_completion();
         self.clear_pending();
-        self.session_mut(run.session_id)?.apply_run(run)
+        let session = self.session_mut(run.session_id)?;
+        session.context_status = None;
+        session.apply_run(run)
     }
 
     pub(super) fn local_command_accepted(
@@ -592,6 +611,18 @@ impl AppState {
             .ok_or(UiStateError::ResourceScopeMismatch)?;
         if session.active_command_id != Some(command_id) {
             return Err(UiStateError::ResourceScopeMismatch);
+        }
+        Ok(())
+    }
+
+    pub(super) fn context_status_loaded(
+        &mut self,
+        context: SessionContextStatus,
+    ) -> Result<(), UiStateError> {
+        self.session_mut(context.session_id)?
+            .install_context_status(context)?;
+        if self.prompt.as_str() == "/context" {
+            self.prompt.clear();
         }
         Ok(())
     }
@@ -726,6 +757,7 @@ pub(super) struct SessionView {
     pub(super) active_command_id: Option<LocalCommandId>,
     pub(super) skills: Vec<PresentedSkill>,
     pub(super) transient: Option<TransientAssistant>,
+    pub(super) context_status: Option<SessionContextStatus>,
 }
 
 impl SessionView {
@@ -774,6 +806,7 @@ impl SessionView {
             active_command_id,
             skills: skills.into_iter().map(PresentedSkill::new).collect(),
             transient: None,
+            context_status: None,
         })
     }
 
@@ -882,6 +915,17 @@ impl SessionView {
             }
             self.active_run_id = Some(run.id);
         }
+        Ok(())
+    }
+
+    fn install_context_status(
+        &mut self,
+        context: SessionContextStatus,
+    ) -> Result<(), UiStateError> {
+        if context.session_id != self.summary.id {
+            return Err(UiStateError::ResourceScopeMismatch);
+        }
+        self.context_status = Some(context);
         Ok(())
     }
 

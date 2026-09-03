@@ -45,11 +45,12 @@ pub use self::{
 pub(crate) use self::types::{ExecutionTargetArch, ExecutionTargetOs};
 
 pub(crate) use self::run_types::{
-    ActivationOutcome, AssistantMessagePhase, CommittedToolCall, CommittedToolTurn,
-    CompactionOperationId, CompactionPlan, CompletedAssistant, CompletedToolTurn,
-    ContextCheckpoint, ContextCheckpointId, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
-    PrepareOperationOutcome, PreparedImageAttachment, ProviderOperationFailureState, ProviderUsage,
-    RunContext, RunInputContext, ToolOperationRecovery,
+    ActivationOutcome, AssistantMessagePhase, CONTEXT_POLICY_VERSION, CommittedToolCall,
+    CommittedToolTurn, CompactionOperationId, CompactionPlan, CompletedAssistant,
+    CompletedToolTurn, ContextCheckpoint, ContextCheckpointId, DispatchOutcome,
+    MAX_TRANSCRIPT_TEXT_BYTES, PrepareOperationOutcome, PreparedImageAttachment,
+    ProviderOperationFailureState, ProviderUsage, RunContext, RunInputContext,
+    SessionContextStatus, ToolOperationRecovery, conservative_input_token_estimate,
 };
 
 const WORKER_QUEUE_CAPACITY: usize = 64;

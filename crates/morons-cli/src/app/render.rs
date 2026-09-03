@@ -155,7 +155,14 @@ fn render_session(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             sections[0],
         );
     }
-    render_model_disclosure(frame, sections[1], app.selected_model());
+    render_model_disclosure(
+        frame,
+        sections[1],
+        app.selected_model(),
+        app.session
+            .as_ref()
+            .and_then(|session| session.context_status.as_ref()),
+    );
     let prompt_title = if app.pending == Some(PendingOperation::SubmitInput) {
         " Message · submitting "
     } else {
@@ -296,18 +303,38 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
     );
 }
 
-fn render_model_disclosure(frame: &mut Frame<'_>, area: Rect, model: Option<&PresentedModel>) {
+fn render_model_disclosure(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    model: Option<&PresentedModel>,
+    context: Option<&morons_protocol::SessionContextStatus>,
+) {
     let line = match model {
-        Some(model) => Line::from(vec![
-            Span::styled("Model ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(service_label(model.model.service)),
-            Span::raw(" · "),
-            Span::raw(model.display_name.first_line()),
-            Span::raw(" · training: "),
-            Span::raw(training_label(model.model.training_use)),
-            Span::raw(" · retention: "),
-            Span::raw(retention_label(model.model.retention)),
-        ]),
+        Some(model) => {
+            let context = context
+                .filter(|context| {
+                    context.service == model.model.service && context.model_id == model.model.id
+                })
+                .map_or_else(String::new, |context| {
+                    let percent = u64::from(context.estimated_input_tokens).saturating_mul(100)
+                        / u64::from(context.maximum_input_tokens);
+                    format!(
+                        " · context: ~{} / {} ({percent}%)",
+                        context.estimated_input_tokens, context.maximum_input_tokens
+                    )
+                });
+            Line::from(vec![
+                Span::styled("Model ", Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(service_label(model.model.service)),
+                Span::raw(" · "),
+                Span::raw(model.display_name.first_line()),
+                Span::raw(" · training: "),
+                Span::raw(training_label(model.model.training_use)),
+                Span::raw(" · retention: "),
+                Span::raw(retention_label(model.model.retention)),
+                Span::raw(context),
+            ])
+        }
         None => Line::from("No reviewed model is currently available"),
     };
     frame.render_widget(
@@ -321,7 +348,9 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         View::Sessions => {
             "↑↓ select · Enter open · n new · Tab model · Ctrl+K credential · Ctrl+S stop · q detach"
         }
-        View::Session => "Enter send · @ skill · !/!! command · Esc sessions · Ctrl+X cancel",
+        View::Session => {
+            "Enter send · @ skill · !/!! command · /context · /compact · Esc sessions · Ctrl+X cancel"
+        }
     };
     let status = Line::from(vec![
         Span::styled(" ", Style::default()),

@@ -74,6 +74,57 @@ fn session_skill_catalog_has_stable_json_shapes() {
 }
 
 #[test]
+fn context_status_contract_has_stable_json_shapes() {
+    let session_id = SessionId::from_bytes([0x19; 16]);
+    let request = ApplicationRequest::GetSessionContext {
+        session_id,
+        service: OpenCodeService::Zen,
+        model_id: "muse-spark-1.2".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_value(request).expect("context request should encode"),
+        json!({
+            "operation": "get_session_context",
+            "session_id": "ses_19191919191919191919191919191919",
+            "service": "zen",
+            "model_id": "muse-spark-1.2",
+        })
+    );
+    let response = ApplicationResponse::SessionContextFound {
+        context: crate::SessionContextStatus {
+            session_id,
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+            context_policy_version: 4,
+            estimated_input_tokens: 12_000,
+            maximum_input_tokens: 96_000,
+            maximum_output_tokens: 32_000,
+            compaction_threshold_tokens: 67_200,
+            checkpoint_source_entry_high_water: Some(42),
+            checkpoint_estimated_summary_tokens: Some(2_000),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("context response should encode"),
+        json!({
+            "result": "session_context_found",
+            "context": {
+                "session_id": "ses_19191919191919191919191919191919",
+                "service": "zen",
+                "model_id": "muse-spark-1.2",
+                "context_policy_version": 4,
+                "estimated_input_tokens": 12000,
+                "maximum_input_tokens": 96000,
+                "maximum_output_tokens": 32000,
+                "compaction_threshold_tokens": 67200,
+                "checkpoint_source_entry_high_water": 42,
+                "checkpoint_estimated_summary_tokens": 2000,
+            },
+        })
+    );
+}
+
+#[test]
 fn run_request_has_stable_json_shape() {
     let request = ApplicationRequest::SubmitSessionInput {
         mutation_request_id: MutationRequestId::from_bytes([0x12; 16]),

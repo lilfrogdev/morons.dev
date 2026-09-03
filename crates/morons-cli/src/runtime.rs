@@ -253,6 +253,21 @@ impl RuntimeState {
                 self.app
                     .set_status("Session detached; server-owned runs continue");
             }
+            AppAction::ShowContext {
+                session_id,
+                service,
+                model_id,
+            } => {
+                send_command(
+                    commands,
+                    RequestCommand::LoadContext {
+                        session_id,
+                        service,
+                        model_id,
+                    },
+                )?;
+                self.app.set_status("Calculating approximate context use");
+            }
             AppAction::SubmitInput {
                 session_id,
                 text,
@@ -417,6 +432,32 @@ impl RuntimeState {
                     });
                 }
             }
+            RequestEvent::ContextLoaded(context) => {
+                let percent = u64::from(context.estimated_input_tokens)
+                    .saturating_mul(100)
+                    .checked_div(u64::from(context.maximum_input_tokens))
+                    .unwrap_or(0);
+                let checkpoint = context.checkpoint_source_entry_high_water.map_or_else(
+                    || "no checkpoint".to_owned(),
+                    |high_water| {
+                        format!(
+                            "checkpoint through entry {high_water} · ~{} summary tokens",
+                            context.checkpoint_estimated_summary_tokens.unwrap_or(0)
+                        )
+                    },
+                );
+                self.app.context_status_loaded(context.clone())?;
+                self.app.set_status(format!(
+                    "Context ~{} / {} tokens ({percent}%) · compacts at {} · reserves {} input and up to {} output · {checkpoint}",
+                    context.estimated_input_tokens,
+                    context.maximum_input_tokens,
+                    context.compaction_threshold_tokens,
+                    context
+                        .maximum_input_tokens
+                        .saturating_sub(context.compaction_threshold_tokens),
+                    context.maximum_output_tokens,
+                ));
+            }
             RequestEvent::SessionLoaded(snapshot) => {
                 let skill_warning = snapshot.skill_warnings.first().cloned();
                 let additional_warnings = snapshot.skill_warnings.len().saturating_sub(1);
@@ -445,10 +486,18 @@ impl RuntimeState {
                 mutation_request_id,
                 accepted,
             } => {
+                let manual_compaction = matches!(
+                    self.pending_command.as_ref(),
+                    Some(RequestCommand::SubmitInput { text, .. })
+                        if text == "/compact" || text.starts_with("/compact ")
+                );
                 self.finish_mutation(mutation_request_id)?;
                 self.app.session_input_accepted(accepted.run)?;
-                self.app
-                    .set_status("Message accepted durably; run is server-owned");
+                self.app.set_status(if manual_compaction {
+                    "Manual compaction accepted; summary and continuation are server-owned"
+                } else {
+                    "Message accepted durably; run is server-owned"
+                });
             }
             RequestEvent::LocalCommandAccepted {
                 mutation_request_id,

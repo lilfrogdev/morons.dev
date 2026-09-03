@@ -15,7 +15,7 @@ pub(super) const MAX_CONTEXT_ENTRIES: usize = 256;
 pub(super) const MAX_TRANSCRIPT_ENTRIES: u64 = 100_000;
 const CONTEXT_ITEM_OVERHEAD_TOKENS: u64 = 16;
 
-pub(super) fn conservative_input_token_estimate(text_bytes: u64, entry_count: u64) -> Option<u32> {
+pub(crate) fn conservative_input_token_estimate(text_bytes: u64, entry_count: u64) -> Option<u32> {
     text_bytes
         .checked_add(entry_count.checked_mul(CONTEXT_ITEM_OVERHEAD_TOKENS)?)
         .and_then(|value| u32::try_from(value).ok())
@@ -715,6 +715,7 @@ pub(crate) struct ContextCheckpoint {
 #[derive(Clone, Debug)]
 pub(crate) struct CompactionPlan {
     pub parent_checkpoint_id: Option<ContextCheckpointId>,
+    pub user_guidance: Option<String>,
     pub source_entry_high_water: u64,
     pub source_digest: [u8; 32],
     pub entries: Vec<TranscriptEntry>,
@@ -733,6 +734,16 @@ impl CompactionOperationId {
     pub(crate) const fn as_bytes(&self) -> &[u8; IDENTIFIER_BYTES] {
         &self.0
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SessionContextStatus {
+    pub estimated_input_tokens: u32,
+    pub maximum_input_tokens: u32,
+    pub maximum_output_tokens: u32,
+    pub compaction_threshold_tokens: u32,
+    pub checkpoint_source_entry_high_water: Option<u64>,
+    pub checkpoint_estimated_summary_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug)]

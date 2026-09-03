@@ -1,9 +1,9 @@
 use morons_protocol::{
     ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
-    OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, SessionEventCursor,
-    SessionId, SessionSummary, SkillSource, SkillSummary, ToolKind, TranscriptEntry,
-    WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
+    OpenCodeModelTrainingUse, OpenCodeService, RunId, RunState, RunSummary, SessionContextStatus,
+    SessionEventCursor, SessionId, SessionSummary, SkillSource, SkillSummary, ToolKind,
+    TranscriptEntry, WorkspaceBlockReason, WorkspaceState, WorkspaceSummary,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -156,6 +156,68 @@ fn bang_prompts_execute_local_commands_without_requiring_a_model() {
         } if selected == session_id && command == "printf private"
     ));
     assert!(!format!("{action:?}").contains("printf private"));
+}
+
+#[test]
+fn slash_context_controls_query_status_and_submit_manual_compaction() {
+    let (session, run) = fixture_session_and_run();
+    let session_id = session.id;
+    let mut app = AppState::new("test-server");
+    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+        .expect("models should be valid");
+    app.open_session(
+        session,
+        empty_workspace(),
+        Vec::new(),
+        vec![run],
+        None,
+        None,
+    )
+    .expect("session should open");
+
+    app.handle_paste("/context");
+    assert!(matches!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::ShowContext {
+            session_id: selected,
+            service: OpenCodeService::Zen,
+            ref model_id,
+        } if selected == session_id && model_id == "grok-4.6"
+    ));
+    app.context_status_loaded(SessionContextStatus {
+        session_id,
+        service: OpenCodeService::Zen,
+        model_id: "grok-4.6".to_owned(),
+        context_policy_version: 4,
+        estimated_input_tokens: 12_000,
+        maximum_input_tokens: 96_000,
+        maximum_output_tokens: 32_000,
+        compaction_threshold_tokens: 67_200,
+        checkpoint_source_entry_high_water: Some(7),
+        checkpoint_estimated_summary_tokens: Some(500),
+    })
+    .expect("context status should install");
+    assert!(app.prompt.is_empty());
+    assert_eq!(
+        app.session
+            .as_ref()
+            .and_then(|session| session.context_status.as_ref())
+            .map(|context| context.estimated_input_tokens),
+        Some(12_000)
+    );
+
+    app.handle_paste("/compact preserve migration constraints");
+    assert!(matches!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::SubmitInput {
+            session_id: selected,
+            ref text,
+            ref attachments,
+            ..
+        } if selected == session_id
+            && text == "/compact preserve migration constraints"
+            && attachments.is_empty()
+    ));
 }
 
 #[test]

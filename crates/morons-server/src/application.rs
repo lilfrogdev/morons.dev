@@ -226,6 +226,41 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::GetSessionContext {
+                session_id,
+                service,
+                model_id,
+            } => {
+                let model = find_open_code_model(to_provider_service(service), &model_id)
+                    .ok_or(ApplicationError::UnsupportedModel)?;
+                let status = self
+                    .sessions
+                    .session_context_status(
+                        to_persistence_session_id(session_id),
+                        model.maximum_input_tokens,
+                        model.maximum_output_tokens,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::SessionContextFound {
+                        context: morons_protocol::SessionContextStatus {
+                            session_id,
+                            service,
+                            model_id,
+                            context_policy_version: crate::persistence::CONTEXT_POLICY_VERSION,
+                            estimated_input_tokens: status.estimated_input_tokens,
+                            maximum_input_tokens: status.maximum_input_tokens,
+                            maximum_output_tokens: status.maximum_output_tokens,
+                            compaction_threshold_tokens: status.compaction_threshold_tokens,
+                            checkpoint_source_entry_high_water: status
+                                .checkpoint_source_entry_high_water,
+                            checkpoint_estimated_summary_tokens: status
+                                .checkpoint_estimated_summary_tokens,
+                        },
+                    },
+                ))
+            }
             ApplicationRequest::GetOpenCodeCredentialStatus => {
                 let credential = self
                     .sessions
