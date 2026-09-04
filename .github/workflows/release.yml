@@ -124,7 +124,7 @@ jobs:
         run: ./scripts/package-release.sh "$TARGET" dist
 
       - name: Upload target package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: package-${{ matrix.target }}
           path: |
@@ -147,7 +147,7 @@ jobs:
 
     steps:
       - name: Download target packages
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: package-*
           path: dist
@@ -203,7 +203,7 @@ jobs:
           LC_ALL=C sort -k2 dist/*.tar.gz.sha256 >dist/SHA256SUMS
 
       - name: Upload complete candidate bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: morons-release-${{ needs.source.outputs.version }}-${{ needs.source.outputs.short_commit }}
           path: |
@@ -229,7 +229,7 @@ jobs:
 
     steps:
       - name: Download verified candidate bundle
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: morons-release-${{ needs.source.outputs.version }}-${{ needs.source.outputs.short_commit }}
           path: dist
