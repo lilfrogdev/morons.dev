@@ -330,7 +330,7 @@ fn validate_python(python: &Path, cancellation: &ProviderCancellation, deadline:
     command.args([
         "-I",
         "-c",
-        "import ipykernel,jupyter_client; assert ipykernel.__version__ == '6.30.1'; assert jupyter_client.__version__ == '8.6.3'",
+        "print('managed-python-ok', flush=True); import ipykernel; print('ipykernel-ok', flush=True); import jupyter_client; print('jupyter-client-ok', flush=True); assert ipykernel.__version__ == '6.30.1'; assert jupyter_client.__version__ == '8.6.3'",
     ]);
     run_managed_process(command, cancellation, deadline).is_ok()
 }
@@ -483,11 +483,11 @@ fn run_managed_process(
     deadline: Instant,
 ) -> Result<(), ToolErrorKind> {
     configure_managed_environment(&mut command);
-    command.stdin(Stdio::null()).stdout(Stdio::null());
+    command.stdin(Stdio::null());
     #[cfg(test)]
-    command.stderr(Stdio::inherit());
+    command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
     #[cfg(not(test))]
-    command.stderr(Stdio::null());
+    command.stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
