@@ -33,7 +33,11 @@ use super::{
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
-const SESSION_SUBSCRIPTION_TEST_TIMEOUT: Duration = Duration::from_secs(15);
+const SESSION_SUBSCRIPTION_TEST_TIMEOUT: Duration = if cfg!(windows) {
+    Duration::from_secs(60)
+} else {
+    Duration::from_secs(30)
+};
 static TEST_PATH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[tokio::test(flavor = "current_thread")]

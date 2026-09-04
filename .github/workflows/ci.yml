@@ -86,7 +86,9 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --target ${{ matrix.target }} --locked -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --target ${{ matrix.target }} --locked
+        # SQLite-heavy integration tests otherwise contend enough on hosted runners
+        # to exhaust test-only observation deadlines without a product failure.
+        run: cargo test --workspace --target ${{ matrix.target }} --locked -- --test-threads 2
 
       - name: Install cross-compilation target
         if: ${{ matrix.cross_target != '' }}
