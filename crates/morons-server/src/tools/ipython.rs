@@ -474,8 +474,11 @@ impl KernelProcess {
             .arg(bridge.source)
             .current_dir(working_directory)
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stdout(Stdio::piped());
+        #[cfg(test)]
+        command.stderr(Stdio::inherit());
+        #[cfg(not(test))]
+        command.stderr(Stdio::null());
         #[cfg(unix)]
         command.process_group(0);
         #[cfg(windows)]
@@ -1098,16 +1101,20 @@ mod tests {
                 &cancellation,
             )
             .await;
-        assert!(matches!(
-            first,
-            ToolResult::Ok {
-                output: ToolOutput::Ipython {
-                    ref stdout,
-                    ref display,
-                    ..
-                }
-            } if stdout == "ready\n" && display == "22"
-        ));
+        assert!(
+            matches!(
+                first,
+                ToolResult::Ok {
+                    output: ToolOutput::Ipython {
+                        ref stdout,
+                        ref display,
+                        ..
+                    }
+                } if stdout == "ready\n" && display == "22"
+            ),
+            "managed Jupyter first cell failed: {:?}",
+            first.error_kind()
+        );
         let second = supervisor
             .execute(
                 session,

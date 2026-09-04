@@ -30,6 +30,7 @@ const PYTHON_VERSION: &str = "3.11.15";
 const JUPYTER_CLIENT_VERSION: &str = "8.6.3";
 const IPYKERNEL_VERSION: &str = "6.30.1";
 const RUNTIME_DIRECTORY: &str = "runtime-v1";
+#[cfg(not(windows))]
 const STAGING_DIRECTORY: &str = ".runtime-v1.staging";
 const LOCK_FILE: &str = ".bootstrap.lock";
 const MANIFEST_FILE: &str = "MANIFEST.txt";
@@ -162,7 +163,7 @@ impl ManagedPythonRuntime {
         if self.packaged_uv.is_none() {
             validate_packaged_uv(&uv)?;
         }
-        let staging = self.root.join(STAGING_DIRECTORY);
+        let staging = preparation_directory(&self.root, &runtime);
         remove_managed_path(&staging)?;
         ensure_private_directory(&staging)?;
         let cache = self.root.join("cache");
@@ -249,10 +250,20 @@ impl ManagedPythonRuntime {
         }
         write_private_file(&staging.join(MANIFEST_FILE), runtime_manifest().as_bytes())?;
         sync_directory(&staging)?;
-        remove_managed_path(&runtime)?;
-        fs::rename(&staging, &runtime).map_err(|_| ToolErrorKind::KernelUnavailable)?;
-        sync_directory(&self.root)?;
-        self.cache(runtime_python(&runtime))
+        #[cfg(not(windows))]
+        {
+            remove_managed_path(&runtime)?;
+            fs::rename(&staging, &runtime).map_err(|_| ToolErrorKind::KernelUnavailable)?;
+            sync_directory(&self.root)?;
+        }
+        let published_python = runtime_python(&runtime);
+        if !path_is_inside(&published_python, &self.root)
+            || !validate_python(&published_python, cancellation, deadline)
+        {
+            remove_managed_path(&runtime)?;
+            return Err(ToolErrorKind::KernelUnavailable);
+        }
+        self.cache(published_python)
     }
 
     fn runtime_is_valid(
@@ -304,12 +315,22 @@ fn runtime_manifest() -> String {
     )
 }
 
+#[cfg(windows)]
+fn preparation_directory(_root: &Path, runtime: &Path) -> PathBuf {
+    runtime.to_path_buf()
+}
+
+#[cfg(not(windows))]
+fn preparation_directory(root: &Path, _runtime: &Path) -> PathBuf {
+    root.join(STAGING_DIRECTORY)
+}
+
 fn validate_python(python: &Path, cancellation: &ProviderCancellation, deadline: Instant) -> bool {
     let mut command = Command::new(python);
     command.args([
         "-I",
         "-c",
-        "import ipykernel,jupyter_client; assert ipykernel.__version__ == '6.30.1'; assert jupyter_client.__version__ == '8.6.3'",
+        "print('managed-python-ok', flush=True); import ipykernel; print('ipykernel-ok', flush=True); import jupyter_client; print('jupyter-client-ok', flush=True); assert ipykernel.__version__ == '6.30.1'; assert jupyter_client.__version__ == '8.6.3'",
     ]);
     run_managed_process(command, cancellation, deadline).is_ok()
 }
@@ -462,10 +483,11 @@ fn run_managed_process(
     deadline: Instant,
 ) -> Result<(), ToolErrorKind> {
     configure_managed_environment(&mut command);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.stdin(Stdio::null());
+    #[cfg(test)]
+    command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    #[cfg(not(test))]
+    command.stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
