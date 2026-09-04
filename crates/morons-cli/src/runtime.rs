@@ -137,6 +137,7 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
                             break Ok(());
                         }
                     }
+                    TerminalInput::Mouse(mouse) => runtime.app.handle_mouse(mouse),
                     TerminalInput::Paste(paste) => {
                         if !runtime.app.accepts_image_input() {
                             runtime.app.handle_paste(&paste);
@@ -759,7 +760,6 @@ impl RuntimeState {
                 if generation == self.session_generation =>
             {
                 self.app.apply_event(event)?;
-                self.app.transcript_scroll = 0;
             }
             SubscriptionEvent::Session { .. } => {}
             SubscriptionEvent::CatalogConnectionLost => {

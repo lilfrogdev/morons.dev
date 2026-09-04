@@ -82,6 +82,8 @@ If `MORONS_PYTHON` is unset, Morons uses `python3` on macOS/Linux and `python` o
 
 - `Enter`: submit a message
 - `Shift+Enter`: insert a newline
+- Mouse wheel/trackpad or `PageUp`/`PageDown`: scroll the fullscreen transcript
+- `Home`/`End`: jump to the start/latest transcript output
 - `@name`: activate an installed Agent Skill
 - `!command`: execute bounded noninteractive Bash and include its command/result in later model context
 - `!!command`: execute Bash but exclude its command/result from model context

@@ -3,19 +3,22 @@ use std::collections::HashMap;
 use morons_protocol::{OpenCodeModelRetention, OpenCodeModelTrainingUse, RunId, RunState};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 
 use super::{
     AppState, CredentialDialog, InformationDialog, PendingOperation, PresentedModel, SessionView,
-    View, service_label, terminal_run_presentation,
+    TranscriptBlockKey, TranscriptViewport, View, service_label, terminal_run_presentation,
 };
 use crate::terminal::SafeText;
 
-pub(super) fn render(frame: &mut Frame<'_>, app: &AppState) {
+pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     let area = frame.area();
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -162,22 +165,37 @@ fn render_models(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_session(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let completion = app.skill_completion();
-    let completion_height = completion.as_ref().map_or(0, |(skills, _)| {
+pub(super) const MAX_PROMPT_HEIGHT: u16 = 10;
+
+fn render_session(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
+    let desired_prompt_height = prompt_height(area.width, app.prompt.as_str());
+    let desired_completion_height = app.skill_completion().map_or(0, |(skills, _)| {
         u16::try_from(skills.len().min(5) + 2).unwrap_or(7)
     });
+    let transcript_reserve = u16::from(area.height > 0);
+    let model_height = if area.height >= 7 { 3 } else { 0 };
+    let prompt_available = area
+        .height
+        .saturating_sub(transcript_reserve)
+        .saturating_sub(model_height);
+    let prompt_height = desired_prompt_height.min(prompt_available);
+    let completion_available = area
+        .height
+        .saturating_sub(transcript_reserve)
+        .saturating_sub(model_height)
+        .saturating_sub(prompt_height);
+    let completion_height = desired_completion_height.min(completion_available);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(1),
-            Constraint::Length(3),
-            Constraint::Length(3),
+            Constraint::Min(transcript_reserve),
             Constraint::Length(completion_height),
+            Constraint::Length(model_height),
+            Constraint::Length(prompt_height),
         ])
         .split(area);
     if let Some(session) = app.session.as_ref() {
-        render_transcript(frame, sections[0], session, app.transcript_scroll);
+        render_transcript(frame, sections[0], session, &mut app.transcript_viewport);
     } else {
         frame.render_widget(
             Paragraph::new("Session state is unavailable")
@@ -185,27 +203,9 @@ fn render_session(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             sections[0],
         );
     }
-    render_model_disclosure(
-        frame,
-        sections[1],
-        app.selected_model(),
-        app.session
-            .as_ref()
-            .and_then(|session| session.context_status.as_ref()),
-    );
-    let prompt_title = if app.pending == Some(PendingOperation::SubmitInput) {
-        " Message · submitting "
-    } else {
-        " Message · Enter submit · Shift+Enter newline "
-    };
-    let prompt = SafeText::from_untrusted(app.prompt.as_str());
-    frame.render_widget(
-        Paragraph::new(prompt.as_str())
-            .block(Block::default().borders(Borders::ALL).title(prompt_title))
-            .wrap(Wrap { trim: false }),
-        sections[2],
-    );
-    if let Some((skills, selected)) = completion {
+    if completion_height > 0
+        && let Some((skills, selected)) = app.skill_completion()
+    {
         let window_start = selected.saturating_sub(4);
         let items = skills
             .iter()
@@ -241,8 +241,49 @@ fn render_session(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             .highlight_symbol("› ");
         let mut state =
             ListState::default().with_selected(Some(selected.saturating_sub(window_start)));
-        frame.render_stateful_widget(list, sections[3], &mut state);
+        frame.render_stateful_widget(list, sections[1], &mut state);
     }
+    if model_height > 0 {
+        render_model_disclosure(
+            frame,
+            sections[2],
+            app.selected_model(),
+            app.session
+                .as_ref()
+                .and_then(|session| session.context_status.as_ref()),
+        );
+    }
+    if prompt_height > 0 {
+        render_prompt(frame, sections[3], app);
+    }
+}
+
+fn prompt_height(width: u16, prompt: &str) -> u16 {
+    let inner_width = width.saturating_sub(2).max(1);
+    let rendered_lines = Paragraph::new(prompt)
+        .wrap(Wrap { trim: false })
+        .line_count(inner_width)
+        .max(1);
+    u16::try_from(rendered_lines)
+        .unwrap_or(u16::MAX)
+        .saturating_add(2)
+        .clamp(3, MAX_PROMPT_HEIGHT)
+}
+
+fn render_prompt(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let prompt_title = if app.pending == Some(PendingOperation::SubmitInput) {
+        " Message · submitting "
+    } else {
+        " Message · Enter submit · Shift+Enter newline "
+    };
+    let prompt = SafeText::from_untrusted(app.prompt.as_str());
+    let block = Block::default().borders(Borders::ALL).title(prompt_title);
+    let inner = block.inner(area);
+    let paragraph = Paragraph::new(prompt.as_str()).wrap(Wrap { trim: false });
+    let rendered_height = paragraph.line_count(inner.width.max(1));
+    let scroll = u16::try_from(rendered_height.saturating_sub(usize::from(inner.height)))
+        .unwrap_or(u16::MAX);
+    frame.render_widget(paragraph.block(block).scroll((scroll, 0)), area);
 }
 
 const fn skill_source_label(source: morons_protocol::SkillSource) -> &'static str {
@@ -253,7 +294,17 @@ const fn skill_source_label(source: morons_protocol::SkillSource) -> &'static st
     }
 }
 
-fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, scroll: u16) {
+struct TranscriptBlock<'a> {
+    key: TranscriptBlockKey,
+    lines: Vec<Line<'a>>,
+}
+
+fn render_transcript(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    session: &SessionView,
+    viewport: &mut TranscriptViewport,
+) {
     let last_entry_by_run = session
         .entries
         .iter()
@@ -271,7 +322,7 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
                 .map(|index| (index, run))
         })
         .collect::<HashMap<usize, _>>();
-    let mut lines = Vec::new();
+    let mut blocks = Vec::new();
     for (index, entry) in session.entries.iter().enumerate() {
         let role_style = if entry.role == "You" {
             Style::default()
@@ -286,12 +337,16 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD)
         };
-        lines.push(Line::from(Span::styled(entry.role, role_style)));
+        let mut lines = vec![Line::from(Span::styled(entry.role, role_style))];
         extend_safe_lines(&mut lines, &entry.text);
         lines.push(Line::default());
         if let Some(run) = terminal_run_by_last_entry.get(&index) {
             extend_terminal_run_outcome(&mut lines, run);
         }
+        blocks.push(TranscriptBlock {
+            key: TranscriptBlockKey::Entry(entry.id),
+            lines,
+        });
     }
     if let Some(transient) = session.transient.as_ref() {
         let label = if transient.refusal {
@@ -299,12 +354,12 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
         } else {
             "Assistant · streaming"
         };
-        lines.push(Line::from(Span::styled(
+        let mut lines = vec![Line::from(Span::styled(
             label,
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::ITALIC),
-        )));
+        ))];
         extend_safe_lines(&mut lines, &transient.presented);
         if transient.truncated || transient.presented.was_truncated() {
             lines.push(Line::from(Span::styled(
@@ -312,7 +367,64 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
                 Style::default().fg(Color::Yellow),
             )));
         }
+        blocks.push(TranscriptBlock {
+            key: TranscriptBlockKey::Transient(transient.run_id),
+            lines,
+        });
     }
+    if let Some(last) = blocks.last_mut() {
+        while last.lines.last().is_some_and(|line| line.spans.is_empty()) {
+            last.lines.pop();
+        }
+    }
+
+    let plain_title = transcript_title(session, viewport);
+    let plain_block = Block::default().borders(Borders::ALL).title(plain_title);
+    let inner = plain_block.inner(area);
+    let measured = viewport.needs_measurement(inner.width).then(|| {
+        blocks
+            .iter()
+            .map(|block| {
+                let height = Paragraph::new(block.lines.clone())
+                    .wrap(Wrap { trim: false })
+                    .line_count(inner.width.max(1));
+                (block.key, height)
+            })
+            .collect()
+    });
+    viewport.update_layout(inner.width, inner.height, measured);
+
+    let title = transcript_title(session, viewport);
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let lines = blocks
+        .into_iter()
+        .flat_map(|block| block.lines)
+        .collect::<Vec<_>>();
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let scroll = u16::try_from(viewport.top()).unwrap_or(u16::MAX);
+    frame.render_widget(paragraph.block(block).scroll((scroll, 0)), area);
+
+    if viewport.content_height() > viewport.viewport_height() && area.height > 2 {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(None)
+            .thumb_style(Style::default().fg(Color::DarkGray));
+        let mut state = ScrollbarState::new(viewport.content_height())
+            .position(viewport.top())
+            .viewport_content_length(viewport.viewport_height());
+        frame.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 1,
+                horizontal: 0,
+            }),
+            &mut state,
+        );
+    }
+}
+
+fn transcript_title(session: &SessionView, viewport: &TranscriptViewport) -> String {
     let run_status = active_work_label(session);
     let shared = if session.shared_directory {
         " · shared directory race risk"
@@ -324,18 +436,17 @@ fn render_transcript(frame: &mut Frame<'_>, area: Rect, session: &SessionView, s
     } else {
         ""
     };
-    let title = format!(
-        " {} · {run_status}{archived}{shared} ",
+    let scroll = if viewport.follows_latest() {
+        ""
+    } else if viewport.has_newer_output() {
+        " · history · new output ↓ · End latest"
+    } else {
+        " · history · End latest"
+    };
+    format!(
+        " {} · {run_status}{archived}{shared}{scroll} ",
         session.display_name.first_line()
-    );
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let inner = block.inner(area);
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let rendered_height = paragraph.line_count(inner.width);
-    let maximum_scroll = u16::try_from(rendered_height.saturating_sub(usize::from(inner.height)))
-        .unwrap_or(u16::MAX);
-    let scroll = maximum_scroll.saturating_sub(scroll.min(maximum_scroll));
-    frame.render_widget(paragraph.block(block).scroll((scroll, 0)), area);
+    )
 }
 
 fn extend_terminal_run_outcome(lines: &mut Vec<Line<'_>>, run: &morons_protocol::RunSummary) {
@@ -408,7 +519,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             "↑↓ select · Enter open · n new · r rename · a archive · d delete archived · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
-            "Enter send · @ skill · !/!! command · /model · /context · /compact · Esc sessions · Ctrl+X cancel"
+            "Enter send · wheel/PgUp/PgDn scroll · Home/End · @ skill · /model · /context · /compact · Esc sessions · Ctrl+X cancel"
         }
     };
     let status = Line::from(vec![
@@ -546,9 +657,9 @@ fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: Informat
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /context inspect · /compact [instructions] summarize · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /context inspect · /compact [instructions] summarize · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
-            15,
+            16,
         ),
     };
     let popup = Rect {

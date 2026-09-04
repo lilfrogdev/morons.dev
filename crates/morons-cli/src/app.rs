@@ -1,5 +1,6 @@
 mod input;
 mod render;
+mod viewport;
 
 use std::{error::Error, fmt};
 
@@ -10,6 +11,7 @@ use morons_protocol::{
 };
 use ratatui::Frame;
 
+use self::viewport::{TranscriptBlockKey, TranscriptViewport};
 use crate::terminal::{CredentialBuffer, PromptBuffer, SafeText, is_bidirectional_control};
 
 const MAX_CLIENT_SESSIONS: usize = 10_000;
@@ -370,7 +372,7 @@ pub(super) struct AppState {
     pub(super) pending_unknown: bool,
     pub(super) confirm_stop: bool,
     pub(super) confirm_delete: Option<SessionId>,
-    pub(super) transcript_scroll: u16,
+    transcript_viewport: TranscriptViewport,
     pub(super) skill_completion_index: usize,
 }
 
@@ -398,12 +400,12 @@ impl AppState {
             pending_unknown: false,
             confirm_stop: false,
             confirm_delete: None,
-            transcript_scroll: 0,
+            transcript_viewport: TranscriptViewport::default(),
             skill_completion_index: 0,
         }
     }
 
-    pub(super) fn render(&self, frame: &mut Frame<'_>) {
+    pub(super) fn render(&mut self, frame: &mut Frame<'_>) {
         render::render(frame, self);
     }
 
@@ -793,7 +795,7 @@ impl AppState {
         self.view = View::Session;
         self.prompt.clear();
         self.draft_images.clear();
-        self.transcript_scroll = 0;
+        self.transcript_viewport.reset();
         self.skill_completion_index = 0;
         Ok(())
     }
@@ -817,7 +819,7 @@ impl AppState {
         self.draft_images.clear();
         self.pending = None;
         self.pending_unknown = false;
-        self.transcript_scroll = 0;
+        self.transcript_viewport.reset();
         self.skill_completion_index = 0;
     }
 
@@ -850,7 +852,15 @@ impl AppState {
             ApplicationEvent::SessionRemoved { session_id, .. } => self.session_deleted(session_id),
             ApplicationEvent::SessionTranscriptEntryCommitted {
                 session_id, entry, ..
-            } => self.session_mut(session_id)?.append_transcript_entry(entry),
+            } => {
+                if self
+                    .session_mut(session_id)?
+                    .append_transcript_entry(entry)?
+                {
+                    self.transcript_viewport.note_content_changed();
+                }
+                Ok(())
+            }
             ApplicationEvent::SessionRunChanged { run, .. } => {
                 let presentation = terminal_run_presentation(&run);
                 let status = presentation.map(|presentation| {
@@ -864,7 +874,13 @@ impl AppState {
                 });
                 let session = self.session_mut(run.session_id)?;
                 session.context_status = None;
+                let had_transient = session.transient.is_some();
                 session.apply_run(run)?;
+                if presentation.is_some() {
+                    self.transcript_viewport.note_content_changed();
+                } else if had_transient && session.transient.is_none() {
+                    self.transcript_viewport.note_layout_changed();
+                }
                 if let Some(status) = status {
                     self.set_status(status);
                 }
@@ -886,9 +902,12 @@ impl AppState {
                 delta,
                 refusal,
                 ..
-            } => self
-                .session_mut(session_id)?
-                .append_delta(run_id, &delta, refusal),
+            } => {
+                self.session_mut(session_id)?
+                    .append_delta(run_id, &delta, refusal)?;
+                self.transcript_viewport.note_content_changed();
+                Ok(())
+            }
         }
     }
 
@@ -917,6 +936,7 @@ impl AppState {
         self.draft_images.clear();
         self.reset_skill_completion();
         self.clear_pending();
+        self.transcript_viewport.scroll_to_bottom();
         let session = self.session_mut(run.session_id)?;
         session.context_status = None;
         session.apply_run(run)
@@ -930,6 +950,7 @@ impl AppState {
         self.prompt.clear();
         self.reset_skill_completion();
         self.clear_pending();
+        self.transcript_viewport.scroll_to_bottom();
         let session = self.session_mut(session_id)?;
         if !session
             .entries
@@ -988,14 +1009,21 @@ impl AppState {
         run.cancellation_requested = cancellation_requested;
         if state.is_terminal() && session.active_run_id == Some(run_id) {
             session.active_run_id = None;
-            session.transient = None;
+            if session.transient.take().is_some() {
+                self.transcript_viewport.note_layout_changed();
+            }
         }
         Ok(())
     }
 
     pub(super) fn clear_transient_assistant(&mut self) {
-        if let Some(session) = self.session.as_mut() {
-            session.transient = None;
+        if self
+            .session
+            .as_mut()
+            .and_then(|session| session.transient.take())
+            .is_some()
+        {
+            self.transcript_viewport.note_layout_changed();
         }
     }
 
@@ -1149,10 +1177,10 @@ impl SessionView {
         })
     }
 
-    fn append_transcript_entry(&mut self, entry: TranscriptEntry) -> Result<(), UiStateError> {
+    fn append_transcript_entry(&mut self, entry: TranscriptEntry) -> Result<bool, UiStateError> {
         let id = transcript_entry_id(&entry);
         if self.entries.iter().any(|existing| existing.id == id) {
-            return Ok(());
+            return Ok(false);
         }
         if self.entries.len() >= MAX_CLIENT_TRANSCRIPT_ENTRIES {
             return Err(UiStateError::ResourceLimitExceeded);
@@ -1172,7 +1200,7 @@ impl SessionView {
             self.active_command_id = None;
         }
         self.entries.push(PresentedTranscriptEntry::new(entry));
-        Ok(())
+        Ok(true)
     }
 
     fn apply_run(&mut self, run: RunSummary) -> Result<(), UiStateError> {
