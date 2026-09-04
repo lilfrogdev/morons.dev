@@ -28,10 +28,26 @@ Build both packaged companions:
 cargo build --locked --release -p morons-cli -p morons-server
 ```
 
-Keep the resulting `morons` and `morons-server` executables together, change to the directory you want a new session to use, and run:
+From a clean checkout, create a checksummed archive for the current Rust host target with:
 
 ```sh
-./target/release/morons
+./scripts/package-release.sh
+```
+
+Pass one of the six reviewed target triples as the first argument when its Rust target and linker are available.
+
+Keep the resulting `morons` and `morons-server` executables together. From a source checkout, change to the directory you want a new session to use and launch the client by path:
+
+```sh
+cd /path/to/project
+/path/to/morons.dev/target/release/morons
+```
+
+From an extracted release archive, launch its client the same way without moving or renaming its sibling companion:
+
+```sh
+cd /path/to/project
+/path/to/extracted-morons-package/morons
 ```
 
 On first launch, read and acknowledge the trusted-local authority notice. Configure the OpenCode credential with `Ctrl+K`.

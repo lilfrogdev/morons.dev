@@ -16,6 +16,14 @@ Run the checklist against the exact archive intended for publication, not binari
 
 ## Candidate setup
 
+From the exact clean candidate checkout, build and package one reviewed target with:
+
+```sh
+./scripts/package-release.sh <target-triple> <output-directory>
+```
+
+The helper refuses a dirty checkout, builds both companions with Cargo's lockfile, verifies their binary formats against the target, writes an internal manifest with both binary hashes, and emits an archive plus SHA-256 sidecar.
+
 Record these values before starting:
 
 - source commit and tag candidate;
