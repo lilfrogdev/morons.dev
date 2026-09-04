@@ -483,10 +483,11 @@ fn run_managed_process(
     deadline: Instant,
 ) -> Result<(), ToolErrorKind> {
     configure_managed_environment(&mut command);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.stdin(Stdio::null()).stdout(Stdio::null());
+    #[cfg(test)]
+    command.stderr(Stdio::inherit());
+    #[cfg(not(test))]
+    command.stderr(Stdio::null());
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
