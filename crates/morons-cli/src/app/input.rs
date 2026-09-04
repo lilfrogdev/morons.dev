@@ -89,7 +89,7 @@ impl AppState {
         }
     }
 
-    pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) {
+    pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) -> AppAction {
         if self.view != View::Session
             || self.information_dialog.is_some()
             || self.model_dialog.is_some()
@@ -98,14 +98,12 @@ impl AppState {
             || self.confirm_stop
             || self.confirm_delete.is_some()
         {
-            return;
+            return AppAction::None;
         }
         match mouse.kind {
-            MouseEventKind::ScrollUp => self.transcript_viewport.scroll_lines_up(MOUSE_SCROLL_ROWS),
-            MouseEventKind::ScrollDown => self
-                .transcript_viewport
-                .scroll_lines_down(MOUSE_SCROLL_ROWS),
-            _ => {}
+            MouseEventKind::ScrollUp => self.scroll_transcript_lines_up(MOUSE_SCROLL_ROWS),
+            MouseEventKind::ScrollDown => self.scroll_transcript_lines_down(MOUSE_SCROLL_ROWS),
+            _ => AppAction::None,
         }
     }
 
@@ -487,22 +485,10 @@ impl AppState {
             }
             KeyCode::Up if self.cycle_skill_completion(true) => AppAction::None,
             KeyCode::Down if self.cycle_skill_completion(false) => AppAction::None,
-            KeyCode::PageUp => {
-                self.transcript_viewport.scroll_page_up();
-                AppAction::None
-            }
-            KeyCode::PageDown => {
-                self.transcript_viewport.scroll_page_down();
-                AppAction::None
-            }
-            KeyCode::Home => {
-                self.transcript_viewport.scroll_to_top();
-                AppAction::None
-            }
-            KeyCode::End => {
-                self.transcript_viewport.scroll_to_bottom();
-                AppAction::None
-            }
+            KeyCode::PageUp => self.scroll_transcript_page_up(),
+            KeyCode::PageDown => self.scroll_transcript_page_down(),
+            KeyCode::Home => self.scroll_transcript_to_start(),
+            KeyCode::End => self.scroll_transcript_to_latest(),
             KeyCode::Backspace if self.pending.is_none() => {
                 self.backspace_prompt();
                 AppAction::None
@@ -526,6 +512,10 @@ impl AppState {
     }
 
     fn submit_action(&mut self) -> AppAction {
+        if self.transcript_page_loading {
+            self.set_status("Wait for transcript history loading to finish");
+            return AppAction::None;
+        }
         if self.prompt.is_empty() {
             self.set_status("Enter a message before submitting");
             return AppAction::None;
@@ -554,6 +544,12 @@ impl AppState {
                 service: model.model.service,
                 model_id: model.model.id.clone(),
             };
+        }
+        if session.is_historical_window() {
+            self.set_status(
+                "Press End to return to the latest transcript before starting new work",
+            );
+            return AppAction::None;
         }
         if session.summary.archived {
             self.set_status("Unarchive this session before starting new work");

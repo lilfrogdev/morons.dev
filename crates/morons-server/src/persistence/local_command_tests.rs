@@ -189,6 +189,7 @@ async fn application_command_mode_executes_in_the_selected_directory_and_publish
                 .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
                     session_id,
                     cursor: None,
+                    direction: morons_protocol::TranscriptPageDirection::Newer,
                     limit: 1,
                 })
                 .await
@@ -349,6 +350,7 @@ async fn local_command_cancellation_stops_descendants_and_commits_interruption()
                 .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
                     session_id,
                     cursor: None,
+                    direction: morons_protocol::TranscriptPageDirection::Newer,
                     limit: 1,
                 })
                 .await

@@ -324,6 +324,7 @@ pub enum ApplicationRequest {
     ListSessionTranscript {
         session_id: SessionId,
         cursor: Option<crate::TranscriptCursor>,
+        direction: crate::TranscriptPageDirection,
         limit: u16,
     },
     SubscribeSession {
@@ -483,11 +484,13 @@ impl fmt::Debug for ApplicationRequest {
             Self::ListSessionTranscript {
                 session_id,
                 cursor,
+                direction,
                 limit,
             } => formatter
                 .debug_struct("ListSessionTranscript")
                 .field("session_id", session_id)
                 .field("cursor", cursor)
+                .field("direction", direction)
                 .field("limit", limit)
                 .finish(),
             Self::SubscribeSession { session_id, cursor } => formatter
@@ -591,7 +594,8 @@ pub enum ApplicationResponse {
         runs: Vec<crate::RunSummary>,
         active_run_id: Option<crate::RunId>,
         active_command_id: Option<crate::LocalCommandId>,
-        next_cursor: Option<crate::TranscriptCursor>,
+        older_cursor: Option<crate::TranscriptCursor>,
+        newer_cursor: Option<crate::TranscriptCursor>,
         event_cursor: SessionEventCursor,
     },
     SessionSubscriptionStarted {

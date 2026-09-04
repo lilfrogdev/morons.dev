@@ -28,7 +28,7 @@ use crate::{
     persistence::{
         DefaultModelSelection, PersistenceError, PreparedImageAttachment, RunModelSelection,
         SessionCatalogEventCursor, SessionCatalogEventKind, SessionEventCursor,
-        SessionEventPayload, SessionId, SessionStore,
+        SessionEventPayload, SessionId, SessionStore, TranscriptPageDirection,
     },
     provider::{
         OpenCodeModelAvailability, OpenCodeProvider, OpenCodeService, ProviderError,
@@ -714,13 +714,23 @@ impl ServerApplication {
             ApplicationRequest::ListSessionTranscript {
                 session_id,
                 cursor,
+                direction,
                 limit,
             } => {
+                let direction = match direction {
+                    morons_protocol::TranscriptPageDirection::Older => {
+                        TranscriptPageDirection::Older
+                    }
+                    morons_protocol::TranscriptPageDirection::Newer => {
+                        TranscriptPageDirection::Newer
+                    }
+                };
                 let page = self
                     .sessions
-                    .list_session_transcript(
+                    .list_session_transcript_window(
                         to_persistence_session_id(session_id),
                         cursor.map(to_persistence_transcript_cursor),
+                        direction,
                         limit,
                     )
                     .await
@@ -738,7 +748,8 @@ impl ServerApplication {
                         active_command_id: page
                             .active_command_id
                             .map(|id| morons_protocol::LocalCommandId::from_bytes(*id.as_bytes())),
-                        next_cursor: page.next_cursor.map(to_protocol_transcript_cursor),
+                        older_cursor: page.older_cursor.map(to_protocol_transcript_cursor),
+                        newer_cursor: page.newer_cursor.map(to_protocol_transcript_cursor),
                         event_cursor: to_protocol_session_event_cursor(page.event_cursor),
                     },
                 ))

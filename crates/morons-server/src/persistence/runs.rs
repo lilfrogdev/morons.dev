@@ -3,7 +3,8 @@ use tokio::sync::oneshot;
 use super::{
     AcceptedRun, CommittedToolTurn, CompletedToolTurn, MutationRequestId, PersistenceError, Run,
     RunCancellationResult, RunFailureKind, RunId, RunModelSelection, RunOpenCodeService, SessionId,
-    SessionStore, ToolCallId, TranscriptCursor, TranscriptEntry, TranscriptPage, WorkerRequest,
+    SessionStore, ToolCallId, TranscriptCursor, TranscriptEntry, TranscriptPage,
+    TranscriptPageDirection, TranscriptWindowPage, WorkerRequest,
     backend::Backend,
     run_types::{
         self, ActivationOutcome, CompletedAssistant, DispatchOutcome, PrepareOperationOutcome,
@@ -376,6 +377,28 @@ impl SessionStore {
         .await
     }
 
+    pub async fn list_session_transcript_window(
+        &self,
+        session_id: SessionId,
+        cursor: Option<TranscriptCursor>,
+        direction: TranscriptPageDirection,
+        limit: u16,
+    ) -> Result<TranscriptWindowPage, PersistenceError> {
+        if limit == 0 || limit > run_types::MAX_TRANSCRIPT_PAGE_SIZE {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a transcript page size must be exactly 1",
+            });
+        }
+        self.run_request(|response| RunWorkerRequest::ListTranscriptWindow {
+            session_id,
+            cursor,
+            direction,
+            limit,
+            response,
+        })
+        .await
+    }
+
     pub(crate) async fn session_context_status(
         &self,
         session_id: SessionId,
@@ -560,6 +583,13 @@ pub(super) enum RunWorkerRequest {
         cursor: Option<TranscriptCursor>,
         limit: u16,
         response: oneshot::Sender<Result<TranscriptPage, PersistenceError>>,
+    },
+    ListTranscriptWindow {
+        session_id: SessionId,
+        cursor: Option<TranscriptCursor>,
+        direction: TranscriptPageDirection,
+        limit: u16,
+        response: oneshot::Sender<Result<TranscriptWindowPage, PersistenceError>>,
     },
     ContextStatus {
         session_id: SessionId,
@@ -765,6 +795,17 @@ impl RunWorkerRequest {
                 response,
             } => {
                 let _ = response.send(backend.list_session_transcript(session_id, cursor, limit));
+            }
+            Self::ListTranscriptWindow {
+                session_id,
+                cursor,
+                direction,
+                limit,
+                response,
+            } => {
+                let _ = response.send(
+                    backend.list_session_transcript_window(session_id, cursor, direction, limit),
+                );
             }
             Self::ContextStatus {
                 session_id,

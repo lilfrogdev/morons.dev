@@ -6,13 +6,81 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use rusqlite::Connection;
 use sha2::{Digest as _, Sha256};
 
+use crate::tools::{ToolOutput, ToolResult};
+
 use super::{
     ActivationOutcome, CompletedAssistant, DefaultModelSelection, DispatchOutcome,
     MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PrepareOperationOutcome,
     ProviderUsage, RunModelSelection, RunOpenCodeService, RunState, SessionEventCursor,
-    SessionEventPayload, SessionStore, TranscriptCursor, TranscriptEntry,
+    SessionEventPayload, SessionStore, TranscriptCursor, TranscriptEntry, TranscriptPageDirection,
 };
 const TEST_MODEL: &str = "muse-spark-1.2";
+
+#[tokio::test(flavor = "current_thread")]
+async fn transcript_windows_reach_both_edges_beyond_the_old_client_limit() {
+    let root = TestRoot::new("long-transcript-window");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0x71; 16]), None)
+        .await
+        .expect("session should be created");
+    for index in 0_u64..513 {
+        let mut request_id = [0_u8; 16];
+        request_id[8..].copy_from_slice(&index.saturating_add(1).to_be_bytes());
+        let command = format!("printf MESSAGE-{index:03}");
+        let accepted = store
+            .accept_local_command(
+                MutationRequestId::from_bytes(request_id),
+                session.id,
+                command,
+                false,
+            )
+            .await
+            .expect("bounded fixture command should be accepted");
+        assert!(
+            store
+                .activate_local_command(accepted.id)
+                .await
+                .expect("fixture command should activate")
+        );
+        store
+            .complete_local_command(
+                accepted.id,
+                ToolResult::Ok {
+                    output: ToolOutput::Bash {
+                        exit_code: Some(0),
+                        signal: None,
+                        stdout: format!("MESSAGE-{index:03}"),
+                        stderr: String::new(),
+                    },
+                },
+            )
+            .await
+            .expect("fixture command should complete");
+    }
+
+    let latest = store
+        .list_session_transcript_window(session.id, None, TranscriptPageDirection::Older, 1)
+        .await
+        .expect("latest edge should load");
+    assert!(latest.older_cursor.is_some());
+    assert!(latest.newer_cursor.is_none());
+    assert!(matches!(
+        &latest.entries[..],
+        [TranscriptEntry::LocalCommand { command, .. }] if command == "printf MESSAGE-512"
+    ));
+
+    let oldest = store
+        .list_session_transcript_window(session.id, None, TranscriptPageDirection::Newer, 1)
+        .await
+        .expect("oldest edge should load");
+    assert!(oldest.older_cursor.is_none());
+    assert!(oldest.newer_cursor.is_some());
+    assert!(matches!(
+        &oldest.entries[..],
+        [TranscriptEntry::LocalCommand { command, .. }] if command == "printf MESSAGE-000"
+    ));
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn rejected_run_input_does_not_append_transcript_state() {
@@ -816,6 +884,51 @@ async fn complete_provider_outcome_commits_assistant_and_terminal_run() {
         &second.entries[0],
         TranscriptEntry::AssistantMessage { run_id, text, .. }
             if *run_id == accepted.run.id && text == "durable answer"
+    ));
+
+    let latest = store
+        .list_session_transcript_window(session.id, None, TranscriptPageDirection::Older, 1)
+        .await
+        .expect("latest transcript window should load");
+    assert!(latest.newer_cursor.is_none());
+    let older_cursor = latest
+        .older_cursor
+        .expect("latest entry should have older history");
+    assert!(matches!(
+        &latest.entries[..],
+        [TranscriptEntry::AssistantMessage { text, .. }] if text == "durable answer"
+    ));
+    let older = store
+        .list_session_transcript_window(
+            session.id,
+            Some(older_cursor),
+            TranscriptPageDirection::Older,
+            1,
+        )
+        .await
+        .expect("older transcript window should load");
+    assert!(older.older_cursor.is_none());
+    let newer_cursor = older
+        .newer_cursor
+        .expect("oldest entry should link back to newer history");
+    assert!(matches!(
+        &older.entries[..],
+        [TranscriptEntry::UserMessage { text, .. }] if text == "answer this"
+    ));
+    let newer = store
+        .list_session_transcript_window(
+            session.id,
+            Some(newer_cursor),
+            TranscriptPageDirection::Newer,
+            1,
+        )
+        .await
+        .expect("newer transcript window should load");
+    assert!(newer.newer_cursor.is_none());
+    assert!(newer.older_cursor.is_some());
+    assert!(matches!(
+        &newer.entries[..],
+        [TranscriptEntry::AssistantMessage { text, .. }] if text == "durable answer"
     ));
 
     let next = store

@@ -5,7 +5,7 @@ use morons_protocol::{
     ApplicationError, FrameError, LocalCommandId, MutationRequestId, OpenCodeApiKey,
     OpenCodeCredentialStatus, OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService, RunId,
     RunSummary, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId,
-    SessionSummary, SkillSummary, TranscriptEntry,
+    SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry, TranscriptPageDirection,
 };
 use tokio::{sync::mpsc, time};
 
@@ -19,10 +19,29 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(150);
 const MAX_REQUEST_ATTEMPTS: usize = 3;
 const SESSION_PAGE_SIZE: u16 = 100;
 const MAX_SESSION_PAGES: usize = 100;
-const TRANSCRIPT_PAGE_SIZE: u16 = 1;
-const MAX_TRANSCRIPT_PAGES: usize = 512;
+const TRANSCRIPT_ENTRY_PAGE_SIZE: u16 = 1;
+const TRANSCRIPT_WINDOW_ENTRIES: usize = 64;
 
 type Client = ApplicationClient<Stream>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TranscriptWindowTarget {
+    Latest,
+    Oldest,
+    Older(TranscriptCursor),
+    Newer(TranscriptCursor),
+}
+
+impl TranscriptWindowTarget {
+    const fn request(self) -> (Option<TranscriptCursor>, TranscriptPageDirection) {
+        match self {
+            Self::Latest => (None, TranscriptPageDirection::Older),
+            Self::Oldest => (None, TranscriptPageDirection::Newer),
+            Self::Older(cursor) => (Some(cursor), TranscriptPageDirection::Older),
+            Self::Newer(cursor) => (Some(cursor), TranscriptPageDirection::Newer),
+        }
+    }
+}
 
 pub(super) enum RequestCommand {
     LoadSessions,
@@ -30,6 +49,10 @@ pub(super) enum RequestCommand {
     LoadDefaultModel,
     LoadCredentialStatus,
     LoadSession(SessionId),
+    LoadTranscriptWindow {
+        session_id: SessionId,
+        target: TranscriptWindowTarget,
+    },
     LoadContext {
         session_id: SessionId,
         service: OpenCodeService,
@@ -103,6 +126,7 @@ impl RequestCommand {
             | Self::LoadDefaultModel
             | Self::LoadCredentialStatus
             | Self::LoadSession(_)
+            | Self::LoadTranscriptWindow { .. }
             | Self::LoadContext { .. } => None,
             Self::SetDefaultModel {
                 mutation_request_id,
@@ -160,6 +184,7 @@ impl RequestCommand {
             Self::LoadDefaultModel => "default model",
             Self::LoadCredentialStatus => "credential status",
             Self::LoadSession(_) => "session transcript and skills",
+            Self::LoadTranscriptWindow { .. } => "transcript history page",
             Self::LoadContext { .. } => "session context status",
             Self::SetDefaultModel { .. } => "default model selection",
             Self::CreateSession { .. } => "session creation",
@@ -190,6 +215,10 @@ impl RequestCommand {
             Self::LoadDefaultModel => Some(Self::LoadDefaultModel),
             Self::LoadCredentialStatus => Some(Self::LoadCredentialStatus),
             Self::LoadSession(session_id) => Some(Self::LoadSession(*session_id)),
+            Self::LoadTranscriptWindow { session_id, target } => Some(Self::LoadTranscriptWindow {
+                session_id: *session_id,
+                target: *target,
+            }),
             Self::LoadContext {
                 session_id,
                 service,
@@ -311,6 +340,10 @@ pub(super) enum RequestEvent {
     },
     CredentialStatusLoaded(OpenCodeCredentialStatus),
     SessionLoaded(SessionSnapshot),
+    TranscriptWindowLoaded {
+        target: TranscriptWindowTarget,
+        window: TranscriptWindow,
+    },
     ContextLoaded(SessionContextStatus),
     SessionCreated {
         mutation_request_id: MutationRequestId,
@@ -377,15 +410,21 @@ pub(super) enum RequestEvent {
     },
 }
 
-pub(super) struct SessionSnapshot {
+pub(super) struct TranscriptWindow {
     pub(super) session: SessionSummary,
     pub(super) entries: Vec<TranscriptEntry>,
     pub(super) runs: Vec<RunSummary>,
     pub(super) active_run_id: Option<RunId>,
     pub(super) active_command_id: Option<LocalCommandId>,
+    pub(super) older_cursor: Option<TranscriptCursor>,
+    pub(super) newer_cursor: Option<TranscriptCursor>,
+    pub(super) event_cursor: SessionEventCursor,
+}
+
+pub(super) struct SessionSnapshot {
+    pub(super) window: TranscriptWindow,
     pub(super) skills: Vec<SkillSummary>,
     pub(super) skill_warnings: Vec<String>,
-    pub(super) event_cursor: SessionEventCursor,
 }
 
 pub(super) async fn run_request_worker(
@@ -541,6 +580,7 @@ async fn execute_credential(
         | RequestCommand::LoadDefaultModel
         | RequestCommand::LoadCredentialStatus
         | RequestCommand::LoadSession(_)
+        | RequestCommand::LoadTranscriptWindow { .. }
         | RequestCommand::LoadContext { .. }
         | RequestCommand::SetDefaultModel { .. }
         | RequestCommand::CreateSession { .. }
@@ -583,6 +623,14 @@ async fn execute(
         RequestCommand::LoadSession(session_id) => load_session(client, *session_id)
             .await
             .map(RequestResult::Session),
+        RequestCommand::LoadTranscriptWindow { session_id, target } => {
+            load_transcript_window(client, *session_id, *target)
+                .await
+                .map(|window| RequestResult::TranscriptWindow {
+                    target: *target,
+                    window,
+                })
+        }
         RequestCommand::LoadContext {
             session_id,
             service,
@@ -752,67 +800,93 @@ async fn load_session(
     session_id: SessionId,
 ) -> Result<SessionSnapshot, ApplicationClientError> {
     let skill_catalog = client.list_session_skills(session_id).await?;
+    let window = load_transcript_window(client, session_id, TranscriptWindowTarget::Latest).await?;
+    Ok(SessionSnapshot {
+        window,
+        skills: skill_catalog.skills,
+        skill_warnings: skill_catalog.warnings,
+    })
+}
+
+async fn load_transcript_window(
+    client: &mut Client,
+    session_id: SessionId,
+    target: TranscriptWindowTarget,
+) -> Result<TranscriptWindow, ApplicationClientError> {
+    let (mut cursor, direction) = target.request();
     let mut entries = Vec::new();
     let mut runs = Vec::new();
-    let mut cursor = None;
     let mut session = None;
     let mut event_cursor = None;
     let mut active_run_id = None;
     let mut active_command_id = None;
-    let mut snapshot_metadata_loaded = false;
-    for _ in 0..MAX_TRANSCRIPT_PAGES {
+    let mut older_cursor = None;
+    let mut newer_cursor = None;
+
+    for index in 0..TRANSCRIPT_WINDOW_ENTRIES {
         let page = client
-            .list_session_transcript(session_id, cursor, TRANSCRIPT_PAGE_SIZE)
+            .list_session_transcript(session_id, cursor, direction, TRANSCRIPT_ENTRY_PAGE_SIZE)
             .await?;
         if session
             .as_ref()
             .is_some_and(|session: &SessionSummary| session != &page.session)
             || event_cursor.is_some_and(|event_cursor| event_cursor != page.event_cursor)
-            || snapshot_metadata_loaded
+            || index > 0
                 && (active_run_id != page.active_run_id
                     || active_command_id != page.active_command_id)
         {
             return Err(ApplicationClientError::EventScopeMismatch);
         }
-        session = Some(page.session);
-        event_cursor = Some(page.event_cursor);
-        if !snapshot_metadata_loaded {
+        if index == 0 {
             active_run_id = page.active_run_id;
             active_command_id = page.active_command_id;
-            snapshot_metadata_loaded = true;
+            match direction {
+                TranscriptPageDirection::Older => newer_cursor = page.newer_cursor,
+                TranscriptPageDirection::Newer => older_cursor = page.older_cursor,
+            }
         }
+        session = Some(page.session);
+        event_cursor = Some(page.event_cursor);
         entries.extend(page.entries);
         for run in page.runs {
             match runs
                 .iter()
                 .position(|existing: &RunSummary| existing.id == run.id)
             {
-                Some(index) if runs[index] != run => {
+                Some(existing) if runs[existing] != run => {
                     return Err(ApplicationClientError::EventScopeMismatch);
                 }
                 Some(_) => {}
                 None => runs.push(run),
             }
         }
-        cursor = page.next_cursor;
+        cursor = match direction {
+            TranscriptPageDirection::Older => {
+                older_cursor = page.older_cursor;
+                page.older_cursor
+            }
+            TranscriptPageDirection::Newer => {
+                newer_cursor = page.newer_cursor;
+                page.newer_cursor
+            }
+        };
         if cursor.is_none() {
-            return Ok(SessionSnapshot {
-                session: session.ok_or(ApplicationClientError::EventScopeMismatch)?,
-                entries,
-                runs,
-                active_run_id,
-                active_command_id,
-                skills: skill_catalog.skills,
-                skill_warnings: skill_catalog.warnings,
-                event_cursor: event_cursor.ok_or(ApplicationClientError::EventScopeMismatch)?,
-            });
+            break;
         }
     }
-    Err(ApplicationClientError::Application(
-        ApplicationError::ResourceLimit {
-            resource: morons_protocol::ResourceLimit::Storage,
-        },
-    ))
+    if direction == TranscriptPageDirection::Older {
+        entries.reverse();
+    }
+    Ok(TranscriptWindow {
+        session: session.ok_or(ApplicationClientError::EventScopeMismatch)?,
+        entries,
+        runs,
+        active_run_id,
+        active_command_id,
+        older_cursor,
+        newer_cursor,
+        event_cursor: event_cursor.ok_or(ApplicationClientError::EventScopeMismatch)?,
+    })
 }
 
 enum RequestResult {
@@ -828,6 +902,10 @@ enum RequestResult {
     },
     CredentialStatus(OpenCodeCredentialStatus),
     Session(SessionSnapshot),
+    TranscriptWindow {
+        target: TranscriptWindowTarget,
+        window: TranscriptWindow,
+    },
     Context(SessionContextStatus),
     SessionCreated {
         mutation_request_id: MutationRequestId,
@@ -887,6 +965,9 @@ impl RequestResult {
             },
             Self::CredentialStatus(status) => RequestEvent::CredentialStatusLoaded(status),
             Self::Session(snapshot) => RequestEvent::SessionLoaded(snapshot),
+            Self::TranscriptWindow { target, window } => {
+                RequestEvent::TranscriptWindowLoaded { target, window }
+            }
             Self::Context(context) => RequestEvent::ContextLoaded(context),
             Self::SessionCreated {
                 mutation_request_id,
@@ -985,6 +1066,7 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 | RequestCommand::LoadDefaultModel
                 | RequestCommand::LoadCredentialStatus
                 | RequestCommand::LoadSession(_)
+                | RequestCommand::LoadTranscriptWindow { .. }
                 | RequestCommand::LoadContext { .. } => None,
                 RequestCommand::SetDefaultModel { .. }
                 | RequestCommand::CreateSession { .. }

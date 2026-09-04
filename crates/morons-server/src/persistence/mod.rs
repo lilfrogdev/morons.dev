@@ -35,6 +35,7 @@ pub use self::{
         MessageId, Run, RunCancellationResult, RunFailureKind, RunId, RunModelSelection,
         RunOpenCodeService, RunState, SessionEvent, SessionEventCursor, SessionEventPage,
         SessionEventPayload, ToolCallId, TranscriptCursor, TranscriptEntry, TranscriptPage,
+        TranscriptPageDirection, TranscriptWindowPage,
     },
     types::{
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,

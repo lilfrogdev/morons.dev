@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use morons_protocol::{MessageId, RunId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,13 @@ impl Default for TranscriptViewport {
 impl TranscriptViewport {
     pub(super) fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    pub(super) fn reset_to_top(&mut self) {
+        *self = Self {
+            follow_latest: false,
+            ..Self::default()
+        };
     }
 
     pub(super) const fn needs_measurement(&self, width: u16) -> bool {
@@ -120,6 +129,10 @@ impl TranscriptViewport {
         self.layout_dirty = true;
     }
 
+    pub(super) fn note_newer_output(&mut self) {
+        self.newer_output = true;
+    }
+
     pub(super) fn scroll_lines_up(&mut self, rows: usize) {
         let current = if self.follow_latest {
             self.maximum_top()
@@ -171,6 +184,32 @@ impl TranscriptViewport {
 
     pub(super) const fn has_newer_output(&self) -> bool {
         self.newer_output
+    }
+
+    pub(super) const fn at_top(&self) -> bool {
+        self.top == 0
+    }
+
+    pub(super) fn at_bottom(&self) -> bool {
+        self.follow_latest || self.top >= self.maximum_top()
+    }
+
+    pub(super) fn visible_block_range(&self) -> (Range<usize>, usize) {
+        let visible_end = self.top.saturating_add(usize::from(self.height));
+        let start = self
+            .blocks
+            .iter()
+            .position(|metric| metric.start.saturating_add(metric.height) > self.top)
+            .unwrap_or(self.blocks.len());
+        let end = self.blocks[start..]
+            .iter()
+            .position(|metric| metric.start >= visible_end)
+            .map_or(self.blocks.len(), |offset| start.saturating_add(offset));
+        let local_scroll = self
+            .blocks
+            .get(start)
+            .map_or(0, |metric| self.top.saturating_sub(metric.start));
+        (start..end, local_scroll)
     }
 
     pub(super) const fn top(&self) -> usize {
