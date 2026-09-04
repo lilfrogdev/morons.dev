@@ -18,18 +18,22 @@ impl OpenCodeService {
 pub enum ProviderProtocol {
     Responses,
     ChatCompletions,
+    AnthropicMessages,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelTrainingUse {
     NotUsed,
     MayUsePromptsAndCompletions,
+    NotDocumented,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelRetention {
     None,
     UpToThirtyDays,
+    NotZeroDataRetention,
+    NotDocumented,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +67,7 @@ pub struct OpenCodeModel {
 
 pub const RESPONSES_PROTOCOL_REVISION: u16 = 1;
 pub const CHAT_COMPLETIONS_PROTOCOL_REVISION: u16 = 2;
+pub const ANTHROPIC_MESSAGES_PROTOCOL_REVISION: u16 = 3;
 pub const MAXIMUM_INPUT_TOKENS: u32 = 96_000;
 pub const MAXIMUM_OUTPUT_TOKENS: u32 = 32_000;
 pub const MAXIMUM_CONTEXT_TOKENS: u32 = MAXIMUM_INPUT_TOKENS + MAXIMUM_OUTPUT_TOKENS;
@@ -75,10 +80,13 @@ const RESPONSES_CAPABILITIES: ModelCapabilities = ModelCapabilities {
     reasoning_continuation: false,
     tool_calls: true,
 };
-const OPENAI_RESPONSES_CAPABILITIES: ModelCapabilities = ModelCapabilities {
+const VISION_CAPABILITIES: ModelCapabilities = ModelCapabilities {
     image_input: true,
-    reasoning_continuation: true,
     ..RESPONSES_CAPABILITIES
+};
+const OPENAI_RESPONSES_CAPABILITIES: ModelCapabilities = ModelCapabilities {
+    reasoning_continuation: true,
+    ..VISION_CAPABILITIES
 };
 const NO_TRAINING_ZERO_RETENTION: ModelDataUse = ModelDataUse {
     training: ModelTrainingUse::NotUsed,
@@ -87,6 +95,14 @@ const NO_TRAINING_ZERO_RETENTION: ModelDataUse = ModelDataUse {
 const NO_TRAINING_THIRTY_DAY_RETENTION: ModelDataUse = ModelDataUse {
     training: ModelTrainingUse::NotUsed,
     retention: ModelRetention::UpToThirtyDays,
+};
+const TRAINING_NOT_ZERO_RETENTION: ModelDataUse = ModelDataUse {
+    training: ModelTrainingUse::MayUsePromptsAndCompletions,
+    retention: ModelRetention::NotZeroDataRetention,
+};
+const UNDOCUMENTED_DATA_USE: ModelDataUse = ModelDataUse {
+    training: ModelTrainingUse::NotDocumented,
+    retention: ModelRetention::NotDocumented,
 };
 
 const fn model(
@@ -113,13 +129,22 @@ const fn openai_model(
     )
 }
 
+const fn vision_model(
+    service: OpenCodeService,
+    id: &'static str,
+    display_name: &'static str,
+    data_use: ModelDataUse,
+) -> OpenCodeModel {
+    model_with_capabilities(service, id, display_name, data_use, VISION_CAPABILITIES)
+}
+
 const fn chat_model(
     service: OpenCodeService,
     id: &'static str,
     display_name: &'static str,
     data_use: ModelDataUse,
 ) -> OpenCodeModel {
-    model_with_protocol(
+    protocol_model(
         service,
         id,
         display_name,
@@ -130,6 +155,57 @@ const fn chat_model(
     )
 }
 
+const fn chat_vision_model(
+    service: OpenCodeService,
+    id: &'static str,
+    display_name: &'static str,
+    data_use: ModelDataUse,
+) -> OpenCodeModel {
+    protocol_model(
+        service,
+        id,
+        display_name,
+        data_use,
+        VISION_CAPABILITIES,
+        ProviderProtocol::ChatCompletions,
+        CHAT_COMPLETIONS_PROTOCOL_REVISION,
+    )
+}
+
+const fn anthropic_model(
+    service: OpenCodeService,
+    id: &'static str,
+    display_name: &'static str,
+    data_use: ModelDataUse,
+) -> OpenCodeModel {
+    protocol_model(
+        service,
+        id,
+        display_name,
+        data_use,
+        RESPONSES_CAPABILITIES,
+        ProviderProtocol::AnthropicMessages,
+        ANTHROPIC_MESSAGES_PROTOCOL_REVISION,
+    )
+}
+
+const fn anthropic_vision_model(
+    service: OpenCodeService,
+    id: &'static str,
+    display_name: &'static str,
+    data_use: ModelDataUse,
+) -> OpenCodeModel {
+    protocol_model(
+        service,
+        id,
+        display_name,
+        data_use,
+        VISION_CAPABILITIES,
+        ProviderProtocol::AnthropicMessages,
+        ANTHROPIC_MESSAGES_PROTOCOL_REVISION,
+    )
+}
+
 const fn model_with_capabilities(
     service: OpenCodeService,
     id: &'static str,
@@ -137,7 +213,7 @@ const fn model_with_capabilities(
     data_use: ModelDataUse,
     capabilities: ModelCapabilities,
 ) -> OpenCodeModel {
-    model_with_protocol(
+    protocol_model(
         service,
         id,
         display_name,
@@ -148,7 +224,7 @@ const fn model_with_capabilities(
     )
 }
 
-const fn model_with_protocol(
+const fn protocol_model(
     service: OpenCodeService,
     id: &'static str,
     display_name: &'static str,
@@ -157,7 +233,6 @@ const fn model_with_protocol(
     protocol: ProviderProtocol,
     protocol_revision: u16,
 ) -> OpenCodeModel {
-    assert!(matches!(data_use.training, ModelTrainingUse::NotUsed));
     OpenCodeModel {
         service,
         id,
@@ -286,23 +361,215 @@ static MODELS: &[OpenCodeModel] = &[
         "Muse Spark 1.2",
         NO_TRAINING_ZERO_RETENTION,
     ),
+    vision_model(
+        OpenCodeService::Go,
+        "grok-4.6",
+        "Grok 4.6",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
     openai_model(
         OpenCodeService::Go,
         "gpt-5.6-luna",
         "GPT 5.6 Luna",
         NO_TRAINING_THIRTY_DAY_RETENTION,
     ),
-    model(
-        OpenCodeService::Go,
-        "grok-4.6",
-        "Grok 4.6",
-        NO_TRAINING_THIRTY_DAY_RETENTION,
-    ),
-    chat_model(
+    chat_vision_model(
         OpenCodeService::Go,
         "glm-5.3-flash",
         "GLM-5.3-Flash",
-        NO_TRAINING_THIRTY_DAY_RETENTION,
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "glm-5.3",
+        "GLM-5.3",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "glm-5.2",
+        "GLM-5.2",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "glm-5.1",
+        "GLM-5.1",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Go,
+        "kimi-k3",
+        "Kimi K3",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Go,
+        "kimi-k2.7-code",
+        "Kimi K2.7 Code",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Go,
+        "kimi-k2.6",
+        "Kimi K2.6",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "longcat-2.0",
+        "LongCat-2.0",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Go,
+        "mimo-v2.5",
+        "MiMo V2.5",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "mimo-v2.5-pro",
+        "MiMo V2.5 Pro",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    anthropic_model(
+        OpenCodeService::Go,
+        "minimax-m3",
+        "MiniMax M3",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    anthropic_model(
+        OpenCodeService::Go,
+        "minimax-m2.7",
+        "MiniMax M2.7",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    // The current endpoint table still pins this route, but the current model and
+    // privacy tables omit M2.5, so its data-use policy remains undisclosed.
+    anthropic_model(
+        OpenCodeService::Go,
+        "minimax-m2.5",
+        "MiniMax M2.5",
+        UNDOCUMENTED_DATA_USE,
+    ),
+    vision_model(
+        OpenCodeService::Go,
+        "muse-spark-1.3-contributor",
+        "Muse Spark 1.3 Contributor",
+        TRAINING_NOT_ZERO_RETENTION,
+    ),
+    vision_model(
+        OpenCodeService::Go,
+        "muse-spark-1.2-contributor",
+        "Muse Spark 1.2 Contributor",
+        TRAINING_NOT_ZERO_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Go,
+        "qwen3.8-max",
+        "Qwen3.8 Max",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Go,
+        "qwen3.8-flash",
+        "Qwen3.8 Flash",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    anthropic_model(
+        OpenCodeService::Go,
+        "qwen3.7-max",
+        "Qwen3.7 Max",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Go,
+        "qwen3.7-plus",
+        "Qwen3.7 Plus",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Go,
+        "qwen3.6-plus",
+        "Qwen3.6 Plus",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "deepseek-v4-pro",
+        "DeepSeek V4 Pro",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "deepseek-v4-flash",
+        "DeepSeek V4 Flash",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Go,
+        "deepseek-v4-flash-vision-exp",
+        "DeepSeek V4 Flash Vision Exp",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "hy4-preview",
+        "Hy4 preview",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "hy3",
+        "Hy3",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Go,
+        "omen-alpha",
+        "Omen Alpha",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    // These identifiers remain in Go's public catalog but no longer appear in the
+    // current endpoint/privacy tables. Keep their routing reviewed and disclose
+    // their data-use classification as undocumented rather than guessing.
+    vision_model(
+        OpenCodeService::Go,
+        "grok-4.5",
+        "Grok 4.5",
+        UNDOCUMENTED_DATA_USE,
+    ),
+    chat_model(OpenCodeService::Go, "glm-5", "GLM-5", UNDOCUMENTED_DATA_USE),
+    chat_vision_model(
+        OpenCodeService::Go,
+        "kimi-k2.5",
+        "Kimi K2.5",
+        UNDOCUMENTED_DATA_USE,
+    ),
+    chat_vision_model(
+        OpenCodeService::Go,
+        "qwen3.5-plus",
+        "Qwen3.5 Plus",
+        UNDOCUMENTED_DATA_USE,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "mimo-v2-pro",
+        "MiMo V2 Pro",
+        UNDOCUMENTED_DATA_USE,
+    ),
+    chat_vision_model(
+        OpenCodeService::Go,
+        "mimo-v2-omni",
+        "MiMo V2 Omni",
+        UNDOCUMENTED_DATA_USE,
+    ),
+    chat_model(
+        OpenCodeService::Go,
+        "hy3-preview",
+        "Hy3 Preview",
+        UNDOCUMENTED_DATA_USE,
     ),
 ];
 
@@ -326,8 +593,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        MAXIMUM_CONTEXT_TOKENS, ModelTrainingUse, OpenCodeService, ProviderProtocol,
-        find_open_code_model, open_code_models,
+        ANTHROPIC_MESSAGES_PROTOCOL_REVISION, CHAT_COMPLETIONS_PROTOCOL_REVISION,
+        MAXIMUM_CONTEXT_TOKENS, ModelRetention, ModelTrainingUse, OpenCodeService,
+        ProviderProtocol, RESPONSES_PROTOCOL_REVISION, find_open_code_model, open_code_models,
     };
 
     #[test]
@@ -343,7 +611,14 @@ mod tests {
                 model.maximum_input_tokens + model.maximum_output_tokens,
                 MAXIMUM_CONTEXT_TOKENS
             );
-            assert_eq!(model.data_use.training, ModelTrainingUse::NotUsed);
+            assert_eq!(
+                model.protocol_revision,
+                match model.protocol {
+                    ProviderProtocol::Responses => RESPONSES_PROTOCOL_REVISION,
+                    ProviderProtocol::ChatCompletions => CHAT_COMPLETIONS_PROTOCOL_REVISION,
+                    ProviderProtocol::AnthropicMessages => ANTHROPIC_MESSAGES_PROTOCOL_REVISION,
+                }
+            );
             assert!(pairs.insert((model.service.as_str(), model.id)));
         }
     }
@@ -358,7 +633,7 @@ mod tests {
                 .protocol
                 == ProviderProtocol::ChatCompletions
                 && model.capabilities.tool_calls
-                && !model.capabilities.image_input)
+                && model.capabilities.image_input)
         );
         assert_eq!(
             find_open_code_model(OpenCodeService::Zen, "grok-4.6")
@@ -393,6 +668,130 @@ mod tests {
         ] {
             assert!(find_open_code_model(OpenCodeService::Zen, model_id).is_none());
         }
-        assert!(find_open_code_model(OpenCodeService::Go, "muse-spark-1.2-contributor").is_none());
+        let contributor = find_open_code_model(OpenCodeService::Go, "muse-spark-1.2-contributor")
+            .expect("current Go contributor model should be reviewed");
+        assert_eq!(
+            contributor.data_use.training,
+            ModelTrainingUse::MayUsePromptsAndCompletions
+        );
+        assert_eq!(
+            contributor.data_use.retention,
+            ModelRetention::NotZeroDataRetention
+        );
+        assert!(
+            find_open_code_model(OpenCodeService::Go, "qwen3.8-max")
+                .is_some_and(|model| model.protocol == ProviderProtocol::AnthropicMessages)
+        );
+        assert!(find_open_code_model(OpenCodeService::Go, "ox-alpha-free").is_none());
+    }
+
+    #[test]
+    fn reviewed_go_manifest_covers_the_complete_live_catalog_snapshot() {
+        let actual = open_code_models()
+            .iter()
+            .filter(|model| model.service == OpenCodeService::Go)
+            .map(|model| model.id)
+            .collect::<BTreeSet<_>>();
+        let expected = [
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-vision-exp",
+            "deepseek-v4-pro",
+            "glm-5",
+            "glm-5.1",
+            "glm-5.2",
+            "glm-5.3",
+            "glm-5.3-flash",
+            "gpt-5.6-luna",
+            "grok-4.5",
+            "grok-4.6",
+            "hy3",
+            "hy3-preview",
+            "hy4-preview",
+            "kimi-k2.5",
+            "kimi-k2.6",
+            "kimi-k2.7-code",
+            "kimi-k3",
+            "longcat-2.0",
+            "mimo-v2-omni",
+            "mimo-v2-pro",
+            "mimo-v2.5",
+            "mimo-v2.5-pro",
+            "minimax-m2.5",
+            "minimax-m2.7",
+            "minimax-m3",
+            "muse-spark-1.2-contributor",
+            "muse-spark-1.3-contributor",
+            "omen-alpha",
+            "qwen3.5-plus",
+            "qwen3.6-plus",
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "qwen3.8-flash",
+            "qwen3.8-max",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected);
+
+        let undocumented_data_use = open_code_models()
+            .iter()
+            .filter(|model| {
+                model.service == OpenCodeService::Go
+                    && (model.data_use.training == ModelTrainingUse::NotDocumented
+                        || model.data_use.retention == ModelRetention::NotDocumented)
+            })
+            .map(|model| model.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            undocumented_data_use,
+            [
+                "glm-5",
+                "grok-4.5",
+                "hy3-preview",
+                "kimi-k2.5",
+                "mimo-v2-omni",
+                "mimo-v2-pro",
+                "minimax-m2.5",
+                "qwen3.5-plus",
+            ]
+            .into_iter()
+            .collect()
+        );
+
+        let protocols = |protocol| {
+            open_code_models()
+                .iter()
+                .filter(|model| model.service == OpenCodeService::Go && model.protocol == protocol)
+                .map(|model| model.id)
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            protocols(ProviderProtocol::Responses),
+            [
+                "gpt-5.6-luna",
+                "grok-4.5",
+                "grok-4.6",
+                "muse-spark-1.2-contributor",
+                "muse-spark-1.3-contributor",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(
+            protocols(ProviderProtocol::AnthropicMessages),
+            [
+                "minimax-m2.5",
+                "minimax-m2.7",
+                "minimax-m3",
+                "qwen3.6-plus",
+                "qwen3.7-max",
+                "qwen3.7-plus",
+                "qwen3.8-flash",
+                "qwen3.8-max",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(protocols(ProviderProtocol::ChatCompletions).len(), 22);
     }
 }

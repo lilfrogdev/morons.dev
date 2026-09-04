@@ -37,4 +37,4 @@ pub use session::{
     SessionListCursor, SessionSummary, SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 34;
+pub const PROTOCOL_VERSION: u32 = 35;

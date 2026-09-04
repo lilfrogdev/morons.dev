@@ -436,6 +436,31 @@ fn server_stop_contract_has_stable_json_shape() {
 
 #[test]
 fn model_catalog_contract_has_stable_json_shape() {
+    assert_eq!(
+        serde_json::to_value(ProviderProtocol::AnthropicMessages).expect("protocol should encode"),
+        json!("anthropic_messages")
+    );
+    assert_eq!(
+        serde_json::to_value(OpenCodeModelTrainingUse::MayUsePromptsAndCompletions)
+            .expect("training use should encode"),
+        json!("may_use_prompts_and_completions")
+    );
+    assert_eq!(
+        serde_json::to_value(OpenCodeModelTrainingUse::NotDocumented)
+            .expect("training use should encode"),
+        json!("not_documented")
+    );
+    assert_eq!(
+        serde_json::to_value(OpenCodeModelRetention::NotZeroDataRetention)
+            .expect("retention should encode"),
+        json!("not_zero_data_retention")
+    );
+    assert_eq!(
+        serde_json::to_value(OpenCodeModelRetention::NotDocumented)
+            .expect("retention should encode"),
+        json!("not_documented")
+    );
+
     let request = ApplicationRequest::ListOpenCodeModels {
         service: OpenCodeService::Go,
     };

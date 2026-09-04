@@ -89,11 +89,26 @@ async fn model_catalog_query_returns_only_reviewed_server_metadata() {
             && model.protocol == morons_protocol::ProviderProtocol::ChatCompletions
             && model.protocol_revision == crate::provider::CHAT_COMPLETIONS_PROTOCOL_REVISION
     }));
-    assert!(
-        models
-            .iter()
-            .all(|model| model.id != "muse-spark-1.2-contributor")
-    );
+    assert_eq!(models.len(), 35);
+    assert!(models.iter().any(|model| {
+        model.id == "muse-spark-1.2-contributor"
+            && model.available
+            && model.training_use
+                == morons_protocol::OpenCodeModelTrainingUse::MayUsePromptsAndCompletions
+            && model.retention == morons_protocol::OpenCodeModelRetention::NotZeroDataRetention
+    }));
+    assert!(models.iter().any(|model| {
+        model.id == "qwen3.8-max"
+            && model.available
+            && model.protocol == morons_protocol::ProviderProtocol::AnthropicMessages
+            && model.protocol_revision == crate::provider::ANTHROPIC_MESSAGES_PROTOCOL_REVISION
+    }));
+    assert!(models.iter().any(|model| {
+        model.id == "grok-4.5"
+            && !model.available
+            && model.training_use == morons_protocol::OpenCodeModelTrainingUse::NotDocumented
+            && model.retention == morons_protocol::OpenCodeModelRetention::NotDocumented
+    }));
 
     let captured = captured_request
         .await
@@ -1953,7 +1968,8 @@ async fn spawn_catalog_provider() -> (
             "{\"object\":\"list\",\"data\":[",
             "{\"id\":\"gpt-5.6-luna\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"},",
             "{\"id\":\"glm-5.3-flash\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"},",
-            "{\"id\":\"muse-spark-1.2-contributor\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"}",
+            "{\"id\":\"muse-spark-1.2-contributor\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"},",
+            "{\"id\":\"qwen3.8-max\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"}",
             "]}"
         );
         let response = format!(

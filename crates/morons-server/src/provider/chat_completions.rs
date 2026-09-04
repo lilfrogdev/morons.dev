@@ -263,16 +263,24 @@ impl ChatCompletionsDecoder {
         {
             self.diagnostic_stage = "validating chunk choices";
         }
+        let terminal_usage_choice = self.finish_reason.as_deref().is_some_and(|finish_reason| {
+            chunk.usage.is_some()
+                && self.usage.is_none()
+                && chunk.choices.len() == 1
+                && chunk.choices[0].is_terminal_usage_noop(finish_reason)
+        });
         if chunk.choices.is_empty() {
             if chunk.usage.is_none() || self.finish_reason.is_none() {
                 return Err(ProviderError::MalformedResponse);
             }
-        } else if chunk.choices.len() != 1 || self.finish_reason.is_some() {
+        } else if !terminal_usage_choice
+            && (chunk.choices.len() != 1 || self.finish_reason.is_some())
+        {
             return Err(ProviderError::MalformedResponse);
         }
 
         let mut events = Vec::new();
-        if let Some(choice) = chunk.choices.into_iter().next() {
+        if !terminal_usage_choice && let Some(choice) = chunk.choices.into_iter().next() {
             #[cfg(debug_assertions)]
             {
                 self.diagnostic_stage = "validating a choice delta";
@@ -293,10 +301,13 @@ impl ChatCompletionsDecoder {
             {
                 self.diagnostic_stage = "validating chat usage";
             }
-            if self.usage.is_some() {
-                return Err(ProviderError::MalformedResponse);
+            let usage = self.validate_usage(usage)?;
+            match self.usage {
+                Some(existing) if !usage_refines(existing, usage) => {
+                    return Err(ProviderError::MalformedResponse);
+                }
+                Some(_) | None => self.usage = Some(usage),
             }
-            self.usage = Some(self.validate_usage(usage)?);
         }
         Ok(events)
     }
@@ -382,12 +393,17 @@ impl ChatCompletionsDecoder {
         {
             self.diagnostic_stage = "validating reasoning details";
         }
-        if delta
-            .reasoning_details
-            .as_ref()
-            .is_some_and(|details| !details.is_empty())
-        {
-            return Err(ProviderError::MalformedResponse);
+        if let Some(details) = delta.reasoning_details {
+            let encoded =
+                serde_json::to_vec(&details).map_err(|_| ProviderError::MalformedResponse)?;
+            if encoded.len() > MAX_DELTA_BYTES {
+                return Err(ProviderError::ResponseLimitExceeded);
+            }
+            self.ignored_reasoning_bytes = self
+                .ignored_reasoning_bytes
+                .checked_add(encoded.len())
+                .filter(|bytes| *bytes <= MAX_ACCUMULATED_TEXT_BYTES)
+                .ok_or(ProviderError::ResponseLimitExceeded)?;
         }
 
         #[cfg(debug_assertions)]
@@ -494,20 +510,60 @@ impl ChatCompletionsDecoder {
     }
 
     fn validate_usage(&self, usage: ChatUsage) -> Result<ProviderUsage, ProviderError> {
-        let cached = usage
+        let detailed_cached = usage
             .prompt_tokens_details
-            .map_or(0, |details| details.cached_tokens);
+            .as_ref()
+            .and_then(|details| details.cached_tokens);
+        let cache_write = usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cache_write_tokens)
+            .unwrap_or(0);
+        let cached = match (detailed_cached, usage.prompt_cache_hit_tokens) {
+            (Some(detailed), Some(top_level)) if detailed != top_level => {
+                return Err(ProviderError::MalformedResponse);
+            }
+            (Some(detailed), _) => detailed,
+            (None, Some(top_level)) => top_level,
+            (None, None) => 0,
+        };
         let reasoning = usage
             .completion_tokens_details
-            .map_or(0, |details| details.reasoning_tokens);
-        if usage.prompt_tokens == 0
+            .as_ref()
+            .and_then(|details| details.reasoning_tokens)
+            .unwrap_or(0);
+        let unsupported_usage = usage
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.audio_tokens)
+            .is_some_and(|tokens| tokens != 0)
+            || usage
+                .completion_tokens_details
+                .as_ref()
+                .is_some_and(|details| {
+                    [
+                        details.audio_tokens,
+                        details.accepted_prediction_tokens,
+                        details.rejected_prediction_tokens,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|tokens| tokens != 0)
+                });
+        if unsupported_usage
+            || usage.prompt_tokens == 0
             || usage.completion_tokens == 0
             || usage.prompt_tokens > u64::from(self.maximum_input_tokens)
             || usage.completion_tokens > u64::from(self.maximum_output_tokens)
             || usage.prompt_tokens > MAX_USAGE_TOKENS
             || usage.completion_tokens > MAX_USAGE_TOKENS
             || usage.prompt_tokens.checked_add(usage.completion_tokens) != Some(usage.total_tokens)
-            || cached > usage.prompt_tokens
+            || cached
+                .checked_add(cache_write)
+                .is_none_or(|cache_tokens| cache_tokens > usage.prompt_tokens)
+            || usage
+                .prompt_cache_miss_tokens
+                .is_some_and(|miss| miss != usage.prompt_tokens - cached)
             || reasoning > usage.completion_tokens
         {
             return Err(ProviderError::MalformedResponse);
@@ -515,7 +571,7 @@ impl ChatCompletionsDecoder {
         Ok(ProviderUsage {
             input_tokens: usage.prompt_tokens,
             cached_input_tokens: cached,
-            cache_write_input_tokens: 0,
+            cache_write_input_tokens: cache_write,
             output_tokens: usage.completion_tokens,
             reasoning_output_tokens: reasoning,
             total_tokens: usage.total_tokens,
@@ -572,6 +628,15 @@ struct ChatChoice {
     logprobs: Option<Value>,
 }
 
+impl ChatChoice {
+    fn is_terminal_usage_noop(&self, expected_finish_reason: &str) -> bool {
+        self.index == 0
+            && self.finish_reason.as_deref() == Some(expected_finish_reason)
+            && self.logprobs.is_none()
+            && self.delta.is_terminal_noop()
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChatDelta {
@@ -583,6 +648,19 @@ struct ChatDelta {
     reasoning: Option<String>,
     reasoning_content: Option<String>,
     reasoning_details: Option<Vec<Value>>,
+}
+
+impl ChatDelta {
+    fn is_terminal_noop(&self) -> bool {
+        self.role.as_deref().is_none_or(|role| role == "assistant")
+            && self.content.as_deref().is_none_or(str::is_empty)
+            && self.refusal.as_deref().is_none_or(str::is_empty)
+            && self.tool_calls.as_ref().is_none_or(Vec::is_empty)
+            && self.function_call.is_none()
+            && self.reasoning.as_deref().is_none_or(str::is_empty)
+            && self.reasoning_content.as_deref().is_none_or(str::is_empty)
+            && self.reasoning_details.as_ref().is_none_or(Vec::is_empty)
+    }
 }
 
 #[derive(Deserialize)]
@@ -610,28 +688,25 @@ struct ChatUsage {
     total_tokens: u64,
     prompt_tokens_details: Option<PromptTokenDetails>,
     completion_tokens_details: Option<CompletionTokenDetails>,
+    prompt_cache_hit_tokens: Option<u64>,
+    prompt_cache_miss_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PromptTokenDetails {
-    #[serde(default)]
-    cached_tokens: u64,
-    #[serde(default, rename = "audio_tokens")]
-    _audio_tokens: u64,
+    cached_tokens: Option<u64>,
+    cache_write_tokens: Option<u64>,
+    audio_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompletionTokenDetails {
-    #[serde(default)]
-    reasoning_tokens: u64,
-    #[serde(default, rename = "audio_tokens")]
-    _audio_tokens: u64,
-    #[serde(default, rename = "accepted_prediction_tokens")]
-    _accepted_prediction_tokens: u64,
-    #[serde(default, rename = "rejected_prediction_tokens")]
-    _rejected_prediction_tokens: u64,
+    reasoning_tokens: Option<u64>,
+    audio_tokens: Option<u64>,
+    accepted_prediction_tokens: Option<u64>,
+    rejected_prediction_tokens: Option<u64>,
 }
 
 #[cfg(debug_assertions)]
@@ -663,6 +738,15 @@ fn diagnose_unknown_chunk_fields(value: &Value) {
             key.len()
         );
     }
+}
+
+const fn usage_refines(previous: ProviderUsage, next: ProviderUsage) -> bool {
+    previous.input_tokens == next.input_tokens
+        && previous.output_tokens == next.output_tokens
+        && previous.total_tokens == next.total_tokens
+        && previous.cached_input_tokens <= next.cached_input_tokens
+        && previous.cache_write_input_tokens <= next.cache_write_input_tokens
+        && previous.reasoning_output_tokens <= next.reasoning_output_tokens
 }
 
 fn is_done_marker(data: &[u8]) -> bool {

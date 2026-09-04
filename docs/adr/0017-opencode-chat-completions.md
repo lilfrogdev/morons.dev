@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted; expanded by ADR 0020
 
 ## Context
 
@@ -19,7 +19,7 @@ The reviewed model manifest assigns every service/model pair one internal wire p
 
 Application protocol version 33 exposes this pair as `protocol` and `protocol_revision` in model summaries instead of describing every revision as a Responses revision. Durable run records continue storing the globally unique revision number; persistence schema 24 is unchanged.
 
-This change admits exactly OpenCode Go `glm-5.3-flash` through Chat Completions revision 2. It is text-only in Morons' reviewed capability surface for this revision, supports reasoning output and function tools, does not support portable reasoning continuation, uses the existing conservative 96,000 input and 32,000 output token limits, and carries Go's reviewed no-training/up-to-thirty-day-retention disclosure. Additional documented Chat Completions models require separate review.
+This change initially admitted exactly OpenCode Go `glm-5.3-flash` through Chat Completions revision 2. It was text-only in the initial reviewed capability surface, supported reasoning output and function tools, did not support portable reasoning continuation, used the conservative 96,000 input and 32,000 output token limits, and carried the policy documented at that review time. ADR 0020 reviews the expanded Go catalog, enables bounded image input for documented Chat Completions vision models, and updates current data-use disclosures while preserving revision 2 and the same limits.
 
 Production routing adds only `https://opencode.ai/zen/go/v1/chat/completions`. Zen Chat Completions has no admitted route. Catalog, credential, TLS, redirect, deadline, cancellation, response-header, error-body, session-affinity, and no-retry behavior remain the ADR 0004 boundary.
 
@@ -31,7 +31,9 @@ The provider-neutral request is converted into typed Chat Completions messages:
 - function results become `tool` messages bound to the exact call ID;
 - tools use the nested OpenAI-compatible function schema;
 - `max_tokens`, streaming, and streaming usage are explicit; and
-- parallel tool calls, image parts, Responses reasoning items, store, repository configuration, and arbitrary compatibility options are absent.
+- parallel tool calls, Responses reasoning items, store, repository configuration, and arbitrary compatibility options are absent.
+
+ADR 0020 later adds bounded normalized image parts for reviewed Go vision models and the explicit empty DeepSeek `reasoning_content` compatibility field. Neither addition permits catalog- or repository-controlled options.
 
 The streaming decoder uses the existing bounded SSE framing and strict duplicate-key JSON parser. It bounds object depth, nodes, fields, collection sizes, keys, identifiers, deltas, accumulated visible text, ignored reasoning text, tool calls, arguments, token usage, and total stream bytes. It requires one response identity and exact model, one choice index, assistant roles, valid terminal reasons, complete strict-object tool arguments, usage consistent with reviewed limits, and a done marker.
 

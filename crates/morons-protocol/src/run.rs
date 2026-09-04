@@ -276,6 +276,7 @@ pub enum TranscriptPageDirection {
 pub enum ProviderProtocol {
     Responses,
     ChatCompletions,
+    AnthropicMessages,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +290,8 @@ pub enum OpenCodeService {
 #[serde(rename_all = "snake_case")]
 pub enum OpenCodeModelTrainingUse {
     NotUsed,
+    MayUsePromptsAndCompletions,
+    NotDocumented,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,6 +299,8 @@ pub enum OpenCodeModelTrainingUse {
 pub enum OpenCodeModelRetention {
     None,
     UpToThirtyDays,
+    NotZeroDataRetention,
+    NotDocumented,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
