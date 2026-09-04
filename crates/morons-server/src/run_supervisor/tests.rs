@@ -1333,7 +1333,7 @@ async fn cancelling_a_parent_run_stops_its_subagent_batch() {
     else {
         panic!("input should return a run");
     };
-    time::timeout(Duration::from_secs(5), child_dispatched)
+    time::timeout(TERMINAL_RUN_TEST_TIMEOUT, child_dispatched)
         .await
         .expect("child should dispatch")
         .expect("child dispatch should be observed");
@@ -2160,7 +2160,7 @@ async fn spawn_stalled_subagent_provider()
             .send(())
             .unwrap_or_else(|_| panic!("child dispatch should be observed"));
         let mut byte = [0_u8; 1];
-        let read = time::timeout(Duration::from_secs(5), child.read(&mut byte))
+        let read = time::timeout(TERMINAL_RUN_TEST_TIMEOUT, child.read(&mut byte))
             .await
             .expect("parent cancellation should close the child stream")
             .expect("child stream read should succeed");
