@@ -2,7 +2,7 @@
 
 This is the repeatable native smoke gate for a Morons release archive. It supplements CI; it does not replace native target validation from [ADR 0007](adr/0007-supported-processor-architectures.md).
 
-Run the checklist against the exact archive intended for publication, not binaries copied directly from `target/`. Use a disposable home and working directory so the test does not reuse normal Morons control state, credentials, sessions, skills, or model preference.
+Run the checklist against an exact combined candidate-workflow artifact or the exact signed-tag draft assets, not binaries copied directly from `target/`. Candidate qualification is preliminary: repeat the required checks against downloaded signed-tag assets before publication. Use a disposable home and working directory so the test does not reuse normal Morons control state, credentials, sessions, skills, or model preference.
 
 ## Safety and evidence rules
 
@@ -16,25 +16,37 @@ Run the checklist against the exact archive intended for publication, not binari
 
 ## Candidate setup
 
-From the exact clean candidate checkout, build and package one reviewed target with:
+For release qualification, use the combined artifact produced by the exact **Release artifacts** workflow run:
 
 ```sh
-./scripts/package-release.sh <target-triple> <output-directory>
+RUN_ID=REPLACE_WITH_RUN_ID
+ARTIFACT=morons-release-REPLACE_WITH_VERSION-REPLACE_WITH_12_CHARACTER_COMMIT
+REVIEW_DIR=$(mktemp -d)
+gh run download "$RUN_ID" \
+  --name "$ARTIFACT" \
+  --dir "$REVIEW_DIR"
+(
+  cd "$REVIEW_DIR"
+  sha256sum -c SHA256SUMS
+)
 ```
 
-The helper refuses a dirty checkout, builds the client and server with Cargo's lockfile, downloads only the pinned target-specific uv asset, verifies all three binary formats and the reviewed uv checksum, records all three hashes, and emits an archive plus SHA-256 sidecar.
+Use `shasum -a 256 -c SHA256SUMS` on systems without `sha256sum`. A clean local checkout may run `./scripts/package-release.sh <target-triple> <output-directory>` as a packaging preflight, but that output does not replace the workflow artifact or signed-tag assets for qualification.
 
 Record these values before starting:
 
-- source commit and tag candidate;
+- workflow run URL and exact source commit;
+- candidate tag, if any;
+- combined artifact name and GitHub-reported aggregate digest;
 - Rust target triple;
-- archive filename and SHA-256 digest;
+- archive filename and SHA-256 digest from `SHA256SUMS`;
 - host operating system and native processor architecture;
 - Herdr pane identifier;
 - managed Python, uv, `jupyter_client`, and `ipykernel` versions observed after first setup;
-- whether a Brave Search key is available.
+- whether a Brave Search key is available; and
+- prior same-target archive commit and digest when exercising the update path.
 
-Verify that the source checkout is clean and that the archive digest matches the candidate manifest. Extract into a new directory and verify every manifest entry, including matching `morons`, `morons-server`, and `morons-uv` executables plus both uv license files. On Unix, all three executables must have executable mode. Do not add the extracted directory to `PATH` for this test.
+Verify that the workflow source is the intended clean `main` commit and that every archive manifest names that exact commit, version, and target. Extract the native archive into a new directory and verify every manifest entry, including matching `morons`, `morons-server`, and `morons-uv` executables plus both uv license files. On Unix, all three executables must have executable mode. Do not add the extracted directory to `PATH` for this test.
 
 Create isolated state from a Bash-compatible shell:
 
@@ -57,6 +69,8 @@ Leave `MORONS_PYTHON` unset for the managed-runtime checks. Preserve the ordinar
 
 Launch the extracted `morons` from `QA_REPO` in a Herdr pane with `HOME=QA_HOME`. Herdr should only send keys/text and read the visible pane. Long pasted prompts should use bracketed paste. Use `;`, not `&&`, when the pane shell is Nu.
 
+For the update check, use a separately extracted, previously reviewed archive for the same native target. Launch the prior package with the disposable `QA_HOME` and `QA_REPO`, acknowledge onboarding, create a named baseline session and durable transcript entry, then stop its companion cleanly. Launch the new package from its own complete extraction directory with the same disposable home and repository. Never copy individual executables between package directories and never run old and new companions concurrently. Record both source commits and archive hashes.
+
 ## Checklist
 
 Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks the candidate unless it is understood and fixed in a separately reviewed change.
@@ -69,9 +83,10 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | PKG-02 | `morons` discovers only its exact sibling `morons-server` and starts it automatically. |
 | PKG-03 | First launch shows the trusted-local authority notice before normal interaction. |
 | PKG-04 | A copied client without its sibling fails before the TUI with a categorized, actionable, redacted diagnostic. |
-| PKG-05 | `/login` configures or replaces the credential without echoing or later displaying key material; `Ctrl+K` opens the same flow as a shortcut. `/logout` requires confirmation and removes the observed credential generation without exposing key material. |
+| PKG-05 | `/login` configures or replaces the credential without echoing or later displaying key material; `Ctrl+K` opens the same flow as a shortcut. `/logout` cancellation does not mutate it, confirmation removes the observed local generation without claiming provider revocation, and a repeated logout reports that no credential is configured. |
 | PKG-06 | `/help` repeats the trust posture, commands, cancellation, and session controls. |
 | PKG-07 | The packaged `morons-uv` has the manifest digest and target format, reports uv 0.12.9, and both shipped uv license texts match the reviewed source. |
+| PKG-08 | Updating from the named prior same-target package by stopping it and launching the new complete package preserves its baseline session/transcript, applies forward migrations, and starts only the new exact sibling companion. No mixed-package installation is used. |
 
 ### Directory and session lifecycle
 
@@ -154,21 +169,25 @@ These are not silently treated as passes:
 
 - automatic compaction at the seventy-percent threshold may be `not run` locally when filling context safely is impractical; deterministic tests and CI evidence must be linked;
 - successful web search may be `blocked` when no Brave key is available; the missing-key path must still pass;
-- native Intel macOS remains `blocked` until run on reviewed `x86_64-apple-darwin` hardware; cross-compilation is not a substitute.
+- native Intel macOS remains `blocked` until run on reviewed `x86_64-apple-darwin` hardware; cross-compilation is not a substitute;
+- Windows ARM64 evidence must identify the hosted runner image and be repeated after a material image/toolchain migration rather than silently carrying old qualification forward.
 
 ## Result record
 
 Copy this section into a dated review artifact or release issue. Do not put secrets or raw provider payloads in it.
 
 ```text
+Workflow run URL:
 Candidate commit:
 Candidate tag:
+Combined artifact name and digest:
 Target triple:
 Archive:
 SHA-256:
+Prior update archive commit and SHA-256:
 Host OS and architecture:
 Herdr pane:
-Python and Jupyter versions:
+Python, uv, and Jupyter versions:
 Brave success path available: yes/no
 Started (UTC):
 Finished (UTC):
@@ -190,6 +209,6 @@ Reviewer:
 1. Archive and delete disposable sessions through the TUI where that behavior is under test.
 2. Stop the companion with `Ctrl+S` and confirm no `morons`, `morons-server`, kernel, or test descendant remains.
 3. Restore the Herdr pane to the source repository or another known directory.
-4. Remove `QA_HOME`, `QA_REPO`, and the extracted archive directory using exact recorded temporary paths.
+4. Remove `QA_HOME`, `QA_REPO`, the downloaded candidate bundle, and all prior/current extraction directories using exact recorded temporary paths.
 5. Confirm the source checkout is still clean and the selected working directory was not removed by session deletion.
 6. Record cleanup as part of the result artifact. Deletion is not represented as forensic erasure.
