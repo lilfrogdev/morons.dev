@@ -25,7 +25,7 @@ The fixed tool catalog adds `task`. One call has this closed shape:
 
 The parent should use a batch for independent work and assign disjoint mutations. The server rejects empty assignments, duplicate names, unknown fields, excessive bytes, excessive children, and more than two `task` calls in one top-level run.
 
-The tool blocks the parent tool loop until every admitted child reaches a terminal result. Children run concurrently under one global four-child semaphore. Results are returned in input order regardless of completion order. Each result contains only its index, optional name, terminal status, bounded final report, provider-turn count, tool-call and mutation counts, and bounded provider usage. The complete `task` call and result are canonical parent transcript entries and enter later parent context.
+The tool blocks the parent tool loop until every admitted child reaches a terminal result. Children run concurrently under one global four-child semaphore. Results are returned in input order regardless of completion order. Each result contains its index, optional name, terminal status, pinned model disclosure, bounded final report, provider-turn count, tool-call and mutation counts, and bounded provider usage. The complete `task` call and result are canonical parent transcript entries and enter later parent context.
 
 There is no background child registry, result injection, child browser, messaging bus, idle revival, or independently resumable child session in the MVP. This avoids hidden work after the parent continues and makes result ordering deterministic.
 
@@ -40,7 +40,7 @@ A child receives only:
 
 It does not inherit the parent transcript, compaction checkpoint, images, reasoning continuation, active skill body, IPython memory, or sibling context. The parent must place necessary constraints and findings in `context` or the assignment. This explicit narrow handoff avoids retransmitting a potentially large parent conversation for every child.
 
-Children use the parent's exact reviewed OpenCode service, model, credential generation, and model limits. There is no child-selected provider or model override. Each child has at most eight provider turns, twenty-four tool calls, eight mutating calls, 32 KiB of final report text, an 8,192-token output request, and ten minutes within the outer tool operation. Child context is conservatively estimated before every dispatch and is not compacted; a child that no longer fits returns a resource-limit result.
+ADR 0018 amends the model-routing part of this decision. Children inherit the parent's exact reviewed service, model, and model limits by default. A typed global setting may instead select one exact reviewed child service/model pair; the executor resolves and pins that pair once per `task` call and never silently substitutes another. Children continue to use the parent's accepted credential generation. Each child has at most eight provider turns, twenty-four tool calls, eight mutating calls, 32 KiB of final report text, an 8,192-token output request, and ten minutes within the outer tool operation. Child context is conservatively estimated before every dispatch and is not compacted; a child that no longer fits returns a resource-limit result.
 
 ### Child capabilities and authority
 

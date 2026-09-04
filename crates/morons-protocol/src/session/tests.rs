@@ -7,11 +7,11 @@ use super::{
     SessionSummary, SkillSource, SkillSummary,
 };
 use crate::{
-    ClientMessage, LocalCommandId, LocalCommandStatus, MessageId, OpenCodeApiKey,
-    OpenCodeCredentialStatus, OpenCodeModelCapabilities, OpenCodeModelRetention,
+    ApplicationSettings, ClientMessage, LocalCommandId, LocalCommandStatus, MessageId,
+    OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelCapabilities, OpenCodeModelRetention,
     OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
-    ProviderProtocol, RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind,
-    ToolResultStatus, TranscriptCursor, TranscriptPageDirection,
+    ProviderProtocol, RunFailureKind, RunId, RunState, RunSummary, SubagentModelSetting,
+    ToolCallId, ToolKind, ToolResultStatus, TranscriptCursor, TranscriptPageDirection,
 };
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
@@ -540,6 +540,76 @@ fn default_model_contract_has_stable_json_shapes() {
         json!({
             "result": "default_open_code_model_updated",
             "selection": { "service": "go", "model_id": "grok-4.6" },
+        })
+    );
+}
+
+#[test]
+fn application_settings_contract_has_stable_json_shapes() {
+    assert_eq!(
+        serde_json::to_value(ApplicationRequest::GetApplicationSettings)
+            .expect("settings query should encode"),
+        json!({ "operation": "get_application_settings" })
+    );
+    let setting = SubagentModelSetting::OpenCode {
+        service: OpenCodeService::Go,
+        model_id: "glm-5.3-flash".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_value(ApplicationRequest::SetSubagentModelSetting {
+            mutation_request_id: MutationRequestId::from_bytes([0x2a; 16]),
+            setting: setting.clone(),
+        })
+        .expect("settings mutation should encode"),
+        json!({
+            "operation": "set_subagent_model_setting",
+            "mutation_request_id": "mut_2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+            "setting": {
+                "mode": "open_code",
+                "service": "go",
+                "model_id": "glm-5.3-flash",
+            },
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ApplicationResponse::ApplicationSettings {
+            settings: ApplicationSettings {
+                subagent_model: SubagentModelSetting::InheritParent {},
+            },
+        })
+        .expect("settings response should encode"),
+        json!({
+            "result": "application_settings",
+            "settings": { "subagent_model": { "mode": "inherit_parent" } },
+        })
+    );
+    assert!(
+        serde_json::from_value::<ApplicationRequest>(json!({
+            "operation": "set_subagent_model_setting",
+            "mutation_request_id": "mut_2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+            "setting": {
+                "mode": "inherit_parent",
+                "unexpected": true,
+            },
+        }))
+        .is_err()
+    );
+    assert_eq!(
+        serde_json::to_value(ApplicationResponse::ApplicationSettingsUpdated {
+            settings: ApplicationSettings {
+                subagent_model: setting,
+            },
+        })
+        .expect("settings update should encode"),
+        json!({
+            "result": "application_settings_updated",
+            "settings": {
+                "subagent_model": {
+                    "mode": "open_code",
+                    "service": "go",
+                    "model_id": "glm-5.3-flash",
+                },
+            },
         })
     );
 }

@@ -18,6 +18,7 @@ mod server_stop;
 mod session_delete;
 mod session_events;
 mod session_mutation;
+mod settings;
 mod tool_execution;
 mod workspace_creation;
 mod worktree_generation;

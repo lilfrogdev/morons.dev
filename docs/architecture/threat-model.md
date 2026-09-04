@@ -177,6 +177,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Disclose the trusted-local authority model prominently and require external containment for users who need isolation.
 - Keep the tool catalog fixed and small while applying strict schema, count, byte, time, and output bounds.
 - Admit subagents only through the closed batched `task` schema; cap a batch at three children, global execution at four children, recursion at one level, and each child independently by provider turns, tool calls, mutations, context, output, and time.
+- Keep subagent model preference in a typed global owner setting outside repositories and prompts; validate exact pairs against the reviewed manifest, pin one selection before task dispatch, disclose it in results, and never silently fall back.
 - Give children only fixed instructions, selected-directory metadata, explicit shared context, and one assignment; do not inherit parent transcript, checkpoints, images, active skill bodies, reasoning continuation, IPython memory, or sibling context.
 - Block the parent until all children terminate, preserve input-order results, and provide no background registry, revival, messaging, or hidden result-injection path.
 - Treat the outer canonical task operation as the durable no-replay boundary and fan parent cancellation out through child provider, web, shell, and process-tree execution.

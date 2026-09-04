@@ -211,6 +211,15 @@ pub struct DefaultModelSelection {
     pub model_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubagentModelSetting {
+    InheritParent {},
+    OpenCode {
+        service: RunOpenCodeService,
+        model_id: String,
+    },
+}
+
 impl RunOpenCodeService {
     pub(super) const fn to_record(self) -> i64 {
         match self {

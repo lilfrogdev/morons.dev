@@ -317,6 +317,22 @@ pub struct OpenCodeModelSelection {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SubagentModelSetting {
+    InheritParent {},
+    OpenCode {
+        service: OpenCodeService,
+        model_id: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplicationSettings {
+    pub subagent_model: SubagentModelSetting,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpenCodeModelSummary {
     pub service: OpenCodeService,

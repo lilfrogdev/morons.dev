@@ -97,6 +97,16 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | MOD-06 | Every selected/default model remains an available reviewed service/model pair; unavailable saved state falls back visibly. |
 | MOD-07 | `/model go glm` exposes reviewed Go `glm-5.3-flash` with the expected data-use disclosure and persists it as the global default. |
 
+### Settings
+
+| ID | Check |
+| --- | --- |
+| SET-01 | `/settings` shows a typed **Subagent model** row; Enter opens a bounded searchable picker and Esc returns without mutation. |
+| SET-02 | **Inherit parent** is the initial policy and remains independent from `/model` selection. |
+| SET-03 | With Zen `gpt-5.6-sol` selected for the main run and Go `glm-5.3-flash` selected for subagents, `task` routes children through Chat Completions and reports `OpenCode Go / glm-5.3-flash · protocol revision 2`. |
+| SET-04 | The exact child setting survives client and companion restart; an unavailable or unauthorized saved pair fails clearly without falling back or rewriting the setting. |
+| SET-05 | Returning to **Inherit parent** makes later task calls use the main run's exact selected service/model while an already running task remains pinned. |
+
 ### Inference, tools, and context
 
 | ID | Check |

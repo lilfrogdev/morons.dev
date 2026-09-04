@@ -556,13 +556,18 @@ impl RunSupervisor {
                 self.sessions.finish_run_stopped(run_id, None).await?;
                 return Ok(true);
             }
+            let tool = call.input.kind();
+            let subagent_setting = if tool == ToolKind::Task {
+                Some(self.sessions.subagent_model_setting().await?)
+            } else {
+                None
+            };
             self.sessions
                 .mark_tool_dispatched(run_id, call.call_id, call.operation_id)
                 .await?;
             let execution_directory = working_directory.clone();
             let execution_input = call.input.clone();
             let execution_cancellation = cancellation.clone();
-            let tool = call.input.kind();
             let mutation = tool.is_mutation();
             let result = if tool == ToolKind::Task {
                 self.subagents
@@ -571,6 +576,7 @@ impl RunSupervisor {
                         call.call_id,
                         execution_directory,
                         &execution_input,
+                        subagent_setting.expect("task tools load one subagent model setting"),
                         &execution_cancellation,
                     )
                     .await

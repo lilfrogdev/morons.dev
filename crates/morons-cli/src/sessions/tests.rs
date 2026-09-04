@@ -1,9 +1,10 @@
 use morons_protocol::{
-    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ClientMessage,
-    MessageId, MutationRequestId, OpenCodeModelCapabilities, OpenCodeModelRetention,
-    OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunId,
-    RunState, RunSummary, ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId,
-    SessionSummary, SkillSource, SkillSummary, read_client_message, write_server_message,
+    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse,
+    ApplicationSettings, ClientMessage, MessageId, MutationRequestId, OpenCodeModelCapabilities,
+    OpenCodeModelRetention, OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse,
+    OpenCodeService, RunId, RunState, RunSummary, ServerMessage, SessionCatalogEventCursor,
+    SessionEventCursor, SessionId, SessionSummary, SkillSource, SkillSummary, SubagentModelSetting,
+    read_client_message, write_server_message,
 };
 
 use super::{ApplicationClient, ApplicationClientError};
@@ -223,6 +224,80 @@ async fn client_queries_and_updates_the_exact_default_model() {
         )
         .await
         .expect("default mutation response should be written");
+    };
+
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_queries_and_updates_typed_application_settings() {
+    let (client_connection, mut server) = tokio::io::duplex(4096);
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let mutation_request_id = MutationRequestId::from_bytes([0x27; 16]);
+    let selected = SubagentModelSetting::OpenCode {
+        service: OpenCodeService::Go,
+        model_id: "glm-5.3-flash".to_owned(),
+    };
+    let expected = selected.clone();
+    let expected_server = expected.clone();
+
+    let client_exchange = async {
+        assert_eq!(
+            client
+                .application_settings()
+                .await
+                .expect("settings query should succeed")
+                .subagent_model,
+            SubagentModelSetting::InheritParent {}
+        );
+        assert_eq!(
+            client
+                .set_subagent_model_setting(mutation_request_id, selected)
+                .await
+                .expect("settings mutation should succeed")
+                .subagent_model,
+            expected
+        );
+    };
+    let server_exchange = async {
+        assert_eq!(
+            read_request(&mut server, 1).await,
+            ApplicationRequest::GetApplicationSettings
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                1,
+                ApplicationResponse::ApplicationSettings {
+                    settings: ApplicationSettings {
+                        subagent_model: SubagentModelSetting::InheritParent {},
+                    },
+                },
+            ),
+        )
+        .await
+        .expect("settings query response should be written");
+
+        assert_eq!(
+            read_request(&mut server, 2).await,
+            ApplicationRequest::SetSubagentModelSetting {
+                mutation_request_id,
+                setting: expected_server.clone(),
+            }
+        );
+        write_server_message(
+            &mut server,
+            &ServerMessage::response(
+                2,
+                ApplicationResponse::ApplicationSettingsUpdated {
+                    settings: ApplicationSettings {
+                        subagent_model: expected_server,
+                    },
+                },
+            ),
+        )
+        .await
+        .expect("settings mutation response should be written");
     };
 
     tokio::join!(client_exchange, server_exchange);

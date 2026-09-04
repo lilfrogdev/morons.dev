@@ -3,7 +3,10 @@ use ratatui_crossterm::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 
-use super::{AppAction, AppState, CredentialDialog, InformationDialog, View};
+use super::{
+    AppAction, AppState, CredentialDialog, InformationDialog, SettingsDialog,
+    SubagentModelCandidate, View,
+};
 use crate::terminal::CredentialBuffer;
 
 const MAX_SESSION_NAME_BYTES: usize = 256;
@@ -35,6 +38,9 @@ impl AppState {
         }
         if self.model_dialog.is_some() {
             return self.handle_model_key(key.code, key.modifiers);
+        }
+        if self.settings_dialog.is_some() {
+            return self.handle_settings_key(key.code, key.modifiers);
         }
         if key.code == KeyCode::Char('?') {
             self.information_dialog = Some(InformationDialog::Help);
@@ -93,6 +99,7 @@ impl AppState {
         if self.view != View::Session
             || self.information_dialog.is_some()
             || self.model_dialog.is_some()
+            || self.settings_dialog.is_some()
             || self.credential_dialog.is_some()
             || self.rename_dialog.is_some()
             || self.confirm_stop
@@ -112,6 +119,13 @@ impl AppState {
             self.append_model_search(paste);
             return;
         }
+        if matches!(
+            self.settings_dialog,
+            Some(SettingsDialog::SubagentModel { .. })
+        ) {
+            self.append_subagent_model_search(paste);
+            return;
+        }
         if let Some(input) = self.rename_dialog.as_mut() {
             input.push_paste(paste);
             if input.len_bytes() > MAX_SESSION_NAME_BYTES {
@@ -126,6 +140,7 @@ impl AppState {
             return;
         }
         if self.credential_dialog.is_none()
+            && self.settings_dialog.is_none()
             && self.view == View::Session
             && self.pending.is_none()
             && !self.confirm_stop
@@ -133,6 +148,120 @@ impl AppState {
         {
             self.prompt.push_paste(paste);
             self.reset_skill_completion();
+        }
+    }
+
+    fn handle_settings_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> AppAction {
+        if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+            self.settings_dialog = None;
+            self.set_status("Settings closed");
+            return AppAction::None;
+        }
+        match self.settings_dialog.as_ref() {
+            Some(SettingsDialog::Overview) => match code {
+                KeyCode::Esc => {
+                    self.settings_dialog = None;
+                    self.set_status("Settings closed");
+                    AppAction::None
+                }
+                KeyCode::Enter => {
+                    self.open_subagent_model_dialog();
+                    AppAction::None
+                }
+                _ => AppAction::None,
+            },
+            Some(SettingsDialog::SubagentModel { .. }) => match code {
+                KeyCode::Esc => {
+                    self.settings_dialog = Some(SettingsDialog::Overview);
+                    self.set_status("Subagent model selection cancelled");
+                    AppAction::None
+                }
+                KeyCode::Up => {
+                    self.move_subagent_model_selection(true);
+                    AppAction::None
+                }
+                KeyCode::Down => {
+                    self.move_subagent_model_selection(false);
+                    AppAction::None
+                }
+                KeyCode::Backspace => {
+                    if let Some(SettingsDialog::SubagentModel { query, selected }) =
+                        self.settings_dialog.as_mut()
+                    {
+                        query.backspace();
+                        *selected = 0;
+                    }
+                    AppAction::None
+                }
+                KeyCode::Enter => {
+                    let matches = self.subagent_model_dialog_matches();
+                    let selected = match self.settings_dialog.as_ref() {
+                        Some(SettingsDialog::SubagentModel { selected, .. }) => *selected,
+                        _ => 0,
+                    };
+                    let setting = match matches.get(selected) {
+                        Some(SubagentModelCandidate::InheritParent) => {
+                            Some(morons_protocol::SubagentModelSetting::InheritParent {})
+                        }
+                        Some(SubagentModelCandidate::Model(index)) => {
+                            self.models.get(*index).map(|model| {
+                                morons_protocol::SubagentModelSetting::OpenCode {
+                                    service: model.model.service,
+                                    model_id: model.model.id.clone(),
+                                }
+                            })
+                        }
+                        None => None,
+                    };
+                    let Some(setting) = setting else {
+                        self.set_status("No available reviewed subagent model is selected");
+                        return AppAction::None;
+                    };
+                    self.settings_dialog = None;
+                    AppAction::SetSubagentModel { setting }
+                }
+                KeyCode::Char(character)
+                    if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.append_subagent_model_search(&character.to_string());
+                    AppAction::None
+                }
+                _ => AppAction::None,
+            },
+            None => AppAction::None,
+        }
+    }
+
+    fn append_subagent_model_search(&mut self, value: &str) {
+        let Some(SettingsDialog::SubagentModel { query, selected }) = self.settings_dialog.as_mut()
+        else {
+            return;
+        };
+        query.push_paste(value);
+        let mut maximum = query.len_bytes().min(super::MAX_MODEL_SEARCH_BYTES);
+        while !query.as_str().is_char_boundary(maximum) {
+            maximum = maximum.saturating_sub(1);
+        }
+        let truncated = maximum < query.len_bytes();
+        let _ = query.truncate(maximum);
+        *selected = 0;
+        if truncated {
+            self.set_status("Subagent model search accepts at most 128 UTF-8 bytes");
+        }
+    }
+
+    fn move_subagent_model_selection(&mut self, reverse: bool) {
+        let count = self.subagent_model_dialog_matches().len();
+        let Some(SettingsDialog::SubagentModel { selected, .. }) = self.settings_dialog.as_mut()
+        else {
+            return;
+        };
+        if count == 0 {
+            *selected = 0;
+        } else if reverse {
+            *selected = selected.checked_sub(1).unwrap_or(count - 1);
+        } else {
+            *selected = (*selected + 1) % count;
         }
     }
 
@@ -533,6 +662,11 @@ impl AppState {
             self.prompt.clear();
             self.open_credential_dialog();
             return AppAction::None;
+        }
+        if prompt == "/settings" {
+            self.prompt.clear();
+            self.open_settings_dialog();
+            return AppAction::LoadSettings;
         }
         if let Some(search) = model_search(prompt).map(str::to_owned) {
             self.prompt.clear();

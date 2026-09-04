@@ -21,7 +21,7 @@ use crate::{
         AcceptedRun, MutationRequestId, OpenCodeCredentialStatus, PersistenceError,
         PersistenceResourceLimit, Run, RunFailureKind, RunId, RunOpenCodeService, RunState,
         Session, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
-        TranscriptCursor, TranscriptEntry,
+        SubagentModelSetting, TranscriptCursor, TranscriptEntry,
     },
     provider::{
         ModelRetention, ModelTrainingUse, OpenCodeModelAvailability, OpenCodeService,
@@ -210,6 +210,38 @@ pub(super) fn to_protocol_model_summary(
         training_use,
         retention,
     })
+}
+
+pub(super) fn to_persistence_subagent_model_setting(
+    setting: morons_protocol::SubagentModelSetting,
+) -> SubagentModelSetting {
+    match setting {
+        morons_protocol::SubagentModelSetting::InheritParent {} => {
+            SubagentModelSetting::InheritParent {}
+        }
+        morons_protocol::SubagentModelSetting::OpenCode { service, model_id } => {
+            SubagentModelSetting::OpenCode {
+                service: to_persistence_service(service),
+                model_id,
+            }
+        }
+    }
+}
+
+pub(super) fn to_protocol_subagent_model_setting(
+    setting: SubagentModelSetting,
+) -> morons_protocol::SubagentModelSetting {
+    match setting {
+        SubagentModelSetting::InheritParent {} => {
+            morons_protocol::SubagentModelSetting::InheritParent {}
+        }
+        SubagentModelSetting::OpenCode { service, model_id } => {
+            morons_protocol::SubagentModelSetting::OpenCode {
+                service: to_protocol_service(service),
+                model_id,
+            }
+        }
+    }
 }
 
 pub(super) fn to_protocol_model_selection(

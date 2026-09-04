@@ -74,6 +74,7 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `!command`: execute bounded noninteractive Bash and include its command/result in later model context
 - `!!command`: execute Bash but exclude its command/result from model context
 - `/model [search]`: search available reviewed models and save one global default for every session
+- `/settings`: inspect typed global settings and choose whether task subagents inherit the parent model or use one exact reviewed model
 - `/login`: configure, replace, or remove the OpenCode API credential through hidden input (`Ctrl+K` shortcut)
 - `/context`: inspect approximate context use, limits, reserves, and the latest checkpoint
 - `/compact [instructions]`: manually summarize an eligible old context prefix
@@ -101,7 +102,7 @@ Every OpenCode Zen and Go inference request carries one stable, derived `x-openc
 
 ## Subagents
 
-The `task` tool follows a bounded OMP-style batch contract: the parent supplies shared context once and one to three self-contained assignments. Children run concurrently with the parent's current model, receive only `read`, `write`, `edit`, `bash`, and `web_search`, and return input-ordered bounded reports. They do not inherit the parent transcript, share IPython memory, recurse, continue in the background, or receive isolated worktrees. Children share the real selected directory, so parallel mutations can race.
+The `task` tool follows a bounded OMP-style batch contract: the parent supplies shared context once and one to three self-contained assignments. By default children inherit the parent's model. `/settings` can instead pin one exact available reviewed service/model pair for later task calls, including a different family, service, or wire protocol such as Zen GPT 5.6 Sol with Go GLM-5.3-Flash. Morons never silently substitutes another child model; each completed report discloses the selected model and protocol revision. Children run concurrently, receive only `read`, `write`, `edit`, `bash`, and `web_search`, and return input-ordered bounded reports. They do not inherit the parent transcript, share IPython memory, recurse, continue in the background, or receive isolated worktrees. Children share the real selected directory, so parallel mutations can race.
 
 ## Skills
 

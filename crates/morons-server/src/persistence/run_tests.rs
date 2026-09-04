@@ -12,7 +12,8 @@ use super::{
     ActivationOutcome, CompletedAssistant, DefaultModelSelection, DispatchOutcome,
     MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PrepareOperationOutcome,
     ProviderUsage, RunModelSelection, RunOpenCodeService, RunState, SessionEventCursor,
-    SessionEventPayload, SessionStore, TranscriptCursor, TranscriptEntry, TranscriptPageDirection,
+    SessionEventPayload, SessionStore, SubagentModelSetting, TranscriptCursor, TranscriptEntry,
+    TranscriptPageDirection,
 };
 const TEST_MODEL: &str = "muse-spark-1.2";
 
@@ -357,6 +358,77 @@ async fn explicit_and_used_models_determine_the_durable_global_default() {
     let corrupted = SessionStore::open_at(root.path());
     assert!(matches!(
         corrupted,
+        Err(PersistenceError::InvalidState { .. })
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn subagent_model_setting_is_global_idempotent_and_durable() {
+    let root = TestRoot::new("subagent-model-setting");
+    let store = SessionStore::open_at(root.path()).expect("session store should open");
+    assert_eq!(
+        store
+            .subagent_model_setting()
+            .await
+            .expect("initial setting should load"),
+        SubagentModelSetting::InheritParent {}
+    );
+
+    let request_id = MutationRequestId::from_bytes([0x43; 16]);
+    let selected = SubagentModelSetting::OpenCode {
+        service: RunOpenCodeService::Go,
+        model_id: "glm-5.3-flash".to_owned(),
+    };
+    for _ in 0..2 {
+        assert_eq!(
+            store
+                .set_subagent_model_setting(request_id, selected.clone())
+                .await
+                .expect("setting should be selected idempotently"),
+            selected
+        );
+    }
+    assert!(matches!(
+        store
+            .set_subagent_model_setting(request_id, SubagentModelSetting::InheritParent {})
+            .await,
+        Err(PersistenceError::RequestConflict)
+    ));
+    assert_eq!(
+        store
+            .subagent_model_setting()
+            .await
+            .expect("selected setting should load"),
+        selected
+    );
+
+    let inherit = SubagentModelSetting::InheritParent {};
+    store
+        .set_subagent_model_setting(MutationRequestId::from_bytes([0x44; 16]), inherit.clone())
+        .await
+        .expect("inherit setting should be restored");
+    drop(store);
+    let reopened = SessionStore::open_at(root.path()).expect("setting should survive restart");
+    assert_eq!(
+        reopened
+            .subagent_model_setting()
+            .await
+            .expect("reopened setting should load"),
+        inherit
+    );
+    drop(reopened);
+
+    let database_path = root.path().join("data").join("sessions.sqlite3");
+    let connection = Connection::open(database_path).expect("database should open for corruption");
+    connection
+        .execute(
+            "UPDATE subagent_model_selections SET operation_fingerprint = zeroblob(32)",
+            [],
+        )
+        .expect("setting fingerprint should be corruptible for test");
+    drop(connection);
+    assert!(matches!(
+        SessionStore::open_at(root.path()),
         Err(PersistenceError::InvalidState { .. })
     ));
 }
