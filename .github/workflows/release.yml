@@ -1,0 +1,265 @@
+name: Release artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing signed tag to create as a draft release; leave empty for candidate artifacts only
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    name: Validate release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      commit: ${{ steps.validate.outputs.commit }}
+      publish: ${{ steps.validate.outputs.publish }}
+      ref: ${{ steps.validate.outputs.ref }}
+      short_commit: ${{ steps.validate.outputs.short_commit }}
+      version: ${{ steps.validate.outputs.version }}
+
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate candidate or signed release tag
+        id: validate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)
+          test -n "$version"
+          commit=$(git rev-parse --verify HEAD)
+          source_ref=$commit
+          publish=false
+
+          if [[ -n "$RELEASE_TAG" ]]; then
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            test "$RELEASE_TAG" = "v$version"
+            tag_object=$(git rev-parse --verify "${RELEASE_TAG}^{tag}")
+            [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]]
+            verification=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/git/tags/$tag_object" \
+              --jq '.verification.verified')
+            test "$verification" = true
+            commit=$(git rev-parse --verify "${RELEASE_TAG}^{commit}")
+            git fetch --no-tags origin main
+            git merge-base --is-ancestor "$commit" origin/main
+            source_ref=$RELEASE_TAG
+            publish=true
+          fi
+
+          {
+            printf 'commit=%s\n' "$commit"
+            printf 'publish=%s\n' "$publish"
+            printf 'ref=%s\n' "$source_ref"
+            printf 'short_commit=%s\n' "${commit:0:12}"
+            printf 'version=%s\n' "$version"
+          } >>"$GITHUB_OUTPUT"
+
+  package:
+    name: Package ${{ matrix.target }}
+    needs: source
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            runner_arch: ARM64
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            runner_arch: ARM64
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            runner_arch: X64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            runner_arch: ARM64
+            target: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            runner_arch: X64
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            runner_arch: ARM64
+            target: aarch64-pc-windows-msvc
+
+    steps:
+      - name: Check out exact release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.ref }}
+
+      - name: Reject an unexpected runner architecture
+        shell: bash
+        env:
+          EXPECTED_RUNNER_ARCH: ${{ matrix.runner_arch }}
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH"
+          rustc -vV
+
+      - name: Install release target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build and package both companions
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: ./scripts/package-release.sh "$TARGET" dist
+
+      - name: Upload target package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  assemble:
+    name: Verify and assemble release
+    needs:
+      - source
+      - package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Download target packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify the complete target set
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ needs.source.outputs.commit }}
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          targets=(
+            aarch64-apple-darwin
+            x86_64-apple-darwin
+            x86_64-unknown-linux-gnu
+            aarch64-unknown-linux-gnu
+            x86_64-pc-windows-msvc
+            aarch64-pc-windows-msvc
+          )
+          shopt -s nullglob
+          archives=(dist/*.tar.gz)
+          checksums=(dist/*.tar.gz.sha256)
+          test "${#archives[@]}" -eq "${#targets[@]}"
+          test "${#checksums[@]}" -eq "${#targets[@]}"
+
+          for target in "${targets[@]}"; do
+            package="morons-v$VERSION-$target"
+            archive="dist/$package.tar.gz"
+            checksum="$archive.sha256"
+            test -f "$archive"
+            test -f "$checksum"
+            (cd dist && sha256sum -c "$(basename "$checksum")")
+
+            manifest=$(tar -xOzf "$archive" "$package/MANIFEST.txt")
+            grep -Fqx "name=morons.dev" <<<"$manifest"
+            grep -Fqx "version=$VERSION" <<<"$manifest"
+            grep -Fqx "target=$target" <<<"$manifest"
+            grep -Fqx "commit=$SOURCE_COMMIT" <<<"$manifest"
+
+            case "$target" in
+              *-windows-msvc) suffix=.exe ;;
+              *) suffix= ;;
+            esac
+            client_expected=$(awk -F= '/^morons_sha256=/ { print $2 }' <<<"$manifest")
+            server_expected=$(awk -F= '/^morons_server_sha256=/ { print $2 }' <<<"$manifest")
+            client_actual=$(tar -xOzf "$archive" "$package/morons$suffix" | sha256sum | awk '{ print $1 }')
+            server_actual=$(tar -xOzf "$archive" "$package/morons-server$suffix" | sha256sum | awk '{ print $1 }')
+            test "$client_actual" = "$client_expected"
+            test "$server_actual" = "$server_expected"
+          done
+
+          LC_ALL=C sort -k2 dist/*.tar.gz.sha256 >dist/SHA256SUMS
+
+      - name: Upload complete candidate bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: morons-release-${{ needs.source.outputs.version }}-${{ needs.source.outputs.short_commit }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+
+  draft:
+    name: Create draft release
+    if: needs.source.outputs.publish == 'true'
+    needs:
+      - source
+      - assemble
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download verified candidate bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: morons-release-${{ needs.source.outputs.version }}-${{ needs.source.outputs.short_commit }}
+          path: dist
+
+      - name: Recheck and create an unpublished draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum -c SHA256SUMS)
+          shopt -s nullglob
+          archives=(dist/*.tar.gz)
+          test "${#archives[@]}" -eq 6
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A release already exists for $RELEASE_TAG; inspect it instead of overwriting it." >&2
+            exit 1
+          fi
+          cat >release-notes.md <<NOTES
+          Draft release for Morons v$VERSION.
+
+          This draft must remain unpublished until the exact downloaded assets pass docs/release-candidate-qa.md on the required native targets.
+          NOTES
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --title "Morons v$VERSION" \
+            --notes-file release-notes.md \
+            dist/*.tar.gz \
+            dist/SHA256SUMS
