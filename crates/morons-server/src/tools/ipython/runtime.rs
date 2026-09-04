@@ -315,17 +315,14 @@ fn runtime_manifest() -> String {
     )
 }
 
-fn preparation_directory(root: &Path, runtime: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let _ = root;
-        return runtime.to_path_buf();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = runtime;
-        root.join(STAGING_DIRECTORY)
-    }
+#[cfg(windows)]
+fn preparation_directory(_root: &Path, runtime: &Path) -> PathBuf {
+    runtime.to_path_buf()
+}
+
+#[cfg(not(windows))]
+fn preparation_directory(root: &Path, _runtime: &Path) -> PathBuf {
+    root.join(STAGING_DIRECTORY)
 }
 
 fn validate_python(python: &Path, cancellation: &ProviderCancellation, deadline: Instant) -> bool {
