@@ -25,6 +25,7 @@ The final category is user-owned authority that Morons deliberately grants to lo
 - Web search results and fetched external content
 - Clipboard data, drag-and-drop paths, image bytes, metadata, filenames, and decoder behavior
 - Shell, Git, compiler, test, package-manager, child-process, and IPython output
+- Packaged uv binaries, managed Python downloads, PyPI metadata, hash-locked wheels, runtime caches, staging directories, and bootstrap manifests
 - Terminal key, paste, resize, mouse, and rendering input
 - Provider model catalogs, HTTP headers, error bodies, SSE records, usage, identifiers, and content
 
@@ -34,7 +35,7 @@ The final category is user-owned authority that Morons deliberately grants to lo
 - The operating system correctly enforces user identity, filesystem permissions, process creation, process-tree termination, local IPC controls, and owner-only Morons state.
 - Root, LocalSystem, administrators, and equivalent privileged identities are outside the local guarantee.
 - Malicious processes already running as the same operating-system user are outside the local IPC and credential-confidentiality guarantee.
-- The selected Bash installation, IPython installation, language runtimes, Git, credential helpers, agents, dependencies, and ordinary user environment are controlled by or accepted by the user; Morons does not attest to them.
+- The selected Bash installation, expert `MORONS_PYTHON` override, Git, credential helpers, agents, dependencies, and ordinary user environment are controlled by or accepted by the user. The default managed IPython runtime pins and verifies artifact identity, but Morons does not claim that upstream Python or package code is safe.
 - OpenCode and its upstream providers receive context deliberately selected for an authorized run. Their infrastructure, policy, catalogs, responses, and model output remain external and untrusted.
 - Public certificate authorities and the operating system's TLS implementation correctly authenticate fixed provider HTTPS origins.
 - Users needing containment run the complete Morons application inside an external boundary that they configure and validate.
@@ -189,7 +190,8 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Validate bounded Agent Skills YAML metadata and matching parent-directory names, reject linked skill entries, apply deterministic precedence with fail-closed collisions, progressively load instructions, and invoke only standalone exact installed `@name` tokens whose complete instructions are snapshotted with the accepted run.
 - Capture clipboard and dropped image bytes immediately, detect type from content, normalize under dimension and encoded-size limits, store bytes once, and fail clearly for non-vision models.
 - Authorize operating-system peers before application exchange and require randomized endpoints, owner-only control state, a lifetime host lock, and role-separated HMAC proofs.
-- Start only the exact packaged companion without a shell or untrusted executable-path selection.
+- Start only exact packaged companions without a shell or untrusted executable-path selection. Verify the target-specific packaged uv digest before use; pin managed Python and all Jupyter package versions and hashes; ignore repository, user uv/pip, virtual-environment, and Python path configuration during bootstrap.
+- Serialize managed Python preparation with an owner-controlled process lock, supervise it under one cancellation and deadline, publish only a validated staged runtime by atomic rename, retain a dedicated verified-download cache for offline reuse, and never inject Morons-managed credentials.
 - Keep provider and web-search routes fixed in reviewed code, disable redirects, scope authorization headers exactly, strictly decode bounded remote responses, and never retry dispatched inference or web search automatically.
 - Store global default-model changes as bounded idempotent facts, validate them against the reviewed manifest, use them only when the current sanitized catalog marks the pair available, and validate every run's explicit model independently.
 - Derive one opaque `x-opencode-session` value per Morons conversation: preserve a root value across its durable session, derive a distinct stable value for each canonical task child, rotate values across unrelated conversations, omit them from catalog requests, and never log or persist a derived header.

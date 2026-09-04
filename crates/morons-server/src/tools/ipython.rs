@@ -1,9 +1,10 @@
+mod runtime;
+
 use std::{
     collections::HashMap,
-    ffi::OsString,
     io::{Read, Write},
     path::PathBuf,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Stdio},
     sync::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
@@ -19,6 +20,7 @@ use std::os::unix::process::CommandExt as _;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, OnceCell, OwnedSemaphorePermit, Semaphore};
 
+use self::runtime::PythonRuntime;
 #[cfg(windows)]
 use super::bash::PlatformJob;
 #[cfg(unix)]
@@ -194,7 +196,7 @@ pub(crate) struct IpythonSupervisor {
 }
 
 struct BridgeConfiguration {
-    executable: OsString,
+    runtime: PythonRuntime,
     source: &'static str,
 }
 
@@ -209,9 +211,9 @@ struct KernelRegistryEntry {
 }
 
 impl IpythonSupervisor {
-    pub(crate) fn new() -> Arc<Self> {
+    pub(crate) fn new(managed_python_root: PathBuf) -> Arc<Self> {
         Self::with_bridge(BridgeConfiguration {
-            executable: configured_python(),
+            runtime: PythonRuntime::configured(managed_python_root),
             source: BRIDGE_SOURCE,
         })
     }
@@ -219,8 +221,16 @@ impl IpythonSupervisor {
     #[cfg(test)]
     pub(crate) fn for_test() -> Arc<Self> {
         Self::with_bridge(BridgeConfiguration {
-            executable: configured_python(),
+            runtime: PythonRuntime::test_override(),
             source: TEST_BRIDGE_SOURCE,
+        })
+    }
+
+    #[cfg(test)]
+    fn with_managed_runtime_for_test(root: PathBuf, uv: PathBuf) -> Arc<Self> {
+        Self::with_bridge(BridgeConfiguration {
+            runtime: PythonRuntime::managed_for_test(root, uv),
+            source: BRIDGE_SOURCE,
         })
     }
 
@@ -456,7 +466,8 @@ impl KernelProcess {
         bridge: Arc<BridgeConfiguration>,
         cancellation: &ProviderCancellation,
     ) -> Result<Self, ToolErrorKind> {
-        let mut command = Command::new(&bridge.executable);
+        let resolved = bridge.runtime.resolve(cancellation)?;
+        let mut command = resolved.command();
         command
             .arg("-u")
             .arg("-c")
@@ -783,16 +794,6 @@ impl CellOutput {
     }
 }
 
-fn configured_python() -> std::ffi::OsString {
-    if let Some(configured) = std::env::var_os("MORONS_PYTHON").filter(|value| !value.is_empty()) {
-        return configured;
-    }
-    #[cfg(windows)]
-    return "python".into();
-    #[cfg(not(windows))]
-    "python3".into()
-}
-
 fn spawn_bridge_reader<R: Read + Send + 'static>(
     mut reader: R,
     sender: SyncSender<BridgeMessage>,
@@ -1073,10 +1074,18 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    #[ignore = "requires Python with jupyter_client and ipykernel installed"]
+    #[ignore = "downloads the pinned managed Python runtime or requires MORONS_PYTHON"]
     async fn live_standard_jupyter_bridge_preserves_ipython_state() {
         let root = test_directory("live-jupyter");
-        let supervisor = IpythonSupervisor::new();
+        let managed_root = root.join("managed-python");
+        let test_uv = std::env::var_os("MORONS_TEST_UV").map(PathBuf::from);
+        if let Some(uv) = test_uv.as_ref() {
+            runtime::validate_packaged_uv(uv).expect("reviewed uv binary should validate");
+        }
+        let supervisor = test_uv.as_ref().map_or_else(
+            || IpythonSupervisor::new(managed_root.clone()),
+            |uv| IpythonSupervisor::with_managed_runtime_for_test(managed_root.clone(), uv.clone()),
+        );
         let session = SessionId::from_bytes([0x44; 16]);
         let (_, cancellation) = crate::provider::provider_cancellation();
         let first = supervisor
@@ -1116,16 +1125,39 @@ mod tests {
             } if display == "42"
         ));
         supervisor.shutdown().await;
+        if test_uv.is_some() {
+            let restarted = IpythonSupervisor::with_managed_runtime_for_test(
+                managed_root,
+                root.join("missing-uv"),
+            );
+            let cached = restarted
+                .execute(
+                    SessionId::from_bytes([0x46; 16]),
+                    root.clone(),
+                    &ToolInput::Ipython {
+                        cell: "6 * 7".to_owned(),
+                    },
+                    &cancellation,
+                )
+                .await;
+            assert!(matches!(
+                cached,
+                ToolResult::Ok {
+                    output: ToolOutput::Ipython { ref display, .. }
+                } if display == "42"
+            ));
+            restarted.shutdown().await;
+        }
         std::fs::remove_dir_all(root).expect("test directory should be removed");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    #[ignore = "requires Python with jupyter_client and ipykernel installed"]
+    #[ignore = "requires MORONS_PYTHON with jupyter_client and ipykernel"]
     async fn live_jupyter_cancellation_stops_kernel_descendants() {
         let root = test_directory("live-cancellation");
         let started = root.join("started");
         let leaked = root.join("leaked");
-        let supervisor = IpythonSupervisor::new();
+        let supervisor = IpythonSupervisor::new(root.join("managed-python"));
         let session = SessionId::from_bytes([0x45; 16]);
         let (handle, cancellation) = crate::provider::provider_cancellation();
         let execution_supervisor = Arc::clone(&supervisor);

@@ -10,7 +10,11 @@ mod runs;
 mod types;
 mod workspace;
 
-use std::{fmt, path::Path, thread};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    thread,
+};
 
 use morons_protocol::ServerEndpoint;
 use tokio::sync::{Mutex, MutexGuard, mpsc, oneshot, watch};
@@ -59,6 +63,7 @@ pub(crate) use self::run_types::{
 const WORKER_QUEUE_CAPACITY: usize = 64;
 
 pub struct SessionStore {
+    application_root: PathBuf,
     sender: Option<mpsc::Sender<WorkerRequest>>,
     worker: Option<thread::JoinHandle<()>>,
     credential_dispatch_lock: Mutex<()>,
@@ -113,11 +118,16 @@ impl SessionStore {
             .name("morons-persistence".to_owned())
             .spawn(move || run_worker(backend, receiver, notification_sender))?;
         Ok(Self {
+            application_root: application_root.to_path_buf(),
             sender: Some(sender),
             worker: Some(worker),
             credential_dispatch_lock: Mutex::new(()),
             event_notifications,
         })
+    }
+
+    pub(crate) fn managed_python_root(&self) -> PathBuf {
+        self.application_root.join("python")
     }
 
     #[cfg(test)]

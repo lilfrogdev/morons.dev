@@ -17,8 +17,10 @@ Do not create a public tag or release for a target whose required native gate is
 Run **Release artifacts** with an empty `tag` input on the exact candidate ref. The workflow:
 
 - builds all six reviewed target triples from one commit;
+- downloads only the pinned checksummed uv asset for each matching target;
 - invokes `scripts/package-release.sh` separately for each target;
-- verifies all archive sidecars, manifests, source commits, targets, and packaged binary hashes;
+- verifies all archive sidecars, manifests, source commits, targets, three packaged binary hashes, and uv license files;
+- performs a first-use and restart managed-IPython smoke test with the packaged uv on each native runner (Intel macOS remains a separate native gate);
 - uploads one short-lived combined candidate artifact; and
 - performs no GitHub release mutation.
 

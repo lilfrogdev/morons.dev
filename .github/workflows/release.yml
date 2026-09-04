@@ -123,6 +123,27 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: ./scripts/package-release.sh "$TARGET" dist
 
+      - name: Smoke-test the packaged managed Python runtime
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version=$(awk -F '"' '/^version = "/ { print $2; exit }' Cargo.toml)
+          case "$TARGET" in
+            *-windows-msvc) suffix=.exe ;;
+            *) suffix= ;;
+          esac
+          uv_path="$PWD/dist/morons-v$version-$TARGET/morons-uv$suffix"
+          if [[ "$TARGET" == *-windows-msvc ]]; then
+            uv_path=$(cygpath -w "$uv_path")
+          fi
+          MORONS_TEST_UV="$uv_path" \
+            cargo test --locked -p morons-server \
+              tools::ipython::tests::live_standard_jupyter_bridge_preserves_ipython_state \
+              -- --ignored
+
       - name: Upload target package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -194,10 +215,20 @@ jobs:
             esac
             client_expected=$(awk -F= '/^morons_sha256=/ { print $2 }' <<<"$manifest")
             server_expected=$(awk -F= '/^morons_server_sha256=/ { print $2 }' <<<"$manifest")
+            uv_expected=$(awk -F= '/^morons_uv_sha256=/ { print $2 }' <<<"$manifest")
+            uv_apache_license_expected=$(awk -F= '/^uv_license_apache_sha256=/ { print $2 }' <<<"$manifest")
+            uv_mit_license_expected=$(awk -F= '/^uv_license_mit_sha256=/ { print $2 }' <<<"$manifest")
+            grep -Fqx "managed_python_uv_version=0.12.9" <<<"$manifest"
             client_actual=$(tar -xOzf "$archive" "$package/morons$suffix" | sha256sum | awk '{ print $1 }')
             server_actual=$(tar -xOzf "$archive" "$package/morons-server$suffix" | sha256sum | awk '{ print $1 }')
+            uv_actual=$(tar -xOzf "$archive" "$package/morons-uv$suffix" | sha256sum | awk '{ print $1 }')
+            uv_apache_license_actual=$(tar -xOzf "$archive" "$package/THIRD_PARTY_LICENSES/uv/LICENSE-APACHE" | sha256sum | awk '{ print $1 }')
+            uv_mit_license_actual=$(tar -xOzf "$archive" "$package/THIRD_PARTY_LICENSES/uv/LICENSE-MIT" | sha256sum | awk '{ print $1 }')
             test "$client_actual" = "$client_expected"
             test "$server_actual" = "$server_expected"
+            test "$uv_actual" = "$uv_expected"
+            test "$uv_apache_license_actual" = "$uv_apache_license_expected"
+            test "$uv_mit_license_actual" = "$uv_mit_license_expected"
           done
 
           LC_ALL=C sort -k2 dist/*.tar.gz.sha256 >dist/SHA256SUMS

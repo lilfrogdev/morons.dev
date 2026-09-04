@@ -99,7 +99,7 @@ pub(crate) fn provider_tools() -> Vec<ProviderTool> {
         },
         ProviderTool {
             name: ToolKind::Ipython.name().to_owned(),
-            description: "Execute one bounded cell in this session's temporary persistent IPython kernel. Variables persist between cells while the kernel lives. The kernel runs in the selected working directory with the user's normal authority and is not sandboxed. Standard input is unavailable. The configured Python runtime must provide jupyter_client and ipykernel.".to_owned(),
+            description: "Execute one bounded cell in this session's temporary persistent IPython kernel. Variables persist between cells while the kernel lives. The kernel runs in the selected working directory with the user's normal authority and is not sandboxed. Standard input is unavailable. Morons prepares its pinned managed Python runtime on first use unless MORONS_PYTHON selects an expert-managed runtime.".to_owned(),
             parameters: object_schema(
                 json!({
                     "cell": {"type": "string", "minLength": 1, "maxLength": MAX_IPYTHON_CELL_BYTES}
