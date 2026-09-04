@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as amended by ADRs 0012 and 0013
+Accepted as amended by ADRs 0012, 0013, and 0017
 
 ## Context
 
@@ -10,7 +10,7 @@ The trusted local server will invoke a model provider on behalf of durable agent
 
 The MVP needs one concrete provider integration. OpenCode documents direct API access to OpenCode Zen and OpenCode Go, a shared API-key credential convention, model-catalog endpoints, and model-specific inference endpoints. The two services have different billing and model availability even though they use the same OpenCode account credential.
 
-Morons will support the models that OpenCode documents for its OpenAI Responses-compatible endpoints as a bounded permanent protocol surface.
+Morons supports only reviewed service/model/protocol combinations at fixed OpenCode endpoints. ADR 0017 adds one bounded Chat Completions revision without allowing catalogs or repository state to select a wire protocol.
 
 Provider execution requires final local credential custody and mutation semantics. Environment inheritance is difficult to constrain once the server launches untrusted tools and subprocesses, and the existing security invariants exclude credentials from environments.
 
@@ -24,17 +24,18 @@ Production requests use only these documented HTTPS origins and paths:
 
 - OpenCode Zen inference: `https://opencode.ai/zen/v1/responses`
 - OpenCode Zen catalog: `https://opencode.ai/zen/v1/models`
-- OpenCode Go inference: `https://opencode.ai/zen/go/v1/responses`
+- OpenCode Go Responses inference: `https://opencode.ai/zen/go/v1/responses`
+- OpenCode Go Chat Completions inference: `https://opencode.ai/zen/go/v1/chat/completions`
 - OpenCode Go catalog: `https://opencode.ai/zen/go/v1/models`
 
-The supported inference protocol is OpenAI Responses-compatible streaming. It is a permanent supported capability.
+OpenAI Responses-compatible streaming remains a permanent supported capability. ADR 0017 admits bounded OpenAI-compatible Chat Completions streaming for explicitly reviewed models.
 
 ### Model admission and disclosure
 
 A reviewed built-in manifest is authoritative for which service and model combinations Morons can invoke. Each entry binds a bounded exact model identifier to:
 
 - OpenCode Zen or OpenCode Go;
-- the Responses protocol revision supported by Morons;
+- the exact wire protocol and globally unique protocol revision supported by Morons;
 - supported input, output, reasoning, and tool-call capabilities;
 - server-enforced context and output limits; and
 - a reviewed data-use and retention disclosure classification.
@@ -115,7 +116,7 @@ Implementation requires:
 
 - real cross-platform credential filesystem tests for ownership, modes, DACLs, links, replacement, synchronization, malformed state, stale temporary files, removal, and restart reconciliation;
 - protocol tests proving authentication precedes secret transfer and secret-bearing messages and errors are redacted;
-- deterministic Responses request and SSE fixture tests covering valid text, tool calls, usage, malformed order, duplicate termination, truncation, oversize fields, timeout, cancellation, and unknown events;
+- deterministic Responses and Chat Completions request/SSE fixture tests covering valid text, tool calls, usage, malformed order, duplicate termination, truncation, oversize fields, timeout, cancellation, and unknown events;
 - HTTP boundary tests covering fixed routing, authorization-header scoping, disabled redirects, TLS and content-type failures, bounded error bodies, and absence of automatic retries;
 - persistence tests covering prepared, dispatched, completed, failed, cancelled, interrupted, and uncertain provider operations without raw provider payloads or credentials;
 - log and audit tests that search for complete and partial credential values; and
@@ -125,8 +126,8 @@ Any HTTP, TLS, secret-memory, or terminal-input dependencies must be pinned exac
 
 ## Consequences
 
-- The MVP has two OpenCode service choices through one bounded Responses protocol surface.
-- Responses support is a stable capability.
+- The MVP has two OpenCode service choices through reviewed bounded Responses and Chat Completions protocol surfaces.
+- Responses support remains stable; Chat Completions admission is model-specific under ADR 0017.
 - A remote model catalog can only narrow the reviewed model manifest.
 - Credential handling uses its final local custody boundary from the first implementation.
 - Owner-only local storage works consistently on macOS, Linux, Windows, and headless systems.

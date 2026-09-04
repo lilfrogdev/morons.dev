@@ -3,9 +3,10 @@ use morons_protocol::{
     MutationRequestId as ProtocolMutationRequestId,
     OpenCodeCredentialStatus as ProtocolOpenCodeCredentialStatus, OpenCodeModelCapabilities,
     OpenCodeModelRetention, OpenCodeModelSummary, OpenCodeModelTrainingUse,
-    OpenCodeService as ProtocolOpenCodeService, ResourceLimit,
-    RunFailureKind as ProtocolRunFailureKind, RunId as ProtocolRunId, RunState as ProtocolRunState,
-    RunSummary, SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
+    OpenCodeService as ProtocolOpenCodeService, ProviderProtocol as ProtocolProviderProtocol,
+    ResourceLimit, RunFailureKind as ProtocolRunFailureKind, RunId as ProtocolRunId,
+    RunState as ProtocolRunState, RunSummary,
+    SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
     SessionEventCursor as ProtocolSessionEventCursor, SessionId as ProtocolSessionId,
     SessionListCursor as ProtocolSessionListCursor, SessionSummary,
     SkillSource as ProtocolSkillSource, SkillSummary as ProtocolSkillSummary,
@@ -22,7 +23,10 @@ use crate::{
         Session, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
         TranscriptCursor, TranscriptEntry,
     },
-    provider::{ModelRetention, ModelTrainingUse, OpenCodeModelAvailability, OpenCodeService},
+    provider::{
+        ModelRetention, ModelTrainingUse, OpenCodeModelAvailability, OpenCodeService,
+        ProviderProtocol,
+    },
 };
 
 pub(super) fn input_accepted_response(accepted: AcceptedRun) -> ApplicationOutcome {
@@ -188,7 +192,11 @@ pub(super) fn to_protocol_model_summary(
         id: model.id.to_owned(),
         display_name: model.display_name.to_owned(),
         available: availability.available,
-        responses_protocol_revision: model.responses_protocol_revision,
+        protocol: match model.protocol {
+            ProviderProtocol::Responses => ProtocolProviderProtocol::Responses,
+            ProviderProtocol::ChatCompletions => ProtocolProviderProtocol::ChatCompletions,
+        },
+        protocol_revision: model.protocol_revision,
         capabilities: OpenCodeModelCapabilities {
             text_input: model.capabilities.text_input,
             image_input: model.capabilities.image_input,

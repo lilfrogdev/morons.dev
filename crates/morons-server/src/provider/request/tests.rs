@@ -67,6 +67,88 @@ fn request_has_a_bounded_stable_responses_shape() {
 }
 
 #[test]
+fn chat_completions_request_has_bounded_compatible_messages_and_tools() {
+    let request = OpenCodeResponseRequest::new(
+        [0x32; 16],
+        OpenCodeService::Go,
+        "glm-5.3-flash",
+        256,
+        1_024,
+        vec![
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::Developer,
+                text: "system guidance".to_owned(),
+                phase: None,
+            },
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::User,
+                text: "inspect".to_owned(),
+                phase: None,
+            },
+            ProviderInputItem::FunctionCall {
+                call_id: "call_1".to_owned(),
+                name: "read".to_owned(),
+                arguments: r#"{"path":"README.md"}"#.to_owned(),
+            },
+            ProviderInputItem::FunctionCallOutput {
+                call_id: "call_1".to_owned(),
+                output: "contents".to_owned(),
+            },
+        ],
+        vec![ProviderTool {
+            name: "read".to_owned(),
+            description: "Read one file".to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        }],
+    )
+    .expect("chat request should validate");
+    let body: Value = serde_json::from_slice(&request.encode_body().expect("body should encode"))
+        .expect("chat body should be JSON");
+    assert_eq!(body["model"], "glm-5.3-flash");
+    assert_eq!(body["messages"][0]["role"], "system");
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(body["messages"][2]["role"], "assistant");
+    assert!(body["messages"][2]["content"].is_null());
+    assert_eq!(body["messages"][2]["tool_calls"][0]["id"], "call_1");
+    assert_eq!(
+        body["messages"][2]["tool_calls"][0]["function"]["name"],
+        "read"
+    );
+    assert_eq!(body["messages"][3]["role"], "tool");
+    assert_eq!(body["messages"][3]["tool_call_id"], "call_1");
+    assert_eq!(body["tools"][0]["type"], "function");
+    assert_eq!(body["tools"][0]["function"]["name"], "read");
+    assert_eq!(body["max_tokens"], 1_024);
+    assert_eq!(body["stream"], true);
+    assert_eq!(body["stream_options"]["include_usage"], true);
+    assert!(body.get("store").is_none());
+    assert!(body.get("parallel_tool_calls").is_none());
+
+    assert_eq!(
+        OpenCodeResponseRequest::new(
+            [0x32; 16],
+            OpenCodeService::Go,
+            "glm-5.3-flash",
+            1,
+            1,
+            vec![ProviderInputItem::Reasoning {
+                id: "reasoning_1".to_owned(),
+                summaries: vec!["not portable".to_owned()],
+                encrypted_content: None,
+            }],
+            Vec::new(),
+        )
+        .expect_err("Responses reasoning items must not enter chat requests"),
+        ProviderError::InvalidRequest
+    );
+}
+
+#[test]
 fn opencode_session_header_is_stable_per_conversation_and_rotates_between_conversations() {
     let first = request_for_conversation([0x31; 16]).opencode_session_header();
     let retry = request_for_conversation([0x31; 16]).opencode_session_header();

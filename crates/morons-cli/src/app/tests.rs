@@ -1318,7 +1318,8 @@ fn fixture_model() -> OpenCodeModelSummary {
         id: "grok-4.6".to_owned(),
         display_name: "Grok 4.6".to_owned(),
         available: true,
-        responses_protocol_revision: 1,
+        protocol: morons_protocol::ProviderProtocol::Responses,
+        protocol_revision: 1,
         capabilities: OpenCodeModelCapabilities {
             text_input: true,
             image_input: false,

@@ -5,7 +5,8 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    OpenCodeModel, OpenCodeService, ProviderError, find_open_code_model, json::parse_strict_value,
+    OpenCodeModel, OpenCodeService, ProviderError, ProviderProtocol, find_open_code_model,
+    json::parse_strict_value,
 };
 
 pub const MAX_PROVIDER_REQUEST_BYTES: usize = 16 * 1024 * 1024;
@@ -256,9 +257,20 @@ impl OpenCodeResponseRequest {
     }
 
     pub(super) fn encode_body(&self) -> Result<Vec<u8>, ProviderError> {
+        let body = match self.model.protocol {
+            ProviderProtocol::Responses => self.encode_responses_body()?,
+            ProviderProtocol::ChatCompletions => self.encode_chat_completions_body()?,
+        };
+        if body.len() > MAX_PROVIDER_REQUEST_BYTES {
+            return Err(ProviderError::InvalidRequest);
+        }
+        Ok(body)
+    }
+
+    fn encode_responses_body(&self) -> Result<Vec<u8>, ProviderError> {
         let input = self.input.iter().map(WireInputItem::from).collect();
         let tools = self.tools.iter().map(WireTool::from).collect();
-        let body = serde_json::to_vec(&WireRequest {
+        serde_json::to_vec(&WireRequest {
             model: self.model.id,
             include: self
                 .model
@@ -272,11 +284,23 @@ impl OpenCodeResponseRequest {
             store: false,
             stream: true,
         })
-        .map_err(|_| ProviderError::InvalidRequest)?;
-        if body.len() > MAX_PROVIDER_REQUEST_BYTES {
-            return Err(ProviderError::InvalidRequest);
-        }
-        Ok(body)
+        .map_err(|_| ProviderError::InvalidRequest)
+    }
+
+    fn encode_chat_completions_body(&self) -> Result<Vec<u8>, ProviderError> {
+        let messages = chat_messages(&self.input)?;
+        let tools = self.tools.iter().map(ChatWireTool::from).collect();
+        serde_json::to_vec(&ChatWireRequest {
+            model: self.model.id,
+            messages,
+            tools,
+            maximum_output_tokens: self.maximum_output_tokens,
+            stream: true,
+            stream_options: ChatWireStreamOptions {
+                include_usage: true,
+            },
+        })
+        .map_err(|_| ProviderError::InvalidRequest)
     }
 }
 
@@ -393,7 +417,8 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
                 encrypted_content,
             } => {
                 validate_identifier(id, MAX_PROVIDER_CALL_ID_BYTES)?;
-                if (summaries.is_empty() && encrypted_content.is_none())
+                if model.protocol == ProviderProtocol::ChatCompletions
+                    || (summaries.is_empty() && encrypted_content.is_none())
                     || (encrypted_content.is_some() && !model.capabilities.reasoning_continuation)
                     || summaries.len() > MAX_REASONING_SUMMARIES
                     || summaries
@@ -675,6 +700,135 @@ impl<'a> From<&'a ProviderTool> for WireTool<'a> {
             parameters: &tool.parameters,
             // Reviewed schemas contain optional fields; Morons validates returned arguments.
             strict: false,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ChatWireRequest<'a> {
+    model: &'a str,
+    messages: Vec<ChatWireMessage<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<ChatWireTool<'a>>,
+    #[serde(rename = "max_tokens")]
+    maximum_output_tokens: u32,
+    stream: bool,
+    stream_options: ChatWireStreamOptions,
+}
+
+#[derive(Serialize)]
+struct ChatWireStreamOptions {
+    include_usage: bool,
+}
+
+#[derive(Serialize)]
+struct ChatWireMessage<'a> {
+    role: &'static str,
+    content: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<ChatWireToolCall<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct ChatWireToolCall<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    call_type: &'static str,
+    function: ChatWireToolCallFunction<'a>,
+}
+
+#[derive(Serialize)]
+struct ChatWireToolCallFunction<'a> {
+    name: &'a str,
+    arguments: &'a str,
+}
+
+fn chat_messages(input: &[ProviderInputItem]) -> Result<Vec<ChatWireMessage<'_>>, ProviderError> {
+    let mut messages = Vec::new();
+    let mut index = 0_usize;
+    while index < input.len() {
+        match &input[index] {
+            ProviderInputItem::Message {
+                role,
+                text,
+                phase: _,
+            } => {
+                messages.push(ChatWireMessage {
+                    role: match role {
+                        ProviderMessageRole::Developer => "system",
+                        ProviderMessageRole::User => "user",
+                        ProviderMessageRole::Assistant => "assistant",
+                    },
+                    content: Some(text),
+                    tool_calls: None,
+                    tool_call_id: None,
+                });
+                index += 1;
+            }
+            ProviderInputItem::FunctionCall { .. } => {
+                let mut calls = Vec::new();
+                while let Some(ProviderInputItem::FunctionCall {
+                    call_id,
+                    name,
+                    arguments,
+                }) = input.get(index)
+                {
+                    calls.push(ChatWireToolCall {
+                        id: call_id,
+                        call_type: "function",
+                        function: ChatWireToolCallFunction { name, arguments },
+                    });
+                    index += 1;
+                }
+                messages.push(ChatWireMessage {
+                    role: "assistant",
+                    content: None,
+                    tool_calls: Some(calls),
+                    tool_call_id: None,
+                });
+            }
+            ProviderInputItem::FunctionCallOutput { call_id, output } => {
+                messages.push(ChatWireMessage {
+                    role: "tool",
+                    content: Some(output),
+                    tool_calls: None,
+                    tool_call_id: Some(call_id),
+                });
+                index += 1;
+            }
+            ProviderInputItem::MultimodalMessage { .. } | ProviderInputItem::Reasoning { .. } => {
+                return Err(ProviderError::InvalidRequest);
+            }
+        }
+    }
+    Ok(messages)
+}
+
+#[derive(Serialize)]
+struct ChatWireTool<'a> {
+    #[serde(rename = "type")]
+    tool_type: &'static str,
+    function: ChatWireToolFunction<'a>,
+}
+
+#[derive(Serialize)]
+struct ChatWireToolFunction<'a> {
+    name: &'a str,
+    description: &'a str,
+    parameters: &'a Value,
+}
+
+impl<'a> From<&'a ProviderTool> for ChatWireTool<'a> {
+    fn from(tool: &'a ProviderTool) -> Self {
+        Self {
+            tool_type: "function",
+            function: ChatWireToolFunction {
+                name: &tool.name,
+                description: &tool.description,
+                parameters: &tool.parameters,
+            },
         }
     }
 }

@@ -1,5 +1,6 @@
 mod cancellation;
 mod catalog;
+mod chat_completions;
 mod error;
 pub(crate) mod json;
 mod models;
@@ -14,9 +15,10 @@ pub use cancellation::{ProviderCancellation, ProviderCancellationHandle, provide
 pub use catalog::OpenCodeModelAvailability;
 pub use error::ProviderError;
 pub use models::{
-    MAXIMUM_CONTEXT_TOKENS, MAXIMUM_INPUT_TOKENS, MAXIMUM_OUTPUT_TOKENS, ModelCapabilities,
-    ModelDataUse, ModelRetention, ModelTrainingUse, OpenCodeModel, OpenCodeService,
-    RESPONSES_PROTOCOL_REVISION, find_open_code_model, open_code_models,
+    CHAT_COMPLETIONS_PROTOCOL_REVISION, MAXIMUM_CONTEXT_TOKENS, MAXIMUM_INPUT_TOKENS,
+    MAXIMUM_OUTPUT_TOKENS, ModelCapabilities, ModelDataUse, ModelRetention, ModelTrainingUse,
+    OpenCodeModel, OpenCodeService, ProviderProtocol, RESPONSES_PROTOCOL_REVISION,
+    find_open_code_model, open_code_models,
 };
 pub(crate) use opencode::OpenCodeProvider;
 pub use outcome::{

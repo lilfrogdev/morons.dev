@@ -15,6 +15,12 @@ impl OpenCodeService {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderProtocol {
+    Responses,
+    ChatCompletions,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelTrainingUse {
     NotUsed,
     MayUsePromptsAndCompletions,
@@ -47,7 +53,8 @@ pub struct OpenCodeModel {
     pub service: OpenCodeService,
     pub id: &'static str,
     pub display_name: &'static str,
-    pub responses_protocol_revision: u16,
+    pub protocol: ProviderProtocol,
+    pub protocol_revision: u16,
     pub capabilities: ModelCapabilities,
     pub maximum_input_tokens: u32,
     pub maximum_output_tokens: u32,
@@ -55,6 +62,7 @@ pub struct OpenCodeModel {
 }
 
 pub const RESPONSES_PROTOCOL_REVISION: u16 = 1;
+pub const CHAT_COMPLETIONS_PROTOCOL_REVISION: u16 = 2;
 pub const MAXIMUM_INPUT_TOKENS: u32 = 96_000;
 pub const MAXIMUM_OUTPUT_TOKENS: u32 = 32_000;
 pub const MAXIMUM_CONTEXT_TOKENS: u32 = MAXIMUM_INPUT_TOKENS + MAXIMUM_OUTPUT_TOKENS;
@@ -105,6 +113,23 @@ const fn openai_model(
     )
 }
 
+const fn chat_model(
+    service: OpenCodeService,
+    id: &'static str,
+    display_name: &'static str,
+    data_use: ModelDataUse,
+) -> OpenCodeModel {
+    model_with_protocol(
+        service,
+        id,
+        display_name,
+        data_use,
+        RESPONSES_CAPABILITIES,
+        ProviderProtocol::ChatCompletions,
+        CHAT_COMPLETIONS_PROTOCOL_REVISION,
+    )
+}
+
 const fn model_with_capabilities(
     service: OpenCodeService,
     id: &'static str,
@@ -112,12 +137,33 @@ const fn model_with_capabilities(
     data_use: ModelDataUse,
     capabilities: ModelCapabilities,
 ) -> OpenCodeModel {
+    model_with_protocol(
+        service,
+        id,
+        display_name,
+        data_use,
+        capabilities,
+        ProviderProtocol::Responses,
+        RESPONSES_PROTOCOL_REVISION,
+    )
+}
+
+const fn model_with_protocol(
+    service: OpenCodeService,
+    id: &'static str,
+    display_name: &'static str,
+    data_use: ModelDataUse,
+    capabilities: ModelCapabilities,
+    protocol: ProviderProtocol,
+    protocol_revision: u16,
+) -> OpenCodeModel {
     assert!(matches!(data_use.training, ModelTrainingUse::NotUsed));
     OpenCodeModel {
         service,
         id,
         display_name,
-        responses_protocol_revision: RESPONSES_PROTOCOL_REVISION,
+        protocol,
+        protocol_revision,
         capabilities,
         maximum_input_tokens: MAXIMUM_INPUT_TOKENS,
         maximum_output_tokens: MAXIMUM_OUTPUT_TOKENS,
@@ -252,6 +298,12 @@ static MODELS: &[OpenCodeModel] = &[
         "Grok 4.6",
         NO_TRAINING_THIRTY_DAY_RETENTION,
     ),
+    chat_model(
+        OpenCodeService::Go,
+        "glm-5.3-flash",
+        "GLM-5.3-Flash",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
 ];
 
 #[must_use]
@@ -274,8 +326,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        MAXIMUM_CONTEXT_TOKENS, ModelTrainingUse, OpenCodeService, find_open_code_model,
-        open_code_models,
+        MAXIMUM_CONTEXT_TOKENS, ModelTrainingUse, OpenCodeService, ProviderProtocol,
+        find_open_code_model, open_code_models,
     };
 
     #[test]
@@ -301,6 +353,13 @@ mod tests {
         assert!(find_open_code_model(OpenCodeService::Zen, "gpt-5.6-luna").is_some());
         assert!(find_open_code_model(OpenCodeService::Go, "gpt-5.6-luna").is_some());
         assert!(find_open_code_model(OpenCodeService::Go, "gpt-5.6-sol").is_none());
+        assert!(
+            find_open_code_model(OpenCodeService::Go, "glm-5.3-flash").is_some_and(|model| model
+                .protocol
+                == ProviderProtocol::ChatCompletions
+                && model.capabilities.tool_calls
+                && !model.capabilities.image_input)
+        );
         assert_eq!(
             find_open_code_model(OpenCodeService::Zen, "grok-4.6")
                 .expect("Zen Grok should be reviewed")
