@@ -81,7 +81,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | --- | --- |
 | PKG-01 | Archive digest, target name, contents, and executable modes match the release manifest. |
 | PKG-02 | `morons` discovers only its exact sibling `morons-server` and starts it automatically. |
-| PKG-03 | First launch shows the trusted-local authority notice before normal interaction. |
+| PKG-03 | Every client launch, including after update or companion restart, shows the trusted-local authority notice before normal interaction. |
 | PKG-04 | A copied client without its sibling fails before the TUI with a categorized, actionable, redacted diagnostic. |
 | PKG-05 | `/login` configures or replaces the credential without echoing or later displaying key material; `Ctrl+K` opens the same flow as a shortcut. `/logout` cancellation does not mutate it, confirmation removes the observed local generation without claiming provider revocation, and a repeated logout reports that no credential is configured. |
 | PKG-06 | `/help` repeats the trust posture, commands, cancellation, and session controls. |
