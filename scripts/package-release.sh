@@ -28,6 +28,7 @@ verify_binary_target() {
         aarch64-unknown-linux-gnu:*ELF*64-bit*ARM*aarch64*) ;;
         x86_64-pc-windows-msvc:*PE32+*x86-64*) ;;
         aarch64-pc-windows-msvc:*PE32+*ARM64*) ;;
+        aarch64-pc-windows-msvc:*PE32+*Aarch64*) ;;
         *) fail "binary format does not match $target: $description" ;;
     esac
 }
