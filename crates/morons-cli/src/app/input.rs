@@ -529,6 +529,11 @@ impl AppState {
             self.information_dialog = Some(InformationDialog::Help);
             return AppAction::None;
         }
+        if prompt == "/login" {
+            self.prompt.clear();
+            self.open_credential_dialog();
+            return AppAction::None;
+        }
         if let Some(search) = model_search(prompt).map(str::to_owned) {
             self.prompt.clear();
             self.open_model_dialog(&search);

@@ -898,16 +898,21 @@ fn unknown_mutation_requires_exact_retry_or_abandonment() {
 }
 
 #[test]
-fn credential_entry_is_hidden_and_emits_generation_bound_actions() {
+fn login_command_hides_credential_entry_and_emits_generation_bound_actions() {
+    let (session, run) = fixture_session_and_run();
     let mut app = AppState::new("test-server");
+    app.open_session(session, Vec::new(), vec![run], None, None)
+        .expect("session should open");
     app.set_credential_status(OpenCodeCredentialStatus {
         configured: false,
         generation: 4,
     });
+    app.handle_paste("/login");
     assert_eq!(
-        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         AppAction::None
     );
+    assert!(app.prompt.is_empty());
     app.handle_paste("not-a-real-key");
 
     let backend = TestBackend::new(100, 24);
@@ -923,6 +928,7 @@ fn credential_entry_is_hidden_and_emits_generation_bound_actions() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(!rendered.contains("not-a-real-key"));
+    assert!(rendered.contains("Login to OpenCode"));
     assert!(rendered.contains("Input is hidden"));
 
     let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

@@ -8,7 +8,7 @@ Run the checklist against the exact archive intended for publication, not binari
 
 - Use only repositories and files created for this run.
 - Treat the tested model, tools, skills, commands, and web results as having the QA account's normal local authority. This is not a sandbox.
-- Enter provider credentials only through the non-echoing `Ctrl+K` dialog. Never place them in shell history, Herdr commands, screenshots, logs, or the result report.
+- Enter provider credentials only through the non-echoing `/login` dialog (`Ctrl+K` shortcut). Never place them in shell history, Herdr commands, screenshots, logs, or the result report.
 - Do not reuse Pi or another application's credentials or state.
 - Record stable result classifications and short observations. Do not record credentials, provider bodies, opaque provider identifiers, authentication material, or unnecessary absolute paths.
 - A failed or cancelled external effect is never automatically retried. Inspect the disposable directory before deciding whether to run a new test.
@@ -69,7 +69,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | PKG-02 | `morons` discovers only its exact sibling `morons-server` and starts it automatically. |
 | PKG-03 | First launch shows the trusted-local authority notice before normal interaction. |
 | PKG-04 | A copied client without its sibling fails before the TUI with a categorized, actionable, redacted diagnostic. |
-| PKG-05 | `Ctrl+K` configures the credential without echoing or later displaying any key material. |
+| PKG-05 | `/login` configures, replaces, or removes the credential without echoing or later displaying key material; `Ctrl+K` opens the same flow as a shortcut. |
 | PKG-06 | `/help` repeats the trust posture, commands, cancellation, and session controls. |
 | PKG-07 | The packaged `morons-uv` has the manifest digest and target format, reports uv 0.12.9, and both shipped uv license texts match the reviewed source. |
 
