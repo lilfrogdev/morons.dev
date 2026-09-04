@@ -19,8 +19,9 @@ use zeroize::Zeroizing;
 use super::responses::ResponsesDiagnostic;
 use super::{
     OpenCodeCredentialLease, OpenCodeModelAvailability, OpenCodeResponseRequest, OpenCodeService,
-    ProviderCancellation, ProviderError, ProviderOutcome, ProviderStreamEvent,
+    ProviderCancellation, ProviderError, ProviderOutcome, ProviderProtocol, ProviderStreamEvent,
     catalog::{MAX_CATALOG_BODY_BYTES, parse_catalog},
+    chat_completions::ChatCompletionsDecoder,
     responses::ResponsesDecoder,
 };
 use crate::persistence::{PersistenceError, SessionStore};
@@ -28,6 +29,7 @@ use crate::persistence::{PersistenceError, SessionStore};
 const ZEN_INFERENCE_URI: &str = "https://opencode.ai/zen/v1/responses";
 const ZEN_CATALOG_URI: &str = "https://opencode.ai/zen/v1/models";
 const GO_INFERENCE_URI: &str = "https://opencode.ai/zen/go/v1/responses";
+const GO_CHAT_INFERENCE_URI: &str = "https://opencode.ai/zen/go/v1/chat/completions";
 const GO_CATALOG_URI: &str = "https://opencode.ai/zen/go/v1/models";
 const USER_AGENT_VALUE: &str = concat!("morons-server/", env!("CARGO_PKG_VERSION"));
 const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
@@ -47,6 +49,7 @@ struct EndpointSet {
     zen_inference: String,
     zen_catalog: String,
     go_inference: String,
+    go_chat_inference: String,
     go_catalog: String,
 }
 
@@ -56,14 +59,19 @@ impl EndpointSet {
             zen_inference: ZEN_INFERENCE_URI.to_owned(),
             zen_catalog: ZEN_CATALOG_URI.to_owned(),
             go_inference: GO_INFERENCE_URI.to_owned(),
+            go_chat_inference: GO_CHAT_INFERENCE_URI.to_owned(),
             go_catalog: GO_CATALOG_URI.to_owned(),
         }
     }
 
-    fn inference(&self, service: OpenCodeService) -> &str {
-        match service {
-            OpenCodeService::Zen => &self.zen_inference,
-            OpenCodeService::Go => &self.go_inference,
+    fn inference(&self, service: OpenCodeService, protocol: ProviderProtocol) -> Option<&str> {
+        match (service, protocol) {
+            (OpenCodeService::Zen, ProviderProtocol::Responses) => Some(&self.zen_inference),
+            (OpenCodeService::Go, ProviderProtocol::Responses) => Some(&self.go_inference),
+            (OpenCodeService::Go, ProviderProtocol::ChatCompletions) => {
+                Some(&self.go_chat_inference)
+            }
+            (OpenCodeService::Zen, ProviderProtocol::ChatCompletions) => None,
         }
     }
 
@@ -122,6 +130,7 @@ impl OpenCodeProvider {
             zen_inference: format!("{base}/zen/v1/responses"),
             zen_catalog: format!("{base}/zen/v1/models"),
             go_inference: format!("{base}/zen/go/v1/responses"),
+            go_chat_inference: format!("{base}/zen/go/v1/chat/completions"),
             go_catalog: format!("{base}/zen/go/v1/models"),
         };
         Self {
@@ -162,6 +171,60 @@ struct OpenCodeClient {
     endpoints: EndpointSet,
     #[cfg(test)]
     emit_decoder_diagnostics: bool,
+}
+
+enum InferenceDecoder {
+    Responses(ResponsesDecoder),
+    ChatCompletions(ChatCompletionsDecoder),
+}
+
+impl InferenceDecoder {
+    fn new(request: &OpenCodeResponseRequest) -> Self {
+        match request.model().protocol {
+            ProviderProtocol::Responses => Self::Responses(ResponsesDecoder::new(
+                request.model().id,
+                request.model().maximum_input_tokens,
+                request.model().maximum_output_tokens,
+            )),
+            ProviderProtocol::ChatCompletions => {
+                Self::ChatCompletions(ChatCompletionsDecoder::new(
+                    request.model().id,
+                    request.model().maximum_input_tokens,
+                    request.model().maximum_output_tokens,
+                ))
+            }
+        }
+    }
+
+    fn push(&mut self, data: &[u8]) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
+        match self {
+            Self::Responses(decoder) => decoder.push(data),
+            Self::ChatCompletions(decoder) => decoder.push(data),
+        }
+    }
+
+    fn finish(self) -> Result<ProviderOutcome, ProviderError> {
+        match self {
+            Self::Responses(decoder) => decoder.finish(),
+            Self::ChatCompletions(decoder) => decoder.finish(),
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn chat_diagnostic_stage(&self) -> Option<&'static str> {
+        match self {
+            Self::Responses(_) => None,
+            Self::ChatCompletions(decoder) => Some(decoder.diagnostic_stage()),
+        }
+    }
+
+    #[cfg(test)]
+    fn responses_diagnostic(&self) -> Option<ResponsesDiagnostic> {
+        match self {
+            Self::Responses(decoder) => Some(decoder.diagnostic()),
+            Self::ChatCompletions(_) => None,
+        }
+    }
 }
 
 impl OpenCodeClient {
@@ -242,7 +305,9 @@ impl OpenCodeClient {
         let http_request = Request::builder()
             .method(Method::POST)
             .uri(parse_uri(
-                self.endpoints.inference(request.model().service),
+                self.endpoints
+                    .inference(request.model().service, request.model().protocol)
+                    .ok_or(ProviderError::UnsupportedModel)?,
             )?)
             .header(ACCEPT, "text/event-stream")
             .header(AUTHORIZATION, authorization)
@@ -289,29 +354,42 @@ impl OpenCodeClient {
         }
         require_content_type(response.headers(), "text/event-stream")?;
         let mut response_body = response.into_body();
-        let mut decoder = ResponsesDecoder::new(
-            request.model().id,
-            request.model().maximum_input_tokens,
-            request.model().maximum_output_tokens,
-        );
+        let mut decoder = InferenceDecoder::new(request);
         while let Some(frame) = next_frame(&mut response_body, deadline, cancellation).await? {
             let data = frame
                 .into_data()
                 .map_err(|_| ProviderError::MalformedResponse)?;
             let decoded = decoder.push(&data);
             if decoded.is_err() {
+                #[cfg(debug_assertions)]
+                if let Some(stage) = decoder.chat_diagnostic_stage() {
+                    eprintln!("chat completions decoder rejected provider data while {stage}");
+                }
                 #[cfg(test)]
-                if self.emit_decoder_diagnostics {
-                    emit_decoder_diagnostic(decoder.diagnostic());
+                if self.emit_decoder_diagnostics
+                    && let Some(diagnostic) = decoder.responses_diagnostic()
+                {
+                    emit_decoder_diagnostic(diagnostic);
                 }
             }
             for event in decoded? {
                 on_event(event);
             }
         }
+        #[cfg(debug_assertions)]
+        let chat_diagnostic_stage = decoder.chat_diagnostic_stage();
         #[cfg(test)]
-        let diagnostic = self.emit_decoder_diagnostics.then(|| decoder.diagnostic());
+        let diagnostic = self
+            .emit_decoder_diagnostics
+            .then(|| decoder.responses_diagnostic())
+            .flatten();
         let outcome = decoder.finish();
+        #[cfg(debug_assertions)]
+        if outcome.is_err()
+            && let Some(stage) = chat_diagnostic_stage
+        {
+            eprintln!("chat completions decoder could not finish after {stage}");
+        }
         #[cfg(test)]
         if outcome.is_err()
             && let Some(diagnostic) = diagnostic

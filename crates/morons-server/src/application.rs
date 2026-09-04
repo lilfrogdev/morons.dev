@@ -572,7 +572,7 @@ impl ServerApplication {
                         RunModelSelection {
                             service: persistence_service,
                             model_id,
-                            protocol_revision: model.responses_protocol_revision,
+                            protocol_revision: model.protocol_revision,
                             maximum_input_tokens: model.maximum_input_tokens,
                             maximum_output_tokens: model.maximum_output_tokens,
                             supports_tool_calls: model.capabilities.tool_calls,

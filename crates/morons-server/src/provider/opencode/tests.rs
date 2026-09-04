@@ -12,8 +12,8 @@ use tokio::{
 use zeroize::Zeroizing;
 
 use super::{
-    EndpointSet, GO_CATALOG_URI, GO_INFERENCE_URI, OpenCodeClient, ZEN_CATALOG_URI,
-    ZEN_INFERENCE_URI, authorization_header,
+    EndpointSet, GO_CATALOG_URI, GO_CHAT_INFERENCE_URI, GO_INFERENCE_URI, OpenCodeClient,
+    ZEN_CATALOG_URI, ZEN_INFERENCE_URI, authorization_header,
 };
 use crate::provider::{
     OpenCodeResponseRequest, OpenCodeService, ProviderError, ProviderInputItem,
@@ -50,11 +50,29 @@ fn request_for(service: OpenCodeService) -> OpenCodeResponseRequest {
     .expect("test request should be valid")
 }
 
+fn chat_request() -> OpenCodeResponseRequest {
+    OpenCodeResponseRequest::new(
+        [0x41; 16],
+        OpenCodeService::Go,
+        "glm-5.3-flash",
+        32,
+        128,
+        vec![ProviderInputItem::Message {
+            role: ProviderMessageRole::User,
+            text: "hello".to_owned(),
+            phase: None,
+        }],
+        Vec::new(),
+    )
+    .expect("chat request should be valid")
+}
+
 fn endpoints(base: &str) -> EndpointSet {
     EndpointSet {
         zen_inference: format!("{base}/zen/v1/responses"),
         zen_catalog: format!("{base}/zen/v1/models"),
         go_inference: format!("{base}/zen/go/v1/responses"),
+        go_chat_inference: format!("{base}/zen/go/v1/chat/completions"),
         go_catalog: format!("{base}/zen/go/v1/models"),
     }
 }
@@ -152,6 +170,15 @@ fn response(status: &str, content_type: &str, body: &[u8]) -> Vec<u8> {
     response
 }
 
+fn successful_chat_stream() -> Vec<u8> {
+    let body = concat!(
+        "data: {\"id\":\"chat_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5.3-flash\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"},\"finish_reason\":\"stop\",\"logprobs\":null}],\"usage\":null}\n\n",
+        "data: {\"id\":\"chat_1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"glm-5.3-flash\",\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    response("200 OK", "text/event-stream", body.as_bytes())
+}
+
 fn successful_stream() -> Vec<u8> {
     let body = concat!(
         "event: response.created\n",
@@ -222,6 +249,30 @@ async fn inference_uses_the_fixed_service_path_and_scopes_authorization() {
         Some("ses_a226742b98d72df1c38a2e7016096028")
     );
     server.await.expect("Go test server should finish");
+
+    let (base, captured, server) = spawn_single_response(successful_chat_stream()).await;
+    let client = OpenCodeClient::for_test(endpoints(&base));
+    let (_handle, mut cancellation) = provider_cancellation();
+    let outcome = client
+        .execute_for_test(
+            TEST_KEY.as_bytes(),
+            &chat_request(),
+            &mut cancellation,
+            |_| {},
+        )
+        .await
+        .expect("Go Chat Completions inference should complete");
+    assert_eq!(outcome.provider_response_id, "chat_1");
+    let captured = captured.await.expect("chat request should be captured");
+    assert_eq!(captured.path, "/zen/go/v1/chat/completions");
+    let body: Value = serde_json::from_slice(&captured.body).expect("chat body should be JSON");
+    assert_eq!(body["model"], "glm-5.3-flash");
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["max_tokens"], 128);
+    assert_eq!(body["stream_options"]["include_usage"], true);
+    assert!(body.get("input").is_none());
+    assert!(body.get("store").is_none());
+    server.await.expect("Go chat test server should finish");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -427,6 +478,7 @@ fn production_endpoints_are_exact_and_non_configurable() {
     assert_eq!(endpoints.zen_inference, ZEN_INFERENCE_URI);
     assert_eq!(endpoints.zen_catalog, ZEN_CATALOG_URI);
     assert_eq!(endpoints.go_inference, GO_INFERENCE_URI);
+    assert_eq!(endpoints.go_chat_inference, GO_CHAT_INFERENCE_URI);
     assert_eq!(endpoints.go_catalog, GO_CATALOG_URI);
 }
 
@@ -539,4 +591,12 @@ async fn live_opencode_go_contract() {
     let api_key = read_live_api_key();
     let client = OpenCodeClient::for_live_test();
     run_live_contract_case(&client, &api_key, OpenCodeService::Go, "grok-4.6").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a real OpenCode Go key on stdin and makes one billable request"]
+async fn live_opencode_go_chat_completions_contract() {
+    let api_key = read_live_api_key();
+    let client = OpenCodeClient::for_live_test();
+    run_live_contract_case(&client, &api_key, OpenCodeService::Go, "glm-5.3-flash").await;
 }

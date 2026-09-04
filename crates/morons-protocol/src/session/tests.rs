@@ -10,8 +10,8 @@ use crate::{
     ClientMessage, LocalCommandId, LocalCommandStatus, MessageId, OpenCodeApiKey,
     OpenCodeCredentialStatus, OpenCodeModelCapabilities, OpenCodeModelRetention,
     OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
-    RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
-    TranscriptCursor, TranscriptPageDirection,
+    ProviderProtocol, RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind,
+    ToolResultStatus, TranscriptCursor, TranscriptPageDirection,
 };
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
@@ -454,7 +454,8 @@ fn model_catalog_contract_has_stable_json_shape() {
             id: "grok-4.6".to_owned(),
             display_name: "Grok 4.6".to_owned(),
             available: true,
-            responses_protocol_revision: 1,
+            protocol: ProviderProtocol::Responses,
+            protocol_revision: 1,
             capabilities: OpenCodeModelCapabilities {
                 text_input: true,
                 image_input: false,
@@ -479,7 +480,8 @@ fn model_catalog_contract_has_stable_json_shape() {
                 "id": "grok-4.6",
                 "display_name": "Grok 4.6",
                 "available": true,
-                "responses_protocol_revision": 1,
+                "protocol": "responses",
+                "protocol_revision": 1,
                 "capabilities": {
                     "text_input": true,
                     "image_input": false,

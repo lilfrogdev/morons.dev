@@ -273,6 +273,13 @@ pub enum TranscriptPageDirection {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ProviderProtocol {
+    Responses,
+    ChatCompletions,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OpenCodeService {
     Zen,
     Go,
@@ -316,7 +323,8 @@ pub struct OpenCodeModelSummary {
     pub id: String,
     pub display_name: String,
     pub available: bool,
-    pub responses_protocol_revision: u16,
+    pub protocol: ProviderProtocol,
+    pub protocol_revision: u16,
     pub capabilities: OpenCodeModelCapabilities,
     pub maximum_input_tokens: u32,
     pub maximum_output_tokens: u32,

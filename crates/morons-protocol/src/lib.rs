@@ -25,9 +25,9 @@ pub use messages::{ClientMessage, ServerMessage};
 pub use run::{
     ImageAttachmentId, ImageAttachmentSummary, ImageUpload, LocalCommandId, LocalCommandStatus,
     MessageId, OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSelection,
-    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId,
-    RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus, TranscriptCursor,
-    TranscriptEntry, TranscriptPageDirection,
+    OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, ProviderProtocol,
+    RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
+    TranscriptCursor, TranscriptEntry, TranscriptPageDirection,
 };
 pub use session::{
     APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
@@ -36,4 +36,4 @@ pub use session::{
     SessionListCursor, SessionSummary, SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 32;
+pub const PROTOCOL_VERSION: u32 = 33;

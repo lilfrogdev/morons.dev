@@ -338,7 +338,7 @@ fn valid_model_summaries(service: OpenCodeService, models: &[OpenCodeModelSummar
             && identifiers.insert(model.id.as_str())
             && !model.display_name.is_empty()
             && model.display_name.len() <= MAX_MODEL_METADATA_BYTES
-            && model.responses_protocol_revision > 0
+            && model.protocol_revision > 0
             && model.maximum_input_tokens > 0
             && model.maximum_input_tokens <= MAX_MODEL_TOKEN_LIMIT
             && model.maximum_output_tokens > 0

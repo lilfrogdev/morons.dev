@@ -83,6 +83,12 @@ async fn model_catalog_query_returns_only_reviewed_server_metadata() {
             .expect("reviewed model should be returned")
             .available
     );
+    assert!(models.iter().any(|model| {
+        model.id == "glm-5.3-flash"
+            && model.available
+            && model.protocol == morons_protocol::ProviderProtocol::ChatCompletions
+            && model.protocol_revision == crate::provider::CHAT_COMPLETIONS_PROTOCOL_REVISION
+    }));
     assert!(
         models
             .iter()
@@ -1853,6 +1859,7 @@ async fn spawn_catalog_provider() -> (
         let body = concat!(
             "{\"object\":\"list\",\"data\":[",
             "{\"id\":\"gpt-5.6-luna\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"},",
+            "{\"id\":\"glm-5.3-flash\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"},",
             "{\"id\":\"muse-spark-1.2-contributor\",\"object\":\"model\",\"created\":1,\"owned_by\":\"opencode\"}",
             "]}"
         );
