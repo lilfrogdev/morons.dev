@@ -54,7 +54,7 @@ Before installing an archive, verify it against the release's `SHA256SUMS`. Keep
 
 To update, stop the running companion with `Ctrl+S`, verify and extract the new archive, replace all three executables before relaunching, and never mix companions from different versions. Database migrations are forward-only; downgrading an existing state directory is unsupported.
 
-On first launch, read and acknowledge the trusted-local authority notice. Configure the OpenCode credential with `Ctrl+K`. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
+On first launch, read and acknowledge the trusted-local authority notice. Configure the OpenCode credential with `/login`; `Ctrl+K` opens the same dialog as a shortcut. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
 
 ### Managed IPython runtime
 
@@ -74,6 +74,7 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `!command`: execute bounded noninteractive Bash and include its command/result in later model context
 - `!!command`: execute Bash but exclude its command/result from model context
 - `/model [search]`: search available reviewed models and save one global default for every session
+- `/login`: configure, replace, or remove the OpenCode API credential through hidden input (`Ctrl+K` shortcut)
 - `/context`: inspect approximate context use, limits, reserves, and the latest checkpoint
 - `/compact [instructions]`: manually summarize an eligible old context prefix
 - `r` in the session browser: rename the selected durable session
