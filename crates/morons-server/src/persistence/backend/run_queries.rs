@@ -10,7 +10,7 @@ use super::{
 };
 use crate::persistence::{
     PersistenceError, Run, RunId, SessionEventCursor, SessionId, TranscriptCursor, TranscriptEntry,
-    TranscriptPage,
+    TranscriptPage, TranscriptPageDirection, TranscriptWindowPage,
     run_types::{
         CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, LEGACY_IMAGE_CONTEXT_POLICY_VERSION,
         LEGACY_SKILL_CONTEXT_POLICY_VERSION, RunContext,
@@ -35,6 +35,31 @@ impl Backend {
         cursor: Option<TranscriptCursor>,
         limit: u16,
     ) -> Result<TranscriptPage, PersistenceError> {
+        let page = self.list_session_transcript_window(
+            session_id,
+            cursor,
+            TranscriptPageDirection::Newer,
+            limit,
+        )?;
+        Ok(TranscriptPage {
+            session: page.session,
+            workspace: page.workspace,
+            entries: page.entries,
+            runs: page.runs,
+            active_run_id: page.active_run_id,
+            active_command_id: page.active_command_id,
+            next_cursor: page.newer_cursor,
+            event_cursor: page.event_cursor,
+        })
+    }
+
+    pub(crate) fn list_session_transcript_window(
+        &self,
+        session_id: SessionId,
+        cursor: Option<TranscriptCursor>,
+        direction: TranscriptPageDirection,
+        limit: u16,
+    ) -> Result<TranscriptWindowPage, PersistenceError> {
         let session =
             load_session(&self.connection, session_id)?.ok_or(PersistenceError::SessionNotFound)?;
         let current_entry_high_water = self
@@ -53,9 +78,17 @@ impl Backend {
                 reason: "a transcript cursor belongs to another session",
             });
         }
-        let (snapshot_entry_sequence, snapshot_event_sequence, after_entry_sequence) = cursor
+        let default_boundary = match direction {
+            TranscriptPageDirection::Older => current_entry_high_water.saturating_add(1),
+            TranscriptPageDirection::Newer => 0,
+        };
+        let (snapshot_entry_sequence, snapshot_event_sequence, boundary_entry_sequence) = cursor
             .map_or(
-                (current_entry_high_water, current_event_high_water, 0),
+                (
+                    current_entry_high_water,
+                    current_event_high_water,
+                    default_boundary,
+                ),
                 |cursor| {
                     (
                         cursor.snapshot_entry_sequence(),
@@ -66,7 +99,7 @@ impl Backend {
             );
         if snapshot_entry_sequence > current_entry_high_water
             || snapshot_event_sequence > current_event_high_water
-            || after_entry_sequence > snapshot_entry_sequence
+            || boundary_entry_sequence > snapshot_entry_sequence.saturating_add(1)
         {
             return Err(PersistenceError::InvalidInput {
                 reason: "a transcript cursor is outside the available snapshot",
@@ -113,39 +146,70 @@ impl Backend {
             });
         }
 
-        let mut statement = self.connection.prepare(
-            "SELECT
-                entry.entry_sequence,
-                entry.message_id,
-                entry.run_id,
-                entry.entry_kind,
-                entry.open_code_service,
-                entry.model_id,
-                entry.text,
-                entry.refusal,
-                entry.created_at_milliseconds,
-                entry.assistant_phase,
-                entry.tool_call_id,
-                call.operation_id,
-                call.provider_operation_id,
-                call.input_payload,
-                result.result_payload
-             FROM session_entries AS entry
-             LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
-             LEFT JOIN tool_operation_facts AS result
-               ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
-             WHERE entry.session_id = ?1
-               AND entry.entry_sequence > ?2
-               AND entry.entry_sequence <= ?3
-               AND entry.fact_sequence <= ?4
-             ORDER BY entry.entry_sequence
-             LIMIT ?5",
-        )?;
+        let entry_query = match direction {
+            TranscriptPageDirection::Older => {
+                "SELECT
+                    entry.entry_sequence,
+                    entry.message_id,
+                    entry.run_id,
+                    entry.entry_kind,
+                    entry.open_code_service,
+                    entry.model_id,
+                    entry.text,
+                    entry.refusal,
+                    entry.created_at_milliseconds,
+                    entry.assistant_phase,
+                    entry.tool_call_id,
+                    call.operation_id,
+                    call.provider_operation_id,
+                    call.input_payload,
+                    result.result_payload
+                 FROM session_entries AS entry
+                 LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
+                 LEFT JOIN tool_operation_facts AS result
+                   ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
+                 WHERE entry.session_id = ?1
+                   AND entry.entry_sequence < ?2
+                   AND entry.entry_sequence <= ?3
+                   AND entry.fact_sequence <= ?4
+                 ORDER BY entry.entry_sequence DESC
+                 LIMIT ?5"
+            }
+            TranscriptPageDirection::Newer => {
+                "SELECT
+                    entry.entry_sequence,
+                    entry.message_id,
+                    entry.run_id,
+                    entry.entry_kind,
+                    entry.open_code_service,
+                    entry.model_id,
+                    entry.text,
+                    entry.refusal,
+                    entry.created_at_milliseconds,
+                    entry.assistant_phase,
+                    entry.tool_call_id,
+                    call.operation_id,
+                    call.provider_operation_id,
+                    call.input_payload,
+                    result.result_payload
+                 FROM session_entries AS entry
+                 LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
+                 LEFT JOIN tool_operation_facts AS result
+                   ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
+                 WHERE entry.session_id = ?1
+                   AND entry.entry_sequence > ?2
+                   AND entry.entry_sequence <= ?3
+                   AND entry.fact_sequence <= ?4
+                 ORDER BY entry.entry_sequence
+                 LIMIT ?5"
+            }
+        };
+        let mut statement = self.connection.prepare(entry_query)?;
         let entries = statement
             .query_map(
                 params![
                     &session_id.as_bytes()[..],
-                    sequence_to_sql(after_entry_sequence)?,
+                    sequence_to_sql(boundary_entry_sequence)?,
                     sequence_to_sql(snapshot_entry_sequence)?,
                     sequence_to_sql(snapshot_event_sequence)?,
                     i64::from(limit) + 1,
@@ -154,36 +218,53 @@ impl Backend {
             )?
             .collect::<Result<Vec<_>, _>>()?;
         let mut entries = entries;
-        entries.extend(self.list_local_command_entries(
+        entries.extend(self.list_local_command_entries_window(
             session_id,
-            after_entry_sequence,
+            boundary_entry_sequence,
             snapshot_entry_sequence,
             snapshot_event_sequence,
+            direction,
             limit.saturating_add(1),
         )?);
         entries.sort_by_key(TranscriptEntry::entry_sequence);
+        if direction == TranscriptPageDirection::Older {
+            entries.reverse();
+        }
         entries.truncate(usize::from(limit) + 1);
         let has_more = entries.len() > usize::from(limit);
         if has_more {
             entries.pop();
         }
+        if direction == TranscriptPageDirection::Older {
+            entries.reverse();
+        }
         self.attach_image_metadata(session_id, &mut entries)?;
-        let next_cursor = if has_more {
-            let after_entry_sequence = entries
-                .last()
-                .ok_or(PersistenceError::InvalidState {
-                    reason: "a transcript page lost its continuation entry",
-                })?
-                .entry_sequence();
-            Some(TranscriptCursor::new(
+        let older_available = !entries.is_empty()
+            && match direction {
+                TranscriptPageDirection::Older => has_more,
+                TranscriptPageDirection::Newer => cursor.is_some(),
+            };
+        let newer_available = !entries.is_empty()
+            && match direction {
+                TranscriptPageDirection::Older => cursor.is_some(),
+                TranscriptPageDirection::Newer => has_more,
+            };
+        let older_cursor = older_available.then(|| {
+            TranscriptCursor::new(
                 session_id,
                 snapshot_entry_sequence,
                 snapshot_event_sequence,
-                after_entry_sequence,
-            ))
-        } else {
-            None
-        };
+                entries[0].entry_sequence(),
+            )
+        });
+        let newer_cursor = newer_available.then(|| {
+            TranscriptCursor::new(
+                session_id,
+                snapshot_entry_sequence,
+                snapshot_event_sequence,
+                entries[entries.len() - 1].entry_sequence(),
+            )
+        });
         let active_run_id =
             active_run_id_at_sequence(&self.connection, session_id, snapshot_event_sequence)?;
         let mut run_ids = entries
@@ -202,14 +283,15 @@ impl Backend {
         let workspace =
             workspace_summary_at_sequence(&self.connection, session_id, snapshot_event_sequence)?;
         let active_command_id = self.active_local_command(session_id)?;
-        Ok(TranscriptPage {
+        Ok(TranscriptWindowPage {
             session,
             workspace,
             entries,
             runs,
             active_run_id,
             active_command_id,
-            next_cursor,
+            older_cursor,
+            newer_cursor,
             event_cursor: SessionEventCursor::new(session_id, snapshot_event_sequence),
         })
     }

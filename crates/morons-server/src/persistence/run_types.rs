@@ -380,6 +380,12 @@ pub struct RunCancellationResult {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TranscriptPageDirection {
+    Older,
+    Newer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TranscriptCursor {
     session_id: SessionId,
     snapshot_entry_sequence: u64,
@@ -676,6 +682,19 @@ pub struct TranscriptPage {
     pub active_run_id: Option<RunId>,
     pub active_command_id: Option<LocalCommandId>,
     pub next_cursor: Option<TranscriptCursor>,
+    pub event_cursor: SessionEventCursor,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TranscriptWindowPage {
+    pub session: Session,
+    pub workspace: super::types::WorkspaceSummary,
+    pub entries: Vec<TranscriptEntry>,
+    pub runs: Vec<Run>,
+    pub active_run_id: Option<RunId>,
+    pub active_command_id: Option<LocalCommandId>,
+    pub older_cursor: Option<TranscriptCursor>,
+    pub newer_cursor: Option<TranscriptCursor>,
     pub event_cursor: SessionEventCursor,
 }
 

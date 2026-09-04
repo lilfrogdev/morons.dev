@@ -22,7 +22,7 @@ use morons_protocol::{
     OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId, RunState,
     RunSummary, ServerMessage, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor,
     SessionId, SessionListCursor, SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry,
-    read_server_message, write_client_message,
+    TranscriptPageDirection, read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -52,7 +52,8 @@ pub struct TranscriptPage {
     pub runs: Vec<RunSummary>,
     pub active_run_id: Option<RunId>,
     pub active_command_id: Option<LocalCommandId>,
-    pub next_cursor: Option<TranscriptCursor>,
+    pub older_cursor: Option<TranscriptCursor>,
+    pub newer_cursor: Option<TranscriptCursor>,
     pub event_cursor: SessionEventCursor,
 }
 
@@ -605,12 +606,14 @@ where
         &mut self,
         session_id: SessionId,
         cursor: Option<TranscriptCursor>,
+        direction: TranscriptPageDirection,
         limit: u16,
     ) -> Result<TranscriptPage, ApplicationClientError> {
         let response = self
             .request(ApplicationRequest::ListSessionTranscript {
                 session_id,
                 cursor,
+                direction,
                 limit,
             })
             .await?;
@@ -620,24 +623,29 @@ where
             runs,
             active_run_id,
             active_command_id,
-            next_cursor,
+            older_cursor,
+            newer_cursor,
             event_cursor,
         } = response
         else {
             return Err(self.unexpected_application_response());
         };
+        let cursors = [older_cursor.as_ref(), newer_cursor.as_ref()];
         let cursor_in_scope = event_cursor.as_bytes()[..16] == session_id.as_bytes()[..]
-            && next_cursor
-                .as_ref()
-                .is_none_or(|cursor| cursor.as_bytes()[..16] == session_id.as_bytes()[..]);
+            && cursors
+                .iter()
+                .flatten()
+                .all(|cursor| cursor.as_bytes()[..16] == session_id.as_bytes()[..]);
         let snapshot_is_consistent = cursor.is_none_or(|cursor| {
             cursor.as_bytes()[24..32] == event_cursor.as_bytes()[16..]
-                && next_cursor.as_ref().is_none_or(|next_cursor| {
-                    next_cursor.as_bytes()[16..32] == cursor.as_bytes()[16..32]
-                })
-        }) && next_cursor.as_ref().is_none_or(|next_cursor| {
-            next_cursor.as_bytes()[24..32] == event_cursor.as_bytes()[16..]
-        });
+                && cursors
+                    .iter()
+                    .flatten()
+                    .all(|next| next.as_bytes()[16..32] == cursor.as_bytes()[16..32])
+        }) && cursors
+            .iter()
+            .flatten()
+            .all(|next| next.as_bytes()[24..32] == event_cursor.as_bytes()[16..]);
         let runs_in_scope = runs.iter().all(|run| run.session_id == session_id);
         let runs_are_unique = runs
             .iter()
@@ -694,7 +702,8 @@ where
             runs,
             active_run_id,
             active_command_id,
-            next_cursor,
+            older_cursor,
+            newer_cursor,
             event_cursor,
         })
     }

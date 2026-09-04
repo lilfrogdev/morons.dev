@@ -222,6 +222,180 @@ fn transcript_history_scrolls_without_new_output_stealing_the_view() {
 }
 
 #[test]
+fn transcript_windows_page_to_history_edges_and_defer_live_output() {
+    let (session, run) = fixture_session_and_run();
+    let older_cursor = transcript_cursor(session.id, 200, 50, 137);
+    let mut app = AppState::new("test-server");
+    app.open_session_window(TranscriptWindowData {
+        summary: session.clone(),
+        entries: vec![TranscriptEntry::AssistantMessage {
+            id: MessageId::from_bytes([0x81; 16]),
+            run_id: run.id,
+            service: OpenCodeService::Zen,
+            model_id: "grok-4.6".to_owned(),
+            text: "LATEST-WINDOW".to_owned(),
+            refusal: false,
+            created_at_milliseconds: 200,
+        }],
+        runs: vec![run.clone()],
+        active_run_id: Some(run.id),
+        active_command_id: None,
+        older_cursor: Some(older_cursor),
+        newer_cursor: None,
+    })
+    .expect("latest transcript window should open");
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("latest window should render");
+
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        AppAction::NavigateTranscript {
+            session_id: session.id,
+            navigation: TranscriptNavigation::Oldest,
+        }
+    );
+    let newer_cursor = transcript_cursor(session.id, 200, 50, 64);
+    app.install_transcript_window(
+        TranscriptWindowData {
+            summary: session.clone(),
+            entries: vec![TranscriptEntry::AssistantMessage {
+                id: MessageId::from_bytes([0x82; 16]),
+                run_id: run.id,
+                service: OpenCodeService::Zen,
+                model_id: "grok-4.6".to_owned(),
+                text: "OLDEST-WINDOW".to_owned(),
+                refusal: false,
+                created_at_milliseconds: 1,
+            }],
+            runs: vec![run.clone()],
+            active_run_id: Some(run.id),
+            active_command_id: None,
+            older_cursor: None,
+            newer_cursor: Some(newer_cursor),
+        },
+        TranscriptNavigation::Oldest,
+    )
+    .expect("oldest transcript window should install");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("oldest window should render");
+    assert!(rendered_terminal(&terminal).contains("OLDEST-WINDOW"));
+    assert!(rendered_terminal(&terminal).contains("history"));
+
+    app.apply_event(ApplicationEvent::SessionTranscriptEntryCommitted {
+        cursor: session_cursor(session.id, 51),
+        session_id: session.id,
+        entry: TranscriptEntry::AssistantMessage {
+            id: MessageId::from_bytes([0x83; 16]),
+            run_id: run.id,
+            service: OpenCodeService::Zen,
+            model_id: "grok-4.6".to_owned(),
+            text: "DEFERRED-LIVE-OUTPUT".to_owned(),
+            refusal: false,
+            created_at_milliseconds: 201,
+        },
+    })
+    .expect("live output should be deferred while history is visible");
+    assert_eq!(app.session.as_ref().expect("session").entries.len(), 1);
+    let command_id = LocalCommandId::from_bytes([0x84; 16]);
+    app.session.as_mut().expect("session").active_command_id = Some(command_id);
+    app.apply_event(ApplicationEvent::SessionTranscriptEntryCommitted {
+        cursor: session_cursor(session.id, 52),
+        session_id: session.id,
+        entry: TranscriptEntry::LocalCommand {
+            id: MessageId::from_bytes([0x85; 16]),
+            command_id,
+            command: "printf deferred".to_owned(),
+            context_visible: false,
+            status: morons_protocol::LocalCommandStatus::Succeeded,
+            exit_code: Some(0),
+            signal: None,
+            stdout: "deferred".to_owned(),
+            stderr: String::new(),
+            created_at_milliseconds: 202,
+        },
+    })
+    .expect("deferred terminal command should update live activity");
+    assert!(
+        app.session
+            .as_ref()
+            .expect("session")
+            .active_command_id
+            .is_none()
+    );
+    assert_eq!(app.session.as_ref().expect("session").entries.len(), 1);
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("deferred output state should render");
+    let history = rendered_terminal(&terminal);
+    assert!(history.contains("new output"));
+    assert!(!history.contains("DEFERRED-LIVE-OUTPUT"));
+
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        AppAction::NavigateTranscript {
+            session_id: session.id,
+            navigation: TranscriptNavigation::Latest,
+        }
+    );
+}
+
+#[test]
+fn live_transcript_window_stays_bounded_and_requests_a_fresh_tail() {
+    let (session, run) = fixture_session_and_run();
+    let entries = (1_u8..=u8::try_from(MAX_CLIENT_TRANSCRIPT_ENTRIES).expect("bounded fixture"))
+        .map(|index| TranscriptEntry::AssistantMessage {
+            id: MessageId::from_bytes([index; 16]),
+            run_id: run.id,
+            service: OpenCodeService::Zen,
+            model_id: "grok-4.6".to_owned(),
+            text: format!("ENTRY-{index}"),
+            refusal: false,
+            created_at_milliseconds: u64::from(index),
+        })
+        .collect();
+    let mut app = AppState::new("test-server");
+    app.open_session(
+        session.clone(),
+        entries,
+        vec![run.clone()],
+        Some(run.id),
+        None,
+    )
+    .expect("full transcript window should open");
+
+    app.apply_event(ApplicationEvent::SessionTranscriptEntryCommitted {
+        cursor: session_cursor(session.id, 300),
+        session_id: session.id,
+        entry: TranscriptEntry::AssistantMessage {
+            id: MessageId::from_bytes([0x90; 16]),
+            run_id: run.id,
+            service: OpenCodeService::Zen,
+            model_id: "grok-4.6".to_owned(),
+            text: "AFTER-WINDOW-LIMIT".to_owned(),
+            refusal: false,
+            created_at_milliseconds: 300,
+        },
+    })
+    .expect("live entry should rotate the bounded window");
+
+    let open = app.session.as_ref().expect("session should remain open");
+    assert_eq!(open.entries.len(), TRANSCRIPT_WINDOW_TARGET_ENTRIES + 1);
+    assert!(app.requires_tail_refresh());
+    assert_eq!(
+        app.request_tail_refresh(),
+        AppAction::NavigateTranscript {
+            session_id: session.id,
+            navigation: TranscriptNavigation::Latest,
+        }
+    );
+    assert!(!app.requires_tail_refresh());
+}
+
+#[test]
 fn transcript_viewport_uses_visible_page_and_preserves_entry_anchor_on_reflow() {
     let first = TranscriptBlockKey::Entry(MessageId::from_bytes([0x61; 16]));
     let second = TranscriptBlockKey::Entry(MessageId::from_bytes([0x62; 16]));
@@ -229,6 +403,7 @@ fn transcript_viewport_uses_visible_page_and_preserves_entry_anchor_on_reflow() 
     let mut viewport = TranscriptViewport::default();
     viewport.update_layout(80, 6, Some(vec![(first, 8), (second, 8)]));
     assert_eq!(viewport.top(), 10);
+    assert_eq!(viewport.visible_block_range(), (1..2, 2));
 
     viewport.scroll_page_up();
     assert_eq!(viewport.top(), 5);
@@ -237,6 +412,7 @@ fn transcript_viewport_uses_visible_page_and_preserves_entry_anchor_on_reflow() 
     viewport.note_content_changed();
     viewport.update_layout(40, 6, Some(vec![(first, 16), (second, 16), (third, 4)]));
     assert_eq!(viewport.top(), 16);
+    assert_eq!(viewport.visible_block_range(), (1..2, 0));
     assert!(viewport.has_newer_output());
 
     viewport.scroll_lines_down(usize::MAX);
@@ -1179,6 +1355,20 @@ fn render_rows(app: &mut AppState, width: u16, height: u16) -> Vec<String> {
 
 fn row_containing(rows: &[String], needle: &str) -> Option<usize> {
     rows.iter().position(|row| row.contains(needle))
+}
+
+fn transcript_cursor(
+    session_id: SessionId,
+    snapshot_entry_sequence: u64,
+    snapshot_event_sequence: u64,
+    boundary_entry_sequence: u64,
+) -> TranscriptCursor {
+    let mut bytes = [0_u8; 40];
+    bytes[..16].copy_from_slice(session_id.as_bytes());
+    bytes[16..24].copy_from_slice(&snapshot_entry_sequence.to_be_bytes());
+    bytes[24..32].copy_from_slice(&snapshot_event_sequence.to_be_bytes());
+    bytes[32..].copy_from_slice(&boundary_entry_sequence.to_be_bytes());
+    TranscriptCursor::from_bytes(bytes)
 }
 
 fn session_cursor(session_id: SessionId, sequence: u64) -> SessionEventCursor {

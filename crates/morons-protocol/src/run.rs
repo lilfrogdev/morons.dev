@@ -266,6 +266,13 @@ impl<'de> Deserialize<'de> for TranscriptCursor {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum TranscriptPageDirection {
+    Older,
+    Newer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OpenCodeService {
     Zen,
     Go,

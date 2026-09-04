@@ -396,6 +396,7 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
         .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
             session_id: protocol_session_id,
             cursor: None,
+            direction: morons_protocol::TranscriptPageDirection::Newer,
             limit: 1,
         })
         .await
@@ -517,13 +518,14 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
         .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
             session_id: run.session_id,
             cursor: None,
+            direction: morons_protocol::TranscriptPageDirection::Newer,
             limit: 1,
         })
         .await
         .expect("first transcript page should load");
     let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
         entries,
-        next_cursor,
+        newer_cursor,
         ..
     }) = first
     else {
@@ -533,20 +535,21 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
     let second = application
         .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
             session_id: run.session_id,
-            cursor: next_cursor,
+            cursor: newer_cursor,
+            direction: morons_protocol::TranscriptPageDirection::Newer,
             limit: 1,
         })
         .await
         .expect("second transcript page should load");
     let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
         entries,
-        next_cursor,
+        newer_cursor,
         ..
     }) = second
     else {
         panic!("transcript should return a page");
     };
-    assert!(next_cursor.is_none());
+    assert!(newer_cursor.is_none());
     assert!(matches!(
         &entries[..],
         [morons_protocol::TranscriptEntry::AssistantMessage { text, .. }]
@@ -924,6 +927,7 @@ async fn image_submission_requires_vision_and_maps_durable_bytes_to_multimodal_c
         .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
             session_id,
             cursor: None,
+            direction: morons_protocol::TranscriptPageDirection::Newer,
             limit: 1,
         })
         .await
@@ -1149,20 +1153,21 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
             .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
                 session_id,
                 cursor,
+                direction: morons_protocol::TranscriptPageDirection::Newer,
                 limit: 1,
             })
             .await
             .expect("subagent transcript should page");
         let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
             entries: page,
-            next_cursor,
+            newer_cursor,
             ..
         }) = outcome
         else {
             panic!("transcript should return a page");
         };
         entries.extend(page);
-        let Some(next) = next_cursor else { break };
+        let Some(next) = newer_cursor else { break };
         cursor = Some(next);
     }
     assert_eq!(entries.len(), 4);
@@ -1326,20 +1331,21 @@ async fn direct_tool_loop_reads_edits_runs_bash_and_commits_durable_results() {
             .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
                 session_id,
                 cursor,
+                direction: morons_protocol::TranscriptPageDirection::Newer,
                 limit: 1,
             })
             .await
             .expect("tool transcript should page");
         let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
             entries: page,
-            next_cursor,
+            newer_cursor,
             ..
         }) = outcome
         else {
             panic!("transcript should return a page");
         };
         entries.extend(page);
-        let Some(next) = next_cursor else { break };
+        let Some(next) = newer_cursor else { break };
         cursor = Some(next);
     }
     assert_eq!(entries.len(), 8);
@@ -1525,20 +1531,21 @@ async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
             .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
                 session_id,
                 cursor,
+                direction: morons_protocol::TranscriptPageDirection::Newer,
                 limit: 1,
             })
             .await
             .expect("transcript should load");
         let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
             entries: page,
-            next_cursor,
+            newer_cursor,
             ..
         }) = outcome
         else {
             panic!("transcript should return a page");
         };
         entries.extend(page);
-        let Some(next) = next_cursor else { break };
+        let Some(next) = newer_cursor else { break };
         cursor = Some(next);
     }
     assert!(matches!(
@@ -1625,20 +1632,21 @@ async fn ipython_tool_reuses_one_session_kernel_and_commits_bounded_results() {
             .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
                 session_id,
                 cursor,
+                direction: morons_protocol::TranscriptPageDirection::Newer,
                 limit: 1,
             })
             .await
             .expect("transcript should load");
         let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
             entries: page,
-            next_cursor,
+            newer_cursor,
             ..
         }) = outcome
         else {
             panic!("transcript should return a page");
         };
         entries.extend(page);
-        let Some(next) = next_cursor else { break };
+        let Some(next) = newer_cursor else { break };
         cursor = Some(next);
     }
     for index in [1, 3] {

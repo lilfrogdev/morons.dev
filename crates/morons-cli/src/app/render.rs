@@ -322,70 +322,18 @@ fn render_transcript(
                 .map(|index| (index, run))
         })
         .collect::<HashMap<usize, _>>();
-    let mut blocks = Vec::new();
-    for (index, entry) in session.entries.iter().enumerate() {
-        let role_style = if entry.role == "You" {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else if entry.refusal {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD)
-        };
-        let mut lines = vec![Line::from(Span::styled(entry.role, role_style))];
-        extend_safe_lines(&mut lines, &entry.text);
-        lines.push(Line::default());
-        if let Some(run) = terminal_run_by_last_entry.get(&index) {
-            extend_terminal_run_outcome(&mut lines, run);
-        }
-        blocks.push(TranscriptBlock {
-            key: TranscriptBlockKey::Entry(entry.id),
-            lines,
-        });
-    }
-    if let Some(transient) = session.transient.as_ref() {
-        let label = if transient.refusal {
-            "Assistant refusal · streaming"
-        } else {
-            "Assistant · streaming"
-        };
-        let mut lines = vec![Line::from(Span::styled(
-            label,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::ITALIC),
-        ))];
-        extend_safe_lines(&mut lines, &transient.presented);
-        if transient.truncated || transient.presented.was_truncated() {
-            lines.push(Line::from(Span::styled(
-                "Transient display limit reached",
-                Style::default().fg(Color::Yellow),
-            )));
-        }
-        blocks.push(TranscriptBlock {
-            key: TranscriptBlockKey::Transient(transient.run_id),
-            lines,
-        });
-    }
-    if let Some(last) = blocks.last_mut() {
-        while last.lines.last().is_some_and(|line| line.spans.is_empty()) {
-            last.lines.pop();
-        }
-    }
-
-    let plain_title = transcript_title(session, viewport);
-    let plain_block = Block::default().borders(Borders::ALL).title(plain_title);
+    let block_count = session.entries.len() + usize::from(session.transient.is_some());
+    let plain_block = Block::default()
+        .borders(Borders::ALL)
+        .title(transcript_title(session, viewport));
     let inner = plain_block.inner(area);
     let measured = viewport.needs_measurement(inner.width).then(|| {
-        blocks
-            .iter()
+        (0..block_count)
+            .filter_map(|index| {
+                transcript_block(session, index, block_count, &terminal_run_by_last_entry)
+            })
             .map(|block| {
-                let height = Paragraph::new(block.lines.clone())
+                let height = Paragraph::new(block.lines)
                     .wrap(Wrap { trim: false })
                     .line_count(inner.width.max(1));
                 (block.key, height)
@@ -394,15 +342,21 @@ fn render_transcript(
     });
     viewport.update_layout(inner.width, inner.height, measured);
 
-    let title = transcript_title(session, viewport);
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let lines = blocks
-        .into_iter()
+    let (visible_blocks, local_scroll) = viewport.visible_block_range();
+    let lines = visible_blocks
+        .filter_map(|index| {
+            transcript_block(session, index, block_count, &terminal_run_by_last_entry)
+        })
         .flat_map(|block| block.lines)
         .collect::<Vec<_>>();
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let scroll = u16::try_from(viewport.top()).unwrap_or(u16::MAX);
-    frame.render_widget(paragraph.block(block).scroll((scroll, 0)), area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(transcript_title(session, viewport));
+    frame.render_widget(block, area);
+    let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((u16::try_from(local_scroll).unwrap_or(u16::MAX), 0));
+    frame.render_widget(paragraph, inner);
 
     if viewport.content_height() > viewport.viewport_height() && area.height > 2 {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -424,6 +378,69 @@ fn render_transcript(
     }
 }
 
+fn transcript_block<'a>(
+    session: &'a SessionView,
+    index: usize,
+    block_count: usize,
+    terminal_run_by_last_entry: &HashMap<usize, &'a morons_protocol::RunSummary>,
+) -> Option<TranscriptBlock<'a>> {
+    let mut block = if let Some(entry) = session.entries.get(index) {
+        let role_style = if entry.role == "You" {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if entry.refusal {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        };
+        let mut lines = vec![Line::from(Span::styled(entry.role, role_style))];
+        extend_safe_lines(&mut lines, &entry.text);
+        lines.push(Line::default());
+        if let Some(run) = terminal_run_by_last_entry.get(&index) {
+            extend_terminal_run_outcome(&mut lines, run);
+        }
+        TranscriptBlock {
+            key: TranscriptBlockKey::Entry(entry.id),
+            lines,
+        }
+    } else {
+        let transient = session.transient.as_ref()?;
+        let label = if transient.refusal {
+            "Assistant refusal · streaming"
+        } else {
+            "Assistant · streaming"
+        };
+        let mut lines = vec![Line::from(Span::styled(
+            label,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::ITALIC),
+        ))];
+        extend_safe_lines(&mut lines, &transient.presented);
+        if transient.truncated || transient.presented.was_truncated() {
+            lines.push(Line::from(Span::styled(
+                "Transient display limit reached",
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        TranscriptBlock {
+            key: TranscriptBlockKey::Transient(transient.run_id),
+            lines,
+        }
+    };
+    if index.saturating_add(1) == block_count {
+        while block.lines.last().is_some_and(|line| line.spans.is_empty()) {
+            block.lines.pop();
+        }
+    }
+    Some(block)
+}
+
 fn transcript_title(session: &SessionView, viewport: &TranscriptViewport) -> String {
     let run_status = active_work_label(session);
     let shared = if session.shared_directory {
@@ -436,15 +453,26 @@ fn transcript_title(session: &SessionView, viewport: &TranscriptViewport) -> Str
     } else {
         ""
     };
-    let scroll = if viewport.follows_latest() {
-        ""
-    } else if viewport.has_newer_output() {
-        " · history · new output ↓ · End latest"
+    let scroll = if session.is_historical_window() || !viewport.follows_latest() {
+        if session.deferred_newer_output || viewport.has_newer_output() {
+            " · history · new output ↓ · End latest"
+        } else {
+            " · history · End latest"
+        }
     } else {
-        " · history · End latest"
+        ""
+    };
+    let pages = match (
+        session.older_cursor.is_some(),
+        session.newer_cursor.is_some(),
+    ) {
+        (true, true) => " · more ↑↓",
+        (true, false) => " · more ↑",
+        (false, true) => " · more ↓",
+        (false, false) => "",
     };
     format!(
-        " {} · {run_status}{archived}{shared}{scroll} ",
+        " {} · {run_status}{archived}{shared}{scroll}{pages} ",
         session.display_name.first_line()
     )
 }

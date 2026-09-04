@@ -7,7 +7,8 @@ use std::{error::Error, fmt};
 use morons_protocol::{
     ApplicationEvent, LocalCommandId, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService, RunFailureKind, RunId, RunState,
-    RunSummary, SessionContextStatus, SessionId, SessionSummary, SkillSummary, TranscriptEntry,
+    RunSummary, SessionContextStatus, SessionId, SessionSummary, SkillSummary, TranscriptCursor,
+    TranscriptEntry,
 };
 use ratatui::Frame;
 
@@ -15,7 +16,8 @@ use self::viewport::{TranscriptBlockKey, TranscriptViewport};
 use crate::terminal::{CredentialBuffer, PromptBuffer, SafeText, is_bidirectional_control};
 
 const MAX_CLIENT_SESSIONS: usize = 10_000;
-const MAX_CLIENT_TRANSCRIPT_ENTRIES: usize = 512;
+const TRANSCRIPT_WINDOW_TARGET_ENTRIES: usize = 64;
+const MAX_CLIENT_TRANSCRIPT_ENTRIES: usize = TRANSCRIPT_WINDOW_TARGET_ENTRIES * 2;
 const MAX_CLIENT_RUNS: usize = 512;
 const MAX_TRANSIENT_DELTA_BYTES: usize = 128 * 1024;
 const MAX_DRAFT_IMAGES: usize = 4;
@@ -64,6 +66,24 @@ pub(super) enum CredentialDialog {
     ConfirmRemove,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TranscriptNavigation {
+    Latest,
+    Oldest,
+    Older(TranscriptCursor),
+    Newer(TranscriptCursor),
+}
+
+pub(super) struct TranscriptWindowData {
+    pub(super) summary: SessionSummary,
+    pub(super) entries: Vec<TranscriptEntry>,
+    pub(super) runs: Vec<RunSummary>,
+    pub(super) active_run_id: Option<RunId>,
+    pub(super) active_command_id: Option<LocalCommandId>,
+    pub(super) older_cursor: Option<TranscriptCursor>,
+    pub(super) newer_cursor: Option<TranscriptCursor>,
+}
+
 #[derive(PartialEq, Eq)]
 pub(super) enum AppAction {
     None,
@@ -72,6 +92,10 @@ pub(super) enum AppAction {
     CreateSession,
     OpenSession(SessionId),
     CloseSession,
+    NavigateTranscript {
+        session_id: SessionId,
+        navigation: TranscriptNavigation,
+    },
     RenameSession {
         session_id: SessionId,
         display_name: String,
@@ -136,6 +160,14 @@ impl fmt::Debug for AppAction {
                 .field(session_id)
                 .finish(),
             Self::CloseSession => formatter.write_str("CloseSession"),
+            Self::NavigateTranscript {
+                session_id,
+                navigation,
+            } => formatter
+                .debug_struct("NavigateTranscript")
+                .field("session_id", session_id)
+                .field("navigation", navigation)
+                .finish(),
             Self::RenameSession {
                 session_id,
                 display_name,
@@ -373,6 +405,7 @@ pub(super) struct AppState {
     pub(super) confirm_stop: bool,
     pub(super) confirm_delete: Option<SessionId>,
     transcript_viewport: TranscriptViewport,
+    transcript_page_loading: bool,
     pub(super) skill_completion_index: usize,
 }
 
@@ -401,12 +434,115 @@ impl AppState {
             confirm_stop: false,
             confirm_delete: None,
             transcript_viewport: TranscriptViewport::default(),
+            transcript_page_loading: false,
             skill_completion_index: 0,
         }
     }
 
     pub(super) fn render(&mut self, frame: &mut Frame<'_>) {
         render::render(frame, self);
+    }
+
+    pub(super) fn scroll_transcript_lines_up(&mut self, rows: usize) -> AppAction {
+        if self.transcript_viewport.at_top() {
+            return self.navigate_to_older_window();
+        }
+        self.transcript_viewport.scroll_lines_up(rows);
+        AppAction::None
+    }
+
+    pub(super) fn scroll_transcript_lines_down(&mut self, rows: usize) -> AppAction {
+        if self.transcript_viewport.at_bottom() {
+            return self.navigate_to_newer_window();
+        }
+        self.transcript_viewport.scroll_lines_down(rows);
+        AppAction::None
+    }
+
+    pub(super) fn scroll_transcript_page_up(&mut self) -> AppAction {
+        if self.transcript_viewport.at_top() {
+            return self.navigate_to_older_window();
+        }
+        self.transcript_viewport.scroll_page_up();
+        AppAction::None
+    }
+
+    pub(super) fn scroll_transcript_page_down(&mut self) -> AppAction {
+        if self.transcript_viewport.at_bottom() {
+            return self.navigate_to_newer_window();
+        }
+        self.transcript_viewport.scroll_page_down();
+        AppAction::None
+    }
+
+    pub(super) fn scroll_transcript_to_start(&mut self) -> AppAction {
+        let Some(session) = self.session.as_ref() else {
+            return AppAction::None;
+        };
+        if session.older_cursor.is_some() && !self.transcript_page_loading {
+            self.transcript_page_loading = true;
+            return AppAction::NavigateTranscript {
+                session_id: session.summary.id,
+                navigation: TranscriptNavigation::Oldest,
+            };
+        }
+        self.transcript_viewport.scroll_to_top();
+        AppAction::None
+    }
+
+    pub(super) fn scroll_transcript_to_latest(&mut self) -> AppAction {
+        let Some(session) = self.session.as_ref() else {
+            return AppAction::None;
+        };
+        if (session.newer_cursor.is_some() || session.deferred_newer_output)
+            && !self.transcript_page_loading
+        {
+            self.transcript_page_loading = true;
+            return AppAction::NavigateTranscript {
+                session_id: session.summary.id,
+                navigation: TranscriptNavigation::Latest,
+            };
+        }
+        self.transcript_viewport.scroll_to_bottom();
+        AppAction::None
+    }
+
+    fn navigate_to_older_window(&mut self) -> AppAction {
+        let Some(session) = self.session.as_ref() else {
+            return AppAction::None;
+        };
+        let Some(cursor) = session.older_cursor else {
+            return AppAction::None;
+        };
+        if self.transcript_page_loading {
+            return AppAction::None;
+        }
+        self.transcript_page_loading = true;
+        AppAction::NavigateTranscript {
+            session_id: session.summary.id,
+            navigation: TranscriptNavigation::Older(cursor),
+        }
+    }
+
+    fn navigate_to_newer_window(&mut self) -> AppAction {
+        let Some(session) = self.session.as_ref() else {
+            return AppAction::None;
+        };
+        if self.transcript_page_loading {
+            return AppAction::None;
+        }
+        let navigation = if let Some(cursor) = session.newer_cursor {
+            TranscriptNavigation::Newer(cursor)
+        } else if session.deferred_newer_output {
+            TranscriptNavigation::Latest
+        } else {
+            return AppAction::None;
+        };
+        self.transcript_page_loading = true;
+        AppAction::NavigateTranscript {
+            session_id: session.summary.id,
+            navigation,
+        }
     }
 
     pub(super) fn skill_completion(&self) -> Option<(Vec<&PresentedSkill>, usize)> {
@@ -762,6 +898,7 @@ impl AppState {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn open_session(
         &mut self,
         summary: SessionSummary,
@@ -770,32 +907,43 @@ impl AppState {
         active_run_id: Option<RunId>,
         active_command_id: Option<LocalCommandId>,
     ) -> Result<(), UiStateError> {
-        let shared_directory = summary
-            .working_directory
-            .as_deref()
-            .is_some_and(|directory| {
-                self.sessions
-                    .iter()
-                    .filter(|session| {
-                        session.summary.working_directory.as_deref() == Some(directory)
-                    })
-                    .count()
-                    > 1
-            });
-        let mut session = SessionView::new(
+        self.open_session_window(TranscriptWindowData {
             summary,
             entries,
             runs,
             active_run_id,
             active_command_id,
-            Vec::new(),
-        )?;
+            older_cursor: None,
+            newer_cursor: None,
+        })
+    }
+
+    pub(super) fn open_session_window(
+        &mut self,
+        window: TranscriptWindowData,
+    ) -> Result<(), UiStateError> {
+        let shared_directory =
+            window
+                .summary
+                .working_directory
+                .as_deref()
+                .is_some_and(|directory| {
+                    self.sessions
+                        .iter()
+                        .filter(|session| {
+                            session.summary.working_directory.as_deref() == Some(directory)
+                        })
+                        .count()
+                        > 1
+                });
+        let mut session = SessionView::new(window, Vec::new())?;
         session.shared_directory = shared_directory;
         self.session = Some(session);
         self.view = View::Session;
         self.prompt.clear();
         self.draft_images.clear();
         self.transcript_viewport.reset();
+        self.transcript_page_loading = false;
         self.skill_completion_index = 0;
         Ok(())
     }
@@ -820,7 +968,87 @@ impl AppState {
         self.pending = None;
         self.pending_unknown = false;
         self.transcript_viewport.reset();
+        self.transcript_page_loading = false;
         self.skill_completion_index = 0;
+    }
+
+    pub(super) fn install_transcript_window(
+        &mut self,
+        mut window: TranscriptWindowData,
+        navigation: TranscriptNavigation,
+    ) -> Result<(), UiStateError> {
+        let current = self
+            .session
+            .as_mut()
+            .filter(|session| session.summary.id == window.summary.id)
+            .ok_or(UiStateError::ResourceScopeMismatch)?;
+        if navigation != TranscriptNavigation::Latest {
+            for run in &mut window.runs {
+                if let Some(live) = current.runs.iter().find(|live| live.id == run.id) {
+                    *run = live.clone();
+                }
+            }
+            if let Some(active_run_id) = current.active_run_id
+                && !window.runs.iter().any(|run| run.id == active_run_id)
+                && let Some(active) = current.runs.iter().find(|run| run.id == active_run_id)
+            {
+                window.runs.push(active.clone());
+            }
+            window.active_run_id = current.active_run_id;
+            window.active_command_id = current.active_command_id;
+        }
+        let deferred_newer_output = current.deferred_newer_output;
+        let transient = if navigation == TranscriptNavigation::Latest {
+            current.transient.take()
+        } else {
+            None
+        };
+        window.summary = current.summary.clone();
+        let mut replacement = SessionView::new(window, Vec::new())?;
+        replacement.skills = std::mem::take(&mut current.skills);
+        replacement.context_status = current.context_status.take();
+        replacement.shared_directory = current.shared_directory;
+        replacement.transient = transient.filter(|transient| {
+            !replacement
+                .entries
+                .iter()
+                .any(|entry| entry.role == "Assistant" && entry.run_id == Some(transient.run_id))
+        });
+        replacement.deferred_newer_output =
+            navigation != TranscriptNavigation::Latest && deferred_newer_output;
+        *current = replacement;
+        self.transcript_page_loading = false;
+        match navigation {
+            TranscriptNavigation::Latest | TranscriptNavigation::Older(_) => {
+                self.transcript_viewport.reset();
+            }
+            TranscriptNavigation::Oldest | TranscriptNavigation::Newer(_) => {
+                self.transcript_viewport.reset_to_top();
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn transcript_page_failed(&mut self) {
+        self.transcript_page_loading = false;
+    }
+
+    pub(super) fn requires_tail_refresh(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.tail_refresh_required)
+            && !self.transcript_page_loading
+    }
+
+    pub(super) fn request_tail_refresh(&mut self) -> AppAction {
+        let Some(session_id) = self.session.as_ref().map(|session| session.summary.id) else {
+            return AppAction::None;
+        };
+        self.transcript_page_loading = true;
+        AppAction::NavigateTranscript {
+            session_id,
+            navigation: TranscriptNavigation::Latest,
+        }
     }
 
     pub(super) fn apply_event(&mut self, event: ApplicationEvent) -> Result<(), UiStateError> {
@@ -853,10 +1081,11 @@ impl AppState {
             ApplicationEvent::SessionTranscriptEntryCommitted {
                 session_id, entry, ..
             } => {
-                if self
-                    .session_mut(session_id)?
-                    .append_transcript_entry(entry)?
-                {
+                let session = self.session_mut(session_id)?;
+                if session.is_historical_window() {
+                    session.defer_transcript_entry(&entry);
+                    self.transcript_viewport.note_newer_output();
+                } else if session.append_transcript_entry(entry)? {
                     self.transcript_viewport.note_content_changed();
                 }
                 Ok(())
@@ -874,9 +1103,13 @@ impl AppState {
                 });
                 let session = self.session_mut(run.session_id)?;
                 session.context_status = None;
+                let historical = session.is_historical_window();
                 let had_transient = session.transient.is_some();
                 session.apply_run(run)?;
-                if presentation.is_some() {
+                if historical {
+                    session.deferred_newer_output = true;
+                    self.transcript_viewport.note_newer_output();
+                } else if presentation.is_some() {
                     self.transcript_viewport.note_content_changed();
                 } else if had_transient && session.transient.is_none() {
                     self.transcript_viewport.note_layout_changed();
@@ -903,9 +1136,14 @@ impl AppState {
                 refusal,
                 ..
             } => {
-                self.session_mut(session_id)?
-                    .append_delta(run_id, &delta, refusal)?;
-                self.transcript_viewport.note_content_changed();
+                let session = self.session_mut(session_id)?;
+                if session.is_historical_window() {
+                    session.deferred_newer_output = true;
+                    self.transcript_viewport.note_newer_output();
+                } else {
+                    session.append_delta(run_id, &delta, refusal)?;
+                    self.transcript_viewport.note_content_changed();
+                }
                 Ok(())
             }
         }
@@ -1122,6 +1360,10 @@ pub(super) struct SessionView {
     pub(super) runs: Vec<RunSummary>,
     pub(super) active_run_id: Option<RunId>,
     pub(super) active_command_id: Option<LocalCommandId>,
+    pub(super) older_cursor: Option<TranscriptCursor>,
+    pub(super) newer_cursor: Option<TranscriptCursor>,
+    deferred_newer_output: bool,
+    tail_refresh_required: bool,
     pub(super) skills: Vec<PresentedSkill>,
     pub(super) transient: Option<TransientAssistant>,
     pub(super) context_status: Option<SessionContextStatus>,
@@ -1129,18 +1371,24 @@ pub(super) struct SessionView {
 }
 
 impl SessionView {
-    fn new(
-        summary: SessionSummary,
-        entries: Vec<TranscriptEntry>,
-        runs: Vec<RunSummary>,
-        active_run_id: Option<RunId>,
-        active_command_id: Option<LocalCommandId>,
-        skills: Vec<SkillSummary>,
-    ) -> Result<Self, UiStateError> {
+    fn new(window: TranscriptWindowData, skills: Vec<SkillSummary>) -> Result<Self, UiStateError> {
+        let TranscriptWindowData {
+            summary,
+            entries,
+            runs,
+            active_run_id,
+            active_command_id,
+            older_cursor,
+            newer_cursor,
+        } = window;
         if entries.len() > MAX_CLIENT_TRANSCRIPT_ENTRIES || runs.len() > MAX_CLIENT_RUNS {
             return Err(UiStateError::ResourceLimitExceeded);
         }
         if runs.iter().any(|run| run.session_id != summary.id)
+            || [older_cursor.as_ref(), newer_cursor.as_ref()]
+                .iter()
+                .flatten()
+                .any(|cursor| cursor.as_bytes()[..16] != summary.id.as_bytes()[..])
             || entries.iter().any(|entry| {
                 transcript_entry_run_id(entry)
                     .is_some_and(|run_id| !runs.iter().any(|run| run.id == run_id))
@@ -1170,11 +1418,36 @@ impl SessionView {
             runs,
             active_run_id,
             active_command_id,
+            older_cursor,
+            newer_cursor,
+            deferred_newer_output: false,
+            tail_refresh_required: false,
             skills: skills.into_iter().map(PresentedSkill::new).collect(),
             transient: None,
             context_status: None,
             shared_directory: false,
         })
+    }
+
+    fn is_historical_window(&self) -> bool {
+        self.newer_cursor.is_some() || self.deferred_newer_output
+    }
+
+    fn defer_transcript_entry(&mut self, entry: &TranscriptEntry) {
+        if let TranscriptEntry::LocalCommand { command_id, .. } = entry
+            && self.active_command_id == Some(*command_id)
+        {
+            self.active_command_id = None;
+        }
+        if let TranscriptEntry::AssistantMessage { run_id, .. } = entry
+            && self
+                .transient
+                .as_ref()
+                .is_some_and(|transient| transient.run_id == *run_id)
+        {
+            self.transient = None;
+        }
+        self.deferred_newer_output = true;
     }
 
     fn append_transcript_entry(&mut self, entry: TranscriptEntry) -> Result<bool, UiStateError> {
@@ -1183,7 +1456,10 @@ impl SessionView {
             return Ok(false);
         }
         if self.entries.len() >= MAX_CLIENT_TRANSCRIPT_ENTRIES {
-            return Err(UiStateError::ResourceLimitExceeded);
+            self.entries
+                .drain(..TRANSCRIPT_WINDOW_TARGET_ENTRIES.min(self.entries.len()));
+            self.older_cursor = None;
+            self.tail_refresh_required = true;
         }
         let run_id = transcript_entry_run_id(&entry);
         if matches!(entry, TranscriptEntry::AssistantMessage { .. })
@@ -1228,6 +1504,14 @@ impl SessionView {
                 .is_some_and(|transient| transient.run_id == run.id)
             {
                 self.transient = None;
+            }
+            if self.is_historical_window()
+                && !self
+                    .entries
+                    .iter()
+                    .any(|entry| entry.run_id == Some(run.id))
+            {
+                self.runs.retain(|existing| existing.id != run.id);
             }
         } else {
             if self

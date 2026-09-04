@@ -15,7 +15,7 @@ use crate::{
     persistence::{
         AcceptedLocalCommand, LocalCommandCancellationResult, LocalCommandId, LocalCommandStatus,
         MessageId, MutationRequestId, PersistenceError, PersistenceResourceLimit, SessionId,
-        TranscriptEntry,
+        TranscriptEntry, TranscriptPageDirection,
         run_types::{MAX_TRANSCRIPT_ENTRIES, MAX_TRANSCRIPT_TEXT_BYTES},
         types::REQUEST_FINGERPRINT_BYTES,
     },
@@ -516,19 +516,49 @@ impl Backend {
         snapshot_event_sequence: u64,
         limit: u16,
     ) -> Result<Vec<TranscriptEntry>, PersistenceError> {
-        let mut statement = self.connection.prepare(
-            "SELECT entry_sequence, message_id, command_text, context_visible,
-                    result_payload, updated_at_milliseconds, command_id
-             FROM local_commands
-             WHERE session_id = ?1 AND entry_sequence > ?2 AND entry_sequence <= ?3
-               AND updated_sequence <= ?4 AND state BETWEEN 3 AND 5
-             ORDER BY entry_sequence LIMIT ?5",
-        )?;
+        self.list_local_command_entries_window(
+            session_id,
+            after_entry_sequence,
+            snapshot_entry_sequence,
+            snapshot_event_sequence,
+            TranscriptPageDirection::Newer,
+            limit,
+        )
+    }
+
+    pub(super) fn list_local_command_entries_window(
+        &self,
+        session_id: SessionId,
+        boundary_entry_sequence: u64,
+        snapshot_entry_sequence: u64,
+        snapshot_event_sequence: u64,
+        direction: TranscriptPageDirection,
+        limit: u16,
+    ) -> Result<Vec<TranscriptEntry>, PersistenceError> {
+        let query = match direction {
+            TranscriptPageDirection::Older => {
+                "SELECT entry_sequence, message_id, command_text, context_visible,
+                        result_payload, updated_at_milliseconds, command_id
+                 FROM local_commands
+                 WHERE session_id = ?1 AND entry_sequence < ?2 AND entry_sequence <= ?3
+                   AND updated_sequence <= ?4 AND state BETWEEN 3 AND 5
+                 ORDER BY entry_sequence DESC LIMIT ?5"
+            }
+            TranscriptPageDirection::Newer => {
+                "SELECT entry_sequence, message_id, command_text, context_visible,
+                        result_payload, updated_at_milliseconds, command_id
+                 FROM local_commands
+                 WHERE session_id = ?1 AND entry_sequence > ?2 AND entry_sequence <= ?3
+                   AND updated_sequence <= ?4 AND state BETWEEN 3 AND 5
+                 ORDER BY entry_sequence LIMIT ?5"
+            }
+        };
+        let mut statement = self.connection.prepare(query)?;
         statement
             .query_map(
                 params![
                     &session_id.as_bytes()[..],
-                    sequence_to_sql(after_entry_sequence)?,
+                    sequence_to_sql(boundary_entry_sequence)?,
                     sequence_to_sql(snapshot_entry_sequence)?,
                     sequence_to_sql(snapshot_event_sequence)?,
                     i64::from(limit),

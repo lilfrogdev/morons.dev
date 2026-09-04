@@ -11,6 +11,7 @@ use crate::{
     OpenCodeCredentialStatus, OpenCodeModelCapabilities, OpenCodeModelRetention,
     OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
     RunFailureKind, RunId, RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus,
+    TranscriptCursor, TranscriptPageDirection,
 };
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
@@ -597,6 +598,26 @@ fn application_response_has_stable_json_shape() {
 }
 
 #[test]
+fn transcript_window_request_has_stable_json_shape() {
+    let request = ApplicationRequest::ListSessionTranscript {
+        session_id: SessionId::from_bytes([0x23; 16]),
+        cursor: Some(TranscriptCursor::from_bytes([0x24; 40])),
+        direction: TranscriptPageDirection::Older,
+        limit: 1,
+    };
+    assert_eq!(
+        serde_json::to_value(request).expect("transcript window request should encode"),
+        json!({
+            "operation": "list_session_transcript",
+            "session_id": "ses_23232323232323232323232323232323",
+            "cursor": "tc2_24242424242424242424242424242424242424242424242424242424242424242424242424242424",
+            "direction": "older",
+            "limit": 1,
+        })
+    );
+}
+
+#[test]
 fn transcript_snapshot_response_has_stable_json_shape() {
     let session_id = SessionId::from_bytes([0x23; 16]);
     let response = ApplicationResponse::SessionTranscriptListed {
@@ -611,7 +632,8 @@ fn transcript_snapshot_response_has_stable_json_shape() {
         runs: Vec::new(),
         active_run_id: None,
         active_command_id: None,
-        next_cursor: None,
+        older_cursor: None,
+        newer_cursor: None,
         event_cursor: session_event_cursor(session_id, 9),
     };
     assert_eq!(
@@ -629,7 +651,8 @@ fn transcript_snapshot_response_has_stable_json_shape() {
             "runs": [],
             "active_run_id": null,
             "active_command_id": null,
-            "next_cursor": null,
+            "older_cursor": null,
+            "newer_cursor": null,
             "event_cursor": "sec1_232323232323232323232323232323230000000000000009",
         })
     );

@@ -7,12 +7,18 @@ use morons_protocol::{MutationRequestId, OpenCodeService, SessionId};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use self::{
-    requests::{RequestCommand, RequestEvent, SessionSnapshot, run_request_worker},
+    requests::{
+        RequestCommand, RequestEvent, SessionSnapshot, TranscriptWindow, TranscriptWindowTarget,
+        run_request_worker,
+    },
     subscriptions::{SubscriptionEvent, spawn_catalog_subscription, spawn_session_subscription},
 };
 use crate::{
     ApplicationClient, ConnectOrStartError, MutationRequestIdError,
-    app::{AppAction, AppState, PendingOperation, UiStateError},
+    app::{
+        AppAction, AppState, PendingOperation, TranscriptNavigation, TranscriptWindowData,
+        UiStateError,
+    },
     connect_or_start, generate_mutation_request_id,
     terminal::{
         SafeText, TerminalEvents, TerminalInput, TerminalSession, require_interactive_terminal,
@@ -137,7 +143,15 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
                             break Ok(());
                         }
                     }
-                    TerminalInput::Mouse(mouse) => runtime.app.handle_mouse(mouse),
+                    TerminalInput::Mouse(mouse) => {
+                        let action = runtime.app.handle_mouse(mouse);
+                        if runtime
+                            .handle_action(action, &request_commands)
+                            .await?
+                        {
+                            break Ok(());
+                        }
+                    }
                     TerminalInput::Paste(paste) => {
                         if !runtime.app.accepts_image_input() {
                             runtime.app.handle_paste(&paste);
@@ -261,6 +275,26 @@ impl RuntimeState {
                 self.app.close_session();
                 self.app
                     .set_status("Session detached; server-owned runs continue");
+            }
+            AppAction::NavigateTranscript {
+                session_id,
+                navigation,
+            } => {
+                if self.requested_session == Some(session_id) {
+                    send_command(
+                        commands,
+                        RequestCommand::LoadTranscriptWindow {
+                            session_id,
+                            target: transcript_window_target(navigation),
+                        },
+                    )?;
+                    self.app.set_status(match navigation {
+                        TranscriptNavigation::Latest => "Loading latest transcript",
+                        TranscriptNavigation::Oldest => "Loading transcript start",
+                        TranscriptNavigation::Older(_) => "Loading older transcript history",
+                        TranscriptNavigation::Newer(_) => "Loading newer transcript history",
+                    });
+                }
             }
             AppAction::RenameSession {
                 session_id,
@@ -554,6 +588,29 @@ impl RuntimeState {
                     ),
                 });
             }
+            RequestEvent::TranscriptWindowLoaded { target, window } => {
+                if self.requested_session == Some(window.session.id) {
+                    let session_id = window.session.id;
+                    let event_cursor = window.event_cursor;
+                    self.install_transcript_window(target, window)?;
+                    if target == TranscriptWindowTarget::Latest {
+                        self.session_generation = self.session_generation.wrapping_add(1);
+                        abort_task(&mut self.session_subscription);
+                        self.session_subscription = Some(spawn_session_subscription(
+                            session_id,
+                            event_cursor,
+                            self.session_generation,
+                            subscription_events.clone(),
+                        ));
+                    }
+                    self.app.set_status(match target {
+                        TranscriptWindowTarget::Latest => "Latest transcript loaded",
+                        TranscriptWindowTarget::Oldest => "Transcript start loaded",
+                        TranscriptWindowTarget::Older(_) => "Older transcript history loaded",
+                        TranscriptWindowTarget::Newer(_) => "Newer transcript history loaded",
+                    });
+                }
+            }
             RequestEvent::SessionCreated {
                 mutation_request_id,
                 session,
@@ -714,6 +771,9 @@ impl RuntimeState {
                 if let Some(service) = model_service {
                     self.app.replace_models(service, Vec::new())?;
                 }
+                if context == "transcript history page" {
+                    self.app.transcript_page_failed();
+                }
                 self.app.set_status(format!("{context} failed: {error}"));
             }
             RequestEvent::MutationFailed {
@@ -760,6 +820,22 @@ impl RuntimeState {
                 if generation == self.session_generation =>
             {
                 self.app.apply_event(event)?;
+                if self.app.requires_tail_refresh() {
+                    let action = self.app.request_tail_refresh();
+                    if let AppAction::NavigateTranscript {
+                        session_id,
+                        navigation,
+                    } = action
+                    {
+                        send_command(
+                            commands,
+                            RequestCommand::LoadTranscriptWindow {
+                                session_id,
+                                target: transcript_window_target(navigation),
+                            },
+                        )?;
+                    }
+                }
             }
             SubscriptionEvent::Session { .. } => {}
             SubscriptionEvent::CatalogConnectionLost => {
@@ -890,18 +966,20 @@ impl RuntimeState {
         snapshot: SessionSnapshot,
         subscription_events: &mpsc::Sender<SubscriptionEvent>,
     ) -> Result<(), TerminalApplicationError> {
-        if self.requested_session != Some(snapshot.session.id) {
+        if self.requested_session != Some(snapshot.window.session.id) {
             return Ok(());
         }
-        let session_id = snapshot.session.id;
-        let event_cursor = snapshot.event_cursor;
-        self.app.open_session(
-            snapshot.session,
-            snapshot.entries,
-            snapshot.runs,
-            snapshot.active_run_id,
-            snapshot.active_command_id,
-        )?;
+        let session_id = snapshot.window.session.id;
+        let event_cursor = snapshot.window.event_cursor;
+        self.app.open_session_window(TranscriptWindowData {
+            summary: snapshot.window.session,
+            entries: snapshot.window.entries,
+            runs: snapshot.window.runs,
+            active_run_id: snapshot.window.active_run_id,
+            active_command_id: snapshot.window.active_command_id,
+            older_cursor: snapshot.window.older_cursor,
+            newer_cursor: snapshot.window.newer_cursor,
+        })?;
         self.app
             .install_session_skills(session_id, snapshot.skills)?;
         self.session_generation = self.session_generation.wrapping_add(1);
@@ -912,6 +990,32 @@ impl RuntimeState {
             self.session_generation,
             subscription_events.clone(),
         ));
+        Ok(())
+    }
+
+    fn install_transcript_window(
+        &mut self,
+        target: TranscriptWindowTarget,
+        window: TranscriptWindow,
+    ) -> Result<(), TerminalApplicationError> {
+        let navigation = match target {
+            TranscriptWindowTarget::Latest => TranscriptNavigation::Latest,
+            TranscriptWindowTarget::Oldest => TranscriptNavigation::Oldest,
+            TranscriptWindowTarget::Older(cursor) => TranscriptNavigation::Older(cursor),
+            TranscriptWindowTarget::Newer(cursor) => TranscriptNavigation::Newer(cursor),
+        };
+        self.app.install_transcript_window(
+            TranscriptWindowData {
+                summary: window.session,
+                entries: window.entries,
+                runs: window.runs,
+                active_run_id: window.active_run_id,
+                active_command_id: window.active_command_id,
+                older_cursor: window.older_cursor,
+                newer_cursor: window.newer_cursor,
+            },
+            navigation,
+        )?;
         Ok(())
     }
 
@@ -1047,6 +1151,15 @@ fn enqueue_initial_queries(
     Ok(())
 }
 
+const fn transcript_window_target(navigation: TranscriptNavigation) -> TranscriptWindowTarget {
+    match navigation {
+        TranscriptNavigation::Latest => TranscriptWindowTarget::Latest,
+        TranscriptNavigation::Oldest => TranscriptWindowTarget::Oldest,
+        TranscriptNavigation::Older(cursor) => TranscriptWindowTarget::Older(cursor),
+        TranscriptNavigation::Newer(cursor) => TranscriptWindowTarget::Newer(cursor),
+    }
+}
+
 fn send_command(
     commands: &mpsc::Sender<RequestCommand>,
     command: RequestCommand,
@@ -1143,6 +1256,36 @@ mod tests {
         assert!(matches!(
             command_receiver.try_recv(),
             Ok(RequestCommand::LoadSession(selected)) if selected == session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn transcript_navigation_requests_one_exact_bounded_window() {
+        let request_worker = tokio::spawn(async {});
+        let mut runtime = RuntimeState::new("test-server".to_owned(), request_worker);
+        let session_id = SessionId::from_bytes([0x45; 16]);
+        runtime.requested_session = Some(session_id);
+        let cursor = morons_protocol::TranscriptCursor::from_bytes([0x46; 40]);
+        let (commands, mut command_receiver) = mpsc::channel(2);
+
+        assert!(
+            !runtime
+                .handle_action(
+                    AppAction::NavigateTranscript {
+                        session_id,
+                        navigation: TranscriptNavigation::Older(cursor),
+                    },
+                    &commands,
+                )
+                .await
+                .expect("history navigation should enqueue")
+        );
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(RequestCommand::LoadTranscriptWindow {
+                session_id: requested,
+                target: TranscriptWindowTarget::Older(requested_cursor),
+            }) if requested == session_id && requested_cursor == cursor
         ));
     }
 

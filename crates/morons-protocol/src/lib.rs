@@ -27,7 +27,7 @@ pub use run::{
     MessageId, OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSelection,
     OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId,
     RunState, RunSummary, ToolCallId, ToolKind, ToolResultStatus, TranscriptCursor,
-    TranscriptEntry,
+    TranscriptEntry, TranscriptPageDirection,
 };
 pub use session::{
     APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
@@ -36,4 +36,4 @@ pub use session::{
     SessionListCursor, SessionSummary, SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 31;
+pub const PROTOCOL_VERSION: u32 = 32;
