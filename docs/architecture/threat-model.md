@@ -116,6 +116,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Repository, model, configuration, catalog, proxy, certificate override, or redirect input selects an attacker-controlled inference origin or credential scope.
 - A malicious provider sends malformed, oversized, endless, contradictory, or terminally inconsistent streams.
 - A remote catalog adds an unreviewed model, capability, protocol, limit, route, or data-use policy.
+- A mixed-protocol model is sent to the wrong Responses, Chat Completions, or Anthropic Messages path; the credential is attached under the wrong header convention; or an undocumented catalog-only model is presented with a guessed favorable data-use policy.
 - Malformed or tampered default-model state selects an unreviewed model, bypasses current availability, or becomes mistaken for provider authorization.
 - A dispatched inference request is retried and incurs duplicate usage.
 - Provider response identifiers become authoritative conversation state and make local recovery depend on external retention.
@@ -193,7 +194,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Authorize operating-system peers before application exchange and require randomized endpoints, owner-only control state, a lifetime host lock, and role-separated HMAC proofs.
 - Start only exact packaged companions without a shell or untrusted executable-path selection. Verify the target-specific packaged uv digest before use; pin managed Python and all Jupyter package versions and hashes; ignore repository, user uv/pip, virtual-environment, and Python path configuration during bootstrap.
 - Serialize managed Python preparation with an owner-controlled process lock, supervise it under one cancellation and deadline, publish only a validated staged runtime by atomic rename, retain a dedicated verified-download cache for offline reuse, and never inject Morons-managed credentials.
-- Keep provider and web-search routes fixed in reviewed code, disable redirects, scope authorization headers exactly, strictly decode bounded remote responses, and never retry dispatched inference or web search automatically.
+- Keep provider and web-search routes fixed in reviewed code, disable redirects, pin each model to one reviewed protocol revision, scope bearer and `x-api-key` headers to their exact routes, strictly decode bounded protocol-specific streams, and never retry dispatched inference or web search automatically.
 - Store global default-model changes as bounded idempotent facts, validate them against the reviewed manifest, use them only when the current sanitized catalog marks the pair available, and validate every run's explicit model independently.
 - Derive one opaque `x-opencode-session` value per Morons conversation: preserve a root value across its durable session, derive a distinct stable value for each canonical task child, rotate values across unrelated conversations, omit them from catalog requests, and never log or persist a derived header.
 - Store Morons-managed credentials outside SQLite and never intentionally include them in child environments, prompts, provider payload bodies, errors, logs, or audit facts.

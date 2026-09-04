@@ -178,11 +178,16 @@ pub(super) fn to_protocol_model_summary(
     let model = availability.model;
     let training_use = match model.data_use.training {
         ModelTrainingUse::NotUsed => OpenCodeModelTrainingUse::NotUsed,
-        ModelTrainingUse::MayUsePromptsAndCompletions => return None,
+        ModelTrainingUse::MayUsePromptsAndCompletions => {
+            OpenCodeModelTrainingUse::MayUsePromptsAndCompletions
+        }
+        ModelTrainingUse::NotDocumented => OpenCodeModelTrainingUse::NotDocumented,
     };
     let retention = match model.data_use.retention {
         ModelRetention::None => OpenCodeModelRetention::None,
         ModelRetention::UpToThirtyDays => OpenCodeModelRetention::UpToThirtyDays,
+        ModelRetention::NotZeroDataRetention => OpenCodeModelRetention::NotZeroDataRetention,
+        ModelRetention::NotDocumented => OpenCodeModelRetention::NotDocumented,
     };
     Some(OpenCodeModelSummary {
         service: match model.service {
@@ -195,6 +200,7 @@ pub(super) fn to_protocol_model_summary(
         protocol: match model.protocol {
             ProviderProtocol::Responses => ProtocolProviderProtocol::Responses,
             ProviderProtocol::ChatCompletions => ProtocolProviderProtocol::ChatCompletions,
+            ProviderProtocol::AnthropicMessages => ProtocolProviderProtocol::AnthropicMessages,
         },
         protocol_revision: model.protocol_revision,
         capabilities: OpenCodeModelCapabilities {

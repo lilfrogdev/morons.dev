@@ -20,6 +20,7 @@ use super::responses::ResponsesDiagnostic;
 use super::{
     OpenCodeCredentialLease, OpenCodeModelAvailability, OpenCodeResponseRequest, OpenCodeService,
     ProviderCancellation, ProviderError, ProviderOutcome, ProviderProtocol, ProviderStreamEvent,
+    anthropic_messages::AnthropicMessagesDecoder,
     catalog::{MAX_CATALOG_BODY_BYTES, parse_catalog},
     chat_completions::ChatCompletionsDecoder,
     responses::ResponsesDecoder,
@@ -30,7 +31,9 @@ const ZEN_INFERENCE_URI: &str = "https://opencode.ai/zen/v1/responses";
 const ZEN_CATALOG_URI: &str = "https://opencode.ai/zen/v1/models";
 const GO_INFERENCE_URI: &str = "https://opencode.ai/zen/go/v1/responses";
 const GO_CHAT_INFERENCE_URI: &str = "https://opencode.ai/zen/go/v1/chat/completions";
+const GO_ANTHROPIC_INFERENCE_URI: &str = "https://opencode.ai/zen/go/v1/messages";
 const GO_CATALOG_URI: &str = "https://opencode.ai/zen/go/v1/models";
+const ANTHROPIC_VERSION: &str = "2023-06-01";
 const USER_AGENT_VALUE: &str = concat!("morons-server/", env!("CARGO_PKG_VERSION"));
 const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -50,6 +53,7 @@ struct EndpointSet {
     zen_catalog: String,
     go_inference: String,
     go_chat_inference: String,
+    go_anthropic_inference: String,
     go_catalog: String,
 }
 
@@ -60,6 +64,7 @@ impl EndpointSet {
             zen_catalog: ZEN_CATALOG_URI.to_owned(),
             go_inference: GO_INFERENCE_URI.to_owned(),
             go_chat_inference: GO_CHAT_INFERENCE_URI.to_owned(),
+            go_anthropic_inference: GO_ANTHROPIC_INFERENCE_URI.to_owned(),
             go_catalog: GO_CATALOG_URI.to_owned(),
         }
     }
@@ -71,7 +76,11 @@ impl EndpointSet {
             (OpenCodeService::Go, ProviderProtocol::ChatCompletions) => {
                 Some(&self.go_chat_inference)
             }
-            (OpenCodeService::Zen, ProviderProtocol::ChatCompletions) => None,
+            (OpenCodeService::Go, ProviderProtocol::AnthropicMessages) => {
+                Some(&self.go_anthropic_inference)
+            }
+            (OpenCodeService::Zen, ProviderProtocol::ChatCompletions)
+            | (OpenCodeService::Zen, ProviderProtocol::AnthropicMessages) => None,
         }
     }
 
@@ -131,6 +140,7 @@ impl OpenCodeProvider {
             zen_catalog: format!("{base}/zen/v1/models"),
             go_inference: format!("{base}/zen/go/v1/responses"),
             go_chat_inference: format!("{base}/zen/go/v1/chat/completions"),
+            go_anthropic_inference: format!("{base}/zen/go/v1/messages"),
             go_catalog: format!("{base}/zen/go/v1/models"),
         };
         Self {
@@ -176,6 +186,7 @@ struct OpenCodeClient {
 enum InferenceDecoder {
     Responses(ResponsesDecoder),
     ChatCompletions(ChatCompletionsDecoder),
+    AnthropicMessages(AnthropicMessagesDecoder),
 }
 
 impl InferenceDecoder {
@@ -193,6 +204,13 @@ impl InferenceDecoder {
                     request.model().maximum_output_tokens,
                 ))
             }
+            ProviderProtocol::AnthropicMessages => {
+                Self::AnthropicMessages(AnthropicMessagesDecoder::new(
+                    request.model().id,
+                    request.model().maximum_input_tokens,
+                    request.model().maximum_output_tokens,
+                ))
+            }
         }
     }
 
@@ -200,6 +218,7 @@ impl InferenceDecoder {
         match self {
             Self::Responses(decoder) => decoder.push(data),
             Self::ChatCompletions(decoder) => decoder.push(data),
+            Self::AnthropicMessages(decoder) => decoder.push(data),
         }
     }
 
@@ -207,14 +226,23 @@ impl InferenceDecoder {
         match self {
             Self::Responses(decoder) => decoder.finish(),
             Self::ChatCompletions(decoder) => decoder.finish(),
+            Self::AnthropicMessages(decoder) => decoder.finish(),
         }
     }
 
     #[cfg(debug_assertions)]
     fn chat_diagnostic_stage(&self) -> Option<&'static str> {
         match self {
-            Self::Responses(_) => None,
+            Self::Responses(_) | Self::AnthropicMessages(_) => None,
             Self::ChatCompletions(decoder) => Some(decoder.diagnostic_stage()),
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn anthropic_diagnostic_stage(&self) -> Option<&'static str> {
+        match self {
+            Self::Responses(_) | Self::ChatCompletions(_) => None,
+            Self::AnthropicMessages(decoder) => Some(decoder.diagnostic_stage()),
         }
     }
 
@@ -222,7 +250,7 @@ impl InferenceDecoder {
     fn responses_diagnostic(&self) -> Option<ResponsesDiagnostic> {
         match self {
             Self::Responses(decoder) => Some(decoder.diagnostic()),
-            Self::ChatCompletions(_) => None,
+            Self::ChatCompletions(_) | Self::AnthropicMessages(_) => None,
         }
     }
 }
@@ -301,8 +329,7 @@ impl OpenCodeClient {
         if cancellation.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
-        let authorization = authorization_header(api_key)?;
-        let http_request = Request::builder()
+        let builder = Request::builder()
             .method(Method::POST)
             .uri(parse_uri(
                 self.endpoints
@@ -310,10 +337,17 @@ impl OpenCodeClient {
                     .ok_or(ProviderError::UnsupportedModel)?,
             )?)
             .header(ACCEPT, "text/event-stream")
-            .header(AUTHORIZATION, authorization)
             .header(CONTENT_TYPE, "application/json")
             .header(OPENCODE_SESSION_HEADER, request.opencode_session_header())
-            .header(USER_AGENT, USER_AGENT_VALUE)
+            .header(USER_AGENT, USER_AGENT_VALUE);
+        let builder = if request.model().protocol == ProviderProtocol::AnthropicMessages {
+            builder
+                .header("x-api-key", api_key_header(api_key)?)
+                .header("anthropic-version", ANTHROPIC_VERSION)
+        } else {
+            builder.header(AUTHORIZATION, authorization_header(api_key)?)
+        };
+        let http_request = builder
             .body(Full::new(Bytes::from(body)))
             .map_err(|_| ProviderError::Transport)?;
         let deadline = Instant::now() + PROVIDER_TOTAL_TIMEOUT;
@@ -365,6 +399,10 @@ impl OpenCodeClient {
                 if let Some(stage) = decoder.chat_diagnostic_stage() {
                     eprintln!("chat completions decoder rejected provider data while {stage}");
                 }
+                #[cfg(debug_assertions)]
+                if let Some(stage) = decoder.anthropic_diagnostic_stage() {
+                    eprintln!("Anthropic Messages decoder rejected provider data while {stage}");
+                }
                 #[cfg(test)]
                 if self.emit_decoder_diagnostics
                     && let Some(diagnostic) = decoder.responses_diagnostic()
@@ -378,6 +416,8 @@ impl OpenCodeClient {
         }
         #[cfg(debug_assertions)]
         let chat_diagnostic_stage = decoder.chat_diagnostic_stage();
+        #[cfg(debug_assertions)]
+        let anthropic_diagnostic_stage = decoder.anthropic_diagnostic_stage();
         #[cfg(test)]
         let diagnostic = self
             .emit_decoder_diagnostics
@@ -389,6 +429,12 @@ impl OpenCodeClient {
             && let Some(stage) = chat_diagnostic_stage
         {
             eprintln!("chat completions decoder could not finish after {stage}");
+        }
+        #[cfg(debug_assertions)]
+        if outcome.is_err()
+            && let Some(stage) = anthropic_diagnostic_stage
+        {
+            eprintln!("Anthropic Messages decoder could not finish after {stage}");
         }
         #[cfg(test)]
         if outcome.is_err()
@@ -485,7 +531,15 @@ fn authorization_header(api_key: &[u8]) -> Result<HeaderValue, ProviderError> {
     let mut value = Zeroizing::new(Vec::with_capacity(7 + api_key.len()));
     value.extend_from_slice(b"Bearer ");
     value.extend_from_slice(api_key);
-    let mut header = HeaderValue::from_bytes(&value).map_err(|_| ProviderError::InvalidRequest)?;
+    sensitive_header(&value)
+}
+
+fn api_key_header(api_key: &[u8]) -> Result<HeaderValue, ProviderError> {
+    sensitive_header(api_key)
+}
+
+fn sensitive_header(value: &[u8]) -> Result<HeaderValue, ProviderError> {
+    let mut header = HeaderValue::from_bytes(value).map_err(|_| ProviderError::InvalidRequest)?;
     header.set_sensitive(true);
     Ok(header)
 }

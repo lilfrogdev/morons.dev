@@ -1,3 +1,4 @@
+mod anthropic_messages;
 mod cancellation;
 mod catalog;
 mod chat_completions;
@@ -15,10 +16,10 @@ pub use cancellation::{ProviderCancellation, ProviderCancellationHandle, provide
 pub use catalog::OpenCodeModelAvailability;
 pub use error::ProviderError;
 pub use models::{
-    CHAT_COMPLETIONS_PROTOCOL_REVISION, MAXIMUM_CONTEXT_TOKENS, MAXIMUM_INPUT_TOKENS,
-    MAXIMUM_OUTPUT_TOKENS, ModelCapabilities, ModelDataUse, ModelRetention, ModelTrainingUse,
-    OpenCodeModel, OpenCodeService, ProviderProtocol, RESPONSES_PROTOCOL_REVISION,
-    find_open_code_model, open_code_models,
+    ANTHROPIC_MESSAGES_PROTOCOL_REVISION, CHAT_COMPLETIONS_PROTOCOL_REVISION,
+    MAXIMUM_CONTEXT_TOKENS, MAXIMUM_INPUT_TOKENS, MAXIMUM_OUTPUT_TOKENS, ModelCapabilities,
+    ModelDataUse, ModelRetention, ModelTrainingUse, OpenCodeModel, OpenCodeService,
+    ProviderProtocol, RESPONSES_PROTOCOL_REVISION, find_open_code_model, open_code_models,
 };
 pub(crate) use opencode::OpenCodeProvider;
 pub use outcome::{

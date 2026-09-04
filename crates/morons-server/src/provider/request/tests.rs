@@ -149,6 +149,139 @@ fn chat_completions_request_has_bounded_compatible_messages_and_tools() {
 }
 
 #[test]
+fn anthropic_messages_request_has_bounded_system_images_and_tool_blocks() {
+    let image = morons_image::normalize_rgba(1, 1, vec![10, 20, 30, 255])
+        .expect("fixture should normalize");
+    let request = OpenCodeResponseRequest::new(
+        [0x33; 16],
+        OpenCodeService::Go,
+        "qwen3.8-max",
+        512,
+        1_024,
+        vec![
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::Developer,
+                text: "system guidance".to_owned(),
+                phase: None,
+            },
+            ProviderInputItem::MultimodalMessage {
+                role: ProviderMessageRole::User,
+                parts: vec![
+                    ProviderContentPart::Text("inspect".to_owned()),
+                    ProviderContentPart::Image {
+                        media_type: image.media_type,
+                        width: image.width,
+                        height: image.height,
+                        bytes: image.bytes,
+                    },
+                ],
+                phase: None,
+            },
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::Assistant,
+                text: "Checking.".to_owned(),
+                phase: Some(super::ProviderMessagePhase::Commentary),
+            },
+            ProviderInputItem::FunctionCall {
+                call_id: "call_1".to_owned(),
+                name: "read".to_owned(),
+                arguments: r#"{"path":"README.md"}"#.to_owned(),
+            },
+            ProviderInputItem::FunctionCallOutput {
+                call_id: "call_1".to_owned(),
+                output: "contents".to_owned(),
+            },
+        ],
+        vec![ProviderTool {
+            name: "read".to_owned(),
+            description: "Read one file".to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+        }],
+    )
+    .expect("Anthropic request should validate");
+    let body: Value = serde_json::from_slice(&request.encode_body().expect("body should encode"))
+        .expect("Anthropic body should be JSON");
+    assert_eq!(body["model"], "qwen3.8-max");
+    assert_eq!(body["system"], "system guidance");
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["messages"][0]["content"][0]["type"], "text");
+    assert_eq!(body["messages"][0]["content"][1]["type"], "image");
+    assert_eq!(
+        body["messages"][0]["content"][1]["source"]["type"],
+        "base64"
+    );
+    assert_eq!(body["messages"][1]["role"], "assistant");
+    assert_eq!(body["messages"][1]["content"][0]["text"], "Checking.");
+    assert_eq!(body["messages"][1]["content"][1]["type"], "tool_use");
+    assert_eq!(
+        body["messages"][1]["content"][1]["input"]["path"],
+        "README.md"
+    );
+    assert_eq!(body["messages"][2]["role"], "user");
+    assert_eq!(body["messages"][2]["content"][0]["type"], "tool_result");
+    assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    assert_eq!(body["max_tokens"], 1_024);
+    assert_eq!(body["stream"], true);
+    assert!(body.get("stream_options").is_none());
+}
+
+#[test]
+fn chat_vision_and_deepseek_tool_replay_use_reviewed_compatibility_shapes() {
+    let image = morons_image::normalize_rgba(1, 1, vec![10, 20, 30, 255])
+        .expect("fixture should normalize");
+    let vision = OpenCodeResponseRequest::new(
+        [0x34; 16],
+        OpenCodeService::Go,
+        "glm-5.3-flash",
+        512,
+        1_024,
+        vec![ProviderInputItem::MultimodalMessage {
+            role: ProviderMessageRole::User,
+            parts: vec![ProviderContentPart::Image {
+                media_type: image.media_type,
+                width: image.width,
+                height: image.height,
+                bytes: image.bytes,
+            }],
+            phase: None,
+        }],
+        Vec::new(),
+    )
+    .expect("reviewed chat vision request should validate");
+    let body: Value = serde_json::from_slice(&vision.encode_body().expect("body should encode"))
+        .expect("chat body should be JSON");
+    assert_eq!(body["messages"][0]["content"][0]["type"], "image_url");
+    assert!(
+        body["messages"][0]["content"][0]["image_url"]["url"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("data:image/png;base64,"))
+    );
+
+    let deepseek = OpenCodeResponseRequest::new(
+        [0x35; 16],
+        OpenCodeService::Go,
+        "deepseek-v4-flash",
+        512,
+        1_024,
+        vec![ProviderInputItem::FunctionCall {
+            call_id: "call_1".to_owned(),
+            name: "read".to_owned(),
+            arguments: r#"{"path":"README.md"}"#.to_owned(),
+        }],
+        Vec::new(),
+    )
+    .expect("DeepSeek tool replay should validate");
+    let body: Value = serde_json::from_slice(&deepseek.encode_body().expect("body should encode"))
+        .expect("DeepSeek body should be JSON");
+    assert_eq!(body["messages"][0]["reasoning_content"], "");
+}
+
+#[test]
 fn opencode_session_header_is_stable_per_conversation_and_rotates_between_conversations() {
     let first = request_for_conversation([0x31; 16]).opencode_session_header();
     let retry = request_for_conversation([0x31; 16]).opencode_session_header();

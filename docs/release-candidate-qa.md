@@ -110,7 +110,8 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | MOD-04 | A saved model becomes the default for a newly created session and survives client and companion restart. |
 | MOD-05 | In a two-client test, a later selection in client A does not alter client B's already-open composer; after B opens or creates a session, B reloads the new global default. |
 | MOD-06 | Every selected/default model remains an available reviewed service/model pair; unavailable saved state falls back visibly. |
-| MOD-07 | `/model go glm` exposes reviewed Go `glm-5.3-flash` with the expected data-use disclosure and persists it as the global default. |
+| MOD-07 | `/model go glm` exposes reviewed Go `glm-5.3-flash` with the expected zero-retention disclosure and persists it as the global default. |
+| MOD-08 | The Go picker equals the intersection of the 35-entry reviewed snapshot and the current public catalog; Responses, Chat Completions, and Anthropic Messages entries disclose protocol revisions 1, 2, and 3, while contributor entries and entries lacking current privacy rows show their exact non-ZDR or undocumented policy labels. |
 
 ### Settings
 
@@ -140,7 +141,9 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-12 | Successful `web_search` returns bounded cited results when a key is available. Without a key, it fails as `CredentialNotConfigured` without network fallback. |
 | RUN-13 | A transcript exceeding 512 entries opens at its latest window; PageUp/wheel crosses older windows, Home reaches the first entry, PageDown returns through newer windows, and End restores current live output without unbounded rendering. |
 | RUN-14 | An explicit `MORONS_PYTHON` lacking Jupyter packages fails with actionable guidance naming `jupyter_client`, `ipykernel`, and `MORONS_PYTHON`. |
-| RUN-15 | Go `glm-5.3-flash` completes plain text and a natural `read` tool loop through Chat Completions, with bounded reasoning ignored and no duplicate terminal output. |
+| RUN-15 | Go `glm-5.3-flash` completes plain text, a normalized image request, and a natural `read` tool loop through Chat Completions, with bounded reasoning ignored and no duplicate terminal output. |
+| RUN-16 | Go `qwen3.8-max` completes plain text and a natural `read` tool loop through Anthropic Messages revision 3; usage, thinking suppression, exact tool arguments, fixed route, `x-api-key` scoping, and `x-opencode-session` affinity are correct. |
+| RUN-17 | Representative current Go models from every protocol group complete a plain response without fallback; one Responses, one Chat Completions, and one Anthropic Messages model complete tool continuations. Catalog-only models either complete on their pinned reviewed route or surface the exact upstream rejection without retry or substitution. |
 
 ### Images
 
@@ -148,8 +151,8 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | --- | --- |
 | IMG-01 | A valid PNG pasted by explicit path becomes one atomic sanitized filename marker. |
 | IMG-02 | Duplicate names receive stable suffixes and unsupported/malformed images fail without corrupting the draft. |
-| IMG-03 | Go/Grok rejects image submission clearly while retaining the draft and attachment. |
-| IMG-04 | Go/Luna accepts the same normalized image and completes an image-aware response. |
+| IMG-03 | A reviewed text-only Go model such as `glm-5.3` rejects image submission clearly while retaining the draft and attachment. |
+| IMG-04 | Reviewed Go vision models on Responses, Chat Completions, and Anthropic Messages each accept the same normalized image and complete an image-aware response. |
 | IMG-05 | A Luna `read` of an image produces bounded dimensions, type, byte count, and a usable multimodal result. |
 
 ### Cancellation, recovery, and terminal behavior

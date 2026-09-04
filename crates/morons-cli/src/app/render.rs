@@ -994,6 +994,8 @@ fn active_work_label(session: &SessionView) -> &'static str {
 const fn training_label(training: OpenCodeModelTrainingUse) -> &'static str {
     match training {
         OpenCodeModelTrainingUse::NotUsed => "not used",
+        OpenCodeModelTrainingUse::MayUsePromptsAndCompletions => "may use prompts/completions",
+        OpenCodeModelTrainingUse::NotDocumented => "not documented",
     }
 }
 
@@ -1001,5 +1003,7 @@ const fn retention_label(retention: OpenCodeModelRetention) -> &'static str {
     match retention {
         OpenCodeModelRetention::None => "none",
         OpenCodeModelRetention::UpToThirtyDays => "up to 30 days",
+        OpenCodeModelRetention::NotZeroDataRetention => "not ZDR",
+        OpenCodeModelRetention::NotDocumented => "not documented",
     }
 }

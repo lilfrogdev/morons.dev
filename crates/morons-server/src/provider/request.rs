@@ -260,6 +260,7 @@ impl OpenCodeResponseRequest {
         let body = match self.model.protocol {
             ProviderProtocol::Responses => self.encode_responses_body()?,
             ProviderProtocol::ChatCompletions => self.encode_chat_completions_body()?,
+            ProviderProtocol::AnthropicMessages => self.encode_anthropic_messages_body()?,
         };
         if body.len() > MAX_PROVIDER_REQUEST_BYTES {
             return Err(ProviderError::InvalidRequest);
@@ -288,7 +289,7 @@ impl OpenCodeResponseRequest {
     }
 
     fn encode_chat_completions_body(&self) -> Result<Vec<u8>, ProviderError> {
-        let messages = chat_messages(&self.input)?;
+        let messages = chat_messages(&self.input, self.model.id.starts_with("deepseek-"))?;
         let tools = self.tools.iter().map(ChatWireTool::from).collect();
         serde_json::to_vec(&ChatWireRequest {
             model: self.model.id,
@@ -299,6 +300,20 @@ impl OpenCodeResponseRequest {
             stream_options: ChatWireStreamOptions {
                 include_usage: true,
             },
+        })
+        .map_err(|_| ProviderError::InvalidRequest)
+    }
+
+    fn encode_anthropic_messages_body(&self) -> Result<Vec<u8>, ProviderError> {
+        let (system, messages) = anthropic_messages(&self.input)?;
+        let tools = self.tools.iter().map(AnthropicWireTool::from).collect();
+        serde_json::to_vec(&AnthropicWireRequest {
+            model: self.model.id,
+            system,
+            messages,
+            tools,
+            maximum_output_tokens: self.maximum_output_tokens,
+            stream: true,
         })
         .map_err(|_| ProviderError::InvalidRequest)
     }
@@ -417,7 +432,7 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
                 encrypted_content,
             } => {
                 validate_identifier(id, MAX_PROVIDER_CALL_ID_BYTES)?;
-                if model.protocol == ProviderProtocol::ChatCompletions
+                if model.protocol != ProviderProtocol::Responses
                     || (summaries.is_empty() && encrypted_content.is_none())
                     || (encrypted_content.is_some() && !model.capabilities.reasoning_continuation)
                     || summaries.len() > MAX_REASONING_SUMMARIES
@@ -724,11 +739,32 @@ struct ChatWireStreamOptions {
 #[derive(Serialize)]
 struct ChatWireMessage<'a> {
     role: &'static str,
-    content: Option<&'a str>,
+    content: Option<ChatWireMessageContent<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<ChatWireToolCall<'a>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ChatWireMessageContent<'a> {
+    Text(&'a str),
+    Parts(Vec<ChatWireContentPart<'a>>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ChatWireContentPart<'a> {
+    Text { text: &'a str },
+    ImageUrl { image_url: ChatWireImageUrl },
+}
+
+#[derive(Serialize)]
+struct ChatWireImageUrl {
+    url: String,
 }
 
 #[derive(Serialize)]
@@ -745,7 +781,10 @@ struct ChatWireToolCallFunction<'a> {
     arguments: &'a str,
 }
 
-fn chat_messages(input: &[ProviderInputItem]) -> Result<Vec<ChatWireMessage<'_>>, ProviderError> {
+fn chat_messages(
+    input: &[ProviderInputItem],
+    requires_reasoning_content: bool,
+) -> Result<Vec<ChatWireMessage<'_>>, ProviderError> {
     let mut messages = Vec::new();
     let mut index = 0_usize;
     while index < input.len() {
@@ -761,9 +800,42 @@ fn chat_messages(input: &[ProviderInputItem]) -> Result<Vec<ChatWireMessage<'_>>
                         ProviderMessageRole::User => "user",
                         ProviderMessageRole::Assistant => "assistant",
                     },
-                    content: Some(text),
+                    content: Some(ChatWireMessageContent::Text(text)),
                     tool_calls: None,
                     tool_call_id: None,
+                    reasoning_content: (*role == ProviderMessageRole::Assistant
+                        && requires_reasoning_content)
+                        .then_some(""),
+                });
+                index += 1;
+            }
+            ProviderInputItem::MultimodalMessage { parts, .. } => {
+                messages.push(ChatWireMessage {
+                    role: "user",
+                    content: Some(ChatWireMessageContent::Parts(
+                        parts
+                            .iter()
+                            .map(|part| match part {
+                                ProviderContentPart::Text(text) => {
+                                    ChatWireContentPart::Text { text }
+                                }
+                                ProviderContentPart::Image {
+                                    media_type, bytes, ..
+                                } => ChatWireContentPart::ImageUrl {
+                                    image_url: ChatWireImageUrl {
+                                        url: format!(
+                                            "data:{};base64,{}",
+                                            media_type.as_str(),
+                                            morons_image::encode_base64(bytes)
+                                        ),
+                                    },
+                                },
+                            })
+                            .collect(),
+                    )),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    reasoning_content: None,
                 });
                 index += 1;
             }
@@ -787,20 +859,20 @@ fn chat_messages(input: &[ProviderInputItem]) -> Result<Vec<ChatWireMessage<'_>>
                     content: None,
                     tool_calls: Some(calls),
                     tool_call_id: None,
+                    reasoning_content: requires_reasoning_content.then_some(""),
                 });
             }
             ProviderInputItem::FunctionCallOutput { call_id, output } => {
                 messages.push(ChatWireMessage {
                     role: "tool",
-                    content: Some(output),
+                    content: Some(ChatWireMessageContent::Text(output)),
                     tool_calls: None,
                     tool_call_id: Some(call_id),
+                    reasoning_content: None,
                 });
                 index += 1;
             }
-            ProviderInputItem::MultimodalMessage { .. } | ProviderInputItem::Reasoning { .. } => {
-                return Err(ProviderError::InvalidRequest);
-            }
+            ProviderInputItem::Reasoning { .. } => return Err(ProviderError::InvalidRequest),
         }
     }
     Ok(messages)
@@ -831,6 +903,194 @@ impl<'a> From<&'a ProviderTool> for ChatWireTool<'a> {
             },
         }
     }
+}
+
+#[derive(Serialize)]
+struct AnthropicWireRequest<'a> {
+    model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
+    messages: Vec<AnthropicWireMessage<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<AnthropicWireTool<'a>>,
+    #[serde(rename = "max_tokens")]
+    maximum_output_tokens: u32,
+    stream: bool,
+}
+
+#[derive(Serialize)]
+struct AnthropicWireMessage<'a> {
+    role: &'static str,
+    content: Vec<AnthropicWireContent<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicWireContent<'a> {
+    Text {
+        text: &'a str,
+    },
+    Image {
+        source: AnthropicWireImageSource,
+    },
+    ToolUse {
+        id: &'a str,
+        name: &'a str,
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: &'a str,
+        content: &'a str,
+    },
+}
+
+#[derive(Serialize)]
+struct AnthropicWireImageSource {
+    #[serde(rename = "type")]
+    source_type: &'static str,
+    media_type: &'static str,
+    data: String,
+}
+
+#[derive(Serialize)]
+struct AnthropicWireTool<'a> {
+    name: &'a str,
+    description: &'a str,
+    input_schema: &'a Value,
+}
+
+impl<'a> From<&'a ProviderTool> for AnthropicWireTool<'a> {
+    fn from(tool: &'a ProviderTool) -> Self {
+        Self {
+            name: &tool.name,
+            description: &tool.description,
+            input_schema: &tool.parameters,
+        }
+    }
+}
+
+fn anthropic_messages(
+    input: &[ProviderInputItem],
+) -> Result<(Option<String>, Vec<AnthropicWireMessage<'_>>), ProviderError> {
+    let mut system_parts = Vec::new();
+    let mut messages = Vec::new();
+    let mut index = 0_usize;
+    while index < input.len() {
+        match &input[index] {
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::Developer,
+                text,
+                phase: _,
+            } => {
+                if !messages.is_empty() {
+                    return Err(ProviderError::InvalidRequest);
+                }
+                system_parts.push(text.as_str());
+                index += 1;
+            }
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::User,
+                text,
+                phase: _,
+            } => {
+                messages.push(AnthropicWireMessage {
+                    role: "user",
+                    content: vec![AnthropicWireContent::Text { text }],
+                });
+                index += 1;
+            }
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::Assistant,
+                text,
+                phase: _,
+            } => {
+                let mut content = vec![AnthropicWireContent::Text { text }];
+                index += 1;
+                append_anthropic_tool_uses(input, &mut index, &mut content)?;
+                messages.push(AnthropicWireMessage {
+                    role: "assistant",
+                    content,
+                });
+            }
+            ProviderInputItem::MultimodalMessage { parts, .. } => {
+                let content = parts
+                    .iter()
+                    .map(|part| match part {
+                        ProviderContentPart::Text(text) => AnthropicWireContent::Text { text },
+                        ProviderContentPart::Image {
+                            media_type, bytes, ..
+                        } => AnthropicWireContent::Image {
+                            source: AnthropicWireImageSource {
+                                source_type: "base64",
+                                media_type: media_type.as_str(),
+                                data: morons_image::encode_base64(bytes),
+                            },
+                        },
+                    })
+                    .collect();
+                messages.push(AnthropicWireMessage {
+                    role: "user",
+                    content,
+                });
+                index += 1;
+            }
+            ProviderInputItem::FunctionCall { .. } => {
+                let mut content = Vec::new();
+                append_anthropic_tool_uses(input, &mut index, &mut content)?;
+                messages.push(AnthropicWireMessage {
+                    role: "assistant",
+                    content,
+                });
+            }
+            ProviderInputItem::FunctionCallOutput { .. } => {
+                let mut content = Vec::new();
+                while let Some(ProviderInputItem::FunctionCallOutput { call_id, output }) =
+                    input.get(index)
+                {
+                    content.push(AnthropicWireContent::ToolResult {
+                        tool_use_id: call_id,
+                        content: output,
+                    });
+                    index += 1;
+                }
+                messages.push(AnthropicWireMessage {
+                    role: "user",
+                    content,
+                });
+            }
+            ProviderInputItem::Reasoning { .. } => return Err(ProviderError::InvalidRequest),
+        }
+    }
+    if messages.is_empty() {
+        return Err(ProviderError::InvalidRequest);
+    }
+    Ok((
+        (!system_parts.is_empty()).then(|| system_parts.join("\n\n")),
+        messages,
+    ))
+}
+
+fn append_anthropic_tool_uses<'a>(
+    input: &'a [ProviderInputItem],
+    index: &mut usize,
+    content: &mut Vec<AnthropicWireContent<'a>>,
+) -> Result<(), ProviderError> {
+    while let Some(ProviderInputItem::FunctionCall {
+        call_id,
+        name,
+        arguments,
+    }) = input.get(*index)
+    {
+        let arguments =
+            parse_strict_value(arguments.as_bytes()).map_err(|_| ProviderError::InvalidRequest)?;
+        content.push(AnthropicWireContent::ToolUse {
+            id: call_id,
+            name,
+            input: arguments,
+        });
+        *index += 1;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

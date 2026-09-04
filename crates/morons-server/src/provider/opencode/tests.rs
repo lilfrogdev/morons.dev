@@ -12,8 +12,9 @@ use tokio::{
 use zeroize::Zeroizing;
 
 use super::{
-    EndpointSet, GO_CATALOG_URI, GO_CHAT_INFERENCE_URI, GO_INFERENCE_URI, OpenCodeClient,
-    ZEN_CATALOG_URI, ZEN_INFERENCE_URI, authorization_header,
+    EndpointSet, GO_ANTHROPIC_INFERENCE_URI, GO_CATALOG_URI, GO_CHAT_INFERENCE_URI,
+    GO_INFERENCE_URI, OpenCodeClient, ZEN_CATALOG_URI, ZEN_INFERENCE_URI, api_key_header,
+    authorization_header,
 };
 use crate::provider::{
     OpenCodeResponseRequest, OpenCodeService, ProviderError, ProviderInputItem,
@@ -67,12 +68,30 @@ fn chat_request() -> OpenCodeResponseRequest {
     .expect("chat request should be valid")
 }
 
+fn anthropic_request() -> OpenCodeResponseRequest {
+    OpenCodeResponseRequest::new(
+        [0x41; 16],
+        OpenCodeService::Go,
+        "qwen3.8-max",
+        32,
+        128,
+        vec![ProviderInputItem::Message {
+            role: ProviderMessageRole::User,
+            text: "hello".to_owned(),
+            phase: None,
+        }],
+        Vec::new(),
+    )
+    .expect("Anthropic request should be valid")
+}
+
 fn endpoints(base: &str) -> EndpointSet {
     EndpointSet {
         zen_inference: format!("{base}/zen/v1/responses"),
         zen_catalog: format!("{base}/zen/v1/models"),
         go_inference: format!("{base}/zen/go/v1/responses"),
         go_chat_inference: format!("{base}/zen/go/v1/chat/completions"),
+        go_anthropic_inference: format!("{base}/zen/go/v1/messages"),
         go_catalog: format!("{base}/zen/go/v1/models"),
     }
 }
@@ -190,6 +209,24 @@ fn successful_stream() -> Vec<u8> {
     response("200 OK", "text/event-stream", body.as_bytes())
 }
 
+fn successful_anthropic_stream() -> Vec<u8> {
+    let body = concat!(
+        "event: message_start\n",
+        "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"qwen3.8-max\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n",
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "event: message_delta\n",
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n",
+        "event: message_stop\n",
+        "data: {\"type\":\"message_stop\"}\n\n"
+    );
+    response("200 OK", "text/event-stream", body.as_bytes())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn inference_uses_the_fixed_service_path_and_scopes_authorization() {
     let (base, captured, server) = spawn_single_response(successful_stream()).await;
@@ -273,6 +310,45 @@ async fn inference_uses_the_fixed_service_path_and_scopes_authorization() {
     assert!(body.get("input").is_none());
     assert!(body.get("store").is_none());
     server.await.expect("Go chat test server should finish");
+
+    let (base, captured, server) = spawn_single_response(successful_anthropic_stream()).await;
+    let client = OpenCodeClient::for_test(endpoints(&base));
+    let (_handle, mut cancellation) = provider_cancellation();
+    let outcome = client
+        .execute_for_test(
+            TEST_KEY.as_bytes(),
+            &anthropic_request(),
+            &mut cancellation,
+            |_| {},
+        )
+        .await
+        .expect("Go Anthropic Messages inference should complete");
+    assert_eq!(outcome.provider_response_id, "msg_1");
+    let captured = captured
+        .await
+        .expect("Anthropic request should be captured");
+    assert_eq!(captured.path, "/zen/go/v1/messages");
+    assert!(!captured.headers.contains_key("authorization"));
+    assert_eq!(
+        captured.headers.get("x-api-key").map(String::as_str),
+        Some(TEST_KEY)
+    );
+    assert_eq!(
+        captured
+            .headers
+            .get("anthropic-version")
+            .map(String::as_str),
+        Some("2023-06-01")
+    );
+    let body: Value = serde_json::from_slice(&captured.body).expect("body should be JSON");
+    assert_eq!(body["model"], "qwen3.8-max");
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["max_tokens"], 128);
+    assert_eq!(body["stream"], true);
+    assert!(body.get("stream_options").is_none());
+    server
+        .await
+        .expect("Go Anthropic Messages test server should finish");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -473,12 +549,16 @@ fn production_endpoints_are_exact_and_non_configurable() {
         .expect("test authorization header should be valid");
     assert!(authorization.is_sensitive());
     assert!(!format!("{authorization:?}").contains(TEST_KEY));
+    let api_key = api_key_header(TEST_KEY.as_bytes()).expect("API key header should be valid");
+    assert!(api_key.is_sensitive());
+    assert!(!format!("{api_key:?}").contains(TEST_KEY));
 
     let endpoints = EndpointSet::production();
     assert_eq!(endpoints.zen_inference, ZEN_INFERENCE_URI);
     assert_eq!(endpoints.zen_catalog, ZEN_CATALOG_URI);
     assert_eq!(endpoints.go_inference, GO_INFERENCE_URI);
     assert_eq!(endpoints.go_chat_inference, GO_CHAT_INFERENCE_URI);
+    assert_eq!(endpoints.go_anthropic_inference, GO_ANTHROPIC_INFERENCE_URI);
     assert_eq!(endpoints.go_catalog, GO_CATALOG_URI);
 }
 
@@ -599,4 +679,12 @@ async fn live_opencode_go_chat_completions_contract() {
     let api_key = read_live_api_key();
     let client = OpenCodeClient::for_live_test();
     run_live_contract_case(&client, &api_key, OpenCodeService::Go, "glm-5.3-flash").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a real OpenCode Go key on stdin and makes one billable request"]
+async fn live_opencode_go_anthropic_messages_contract() {
+    let api_key = read_live_api_key();
+    let client = OpenCodeClient::for_live_test();
+    run_live_contract_case(&client, &api_key, OpenCodeService::Go, "qwen3.8-max").await;
 }

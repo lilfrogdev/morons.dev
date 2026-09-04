@@ -13,7 +13,7 @@ fn complete_text_stream_is_normalized_with_usage() {
     let mut decoder = decoder();
     let stream = [
         record(
-            r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"bounded thought"},"finish_reason":null,"logprobs":null}],"usage":null}"#,
+            r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"bounded thought","reasoning_details":[{"type":"reasoning.text","text":"opaque thought"}]},"finish_reason":null,"logprobs":null}],"usage":null}"#,
         ),
         record(
             r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"content":"hel"},"finish_reason":null,"logprobs":null}],"usage":null}"#,
@@ -22,7 +22,10 @@ fn complete_text_stream_is_normalized_with_usage() {
             r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop","logprobs":null}],"usage":null}"#,
         ),
         record(
-            r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":3},"completion_tokens_details":{"reasoning_tokens":1}}}"#,
+            r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}"#,
+        ),
+        record(
+            r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":3,"cache_write_tokens":2},"completion_tokens_details":{"reasoning_tokens":1},"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":7}}"#,
         ),
         record("[DONE]"),
         record(" [DONE] "),
@@ -64,6 +67,7 @@ fn complete_text_stream_is_normalized_with_usage() {
     ));
     assert_eq!(outcome.usage.input_tokens, 10);
     assert_eq!(outcome.usage.cached_input_tokens, 3);
+    assert_eq!(outcome.usage.cache_write_input_tokens, 2);
     assert_eq!(outcome.usage.output_tokens, 4);
     assert_eq!(outcome.usage.reasoning_output_tokens, 1);
     assert_eq!(outcome.usage.total_tokens, 14);
@@ -116,7 +120,7 @@ fn malformed_incomplete_and_oversized_streams_fail_closed() {
         .push(
             [
                 record(
-                    r#"{"id":"chat_compatible","request_id":"request_compatible","created":3,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0}}}"#,
+                    r#"{"id":"chat_compatible","request_id":"request_compatible","created":3,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":null,"audio_tokens":null},"completion_tokens_details":{"reasoning_tokens":null,"audio_tokens":null,"accepted_prediction_tokens":null,"rejected_prediction_tokens":null}}}"#,
                 ),
                 record("[DONE]"),
             ]
@@ -138,6 +142,38 @@ fn malformed_incomplete_and_oversized_streams_fail_closed() {
                     ),
                     record("[DONE]"),
                     record(r#"{"choices":[],"cost":"not-a-decimal"}"#),
+                ]
+                .concat()
+                .as_bytes(),
+            )
+            .err(),
+        Some(ProviderError::MalformedResponse)
+    );
+
+    let mut inconsistent_cache_usage = decoder();
+    assert_eq!(
+        inconsistent_cache_usage
+            .push(
+                record(
+                    r#"{"id":"chat_cache","object":"chat.completion.chunk","created":4,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"prompt_tokens_details":{"cached_tokens":1},"prompt_cache_hit_tokens":2,"prompt_cache_miss_tokens":1}}"#,
+                )
+                .as_bytes(),
+            )
+            .err(),
+        Some(ProviderError::MalformedResponse)
+    );
+
+    let mut contradictory_usage = decoder();
+    assert_eq!(
+        contradictory_usage
+            .push(
+                [
+                    record(
+                        r#"{"id":"chat_usage","object":"chat.completion.chunk","created":4,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                    ),
+                    record(
+                        r#"{"id":"chat_usage","object":"chat.completion.chunk","created":4,"model":"glm-5.3-flash","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}"#,
+                    ),
                 ]
                 .concat()
                 .as_bytes(),
