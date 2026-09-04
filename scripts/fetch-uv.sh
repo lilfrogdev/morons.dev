@@ -32,7 +32,9 @@ case "$target" in
 esac
 
 command -v curl >/dev/null 2>&1 || fail "curl is required"
-command -v tar >/dev/null 2>&1 || fail "tar is required"
+if [[ "$extension" != zip ]]; then
+    command -v tar >/dev/null 2>&1 || fail "tar is required"
+fi
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/morons-uv.XXXXXX")
 trap 'rm -rf -- "$temporary"' EXIT
@@ -42,10 +44,17 @@ curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
     "$url" -o "$temporary/$archive"
 actual_sha=$(sha256_file "$temporary/$archive")
 [[ "$actual_sha" = "$archive_sha" ]] || fail "archive checksum mismatch for $target"
-tar -xf "$temporary/$archive" -C "$temporary"
 if [[ "$extension" = zip ]]; then
+    if command -v unzip >/dev/null 2>&1; then
+        unzip -q "$temporary/$archive" -d "$temporary"
+    elif command -v 7z >/dev/null 2>&1; then
+        7z x -y -o"$temporary" "$temporary/$archive" >/dev/null
+    else
+        fail "unzip or 7z is required for Windows uv assets"
+    fi
     source="$temporary/$executable"
 else
+    tar -xf "$temporary/$archive" -C "$temporary"
     source="$temporary/uv-$target/$executable"
 fi
 [[ -f "$source" && ! -L "$source" ]] || fail "archive does not contain the expected uv executable"
