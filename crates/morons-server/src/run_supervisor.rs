@@ -65,12 +65,13 @@ impl RunSupervisor {
         provider: Arc<OpenCodeProvider>,
         session_events: Arc<SessionEventHub>,
     ) -> Arc<Self> {
+        let managed_python_root = sessions.managed_python_root();
         Self::with_tools(
             sessions,
             provider,
             session_events,
             WebSearchToolExecutor::new(),
-            IpythonSupervisor::new(),
+            IpythonSupervisor::new(managed_python_root),
         )
     }
 
@@ -86,7 +87,7 @@ impl RunSupervisor {
             provider,
             session_events,
             WebSearchToolExecutor::for_test(search_origin),
-            IpythonSupervisor::new(),
+            IpythonSupervisor::for_test(),
         )
     }
 

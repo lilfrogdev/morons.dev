@@ -1,0 +1,4 @@
+crates/morons-server/runtime/* text eol=lf
+scripts/fetch-uv.sh text eol=lf
+scripts/package-release.sh text eol=lf
+.github/workflows/release.yml text eol=lf

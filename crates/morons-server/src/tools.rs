@@ -603,7 +603,7 @@ impl ToolErrorKind {
             Self::InvalidResponse => "search service returned an invalid response",
             Self::CredentialNotConfigured => "search credential is not configured",
             Self::KernelUnavailable => {
-                "IPython kernel unavailable; install jupyter_client and ipykernel or set MORONS_PYTHON"
+                "IPython runtime unavailable; reinstall the matching Morons package, retry first setup with network access, or set MORONS_PYTHON to an expert-managed Python with jupyter_client and ipykernel"
             }
             Self::ExecutionFailed => "IPython cell failed",
             Self::ImageInputUnsupported => "selected model does not support image input",

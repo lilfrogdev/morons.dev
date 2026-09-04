@@ -39,8 +39,9 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Cancellation, timeout, output exhaustion, kernel restart, graceful shutdown, and client-requested stop terminate the complete process tree owned by the operation. Morons must not report termination until controlled descendants are known to have stopped or the result is explicitly uncertain.
 - Process-tree control and bounded pipes are lifecycle controls, not containment. Effects completed before termination remain applied.
 - Standard input remains closed for model-selected and command-mode subprocesses. Morons exposes no user-facing subprocess PTY, interactive terminal, terminal emulator, or SSH surface.
-- The persistent IPython kernel is one temporary runtime per active session, launched through the configured Python runtime's `jupyter_client` and `ipykernel`. At most four kernels remain live; least-recently-used idle kernels are evicted. Kernel memory is never authoritative and may be lost on cancellation, limit exhaustion, eviction, failure, or restart.
-- Morons injects no helper API or generic privileged server proxy into IPython kernels. Model-facing Morons tools remain separate bounded typed tool calls.
+- The persistent IPython kernel is one temporary runtime per active session. By default it uses the versioned Morons-owned Python and hash-locked Jupyter dependencies prepared by the exact checksummed packaged `morons-uv`; `MORONS_PYTHON` is an explicit expert override. At most four kernels remain live; least-recently-used idle kernels are evicted. Kernel memory is never authoritative and may be lost on cancellation, limit exhaustion, eviction, failure, or restart.
+- Managed Python preparation is locked, staged, atomically published, cancellable, time-bounded, isolated from repository and user Python configuration, and separate from credentials, SQLite, attachments, system Python, and user virtual environments. A partial or invalid stage is never executable as the active runtime.
+- Morons injects no helper API, managed provider credential, or generic privileged server proxy into IPython kernels. Model-facing Morons tools remain separate bounded typed tool calls.
 
 ## Subagents
 

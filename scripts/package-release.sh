@@ -78,10 +78,20 @@ rm -f -- "$archive" "$checksum"
 mkdir -p "$stage"
 install -m 755 "$client" "$stage/morons$executable_suffix"
 install -m 755 "$server" "$stage/morons-server$executable_suffix"
+./scripts/fetch-uv.sh "$target" "$stage/morons-uv$executable_suffix" >/dev/null
+verify_binary_target "$stage/morons-uv$executable_suffix" "$target"
 install -m 644 README.md LICENSE "$stage/"
+mkdir -p "$stage/THIRD_PARTY_LICENSES/uv"
+install -m 644 third-party/uv/LICENSE-APACHE third-party/uv/LICENSE-MIT \
+    "$stage/THIRD_PARTY_LICENSES/uv/"
 
 client_sha=$(sha256_file "$stage/morons$executable_suffix")
 server_sha=$(sha256_file "$stage/morons-server$executable_suffix")
+uv_sha=$(sha256_file "$stage/morons-uv$executable_suffix")
+uv_apache_license_sha=$(sha256_file "$stage/THIRD_PARTY_LICENSES/uv/LICENSE-APACHE")
+uv_mit_license_sha=$(sha256_file "$stage/THIRD_PARTY_LICENSES/uv/LICENSE-MIT")
+uv_version=$(awk '$1 == "version" { print $2 }' crates/morons-server/runtime/uv-assets.txt)
+[[ -n "$uv_version" ]] || fail "managed Python uv version is unavailable"
 cat >"$stage/MANIFEST.txt" <<MANIFEST
 name=morons.dev
 version=$version
@@ -89,6 +99,10 @@ target=$target
 commit=$commit
 morons_sha256=$client_sha
 morons_server_sha256=$server_sha
+managed_python_uv_version=$uv_version
+morons_uv_sha256=$uv_sha
+uv_license_apache_sha256=$uv_apache_license_sha
+uv_license_mit_sha256=$uv_mit_license_sha
 MANIFEST
 
 COPYFILE_DISABLE=1 tar -C "$output_dir" -czf "$archive" "$package_name"

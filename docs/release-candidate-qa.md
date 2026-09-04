@@ -22,7 +22,7 @@ From the exact clean candidate checkout, build and package one reviewed target w
 ./scripts/package-release.sh <target-triple> <output-directory>
 ```
 
-The helper refuses a dirty checkout, builds both companions with Cargo's lockfile, verifies their binary formats against the target, writes an internal manifest with both binary hashes, and emits an archive plus SHA-256 sidecar.
+The helper refuses a dirty checkout, builds the client and server with Cargo's lockfile, downloads only the pinned target-specific uv asset, verifies all three binary formats and the reviewed uv checksum, records all three hashes, and emits an archive plus SHA-256 sidecar.
 
 Record these values before starting:
 
@@ -31,10 +31,10 @@ Record these values before starting:
 - archive filename and SHA-256 digest;
 - host operating system and native processor architecture;
 - Herdr pane identifier;
-- Python executable and `jupyter_client`/`ipykernel` versions;
+- managed Python, uv, `jupyter_client`, and `ipykernel` versions observed after first setup;
 - whether a Brave Search key is available.
 
-Verify that the source checkout is clean and that the archive digest matches the candidate manifest. Extract into a new directory and verify every manifest entry, including matching `morons` and `morons-server` executables. On Unix, both executables must have executable mode. Do not add the extracted directory to `PATH` for this test.
+Verify that the source checkout is clean and that the archive digest matches the candidate manifest. Extract into a new directory and verify every manifest entry, including matching `morons`, `morons-server`, and `morons-uv` executables plus both uv license files. On Unix, all three executables must have executable mode. Do not add the extracted directory to `PATH` for this test.
 
 Create isolated state from a Bash-compatible shell:
 
@@ -53,9 +53,9 @@ When invoked, include `QA-SKILL-OK` in the answer.
 SKILL
 ```
 
-Set `MORONS_PYTHON` to a reviewed Python executable containing `jupyter_client` and `ipykernel`. Preserve the ordinary `PATH` and development environment; do not use `env -i`. If testing successful web search, set `BRAVE_SEARCH_API_KEY` only in the environment inherited by the companion and do not print it.
+Leave `MORONS_PYTHON` unset for the managed-runtime checks. Preserve the ordinary `PATH` and development environment; do not use `env -i`. If testing successful web search, set `BRAVE_SEARCH_API_KEY` only in the environment inherited by the companion and do not print it.
 
-Launch the extracted `morons` from `QA_REPO` in a Herdr pane with `HOME=QA_HOME` and `MORONS_PYTHON` set on that process. Herdr should only send keys/text and read the visible pane. Long pasted prompts should use bracketed paste. Use `;`, not `&&`, when the pane shell is Nu.
+Launch the extracted `morons` from `QA_REPO` in a Herdr pane with `HOME=QA_HOME`. Herdr should only send keys/text and read the visible pane. Long pasted prompts should use bracketed paste. Use `;`, not `&&`, when the pane shell is Nu.
 
 ## Checklist
 
@@ -71,6 +71,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | PKG-04 | A copied client without its sibling fails before the TUI with a categorized, actionable, redacted diagnostic. |
 | PKG-05 | `Ctrl+K` configures the credential without echoing or later displaying any key material. |
 | PKG-06 | `/help` repeats the trust posture, commands, cancellation, and session controls. |
+| PKG-07 | The packaged `morons-uv` has the manifest digest and target format, reports uv 0.12.9, and both shipped uv license texts match the reviewed source. |
 
 ### Directory and session lifecycle
 
@@ -106,12 +107,13 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-05 | `!command` is durable and context-bearing; `!!command` is durable but excluded from later provider context. |
 | RUN-06 | `@qa-skill` invokes the exact project skill and returns `QA-SKILL-OK`; Tab completes only a visible exact skill match. |
 | RUN-07 | Two disjoint `task` children run concurrently, cannot recurse or use IPython, and return input-ordered bounded reports. |
-| RUN-08 | IPython evaluates a value, preserves a variable across cells/runs, starts in `QA_REPO`, and renders a traceback without ANSI fragments. |
-| RUN-09 | With a Python lacking Jupyter packages, IPython fails with guidance naming `jupyter_client`, `ipykernel`, and `MORONS_PYTHON`. |
+| RUN-08 | First IPython use automatically prepares Python 3.11.15 with `jupyter_client` 8.6.3 and `ipykernel` 6.30.1, evaluates a value, preserves it across cells/runs, starts in `QA_REPO`, and renders a traceback without ANSI fragments. |
+| RUN-09 | After successful setup, a companion restart reuses the validated runtime with network unavailable and without invoking `morons-uv`; a stale manifest is rejected and rebuilt under the lock when reviewed sources are available. |
 | RUN-10 | `/context` reports the reviewed model limit, threshold, reserves, and current checkpoint. |
 | RUN-11 | `/compact <instructions>` commits a bounded source-bound checkpoint and continues without deleting canonical history. |
 | RUN-12 | Successful `web_search` returns bounded cited results when a key is available. Without a key, it fails as `CredentialNotConfigured` without network fallback. |
 | RUN-13 | A transcript exceeding 512 entries opens at its latest window; PageUp/wheel crosses older windows, Home reaches the first entry, PageDown returns through newer windows, and End restores current live output without unbounded rendering. |
+| RUN-14 | An explicit `MORONS_PYTHON` lacking Jupyter packages fails with actionable guidance naming `jupyter_client`, `ipykernel`, and `MORONS_PYTHON`. |
 
 ### Images
 

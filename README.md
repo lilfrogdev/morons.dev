@@ -19,10 +19,10 @@ Requirements:
 - Rust 1.98 (selected by `rust-toolchain.toml`)
 - a Bash-compatible shell; Windows requires Git Bash or compatible Bash configuration
 - an OpenCode Zen or Go API key
-- Python with `jupyter_client` and `ipykernel` for the `ipython` tool (see setup below)
+- internet access for the first managed IPython setup and for `web_search`
 - `BRAVE_SEARCH_API_KEY` for `web_search`
 
-Build both packaged companions:
+Build the Rust client and server companion:
 
 ```sh
 cargo build --locked --release -p morons-cli -p morons-server
@@ -36,7 +36,7 @@ From a clean checkout, create a checksummed archive for the current Rust host ta
 
 Pass one of the six reviewed target triples as the first argument when its Rust target and linker are available.
 
-Keep the resulting `morons` and `morons-server` executables together. From a source checkout, change to the directory you want a new session to use and launch the client by path:
+Keep the resulting `morons`, `morons-server`, and `morons-uv` executables together. From a source checkout, change to the directory you want a new session to use and launch the client by path:
 
 ```sh
 cd /path/to/project
@@ -50,33 +50,19 @@ cd /path/to/project
 /path/to/extracted-morons-package/morons
 ```
 
-Before installing an archive, verify it against the release's `SHA256SUMS`. Keep both executables in one owner-controlled directory that is not writable by other users. You may add that directory to `PATH`, but invoke only `morons`; `morons-server` is an internal companion.
+Before installing an archive, verify it against the release's `SHA256SUMS`. Keep all three executables in one owner-controlled directory that is not writable by other users. You may add that directory to `PATH`, but invoke only `morons`; `morons-server` and `morons-uv` are internal companions.
 
-To update, stop the running companion with `Ctrl+S`, verify and extract the new archive, replace both executables before relaunching, and never mix companions from different versions. Database migrations are forward-only; downgrading an existing state directory is unsupported.
+To update, stop the running companion with `Ctrl+S`, verify and extract the new archive, replace all three executables before relaunching, and never mix companions from different versions. Database migrations are forward-only; downgrading an existing state directory is unsupported.
 
 On first launch, read and acknowledge the trusted-local authority notice. Configure the OpenCode credential with `Ctrl+K`. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
 
-### IPython setup
+### Managed IPython runtime
 
-Morons does not install or bundle a Python environment. The selected Python executable must provide `jupyter_client` and `ipykernel`. To keep these packages separate from a system Python, create a virtual environment yourself.
+Release archives include a checksummed `morons-uv` helper. On the first `ipython` call, the companion uses it to prepare Morons-owned Python 3.11.15 with hash-locked `jupyter_client` 8.6.3 and `ipykernel` 6.30.1. Initial setup requires internet access to the reviewed Python and PyPI sources. The versioned runtime and download cache live under `~/.morons/python` on macOS/Linux or `%LOCALAPPDATA%\\morons.dev\\python` on Windows; later use works without network access. Interrupted, stale, or invalid staging state is rebuilt under a process lock and never becomes the active runtime.
 
-macOS or Linux:
+Normal use does not require Python or `pip` to be installed. `MORONS_PYTHON` remains an expert override: when set before the companion starts, Morons bypasses managed setup and uses that executable, which must provide `jupyter_client` and `ipykernel`. Stop an existing companion with `Ctrl+S` before changing the override.
 
-```sh
-python3 -m venv "$HOME/.venvs/morons"
-"$HOME/.venvs/morons/bin/python" -m pip install jupyter_client ipykernel
-MORONS_PYTHON="$HOME/.venvs/morons/bin/python" ./target/release/morons
-```
-
-Windows from Git Bash:
-
-```sh
-py -m venv "$HOME/.venvs/morons"
-"$HOME/.venvs/morons/Scripts/python.exe" -m pip install jupyter_client ipykernel
-MORONS_PYTHON="$HOME/.venvs/morons/Scripts/python.exe" ./target/release/morons.exe
-```
-
-If `MORONS_PYTHON` is unset, Morons uses `python3` on macOS/Linux and `python` on Windows. The companion reads this setting when it starts; stop an existing companion with `Ctrl+S` before relaunching with a different Python executable.
+Direct source-tree binaries do not automatically download build companions. Maintainers can use `scripts/package-release.sh` to produce a complete local archive; developers intentionally testing an existing Python may continue to set `MORONS_PYTHON`.
 
 ## Interaction
 
