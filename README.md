@@ -75,7 +75,8 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `!!command`: execute Bash but exclude its command/result from model context
 - `/model [search]`: search available reviewed models and save one global default for every session
 - `/settings`: inspect typed global settings and choose whether task subagents inherit the parent model or use one exact reviewed model
-- `/login`: configure, replace, or remove the OpenCode API credential through hidden input (`Ctrl+K` shortcut)
+- `/login`: configure or replace the OpenCode API credential through hidden input (`Ctrl+K` shortcut)
+- `/logout`: remove the locally stored OpenCode credential after explicit confirmation
 - `/context`: inspect approximate context use, limits, reserves, and the latest checkpoint
 - `/compact [instructions]`: manually summarize an eligible old context prefix
 - `r` in the session browser: rename the selected durable session

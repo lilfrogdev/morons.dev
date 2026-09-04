@@ -69,7 +69,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | PKG-02 | `morons` discovers only its exact sibling `morons-server` and starts it automatically. |
 | PKG-03 | First launch shows the trusted-local authority notice before normal interaction. |
 | PKG-04 | A copied client without its sibling fails before the TUI with a categorized, actionable, redacted diagnostic. |
-| PKG-05 | `/login` configures, replaces, or removes the credential without echoing or later displaying key material; `Ctrl+K` opens the same flow as a shortcut. |
+| PKG-05 | `/login` configures or replaces the credential without echoing or later displaying key material; `Ctrl+K` opens the same flow as a shortcut. `/logout` requires confirmation and removes the observed credential generation without exposing key material. |
 | PKG-06 | `/help` repeats the trust posture, commands, cancellation, and session controls. |
 | PKG-07 | The packaged `morons-uv` has the manifest digest and target format, reports uv 0.12.9, and both shipped uv license texts match the reviewed source. |
 
