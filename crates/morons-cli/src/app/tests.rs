@@ -950,6 +950,77 @@ fn login_command_hides_credential_entry_and_emits_generation_bound_actions() {
 }
 
 #[test]
+fn logout_requires_confirmation_and_uses_the_observed_credential_generation() {
+    let (session, run) = fixture_session_and_run();
+    let mut app = AppState::new("test-server");
+    app.open_session(session, Vec::new(), vec![run], None, None)
+        .expect("session should open");
+    app.set_credential_status(OpenCodeCredentialStatus {
+        configured: true,
+        generation: 9,
+    });
+
+    app.handle_paste("/logout");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert!(app.prompt.is_empty());
+    assert!(matches!(
+        app.credential_dialog,
+        Some(CredentialDialog::ConfirmRemove)
+    ));
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("logout confirmation should render");
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("Log out of OpenCode"));
+    assert!(rendered.contains("Dispatched requests"));
+
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert!(app.credential_dialog.is_none());
+    app.handle_paste("/logout");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+        AppAction::RemoveCredential {
+            expected_generation: 9,
+        }
+    );
+    assert!(app.credential_dialog.is_none());
+
+    app.set_credential_status(OpenCodeCredentialStatus {
+        configured: false,
+        generation: 10,
+    });
+    app.handle_paste("/logout");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert!(app.credential_dialog.is_none());
+    assert_eq!(
+        app.status.first_line(),
+        "No OpenCode credential is configured"
+    );
+}
+
+#[test]
 fn credential_replacement_and_removal_use_observed_generation() {
     let mut app = AppState::new("test-server");
     app.set_credential_status(OpenCodeCredentialStatus {

@@ -553,7 +553,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             "↑↓ select · Enter open · n new · r rename · a archive · d delete archived · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
-            "Enter send · wheel/PgUp/PgDn scroll · Home/End · @ skill · /model · /settings · /login · /context · /compact · Esc sessions · Ctrl+X cancel"
+            "Enter send · wheel/PgUp/PgDn scroll · Home/End · @ skill · /model · /settings · /login · /logout · /context · /compact · Esc sessions · Ctrl+X cancel"
         }
     };
     let status = Line::from(vec![
@@ -843,7 +843,7 @@ fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: Informat
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure global subagent model · /login manage OpenCode credential · /context inspect · /compact [instructions] summarize · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure global subagent model · /login configure or replace the OpenCode credential · /logout remove it after confirmation · /context inspect · /compact [instructions] summarize · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             16,
         ),
@@ -892,7 +892,7 @@ fn render_credential_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &Credenti
         CredentialDialog::ChooseAction => (
             7,
             " OpenCode login ",
-            "A credential is configured.\n\nr replace · d remove · Esc cancel",
+            "A credential is configured.\n\nr replace · d log out · Esc cancel",
         ),
         CredentialDialog::Enter {
             replacing: true, ..
@@ -910,8 +910,8 @@ fn render_credential_dialog(frame: &mut Frame<'_>, area: Rect, dialog: &Credenti
         ),
         CredentialDialog::ConfirmRemove => (
             7,
-            " Remove OpenCode credential ",
-            "Remove the stored credential? Dispatched requests cannot be retracted.\n\ny remove · n cancel",
+            " Log out of OpenCode ",
+            "Remove the locally stored credential? Dispatched requests cannot be retracted.\n\ny log out · n/Esc cancel",
         ),
     };
     let width = area.width.min(68);

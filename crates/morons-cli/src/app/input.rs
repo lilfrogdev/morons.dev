@@ -448,6 +448,17 @@ impl AppState {
         }
     }
 
+    fn open_logout_dialog(&mut self) {
+        match self.credential {
+            Some(status) if status.configured => {
+                self.credential_dialog = Some(CredentialDialog::ConfirmRemove);
+                self.set_status("Confirm removing the local OpenCode credential");
+            }
+            Some(_) => self.set_status("No OpenCode credential is configured"),
+            None => self.set_status("Credential status is still loading"),
+        }
+    }
+
     fn handle_credential_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         if matches!(self.credential_dialog, Some(CredentialDialog::ChooseAction)) {
             return match code {
@@ -661,6 +672,11 @@ impl AppState {
         if prompt == "/login" {
             self.prompt.clear();
             self.open_credential_dialog();
+            return AppAction::None;
+        }
+        if prompt == "/logout" {
+            self.prompt.clear();
+            self.open_logout_dialog();
             return AppAction::None;
         }
         if prompt == "/settings" {
