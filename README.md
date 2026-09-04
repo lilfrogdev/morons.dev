@@ -50,7 +50,11 @@ cd /path/to/project
 /path/to/extracted-morons-package/morons
 ```
 
-On first launch, read and acknowledge the trusted-local authority notice. Configure the OpenCode credential with `Ctrl+K`.
+Before installing an archive, verify it against the release's `SHA256SUMS`. Keep both executables in one owner-controlled directory that is not writable by other users. You may add that directory to `PATH`, but invoke only `morons`; `morons-server` is an internal companion.
+
+To update, stop the running companion with `Ctrl+S`, verify and extract the new archive, replace both executables before relaunching, and never mix companions from different versions. Database migrations are forward-only; downgrading an existing state directory is unsupported.
+
+On first launch, read and acknowledge the trusted-local authority notice. Configure the OpenCode credential with `Ctrl+K`. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
 
 ### IPython setup
 
