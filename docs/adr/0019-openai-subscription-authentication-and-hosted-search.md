@@ -25,7 +25,20 @@ Pi is useful non-normative comparison: it currently implements browser and devic
 
 No reviewed OpenAI source found during this design establishes a general third-party native-client registration process or expressly authorizes an independent coding agent to reuse the Codex CLI client ID and private ChatGPT backend contract. Absence of a discovered document is not proof that no program exists, but it is insufficient authorization for Morons to ship the integration.
 
-A second policy issue is data use. OpenAI documents that ChatGPT-authenticated Codex follows the selected ChatGPT workspace and account controls. Personal ChatGPT data may be used to improve models when the account setting permits it, while business offerings have different defaults and controls. Morons cannot infer a fixed no-training guarantee merely from possession of an access token or an unverified plan claim.
+A second policy dimension is data use. OpenAI documents that ChatGPT-authenticated Codex follows the selected ChatGPT workspace and account controls. Personal ChatGPT data may be used to improve models when the account setting permits it, while business offerings have different defaults and controls. Morons cannot infer a fixed no-training guarantee merely from possession of an access token or an unverified plan claim.
+
+### Data-use product decision
+
+The owner approved support for reviewed providers and models that may use inputs or outputs for training and that may retain data on 2026-09-04. Training eligibility and non-zero retention are disclosed user routing preferences, not project-wide admission prohibitions or OpenAI implementation approval gates.
+
+Morons will add two independent typed global opt-in restrictions when the first relevant provider or model is implemented:
+
+- **Block training use**, disabled by default, permits only entries whose reviewed classification says content is not used for training.
+- **Require zero data retention**, disabled by default, permits only entries whose reviewed classification establishes zero data retention.
+
+With both restrictions disabled, neither possible training nor non-zero retention blocks an otherwise reviewed entry. A user may enable either restriction or both. The restrictions cannot establish a provider guarantee beyond the reviewed contract, cannot be changed by repositories or models, and never cause silent provider or model substitution.
+
+Once accepted and implemented, this decision supersedes ADR 0004's blanket exclusion of models documented as using prompts or completions for training. Every service/model/protocol combination still requires ordinary route, capability, limit, billing, policy, and live-qualification review.
 
 ## Approval gates
 
@@ -34,10 +47,9 @@ No implementation may begin, and Brave Search remains the only shipped search ad
 1. **OpenAI authorization:** OpenAI documentation or written authorization confirms that Morons may act as a native public OAuth client and invoke the intended ChatGPT subscription backend and hosted web-search capability.
 2. **Dedicated client identity:** Morons receives or registers its own reviewed public client ID, exact loopback redirect URI set, and originator/application identity. Morons will not ship Codex's `app_EMoamEEZ73f0CkXaXp7hrann`, Pi's identity, or another application's client ID.
 3. **Exact provider contract:** Authorization, token, JWKS, revocation, inference/search origins, paths, scopes, required headers, supported hosted-search models, rate limits, and response shapes are confirmed. Production routes remain hard-coded reviewed HTTPS values and cannot come from OIDC discovery, repository files, environment overrides, protocol input, model output, or remote catalogs.
-4. **Data-use decision:** The owner explicitly approves adding a reviewed `ChatGPT workspace/account controlled` data-use classification, including the possibility of training under personal-account settings, or supplies a provider contract that establishes a stricter class Morons can verify.
-5. **Product approval:** The owner approves this complete design, including the refresh uncertainty and logout behavior below.
+4. **Product approval:** The owner approves this complete design, including the refresh uncertainty and logout behavior below.
 
-Approval must identify the contract revision or dated correspondence being relied on. A successful experiment, another open-source client's behavior, or a token accepted by an endpoint is not approval.
+Approval for the OpenAI contract gates must identify the contract revision or dated correspondence being relied on. A successful experiment, another open-source client's behavior, or a token accepted by an endpoint is not approval. The data-use product decision above is already approved and does not satisfy or depend on those external contract gates.
 
 ## Proposed decision after approval
 
@@ -48,6 +60,8 @@ The first implementation supports **OpenAI ChatGPT subscription** as a distinct 
 OpenCode and OpenAI credential identities remain separate. `/login` becomes a typed provider chooser when more than one provider is supported. `/logout` lists configured providers when necessary and confirms one exact provider and observed identity generation. Existing OpenCode behavior and files remain backward compatible.
 
 A new typed `/settings` row selects the web-search service and exact reviewed search model. Merely logging in does not express a model or billing preference. Migration retains Brave as the effective adapter until the owner deliberately selects an approved OpenAI pair. No catalog ordering, repository setting, prompt, skill, or model call can make that selection. The eventual removal of Brave requires a later release decision after OpenAI search is qualified.
+
+The two global data-use restrictions apply consistently to root, subagent, compaction, and hosted-search selections. Both are disabled by default. **Block training use** makes training-eligible or unverifiably account-controlled entries unavailable for new selection. **Require zero data retention** independently makes entries with non-zero or unverifiable retention unavailable. An incompatible dispatch is rejected without fallback. If a saved exact selection becomes incompatible after the user enables either restriction, it remains visible as blocked until the user changes the selection or restriction; Morons does not rewrite it silently.
 
 ### Login flow
 
@@ -98,7 +112,7 @@ Local logout is not conditional on successful remote revocation. Once accepted, 
 
 ### Hosted web search
 
-The approved adapter uses one exact reviewed OpenAI subscription service/model/protocol entry selected through `/settings`. Every search result records and displays that selection and its data-use classification. Unavailable or unauthorized selection fails without fallback.
+The approved adapter uses one exact reviewed OpenAI subscription service/model/protocol entry selected through `/settings` and permitted by the current data-use restrictions. Every search result records and displays that selection and its data-use classification. Unavailable, unauthorized, or preference-incompatible selection fails without fallback.
 
 Each call sends only the bounded search query and fixed server-owned search instructions to the fixed OpenAI hosted-search route. It does not send the parent transcript, selected directory, attachments, skill body, command output, environment, or arbitrary model-selected provider options. The request uses `store: false`, one hosted `web_search` tool, a required tool choice, fixed source inclusion, fixed output/token limits, and no client-supplied URL or headers.
 
@@ -110,15 +124,15 @@ OpenAI and any upstream search providers receive the query and may apply externa
 
 ### Data-use presentation
 
-If approval permits account-controlled ChatGPT data use, Morons adds a distinct manifest classification rather than labelling it `not used for training`. The UI must state, before first selection and in settings disclosure:
+Morons adds a distinct `ChatGPT workspace/account controlled` manifest classification rather than labelling it `not used for training`. The UI must state, before first selection and in settings disclosure:
 
 > Data use follows the selected ChatGPT workspace and account controls. Personal-account content may be used to improve models when that setting is enabled. Morons cannot verify the account setting.
 
-A separate acknowledgement may record that the owner made this routing choice, but it is preference confirmation, not proof of provider policy. Business/Enterprise claims from a token do not silently upgrade the classification.
+With both opt-in restrictions disabled, this deliberate selection is permitted after disclosure. **Block training use** rejects the account-controlled training classification because Morons cannot verify the effective account toggle. **Require zero data retention** separately rejects account-controlled retention unless the reviewed provider contract establishes ZDR. A separate acknowledgement may record that the owner made a routing choice, but it is preference confirmation, not proof of provider policy. Business/Enterprise claims from a token do not silently upgrade either classification.
 
 ### Protocol, persistence, and audit boundaries
 
-Implementation requires a protocol revision for typed provider-specific login attempts, sanitized credential statuses, exact cancellation, provider-specific logout, and web-search settings. Secret-bearing request/response types must have manually reviewed redacted `Debug` behavior.
+Implementation requires a protocol revision for typed provider-specific login attempts, sanitized credential statuses, exact cancellation, provider-specific logout, the two global data-use restrictions, and web-search settings. Secret-bearing request/response types must have manually reviewed redacted `Debug` behavior.
 
 SQLite may store only non-secret provider kind, mutation identity, generation, state transition, timestamp, idempotency, audit classification, and search service/model/protocol facts. It never stores OAuth URLs, state, nonce, verifier, authorization code, account ID, token revision, expiry, tokens, token hashes, JWT claims, request headers, or provider bodies. Credential files remain authoritative for secret state and refresh recovery; published status follows successful filesystem installation and any required SQLite reconciliation.
 
@@ -131,7 +145,7 @@ Each boundary remains a separate reviewed PR:
 1. provider-neutral credential status/selector protocol and storage migration without network activity;
 2. bounded server-owned OAuth login/callback/token validation with test-only injected origins;
 3. serialized source-bound refresh and provider-specific `/logout` revocation/recovery;
-4. reviewed OpenAI hosted-search manifest, explicit settings selection, bounded adapter, and Brave coexistence;
+4. typed opt-in training and ZDR restrictions, reviewed OpenAI hosted-search manifest, explicit settings selection, bounded adapter, and Brave coexistence;
 5. packaged clean-home and credentialed live qualification; and
 6. only then, a separate decision on removing Brave.
 
@@ -145,6 +159,7 @@ No PR may combine a new credential origin with a new model inference origin mere
 - login, replacement, refresh rotation, concurrent refresh, account mismatch, permanent failure, uncertain refresh, crash recovery, logout, uncertain revocation, and generation tests;
 - protocol, debug, log, audit, panic, subprocess-environment, command-argument, SQLite, backup, transcript, attachment, and kernel scans for complete and partial token fixtures;
 - hosted-search request/SSE/source/citation/usage/limit/cancellation/uncertainty tests with one fixed private test injection boundary;
+- default-off and independently enabled training/ZDR restriction tests covering every selection surface, composition, existing incompatible selections, durable restart, repository/model mutation attempts, and absence of fallback;
 - six-target CI and packaging checks; and
 - deliberate live login/search/logout without copying credentials to fixtures, commands, environment variables, screenshots, logs, or reports.
 
@@ -155,7 +170,7 @@ No PR may combine a new credential origin with a new model inference origin mere
 - OpenAI OAuth tokens would receive the same dedicated server custody as OpenCode credentials while requiring stronger refresh and callback recovery state.
 - Normal refresh can continue same-account work without changing owner identity generation; uncertain rotation fails closed and may require a new login.
 - Search model choice and data-use disclosure become explicit owner preferences rather than consequences of credential access or catalog order.
-- Supporting personal ChatGPT subscriptions requires an explicit product decision about account-controlled training policy.
+- Reviewed training-eligible and non-ZDR models are permitted by default after deliberate selection and disclosure; users can independently opt into blocking training use, requiring ZDR, or both without relying on unverifiable account claims.
 
 ## Alternatives rejected
 
@@ -166,5 +181,6 @@ No PR may combine a new credential origin with a new model inference origin mere
 - **Automatically retry refresh, search, or inference after dispatch:** may consume a rotating token or duplicate billable work.
 - **Fall back to Brave, OpenCode, an API key, or another model after OpenAI failure:** changes provider, credential, policy, or billing without owner intent.
 - **Infer no-training status from `store: false`, plan text, or token claims:** none proves the effective workspace/account data controls.
+- **Exclude every training-eligible or non-ZDR model globally:** removes legitimate user routing choices; Morons instead defaults to disclosed reviewed entries and offers independent opt-in training and retention restrictions.
 - **Use an OpenAI Platform API key as if it were subscription auth:** the documented API route is technically simpler, but it uses separate usage-based billing and does not satisfy the selected ChatGPT-subscription goal; it remains a possible separate decision.
 - **Replace Brave in the authentication PR:** combines credential, provider, search, migration, and release risks and removes the known fallback before qualification.
