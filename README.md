@@ -14,13 +14,12 @@ Do not use production credentials with untrusted repositories unless you accept 
 
 ## Build and run
 
-Requirements:
+Source-build requirements:
 
 - Rust 1.98 (selected by `rust-toolchain.toml`)
-- a Bash-compatible shell; Windows requires Git Bash or compatible Bash configuration
-- an OpenCode Zen or Go API key
-- internet access for the first managed IPython setup and for `web_search`
-- `BRAVE_SEARCH_API_KEY` for `web_search`
+- a Bash-compatible shell
+
+Packaged use does not require Rust or a preinstalled Python. Bash is required for the `bash` tool and `!`/`!!` command modes; on Windows, Morons discovers a normal Git for Windows installation or uses the expert `MORONS_BASH` override set before the companion starts. An OpenCode Zen or Go API key is required only for model inference, not for launch or local session management. First managed-IPython setup and provider operations require network access. Successful `web_search` additionally requires `BRAVE_SEARCH_API_KEY` in the companion's inherited environment.
 
 Build the Rust client and server companion:
 
@@ -36,7 +35,7 @@ From a clean checkout, create a checksummed archive for the current Rust host ta
 
 Pass one of the six reviewed target triples as the first argument when its Rust target and linker are available.
 
-Keep the resulting `morons`, `morons-server`, and `morons-uv` executables together. From a source checkout, change to the directory you want a new session to use and launch the client by path:
+Keep the complete extracted package together; in particular, `morons`, `morons-server`, and `morons-uv` must remain exact siblings. Executable names have an `.exe` suffix on Windows. From a source checkout, change to the directory you want a new session to use and launch the client by path:
 
 ```sh
 cd /path/to/project
@@ -50,15 +49,15 @@ cd /path/to/project
 /path/to/extracted-morons-package/morons
 ```
 
-Before installing an archive, verify it against the release's `SHA256SUMS`. Keep all three executables in one owner-controlled directory that is not writable by other users. You may add that directory to `PATH`, but invoke only `morons`; `morons-server` and `morons-uv` are internal companions.
+Before installing an archive, verify it against the release's `SHA256SUMS` and inspect its `MANIFEST.txt`. Keep the complete package in one owner-controlled directory that is not writable by other users. You may add that directory to `PATH`, but invoke only `morons`; `morons-server` and `morons-uv` are internal companions.
 
-To update, stop the running companion with `Ctrl+S`, verify and extract the new archive, replace all three executables before relaunching, and never mix companions from different versions. Database migrations are forward-only; downgrading an existing state directory is unsupported.
+To update, stop the running companion with `Ctrl+S`, verify and extract the new archive into a new complete installation directory, and launch that directory's `morons`. Do not copy individual executables over an old package or mix companions from different versions. Durable state remains in the application state directory and migrates forward on the next start. Database migrations are forward-only; downgrading an existing state directory is unsupported.
 
-On first launch, read and acknowledge the trusted-local authority notice. Configure the OpenCode credential with `/login`; `Ctrl+K` opens the same dialog as a shortcut. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
+On first launch, read and acknowledge the trusted-local authority notice. Configure or replace the server-owned OpenCode credential with `/login`; `Ctrl+K` opens the same non-echoing dialog as a shortcut. `/logout` removes the local credential after confirmation but does not revoke the API key at OpenCode; revoke it through the provider account when needed. Credentials live in dedicated owner-controlled state outside SQLite and are never intentionally exposed to tools or kernels. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
 
 ### Managed IPython runtime
 
-Release archives include a checksummed `morons-uv` helper. On the first `ipython` call, the companion uses it to prepare Morons-owned Python 3.11.15 with hash-locked `jupyter_client` 8.6.3 and `ipykernel` 6.30.1. Initial setup requires internet access to the reviewed Python and PyPI sources. The versioned runtime and download cache live under `~/.morons/python` on macOS/Linux or `%LOCALAPPDATA%\\morons.dev\\python` on Windows; later use works without network access. Interrupted, stale, or invalid staging state is rebuilt under a process lock and never becomes the active runtime.
+Release archives include a checksummed `morons-uv` helper. On the first `ipython` call, the companion uses it to prepare Morons-owned Python 3.11.15 with hash-locked `jupyter_client` 8.6.3 and `ipykernel` 6.30.1. Initial setup requires internet access to the reviewed Python and PyPI sources. The versioned runtime and download cache live under `~/.morons/python` on macOS/Linux or `%LOCALAPPDATA%\\morons.dev\\python` on Windows; after setup succeeds, ordinary reuse of that validated runtime does not require network access. Interrupted, stale, or invalid staging state is rebuilt under a process lock and never becomes the active runtime.
 
 Normal use does not require Python or `pip` to be installed. `MORONS_PYTHON` remains an expert override: when set before the companion starts, Morons bypasses managed setup and uses that executable, which must provide `jupyter_client` and `ipykernel`. Stop an existing companion with `Ctrl+S` before changing the override.
 
@@ -111,7 +110,7 @@ Morons reads standard `SKILL.md` directories from bundled, user, and project roo
 
 ## Platforms
 
-The intended targets are x86_64 and aarch64 on macOS, Linux, and Windows. CI exercises Linux, macOS, and Windows plus Linux and Windows aarch64 coverage. Native Intel macOS validation remains required before claiming release support for that target; see [ADR 0007](docs/adr/0007-supported-processor-architectures.md).
+The intended package targets are x86_64 and aarch64 on macOS, Linux, and Windows. CI runs natively on Linux x86_64/aarch64, macOS aarch64, and Windows x86_64/aarch64, and cross-checks the Intel macOS build. The `x86_64-apple-darwin` archive must also pass the native checklist on reviewed Intel hardware before Morons claims release support for it; cross-compilation is not that qualification. See [ADR 0007](docs/adr/0007-supported-processor-architectures.md).
 
 ## License
 
