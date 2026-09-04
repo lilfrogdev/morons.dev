@@ -16,8 +16,8 @@ use ratatui_crossterm::{
     crossterm::{
         cursor::{Hide, Show},
         event::{
-            self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent,
-            KeyEventKind, KeyModifiers,
+            self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+            EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
         },
         execute,
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -37,6 +37,7 @@ type AppTerminal = Terminal<CrosstermBackend<Stdout>>;
 
 pub enum TerminalInput {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Paste(Zeroizing<String>),
     Image(morons_image::NormalizedImage),
     ClipboardUnavailable,
@@ -47,6 +48,7 @@ impl std::fmt::Debug for TerminalInput {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Key(_) => formatter.write_str("TerminalInput::Key([REDACTED])"),
+            Self::Mouse(_) => formatter.write_str("TerminalInput::Mouse([REDACTED])"),
             Self::Paste(paste) => formatter
                 .debug_struct("TerminalInput::Paste")
                 .field("paste_bytes", &paste.len())
@@ -84,7 +86,20 @@ impl TerminalSession {
     pub fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide) {
+        if let Err(error) = execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture,
+            Hide
+        ) {
+            let _ = execute!(
+                stdout,
+                Show,
+                DisableMouseCapture,
+                DisableBracketedPaste,
+                LeaveAlternateScreen
+            );
             let _ = disable_raw_mode();
             return Err(error);
         }
@@ -93,7 +108,13 @@ impl TerminalSession {
             Ok(terminal) => terminal,
             Err(error) => {
                 let mut stdout = io::stdout();
-                let _ = execute!(stdout, Show, DisableBracketedPaste, LeaveAlternateScreen);
+                let _ = execute!(
+                    stdout,
+                    Show,
+                    DisableMouseCapture,
+                    DisableBracketedPaste,
+                    LeaveAlternateScreen
+                );
                 let _ = disable_raw_mode();
                 return Err(error);
             }
@@ -123,6 +144,7 @@ impl TerminalSession {
         if let Err(error) = execute!(
             self.terminal.backend_mut(),
             Show,
+            DisableMouseCapture,
             DisableBracketedPaste,
             LeaveAlternateScreen
         ) && first_error.is_none()
@@ -212,7 +234,14 @@ fn read_terminal_events(sender: mpsc::Sender<io::Result<TerminalInput>>, stop: &
                         return;
                     }
                 }
-                Ok(Event::FocusGained | Event::FocusLost | Event::Mouse(_)) => {}
+                Ok(Event::Mouse(mouse)) => {
+                    if sender.try_send(Ok(TerminalInput::Mouse(mouse))).is_err()
+                        && sender.is_closed()
+                    {
+                        return;
+                    }
+                }
+                Ok(Event::FocusGained | Event::FocusLost) => {}
                 Err(error) => {
                     let _ = sender.try_send(Err(error));
                     return;
@@ -270,7 +299,9 @@ fn bounded_utf8_prefix(mut value: String, maximum_bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui_crossterm::crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+    };
 
     use super::{TerminalInput, bounded_utf8_prefix, is_clipboard_paste_key};
 
@@ -291,6 +322,16 @@ mod tests {
         let debug = format!("{:?}", TerminalInput::Image(image));
         assert!(!debug.contains("AQIDBA"));
         assert!(debug.contains("width"));
+        let debug = format!(
+            "{:?}",
+            TerminalInput::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 12,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            })
+        );
+        assert_eq!(debug, "TerminalInput::Mouse([REDACTED])");
     }
 
     #[test]

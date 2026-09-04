@@ -102,7 +102,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-01 | Go/Grok completes a plain response and a natural `read` request for `sample.txt`. |
 | RUN-02 | Natural `write`, `edit`, and `bash` calls change only the intended disposable files and commit bounded results. |
 | RUN-03 | A response after a tool loop appears immediately without requiring another event or reload. |
-| RUN-04 | Long wrapped command output still auto-scrolls to the newest assistant response. |
+| RUN-04 | Long wrapped output follows the bottom until wheel/PageUp history scrolling begins; new output does not steal that viewport, and End resumes the latest output. |
 | RUN-05 | `!command` is durable and context-bearing; `!!command` is durable but excluded from later provider context. |
 | RUN-06 | `@qa-skill` invokes the exact project skill and returns `QA-SKILL-OK`; Tab completes only a visible exact skill match. |
 | RUN-07 | Two disjoint `task` children run concurrently, cannot recurse or use IPython, and return input-ordered bounded reports. |
@@ -131,7 +131,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | LIFE-03 | `Ctrl+S` requires confirmation, stops the companion, interrupts active work durably, and restores terminal ownership. |
 | LIFE-04 | After forced companion termination, restart marks interrupted work terminal and never replays provider, command, Python, web, or filesystem effects. |
 | LIFE-05 | ANSI-colored command output and IPython tracebacks render as plain text with no control-sequence fragments. |
-| LIFE-06 | Resize through narrow and short terminal dimensions does not panic, expose raw controls, or lose access to the composer/session browser. |
+| LIFE-06 | Resizing through narrow and short dimensions reflows wrapped text, preserves the history entry anchor, keeps the growing composer bottom-docked, and does not panic or expose raw controls. |
 
 ### Expected separately recorded limits
 

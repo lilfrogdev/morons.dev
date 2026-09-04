@@ -6,7 +6,9 @@ use morons_protocol::{
     TranscriptEntry,
 };
 use ratatui::{Terminal, backend::TestBackend};
-use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui_crossterm::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 
 use super::*;
 use crate::terminal::MAX_PROMPT_BYTES;
@@ -132,6 +134,198 @@ fn transcript_auto_scroll_accounts_for_wrapped_lines() {
         .collect::<String>();
 
     assert!(rendered.contains("LATEST-ASSISTANT-OUTPUT"));
+
+    terminal.backend_mut().resize(28, 12);
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("resized wrapped transcript should render");
+    assert!(rendered_terminal(&terminal).contains("LATEST-ASSISTANT-OUTPUT"));
+    assert!(app.transcript_viewport.follows_latest());
+}
+
+#[test]
+fn transcript_history_scrolls_without_new_output_stealing_the_view() {
+    let (session, run) = fixture_session_and_run();
+    let mut entries = (1_u8..=16)
+        .map(|index| TranscriptEntry::AssistantMessage {
+            id: MessageId::from_bytes([index; 16]),
+            run_id: run.id,
+            service: OpenCodeService::Zen,
+            model_id: "grok-4.6".to_owned(),
+            text: format!("TRANSCRIPT-{index:02}"),
+            refusal: false,
+            created_at_milliseconds: u64::from(index),
+        })
+        .collect::<Vec<_>>();
+    entries.push(TranscriptEntry::AssistantMessage {
+        id: MessageId::from_bytes([0x40; 16]),
+        run_id: run.id,
+        service: OpenCodeService::Zen,
+        model_id: "grok-4.6".to_owned(),
+        text: "LATEST-BEFORE-SCROLL".to_owned(),
+        refusal: false,
+        created_at_milliseconds: 40,
+    });
+    let mut app = AppState::new("test-server");
+    app.open_session(session, entries, vec![run.clone()], None, None)
+        .expect("session should open");
+
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("latest transcript should render");
+    assert!(rendered_terminal(&terminal).contains("LATEST-BEFORE-SCROLL"));
+
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("oldest transcript should render");
+    assert!(rendered_terminal(&terminal).contains("TRANSCRIPT-01"));
+    assert!(!app.transcript_viewport.follows_latest());
+
+    app.apply_event(ApplicationEvent::SessionTranscriptEntryCommitted {
+        cursor: session_cursor(run.session_id, 50),
+        session_id: run.session_id,
+        entry: TranscriptEntry::AssistantMessage {
+            id: MessageId::from_bytes([0x50; 16]),
+            run_id: run.id,
+            service: OpenCodeService::Zen,
+            model_id: "grok-4.6".to_owned(),
+            text: "NEWEST-WHILE-READING".to_owned(),
+            refusal: false,
+            created_at_milliseconds: 50,
+        },
+    })
+    .expect("new transcript entry should apply");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("history should remain anchored");
+    let history = rendered_terminal(&terminal);
+    assert!(history.contains("TRANSCRIPT-01"));
+    assert!(history.contains("new output"));
+    assert!(!history.contains("NEWEST-WHILE-READING"));
+
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("latest transcript should render again");
+    let latest = rendered_terminal(&terminal);
+    assert!(latest.contains("NEWEST-WHILE-READING"));
+    assert!(!latest.contains("new output"));
+}
+
+#[test]
+fn transcript_viewport_uses_visible_page_and_preserves_entry_anchor_on_reflow() {
+    let first = TranscriptBlockKey::Entry(MessageId::from_bytes([0x61; 16]));
+    let second = TranscriptBlockKey::Entry(MessageId::from_bytes([0x62; 16]));
+    let third = TranscriptBlockKey::Entry(MessageId::from_bytes([0x63; 16]));
+    let mut viewport = TranscriptViewport::default();
+    viewport.update_layout(80, 6, Some(vec![(first, 8), (second, 8)]));
+    assert_eq!(viewport.top(), 10);
+
+    viewport.scroll_page_up();
+    assert_eq!(viewport.top(), 5);
+    viewport.scroll_lines_down(3);
+    assert_eq!(viewport.top(), 8);
+    viewport.note_content_changed();
+    viewport.update_layout(40, 6, Some(vec![(first, 16), (second, 16), (third, 4)]));
+    assert_eq!(viewport.top(), 16);
+    assert!(viewport.has_newer_output());
+
+    viewport.scroll_lines_down(usize::MAX);
+    assert!(viewport.follows_latest());
+    assert!(!viewport.has_newer_output());
+    assert_eq!(viewport.top(), 30);
+}
+
+#[test]
+fn mouse_wheel_scrolls_in_rendered_line_steps() {
+    let (session, run) = fixture_session_and_run();
+    let mut app = AppState::new("test-server");
+    app.open_session(session, Vec::new(), vec![run], None, None)
+        .expect("session should open");
+    let first = TranscriptBlockKey::Entry(MessageId::from_bytes([0x71; 16]));
+    app.transcript_viewport
+        .update_layout(80, 6, Some(vec![(first, 20)]));
+    assert_eq!(app.transcript_viewport.top(), 14);
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.transcript_viewport.top(), 11);
+    assert!(!app.transcript_viewport.follows_latest());
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.transcript_viewport.top(), 14);
+    assert!(app.transcript_viewport.follows_latest());
+
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 1,
+        row: 1,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(app.transcript_viewport.top(), 14);
+}
+
+#[test]
+fn composer_stays_bottom_docked_and_grows_upward() {
+    let (session, run) = fixture_session_and_run();
+    let mut app = AppState::new("test-server");
+    app.open_session(session, Vec::new(), vec![run], None, None)
+        .expect("session should open");
+
+    app.handle_paste("short");
+    let short_rows = render_rows(&mut app, 60, 24);
+    let short_top = row_containing(&short_rows, "Message · Enter submit")
+        .expect("short composer should render");
+    let short_bottom = short_top + 2;
+
+    app.prompt.clear();
+    app.handle_paste("@");
+    app.install_session_skills(
+        app.session
+            .as_ref()
+            .expect("session should exist")
+            .summary
+            .id,
+        vec![SkillSummary {
+            name: "long".to_owned(),
+            description: "Completion above the fixed composer".to_owned(),
+            source: SkillSource::Project,
+        }],
+    )
+    .expect("skills should install");
+    let completion_rows = render_rows(&mut app, 60, 24);
+    let completion_top = row_containing(&completion_rows, "Message · Enter submit")
+        .expect("composer should render with completion");
+    assert_eq!(completion_top, short_top);
+    assert!(row_containing(&completion_rows, "Skills ·").is_some());
+
+    app.prompt.clear();
+    app.handle_paste(&"wrapped composer text ".repeat(40));
+    let long_rows = render_rows(&mut app, 60, 24);
+    let long_top =
+        row_containing(&long_rows, "Message · Enter submit").expect("long composer should render");
+    assert!(long_top < short_top);
+    assert_eq!(
+        long_top + usize::from(render::MAX_PROMPT_HEIGHT) - 1,
+        short_bottom
+    );
 }
 
 #[test]
@@ -956,6 +1150,35 @@ fn fixture_model() -> OpenCodeModelSummary {
         training_use: OpenCodeModelTrainingUse::NotUsed,
         retention: OpenCodeModelRetention::None,
     }
+}
+
+fn rendered_terminal(terminal: &Terminal<TestBackend>) -> String {
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
+fn render_rows(app: &mut AppState, width: u16, height: u16) -> Vec<String> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("application should render");
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(usize::from(width))
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+        .collect()
+}
+
+fn row_containing(rows: &[String], needle: &str) -> Option<usize> {
+    rows.iter().position(|row| row.contains(needle))
 }
 
 fn session_cursor(session_id: SessionId, sequence: u64) -> SessionEventCursor {

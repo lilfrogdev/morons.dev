@@ -1,10 +1,13 @@
 use morons_protocol::MAX_OPENCODE_API_KEY_BYTES;
-use ratatui_crossterm::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui_crossterm::crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 
 use super::{AppAction, AppState, CredentialDialog, InformationDialog, View};
 use crate::terminal::CredentialBuffer;
 
 const MAX_SESSION_NAME_BYTES: usize = 256;
+const MOUSE_SCROLL_ROWS: usize = 3;
 
 impl AppState {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> AppAction {
@@ -83,6 +86,26 @@ impl AppState {
         match self.view {
             View::Sessions => self.handle_sessions_key(key.code),
             View::Session => self.handle_session_key(key.code, key.modifiers),
+        }
+    }
+
+    pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.view != View::Session
+            || self.information_dialog.is_some()
+            || self.model_dialog.is_some()
+            || self.credential_dialog.is_some()
+            || self.rename_dialog.is_some()
+            || self.confirm_stop
+            || self.confirm_delete.is_some()
+        {
+            return;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => self.transcript_viewport.scroll_lines_up(MOUSE_SCROLL_ROWS),
+            MouseEventKind::ScrollDown => self
+                .transcript_viewport
+                .scroll_lines_down(MOUSE_SCROLL_ROWS),
+            _ => {}
         }
     }
 
@@ -465,11 +488,19 @@ impl AppState {
             KeyCode::Up if self.cycle_skill_completion(true) => AppAction::None,
             KeyCode::Down if self.cycle_skill_completion(false) => AppAction::None,
             KeyCode::PageUp => {
-                self.transcript_scroll = self.transcript_scroll.saturating_add(10);
+                self.transcript_viewport.scroll_page_up();
                 AppAction::None
             }
             KeyCode::PageDown => {
-                self.transcript_scroll = self.transcript_scroll.saturating_sub(10);
+                self.transcript_viewport.scroll_page_down();
+                AppAction::None
+            }
+            KeyCode::Home => {
+                self.transcript_viewport.scroll_to_top();
+                AppAction::None
+            }
+            KeyCode::End => {
+                self.transcript_viewport.scroll_to_bottom();
                 AppAction::None
             }
             KeyCode::Backspace if self.pending.is_none() => {
