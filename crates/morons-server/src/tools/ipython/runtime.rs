@@ -252,7 +252,14 @@ impl ManagedPythonRuntime {
         remove_managed_path(&runtime)?;
         fs::rename(&staging, &runtime).map_err(|_| ToolErrorKind::KernelUnavailable)?;
         sync_directory(&self.root)?;
-        self.cache(runtime_python(&runtime))
+        let published_python = runtime_python(&runtime);
+        if !path_is_inside(&published_python, &self.root)
+            || !validate_python(&published_python, cancellation, deadline)
+        {
+            remove_managed_path(&runtime)?;
+            return Err(ToolErrorKind::KernelUnavailable);
+        }
+        self.cache(published_python)
     }
 
     fn runtime_is_valid(
