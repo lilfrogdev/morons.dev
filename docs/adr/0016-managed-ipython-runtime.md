@@ -8,9 +8,7 @@ Accepted
 
 ADR 0012 introduced one temporary persistent IPython kernel per active session, but required the selected system Python to already contain `jupyter_client` and `ipykernel`. That made a core tool fail on a clean installation and moved version compatibility onto every user.
 
-The runtime is executable code with the local user's authority. [PyZMQ describes its Windows ARM wheel support as experimental](https://pyzmq.readthedocs.io/en/stable/changelog.html), and native release-candidate execution can start the kernel but cannot complete the Jupyter message handshake. Windows ARM64 provides supported x86_64 application emulation.
-
- Automatic preparation therefore must not execute installer shell pipelines, discover repository configuration, trust mutable package versions, write into system Python, expose Morons-managed provider credentials, or leave a partially prepared environment active. Setup also remains subject to cancellation and time bounds.
+The runtime is executable code with the local user's authority. Automatic preparation therefore must not execute installer shell pipelines, discover repository configuration, trust mutable package versions, write into system Python, expose Morons-managed provider credentials, or leave a partially prepared environment active. Setup also remains subject to cancellation and time bounds.
 
 ## Decision
 
@@ -18,7 +16,7 @@ Morons release archives contain three same-target executables: the user-facing `
 
 On the first `ipython` operation, the server validates that its sibling `morons-uv` is the exact reviewed binary for the running OS and architecture. It then prepares this fixed runtime:
 
-- CPython 3.11.15 from uv's version-pinned managed-Python catalog (x86_64 CPython under Windows ARM64 emulation, native CPython on the other targets);
+- CPython 3.11.15 from uv's version-pinned managed-Python catalog;
 - `jupyter_client` 8.6.3;
 - `ipykernel` 6.30.1; and
 - all transitive Python packages pinned by `crates/morons-server/runtime/ipython-requirements.txt`.
@@ -27,7 +25,7 @@ The requirements lock is generated universally for Python 3.11 and contains an a
 
 Managed state is stored under the existing owner-controlled Morons application root: `~/.morons/python` on Unix and `%LOCALAPPDATA%\\morons.dev\\python` on Windows. It is separate from SQLite, attachments, credentials, system Python, user virtual environments, and selected repositories. A dedicated cache permits later rebuilds from already verified downloads.
 
-Preparation has a ten-minute aggregate deadline, closed standard input, discarded diagnostics, process-tree ownership, exact cancellation, a 1 GiB managed-tree byte ceiling, and a 100,000-node ceiling checked before reuse and after each setup stage. A cross-process file lock serializes setup. Morons builds a relocatable virtual environment in a fixed staging directory, validates exact import versions, writes a source-bound manifest, synchronizes it where supported, and atomically renames it to `runtime-v1`. An interrupted or failed stage is never selected. A missing, stale, malformed, or failed runtime is removed and rebuilt under the lock. A valid runtime is checked once on first use after each server start and then cached in memory.
+Preparation has a ten-minute aggregate deadline, closed standard input, discarded diagnostics, process-tree ownership, exact cancellation, a 1 GiB managed-tree byte ceiling, and a 100,000-node ceiling checked before reuse and after each setup stage. A cross-process file lock serializes setup. On Unix, Morons builds in a fixed staging directory, validates exact import versions, writes a source-bound manifest, and atomically renames the environment to `runtime-v1`. Windows virtual-environment launchers embed their creation path, so Windows builds at the final versioned path under the exclusive lock and writes the exact manifest last as the validity marker. An interrupted or failed environment is never selected. A missing, stale, malformed, or failed runtime is removed and rebuilt under the lock. A valid runtime is checked once on first use after each server start and then cached in memory.
 
 Managed uv and Python processes inherit the user's ordinary non-Python environment, including network and proxy configuration, while uv, pip, virtual-environment, `PYTHON*`, and project configuration inputs are removed or overridden. Managed kernels set isolated Python path/user-site behavior but otherwise retain the same trusted-local filesystem, process, network, Git, agent, and ordinary environment authority as `bash`. Morons-managed provider credentials remain server-owned and are never injected into setup or kernels.
 
@@ -38,7 +36,6 @@ Application protocol version 32 and persistence schema version 24 are unchanged.
 ## Consequences
 
 - Packaged Morons provides a working persistent IPython runtime without requiring Python or manual `pip install` steps.
-- Windows ARM64 keeps native Morons and uv executables but uses Windows' x86_64 emulation for the managed Python kernel because the current native PyZMQ Windows ARM wheel cannot complete a Jupyter kernel handshake. The runtime manifest records this target explicitly.
 - First IPython use needs network access and may take longer while the interpreter and wheels are downloaded. Subsequent normal use and server restarts need no network.
 - Release archives become larger because they include uv and its license texts.
 - Release construction now depends on the fixed reviewed uv GitHub assets and fails closed on a checksum, format, layout, or target mismatch.

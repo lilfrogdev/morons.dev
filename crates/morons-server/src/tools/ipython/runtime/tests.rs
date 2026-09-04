@@ -31,15 +31,6 @@ fn manifest_and_requirements_are_source_bound() {
     let manifest = runtime_manifest();
     assert!(manifest.contains("uv=0.12.9"));
     assert!(manifest.contains("python=3.11.15"));
-    assert!(manifest.contains(&format!("python_target={}", managed_python_target())));
-    if cfg!(all(windows, target_arch = "aarch64")) {
-        assert_eq!(
-            managed_python_request(),
-            "cpython-3.11.15-windows-x86_64-none"
-        );
-    } else {
-        assert_eq!(managed_python_request(), "3.11.15");
-    }
     assert!(manifest.contains("jupyter_client=8.6.3"));
     assert!(manifest.contains("ipykernel=6.30.1"));
 }

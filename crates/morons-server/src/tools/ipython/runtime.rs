@@ -30,6 +30,7 @@ const PYTHON_VERSION: &str = "3.11.15";
 const JUPYTER_CLIENT_VERSION: &str = "8.6.3";
 const IPYKERNEL_VERSION: &str = "6.30.1";
 const RUNTIME_DIRECTORY: &str = "runtime-v1";
+#[cfg(not(windows))]
 const STAGING_DIRECTORY: &str = ".runtime-v1.staging";
 const LOCK_FILE: &str = ".bootstrap.lock";
 const MANIFEST_FILE: &str = "MANIFEST.txt";
@@ -162,7 +163,7 @@ impl ManagedPythonRuntime {
         if self.packaged_uv.is_none() {
             validate_packaged_uv(&uv)?;
         }
-        let staging = self.root.join(STAGING_DIRECTORY);
+        let staging = preparation_directory(&self.root, &runtime);
         remove_managed_path(&staging)?;
         ensure_private_directory(&staging)?;
         let cache = self.root.join("cache");
@@ -185,7 +186,7 @@ impl ManagedPythonRuntime {
                 OsString::from("--no-bin"),
                 OsString::from("--install-dir"),
                 managed_python.as_os_str().to_owned(),
-                OsString::from(managed_python_request()),
+                OsString::from(PYTHON_VERSION),
             ],
             cancellation,
             deadline,
@@ -249,9 +250,12 @@ impl ManagedPythonRuntime {
         }
         write_private_file(&staging.join(MANIFEST_FILE), runtime_manifest().as_bytes())?;
         sync_directory(&staging)?;
-        remove_managed_path(&runtime)?;
-        fs::rename(&staging, &runtime).map_err(|_| ToolErrorKind::KernelUnavailable)?;
-        sync_directory(&self.root)?;
+        #[cfg(not(windows))]
+        {
+            remove_managed_path(&runtime)?;
+            fs::rename(&staging, &runtime).map_err(|_| ToolErrorKind::KernelUnavailable)?;
+            sync_directory(&self.root)?;
+        }
         let published_python = runtime_python(&runtime);
         if !path_is_inside(&published_python, &self.root)
             || !validate_python(&published_python, cancellation, deadline)
@@ -307,28 +311,20 @@ impl ManagedPythonRuntime {
 
 fn runtime_manifest() -> String {
     format!(
-        "format=1\nuv={UV_VERSION}\npython={PYTHON_VERSION}\npython_target={}\njupyter_client={JUPYTER_CLIENT_VERSION}\nipykernel={IPYKERNEL_VERSION}\nrequirements_sha256={REQUIREMENTS_SHA256}\n",
-        managed_python_target()
+        "format=1\nuv={UV_VERSION}\npython={PYTHON_VERSION}\njupyter_client={JUPYTER_CLIENT_VERSION}\nipykernel={IPYKERNEL_VERSION}\nrequirements_sha256={REQUIREMENTS_SHA256}\n"
     )
 }
 
-fn managed_python_request() -> &'static str {
-    if cfg!(all(windows, target_arch = "aarch64")) {
-        "cpython-3.11.15-windows-x86_64-none"
-    } else {
-        PYTHON_VERSION
+fn preparation_directory(root: &Path, runtime: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let _ = root;
+        return runtime.to_path_buf();
     }
-}
-
-fn managed_python_target() -> &'static str {
-    match (env::consts::OS, env::consts::ARCH) {
-        ("windows", "aarch64") => "x86_64-pc-windows-msvc",
-        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        ("macos", "x86_64") => "x86_64-apple-darwin",
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
-        _ => "unsupported",
+    #[cfg(not(windows))]
+    {
+        let _ = runtime;
+        root.join(STAGING_DIRECTORY)
     }
 }
 
