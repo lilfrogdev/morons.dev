@@ -447,11 +447,21 @@ pub(crate) struct SubagentUsage {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct SubagentModelDisclosure {
+    pub service: String,
+    pub model_id: String,
+    pub protocol_revision: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SubagentResult {
     pub index: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub status: SubagentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<SubagentModelDisclosure>,
     pub output: String,
     pub provider_turns: u16,
     pub tool_calls: u16,
@@ -502,6 +512,7 @@ pub(crate) enum ToolErrorKind {
     KernelUnavailable,
     ExecutionFailed,
     ImageInputUnsupported,
+    ModelUnavailable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -607,6 +618,7 @@ impl ToolErrorKind {
             }
             Self::ExecutionFailed => "IPython cell failed",
             Self::ImageInputUnsupported => "selected model does not support image input",
+            Self::ModelUnavailable => "configured subagent model is unavailable",
         }
     }
 }
@@ -843,12 +855,19 @@ impl ToolOutput {
                         summary.push(')');
                     }
                     summary.push_str(&format!(
-                        ": {}; {} provider turn(s), {} tool call(s), {} total token(s)\n",
+                        ": {}; {} provider turn(s), {} tool call(s), {} total token(s)",
                         result.status.label(),
                         result.provider_turns,
                         result.tool_calls,
                         result.usage.total_tokens
                     ));
+                    if let Some(model) = &result.model {
+                        summary.push_str(&format!(
+                            "; {} / {} · protocol revision {}",
+                            model.service, model.model_id, model.protocol_revision
+                        ));
+                    }
+                    summary.push('\n');
                     summary.push_str(&result.output);
                 }
                 summary
@@ -1073,6 +1092,17 @@ fn validate_subagent_results(results: &[SubagentResult]) -> bool {
         && results.iter().enumerate().all(|(index, result)| {
             result.index == u16::try_from(index + 1).unwrap_or(u16::MAX)
                 && result.name.as_deref().is_none_or(valid_subagent_name)
+                && result.model.as_ref().is_none_or(|model| {
+                    matches!(model.service.as_str(), "OpenCode Zen" | "OpenCode Go")
+                        && !model.model_id.is_empty()
+                        && model.model_id.len() <= 128
+                        && model.model_id.bytes().all(|byte| {
+                            byte.is_ascii_lowercase()
+                                || byte.is_ascii_digit()
+                                || matches!(byte, b'.' | b'-' | b'_')
+                        })
+                        && model.protocol_revision > 0
+                })
                 && result.output.len() <= MAX_SUBAGENT_OUTPUT_BYTES
                 && result.provider_turns <= MAX_SUBAGENT_PROVIDER_TURNS
                 && result.tool_calls <= MAX_SUBAGENT_TOOL_CALLS

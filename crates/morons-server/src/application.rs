@@ -386,6 +386,56 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::GetApplicationSettings => {
+                let subagent_model = self
+                    .sessions
+                    .subagent_model_setting()
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::ApplicationSettings {
+                        settings: morons_protocol::ApplicationSettings {
+                            subagent_model: to_protocol_subagent_model_setting(subagent_model),
+                        },
+                    },
+                ))
+            }
+            ApplicationRequest::SetSubagentModelSetting {
+                mutation_request_id,
+                setting,
+            } => {
+                let setting = to_persistence_subagent_model_setting(setting);
+                if let crate::persistence::SubagentModelSetting::OpenCode { service, model_id } =
+                    &setting
+                {
+                    let model = find_open_code_model(
+                        to_provider_service(to_protocol_service(*service)),
+                        model_id,
+                    )
+                    .ok_or(ApplicationError::UnsupportedModel)?;
+                    if !model.capabilities.text_input
+                        || !model.capabilities.text_output
+                        || !model.capabilities.tool_calls
+                    {
+                        return Err(ApplicationError::UnsupportedModel);
+                    }
+                }
+                let setting = self
+                    .sessions
+                    .set_subagent_model_setting(
+                        to_persistence_mutation_id(mutation_request_id),
+                        setting,
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::ApplicationSettingsUpdated {
+                        settings: morons_protocol::ApplicationSettings {
+                            subagent_model: to_protocol_subagent_model_setting(setting),
+                        },
+                    },
+                ))
+            }
             ApplicationRequest::ListSessionSkills { session_id } => {
                 let working_directory = self
                     .sessions

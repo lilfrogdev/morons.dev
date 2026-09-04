@@ -2,10 +2,11 @@ use std::time::Duration;
 
 use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
-    ApplicationError, FrameError, LocalCommandId, MutationRequestId, OpenCodeApiKey,
-    OpenCodeCredentialStatus, OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService, RunId,
-    RunSummary, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId,
-    SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry, TranscriptPageDirection,
+    ApplicationError, ApplicationSettings, FrameError, LocalCommandId, MutationRequestId,
+    OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSelection, OpenCodeModelSummary,
+    OpenCodeService, RunId, RunSummary, SessionCatalogEventCursor, SessionContextStatus,
+    SessionEventCursor, SessionId, SessionSummary, SkillSummary, SubagentModelSetting,
+    TranscriptCursor, TranscriptEntry, TranscriptPageDirection,
 };
 use tokio::{sync::mpsc, time};
 
@@ -47,6 +48,7 @@ pub(super) enum RequestCommand {
     LoadSessions,
     LoadModels(OpenCodeService),
     LoadDefaultModel,
+    LoadSettings,
     LoadCredentialStatus,
     LoadSession(SessionId),
     LoadTranscriptWindow {
@@ -62,6 +64,10 @@ pub(super) enum RequestCommand {
         mutation_request_id: MutationRequestId,
         service: OpenCodeService,
         model_id: String,
+    },
+    SetSubagentModel {
+        mutation_request_id: MutationRequestId,
+        setting: SubagentModelSetting,
     },
     CreateSession {
         mutation_request_id: MutationRequestId,
@@ -124,11 +130,16 @@ impl RequestCommand {
             Self::LoadSessions
             | Self::LoadModels(_)
             | Self::LoadDefaultModel
+            | Self::LoadSettings
             | Self::LoadCredentialStatus
             | Self::LoadSession(_)
             | Self::LoadTranscriptWindow { .. }
             | Self::LoadContext { .. } => None,
             Self::SetDefaultModel {
+                mutation_request_id,
+                ..
+            }
+            | Self::SetSubagentModel {
                 mutation_request_id,
                 ..
             }
@@ -182,11 +193,13 @@ impl RequestCommand {
             Self::LoadSessions => "session list",
             Self::LoadModels(_) => "model list",
             Self::LoadDefaultModel => "default model",
+            Self::LoadSettings => "application settings",
             Self::LoadCredentialStatus => "credential status",
             Self::LoadSession(_) => "session transcript and skills",
             Self::LoadTranscriptWindow { .. } => "transcript history page",
             Self::LoadContext { .. } => "session context status",
             Self::SetDefaultModel { .. } => "default model selection",
+            Self::SetSubagentModel { .. } => "subagent model setting",
             Self::CreateSession { .. } => "session creation",
             Self::RenameSession { .. } => "session rename",
             Self::SetSessionArchived { .. } => "session archive change",
@@ -213,6 +226,7 @@ impl RequestCommand {
             Self::LoadSessions => Some(Self::LoadSessions),
             Self::LoadModels(service) => Some(Self::LoadModels(*service)),
             Self::LoadDefaultModel => Some(Self::LoadDefaultModel),
+            Self::LoadSettings => Some(Self::LoadSettings),
             Self::LoadCredentialStatus => Some(Self::LoadCredentialStatus),
             Self::LoadSession(session_id) => Some(Self::LoadSession(*session_id)),
             Self::LoadTranscriptWindow { session_id, target } => Some(Self::LoadTranscriptWindow {
@@ -236,6 +250,13 @@ impl RequestCommand {
                 mutation_request_id: *mutation_request_id,
                 service: *service,
                 model_id: model_id.clone(),
+            }),
+            Self::SetSubagentModel {
+                mutation_request_id,
+                setting,
+            } => Some(Self::SetSubagentModel {
+                mutation_request_id: *mutation_request_id,
+                setting: setting.clone(),
             }),
             Self::CreateSession {
                 mutation_request_id,
@@ -337,6 +358,11 @@ pub(super) enum RequestEvent {
     DefaultModelUpdated {
         mutation_request_id: MutationRequestId,
         selection: OpenCodeModelSelection,
+    },
+    SettingsLoaded(ApplicationSettings),
+    SettingsUpdated {
+        mutation_request_id: MutationRequestId,
+        settings: ApplicationSettings,
     },
     CredentialStatusLoaded(OpenCodeCredentialStatus),
     SessionLoaded(SessionSnapshot),
@@ -578,11 +604,13 @@ async fn execute_credential(
         RequestCommand::LoadSessions
         | RequestCommand::LoadModels(_)
         | RequestCommand::LoadDefaultModel
+        | RequestCommand::LoadSettings
         | RequestCommand::LoadCredentialStatus
         | RequestCommand::LoadSession(_)
         | RequestCommand::LoadTranscriptWindow { .. }
         | RequestCommand::LoadContext { .. }
         | RequestCommand::SetDefaultModel { .. }
+        | RequestCommand::SetSubagentModel { .. }
         | RequestCommand::CreateSession { .. }
         | RequestCommand::RenameSession { .. }
         | RequestCommand::SetSessionArchived { .. }
@@ -616,6 +644,10 @@ async fn execute(
             .default_open_code_model()
             .await
             .map(RequestResult::DefaultModel),
+        RequestCommand::LoadSettings => client
+            .application_settings()
+            .await
+            .map(RequestResult::Settings),
         RequestCommand::LoadCredentialStatus => client
             .open_code_credential_status()
             .await
@@ -649,6 +681,16 @@ async fn execute(
             .map(|selection| RequestResult::DefaultModelUpdated {
                 mutation_request_id: *mutation_request_id,
                 selection,
+            }),
+        RequestCommand::SetSubagentModel {
+            mutation_request_id,
+            setting,
+        } => client
+            .set_subagent_model_setting(*mutation_request_id, setting.clone())
+            .await
+            .map(|settings| RequestResult::SettingsUpdated {
+                mutation_request_id: *mutation_request_id,
+                settings,
             }),
         RequestCommand::CreateSession {
             mutation_request_id,
@@ -900,6 +942,11 @@ enum RequestResult {
         mutation_request_id: MutationRequestId,
         selection: OpenCodeModelSelection,
     },
+    Settings(ApplicationSettings),
+    SettingsUpdated {
+        mutation_request_id: MutationRequestId,
+        settings: ApplicationSettings,
+    },
     CredentialStatus(OpenCodeCredentialStatus),
     Session(SessionSnapshot),
     TranscriptWindow {
@@ -962,6 +1009,14 @@ impl RequestResult {
             } => RequestEvent::DefaultModelUpdated {
                 mutation_request_id,
                 selection,
+            },
+            Self::Settings(settings) => RequestEvent::SettingsLoaded(settings),
+            Self::SettingsUpdated {
+                mutation_request_id,
+                settings,
+            } => RequestEvent::SettingsUpdated {
+                mutation_request_id,
+                settings,
             },
             Self::CredentialStatus(status) => RequestEvent::CredentialStatusLoaded(status),
             Self::Session(snapshot) => RequestEvent::SessionLoaded(snapshot),
@@ -1064,11 +1119,13 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 RequestCommand::LoadModels(service) => Some(*service),
                 RequestCommand::LoadSessions
                 | RequestCommand::LoadDefaultModel
+                | RequestCommand::LoadSettings
                 | RequestCommand::LoadCredentialStatus
                 | RequestCommand::LoadSession(_)
                 | RequestCommand::LoadTranscriptWindow { .. }
                 | RequestCommand::LoadContext { .. } => None,
                 RequestCommand::SetDefaultModel { .. }
+                | RequestCommand::SetSubagentModel { .. }
                 | RequestCommand::CreateSession { .. }
                 | RequestCommand::RenameSession { .. }
                 | RequestCommand::SetSessionArchived { .. }
@@ -1133,6 +1190,26 @@ mod tests {
                 service: OpenCodeService::Go,
                 ref model_id,
             }) if retried == mutation_request_id && model_id == "grok-4.6"
+        ));
+
+        let setting = RequestCommand::SetSubagentModel {
+            mutation_request_id,
+            setting: SubagentModelSetting::OpenCode {
+                service: OpenCodeService::Go,
+                model_id: "glm-5.3-flash".to_owned(),
+            },
+        };
+        assert_eq!(setting.mutation_request_id(), Some(mutation_request_id));
+        assert_eq!(setting.context(), "subagent model setting");
+        assert!(matches!(
+            setting.clone_for_retry(),
+            Some(RequestCommand::SetSubagentModel {
+                mutation_request_id: retried,
+                setting: SubagentModelSetting::OpenCode {
+                    service: OpenCodeService::Go,
+                    ref model_id,
+                },
+            }) if retried == mutation_request_id && model_id == "glm-5.3-flash"
         ));
     }
 

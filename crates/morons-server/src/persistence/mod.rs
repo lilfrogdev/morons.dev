@@ -27,8 +27,9 @@ use self::{
         MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE,
         REQUEST_FINGERPRINT_BYTES, archive_session_fingerprint,
         create_session_with_directory_fingerprint, default_model_fingerprint,
-        delete_session_fingerprint, rename_session_fingerprint, validate_display_name,
-        validate_model_identifier, validate_working_directory_path,
+        delete_session_fingerprint, rename_session_fingerprint, subagent_model_fingerprint,
+        validate_display_name, validate_model_identifier, validate_subagent_model_setting,
+        validate_working_directory_path,
     },
 };
 
@@ -38,8 +39,8 @@ pub use self::{
         ImageAttachmentId, LocalCommandCancellationResult, LocalCommandId, LocalCommandStatus,
         MessageId, Run, RunCancellationResult, RunFailureKind, RunId, RunModelSelection,
         RunOpenCodeService, RunState, SessionEvent, SessionEventCursor, SessionEventPage,
-        SessionEventPayload, ToolCallId, TranscriptCursor, TranscriptEntry, TranscriptPage,
-        TranscriptPageDirection, TranscriptWindowPage,
+        SessionEventPayload, SubagentModelSetting, ToolCallId, TranscriptCursor, TranscriptEntry,
+        TranscriptPage, TranscriptPageDirection, TranscriptWindowPage,
     },
     types::{
         MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
@@ -406,6 +407,46 @@ impl SessionStore {
             .map_err(|_| PersistenceError::WorkerStopped)?
     }
 
+    pub async fn subagent_model_setting(&self) -> Result<SubagentModelSetting, PersistenceError> {
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::GetSubagentModelSetting {
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
+    pub async fn set_subagent_model_setting(
+        &self,
+        request_id: MutationRequestId,
+        setting: SubagentModelSetting,
+    ) -> Result<SubagentModelSetting, PersistenceError> {
+        if request_id.is_zero() {
+            return Err(PersistenceError::InvalidInput {
+                reason: "a mutation request identifier must not be all zeroes",
+            });
+        }
+        validate_subagent_model_setting(&setting)?;
+        let fingerprint = subagent_model_fingerprint(&setting);
+        let (response_sender, response_receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::SetSubagentModelSetting {
+                request_id,
+                fingerprint,
+                setting,
+                response: response_sender,
+            })
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        response_receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
     pub async fn open_code_credential_status(
         &self,
     ) -> Result<OpenCodeCredentialStatus, PersistenceError> {
@@ -662,6 +703,15 @@ enum WorkerRequest {
         selection: DefaultModelSelection,
         response: oneshot::Sender<Result<DefaultModelSelection, PersistenceError>>,
     },
+    GetSubagentModelSetting {
+        response: oneshot::Sender<Result<SubagentModelSetting, PersistenceError>>,
+    },
+    SetSubagentModelSetting {
+        request_id: MutationRequestId,
+        fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
+        setting: SubagentModelSetting,
+        response: oneshot::Sender<Result<SubagentModelSetting, PersistenceError>>,
+    },
     GetOpenCodeCredentialStatus {
         response: oneshot::Sender<Result<OpenCodeCredentialStatus, PersistenceError>>,
     },
@@ -806,6 +856,21 @@ fn run_worker(
             } => {
                 let _ =
                     response.send(backend.set_default_model(request_id, fingerprint, selection));
+            }
+            WorkerRequest::GetSubagentModelSetting { response } => {
+                let _ = response.send(backend.subagent_model_setting());
+            }
+            WorkerRequest::SetSubagentModelSetting {
+                request_id,
+                fingerprint,
+                setting,
+                response,
+            } => {
+                let _ = response.send(backend.set_subagent_model_setting(
+                    request_id,
+                    fingerprint,
+                    setting,
+                ));
             }
             WorkerRequest::GetOpenCodeCredentialStatus { response } => {
                 let _ = response.send(backend.open_code_credential_status());

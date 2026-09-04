@@ -1,9 +1,9 @@
 use morons_protocol::{
-    ApplicationEvent, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
+    ApplicationEvent, ApplicationSettings, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
     OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
-    OpenCodeModelTrainingUse, OpenCodeService, RunFailureKind, RunId, RunState, RunSummary,
-    SessionContextStatus, SessionEventCursor, SessionId, SessionSummary, SkillSource, SkillSummary,
-    TranscriptEntry,
+    OpenCodeModelTrainingUse, OpenCodeService, ProviderProtocol, RunFailureKind, RunId, RunState,
+    RunSummary, SessionContextStatus, SessionEventCursor, SessionId, SessionSummary, SkillSource,
+    SkillSummary, SubagentModelSetting, TranscriptEntry,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{
@@ -1231,6 +1231,101 @@ fn slash_model_search_selects_and_preserves_one_global_default() {
         AppAction::None
     );
     assert_eq!(app.selected_model, selected_before_tab);
+}
+
+#[test]
+fn slash_settings_selects_an_independent_reviewed_subagent_model_or_parent_inheritance() {
+    let (session, run) = fixture_session_and_run();
+    let mut glm = fixture_model();
+    glm.service = OpenCodeService::Go;
+    glm.id = "glm-5.3-flash".to_owned();
+    glm.display_name = "GLM-5.3-Flash".to_owned();
+    glm.protocol = ProviderProtocol::ChatCompletions;
+    glm.protocol_revision = 2;
+
+    let mut app = AppState::new("test-server");
+    app.information_dialog = None;
+    app.install_settings(ApplicationSettings {
+        subagent_model: SubagentModelSetting::InheritParent {},
+    });
+    app.replace_models(OpenCodeService::Go, vec![glm])
+        .expect("Go models should apply");
+    app.open_session(session, Vec::new(), vec![run], None, None)
+        .expect("session should open");
+
+    app.handle_paste("/settings");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::LoadSettings
+    );
+    assert!(app.prompt.is_empty());
+    assert!(matches!(
+        app.settings_dialog,
+        Some(SettingsDialog::Overview)
+    ));
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert!(matches!(
+        app.settings_dialog,
+        Some(SettingsDialog::SubagentModel { selected: 0, .. })
+    ));
+    app.handle_paste("glm");
+    assert_eq!(
+        app.subagent_model_dialog_matches(),
+        vec![SubagentModelCandidate::Model(0)]
+    );
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+    terminal
+        .draw(|frame| app.render(frame))
+        .expect("settings should render");
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("Subagent model search"));
+    assert!(rendered.contains("glm-5.3-flash"));
+    assert!(rendered.contains("protocol 2"));
+    assert!(rendered.contains("training: not used"));
+
+    let selected = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        selected,
+        AppAction::SetSubagentModel {
+            setting: SubagentModelSetting::OpenCode {
+                service: OpenCodeService::Go,
+                ref model_id,
+            },
+        } if model_id == "glm-5.3-flash"
+    ));
+    app.install_settings(ApplicationSettings {
+        subagent_model: SubagentModelSetting::OpenCode {
+            service: OpenCodeService::Go,
+            model_id: "glm-5.3-flash".to_owned(),
+        },
+    });
+    app.open_settings_dialog();
+    app.open_subagent_model_dialog();
+    assert!(matches!(
+        app.settings_dialog,
+        Some(SettingsDialog::SubagentModel { selected: 1, .. })
+    ));
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::SetSubagentModel {
+            setting: SubagentModelSetting::InheritParent {},
+        }
+    );
 }
 
 #[test]

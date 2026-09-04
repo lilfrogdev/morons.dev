@@ -5,17 +5,19 @@ use tokio::{sync::Semaphore, task::JoinSet, time};
 
 use super::{NormalizedTurn, normalize_subagent_provider_turn, to_provider_service};
 use crate::{
-    persistence::{Run, RunFailureKind, ToolCallId, conservative_input_token_estimate},
+    persistence::{
+        Run, RunFailureKind, SubagentModelSetting, ToolCallId, conservative_input_token_estimate,
+    },
     provider::{
         OpenCodeProvider, OpenCodeResponseRequest, ProviderCancellation, ProviderError,
         ProviderInputItem, ProviderMessagePhase, ProviderMessageRole, ProviderUsage,
-        provider_cancellation,
+        find_open_code_model, provider_cancellation,
     },
     tools::{
         BashToolExecutor, DirectToolExecutor, MAX_SUBAGENT_MUTATIONS, MAX_SUBAGENT_OUTPUT_BYTES,
-        MAX_SUBAGENT_PROVIDER_TURNS, MAX_SUBAGENT_TOOL_CALLS, SubagentResult, SubagentStatus,
-        SubagentTask, SubagentUsage, ToolErrorKind, ToolInput, ToolKind, ToolOutput, ToolResult,
-        WebSearchToolExecutor, subagent_provider_tools,
+        MAX_SUBAGENT_PROVIDER_TURNS, MAX_SUBAGENT_TOOL_CALLS, SubagentModelDisclosure,
+        SubagentResult, SubagentStatus, SubagentTask, SubagentUsage, ToolErrorKind, ToolInput,
+        ToolKind, ToolOutput, ToolResult, WebSearchToolExecutor, subagent_provider_tools,
     },
 };
 
@@ -41,6 +43,7 @@ struct SubagentRunConfig {
     credential_generation: u64,
     maximum_input_tokens: u32,
     maximum_output_tokens: u32,
+    protocol_revision: u16,
 }
 
 enum ChildStop {
@@ -73,19 +76,14 @@ impl SubagentExecutor {
         call_id: ToolCallId,
         working_directory: PathBuf,
         input: &ToolInput,
+        setting: SubagentModelSetting,
         cancellation: &ProviderCancellation,
     ) -> ToolResult {
         let ToolInput::Task { context, tasks } = input else {
             return ToolResult::error(ToolErrorKind::InvalidResponse);
         };
-        let config = SubagentRunConfig {
-            session_id: *run.session_id.as_bytes(),
-            call_id: *call_id.as_bytes(),
-            service: run.service,
-            model_id: run.model_id.clone(),
-            credential_generation: run.credential_generation,
-            maximum_input_tokens: run.maximum_input_tokens,
-            maximum_output_tokens: run.maximum_output_tokens,
+        let Some(config) = subagent_run_config(run, call_id, setting) else {
+            return ToolResult::error(ToolErrorKind::ModelUnavailable);
         };
         let (batch_handle, batch_cancellation) = provider_cancellation();
         let mut children = JoinSet::new();
@@ -145,6 +143,10 @@ impl SubagentExecutor {
             return ToolResult::error(error);
         }
         results.sort_by_key(|result| result.index);
+        let disclosure = subagent_model_disclosure(&config);
+        for result in &mut results {
+            result.model = Some(disclosure.clone());
+        }
         ToolResult::Ok {
             output: ToolOutput::Task { results },
         }
@@ -542,6 +544,61 @@ fn add_usage(total: &mut SubagentUsage, usage: ProviderUsage) -> bool {
     true
 }
 
+fn subagent_run_config(
+    run: &Run,
+    call_id: ToolCallId,
+    setting: SubagentModelSetting,
+) -> Option<SubagentRunConfig> {
+    let (service, model_id, maximum_input_tokens, maximum_output_tokens, protocol_revision) =
+        match setting {
+            SubagentModelSetting::InheritParent {} => (
+                run.service,
+                run.model_id.clone(),
+                run.maximum_input_tokens,
+                run.maximum_output_tokens,
+                run.protocol_revision,
+            ),
+            SubagentModelSetting::OpenCode { service, model_id } => {
+                let model = find_open_code_model(to_provider_service(service), &model_id)?;
+                if !model.capabilities.text_input
+                    || !model.capabilities.text_output
+                    || !model.capabilities.tool_calls
+                {
+                    return None;
+                }
+                (
+                    service,
+                    model_id,
+                    model.maximum_input_tokens,
+                    model.maximum_output_tokens,
+                    model.protocol_revision,
+                )
+            }
+        };
+    Some(SubagentRunConfig {
+        session_id: *run.session_id.as_bytes(),
+        call_id: *call_id.as_bytes(),
+        service,
+        model_id,
+        credential_generation: run.credential_generation,
+        maximum_input_tokens,
+        maximum_output_tokens,
+        protocol_revision,
+    })
+}
+
+fn subagent_model_disclosure(config: &SubagentRunConfig) -> SubagentModelDisclosure {
+    SubagentModelDisclosure {
+        service: match config.service {
+            crate::persistence::RunOpenCodeService::Zen => "OpenCode Zen",
+            crate::persistence::RunOpenCodeService::Go => "OpenCode Go",
+        }
+        .to_owned(),
+        model_id: config.model_id.clone(),
+        protocol_revision: config.protocol_revision,
+    }
+}
+
 fn subagent_result(
     index: u16,
     name: Option<String>,
@@ -553,6 +610,7 @@ fn subagent_result(
         index,
         name,
         status,
+        model: None,
         output: output.to_owned(),
         provider_turns: metrics.provider_turns,
         tool_calls: metrics.tool_calls,
@@ -643,6 +701,62 @@ mod tests {
         assert_ne!(first, subagent_conversation_id([0x11; 16], [0x23; 16], 1));
         assert_ne!(first, [0x11; 16]);
         assert_ne!(first, [0; 16]);
+    }
+
+    #[test]
+    fn configured_cross_protocol_model_replaces_parent_identity_and_limits() {
+        let run = Run {
+            id: crate::persistence::RunId::from_bytes([0x10; 16]),
+            session_id: crate::persistence::SessionId::from_bytes([0x11; 16]),
+            user_message_id: crate::persistence::MessageId::from_bytes([0x12; 16]),
+            service: crate::persistence::RunOpenCodeService::Zen,
+            model_id: "gpt-5.6-sol".to_owned(),
+            protocol_revision: 1,
+            credential_generation: 9,
+            context_policy_version: crate::persistence::CONTEXT_POLICY_VERSION,
+            tool_catalog_version: crate::tools::TOOL_CATALOG_VERSION,
+            tool_limits_version: crate::tools::TOOL_LIMITS_VERSION,
+            execution_image_generation: None,
+            state: crate::persistence::RunState::Active,
+            cancellation_requested: false,
+            failure: None,
+            accepted_at_milliseconds: 1,
+            updated_at_milliseconds: 1,
+            source_entry_high_water: 1,
+            estimated_input_tokens: 1,
+            maximum_input_tokens: 96_000,
+            maximum_output_tokens: 32_000,
+            provider_turns: 1,
+            tool_calls: 1,
+            tool_mutations: 0,
+            tool_result_bytes: 0,
+        };
+        let config = subagent_run_config(
+            &run,
+            ToolCallId::from_bytes([0x13; 16]),
+            SubagentModelSetting::OpenCode {
+                service: crate::persistence::RunOpenCodeService::Go,
+                model_id: "glm-5.3-flash".to_owned(),
+            },
+        )
+        .expect("reviewed cross-protocol setting should resolve");
+        assert_eq!(config.service, crate::persistence::RunOpenCodeService::Go);
+        assert_eq!(config.model_id, "glm-5.3-flash");
+        assert_eq!(config.protocol_revision, 2);
+        assert_eq!(config.credential_generation, 9);
+        assert_eq!(config.maximum_input_tokens, 96_000);
+        assert_eq!(config.maximum_output_tokens, 32_000);
+        assert!(
+            subagent_run_config(
+                &run,
+                ToolCallId::from_bytes([0x14; 16]),
+                SubagentModelSetting::OpenCode {
+                    service: crate::persistence::RunOpenCodeService::Go,
+                    model_id: "not-reviewed".to_owned(),
+                },
+            )
+            .is_none()
+        );
     }
 
     #[test]

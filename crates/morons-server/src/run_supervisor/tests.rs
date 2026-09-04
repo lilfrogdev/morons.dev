@@ -4,7 +4,7 @@ use morons_cli::ApplicationClient;
 
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, MutationRequestId,
-    OpenCodeService, RunId, RunState, SessionId,
+    OpenCodeService, RunId, RunState, SessionId, SubagentModelSetting,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -377,6 +377,80 @@ async fn default_model_selection_is_reviewed_idempotent_and_queryable() {
         Err(ApplicationError::UnsupportedModel)
     ));
     application.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn subagent_model_setting_is_reviewed_idempotent_and_queryable() {
+    let root = TestRoot::new("subagent-model-application");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    let application = ServerApplication::from_session_store_for_test(store, "http://127.0.0.1:9");
+
+    let initial = application
+        .execute_for_local_owner(ApplicationRequest::GetApplicationSettings)
+        .await
+        .expect("initial settings query should succeed");
+    assert!(matches!(
+        initial,
+        ApplicationOutcome::Response(ApplicationResponse::ApplicationSettings { settings })
+            if settings.subagent_model == SubagentModelSetting::InheritParent {}
+    ));
+
+    let request = ApplicationRequest::SetSubagentModelSetting {
+        mutation_request_id: MutationRequestId::from_bytes([0x63; 16]),
+        setting: SubagentModelSetting::OpenCode {
+            service: OpenCodeService::Go,
+            model_id: "glm-5.3-flash".to_owned(),
+        },
+    };
+    for _ in 0..2 {
+        let updated = application
+            .execute_for_local_owner(request.clone())
+            .await
+            .expect("subagent model setting should succeed");
+        assert!(matches!(
+            updated,
+            ApplicationOutcome::Response(ApplicationResponse::ApplicationSettingsUpdated {
+                settings
+            }) if matches!(
+                settings.subagent_model,
+                SubagentModelSetting::OpenCode {
+                    service: OpenCodeService::Go,
+                    ref model_id,
+                } if model_id == "glm-5.3-flash"
+            )
+        ));
+    }
+    let loaded = application
+        .execute_for_local_owner(ApplicationRequest::GetApplicationSettings)
+        .await
+        .expect("updated settings should load");
+    assert!(matches!(
+        loaded,
+        ApplicationOutcome::Response(ApplicationResponse::ApplicationSettings { settings })
+            if settings.subagent_model == request_setting(&request)
+    ));
+
+    let unsupported = application
+        .execute_for_local_owner(ApplicationRequest::SetSubagentModelSetting {
+            mutation_request_id: MutationRequestId::from_bytes([0x64; 16]),
+            setting: SubagentModelSetting::OpenCode {
+                service: OpenCodeService::Go,
+                model_id: "not-reviewed".to_owned(),
+            },
+        })
+        .await;
+    assert!(matches!(
+        unsupported,
+        Err(ApplicationError::UnsupportedModel)
+    ));
+    application.shutdown().await;
+}
+
+fn request_setting(request: &ApplicationRequest) -> SubagentModelSetting {
+    match request {
+        ApplicationRequest::SetSubagentModelSetting { setting, .. } => setting.clone(),
+        _ => panic!("request should contain a subagent setting"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1069,6 +1143,16 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
         )
         .await
         .expect("credential should be configured");
+    store
+        .set_subagent_model_setting(
+            PersistenceMutationRequestId::from_bytes([0x73; 16]),
+            crate::persistence::SubagentModelSetting::OpenCode {
+                service: RunOpenCodeService::Go,
+                model_id: "glm-5.3-flash".to_owned(),
+            },
+        )
+        .await
+        .expect("cross-protocol subagent model should be configured");
     let session = store
         .create_session_at(
             PersistenceMutationRequestId::from_bytes([0x75; 16]),
@@ -1126,10 +1210,18 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
             .iter()
             .all(|request| !request.contains("\"name\":\"ipython\""))
     );
-    assert!(requests[3].contains("function_call_output"));
+    assert!(requests[3].contains("\"role\":\"tool\""));
     assert!(requests[3].contains("alpha source"));
     assert!(requests[4].contains("alpha report"));
     assert!(requests[4].contains("beta report"));
+    assert!(requests[4].contains("OpenCode Go"));
+    assert!(requests[4].contains("glm-5.3-flash"));
+    assert!(requests[0].starts_with("POST /zen/v1/responses"));
+    assert!(
+        requests[1..4]
+            .iter()
+            .all(|request| request.starts_with("POST /zen/go/v1/chat/completions"))
+    );
     assert!(
         requests[4]
             .find("alpha report")
@@ -1194,6 +1286,7 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
             ..
         } if summary.find("alpha report").zip(summary.find("beta report"))
             .is_some_and(|(alpha, beta)| alpha < beta)
+            && summary.contains("OpenCode Go / glm-5.3-flash · protocol revision 2")
     ));
     application.shutdown().await;
     drop(application);
@@ -2111,21 +2204,14 @@ async fn spawn_subagent_provider() -> (
                 .expect("child should connect");
             let request = String::from_utf8(read_http_request(&mut child).await)
                 .expect("child request should be UTF-8");
-            let output = if request.contains("alpha report") {
-                let arguments = r#"{"path":"alpha.txt","offset":1,"limit":10}"#;
-                format!(
-                    "{{\"id\":\"fc_child_read\",\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":\"provider_child_read\",\"name\":\"read\",\"arguments\":{}}}",
-                    serde_json::to_string(arguments).expect("read arguments should encode")
-                )
+            let body = if request.contains("alpha report") {
+                chat_tool_output_body(&format!("chat_child_{child_number}"))
             } else if request.contains("beta report") {
-                format!(
-                    "{{\"id\":\"msg_child_{child_number}\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{{\"type\":\"output_text\",\"text\":\"beta report\",\"annotations\":[]}}]}}"
-                )
+                chat_text_output_body(&format!("chat_child_{child_number}"), "beta report")
             } else {
                 panic!("child request should contain one scoped assignment")
             };
             captured.push(request);
-            let body = provider_output_body(&format!("resp_child_{child_number}"), &output);
             write_provider_headers(&mut child, body.len()).await;
             pending_children.push((child, body));
         }
@@ -2148,8 +2234,16 @@ async fn spawn_subagent_provider() -> (
             String::from_utf8(read_http_request(&mut child_final).await)
                 .expect("child continuation should be UTF-8"),
         );
-        let alpha_output = "{\"id\":\"msg_child_alpha\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"phase\":\"final_answer\",\"content\":[{\"type\":\"output_text\",\"text\":\"alpha report\",\"annotations\":[]}]}";
-        write_provider_output(&mut child_final, "resp_child_alpha", alpha_output).await;
+        let body = chat_text_output_body("chat_child_alpha", "alpha report");
+        write_provider_headers(&mut child_final, body.len()).await;
+        child_final
+            .write_all(body.as_bytes())
+            .await
+            .expect("child continuation response should write");
+        child_final
+            .shutdown()
+            .await
+            .expect("child continuation response should close");
 
         let (mut parent_final, _) = listener
             .accept()
@@ -2166,6 +2260,51 @@ async fn spawn_subagent_provider() -> (
             .unwrap_or_else(|_| panic!("subagent requests should be observed"));
     });
     (format!("http://{address}"), requests_receiver, server)
+}
+
+fn chat_text_output_body(response_id: &str, text: &str) -> String {
+    let chunk = serde_json::json!({
+        "id": response_id,
+        "created": 1,
+        "model": "glm-5.3-flash",
+        "choices": [{
+            "index": 0,
+            "delta": { "role": "assistant", "content": text },
+            "finish_reason": "stop",
+        }],
+        "usage": { "prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11 },
+    });
+    format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        serde_json::to_string(&chunk).expect("chat text should encode")
+    )
+}
+
+fn chat_tool_output_body(response_id: &str) -> String {
+    let arguments = r#"{"path":"alpha.txt","offset":1,"limit":10}"#;
+    let chunk = serde_json::json!({
+        "id": response_id,
+        "created": 1,
+        "model": "glm-5.3-flash",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "role": "assistant",
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "provider_child_read",
+                    "type": "function",
+                    "function": { "name": "read", "arguments": arguments },
+                }],
+            },
+            "finish_reason": "tool_calls",
+        }],
+        "usage": { "prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11 },
+    });
+    format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        serde_json::to_string(&chunk).expect("chat tool output should encode")
+    )
 }
 
 async fn write_provider_output(

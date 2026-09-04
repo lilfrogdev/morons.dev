@@ -17,12 +17,13 @@ const MAX_IMAGE_ATTACHMENTS_PER_MESSAGE: usize = 4;
 const MAX_IMAGE_DISPLAY_NAME_BYTES: usize = 128;
 
 use morons_protocol::{
-    ApplicationError, ApplicationRequest, ApplicationResponse, ClientMessage, FrameError,
-    LocalCommandId, MessageId, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService, ResourceLimit, RunId, RunState,
-    RunSummary, ServerMessage, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor,
-    SessionId, SessionListCursor, SessionSummary, SkillSummary, TranscriptCursor, TranscriptEntry,
-    TranscriptPageDirection, read_server_message, write_client_message,
+    ApplicationError, ApplicationRequest, ApplicationResponse, ApplicationSettings, ClientMessage,
+    FrameError, LocalCommandId, MessageId, MutationRequestId, OpenCodeApiKey,
+    OpenCodeCredentialStatus, OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService,
+    ResourceLimit, RunId, RunState, RunSummary, ServerMessage, SessionCatalogEventCursor,
+    SessionContextStatus, SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
+    SkillSummary, SubagentModelSetting, TranscriptCursor, TranscriptEntry, TranscriptPageDirection,
+    read_server_message, write_client_message,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -325,6 +326,13 @@ fn valid_model_identifier(model_id: &str) -> bool {
         && model_id.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
         })
+}
+
+fn valid_subagent_model_setting(setting: &SubagentModelSetting) -> bool {
+    match setting {
+        SubagentModelSetting::InheritParent {} => true,
+        SubagentModelSetting::OpenCode { model_id, .. } => valid_model_identifier(model_id),
+    }
 }
 
 fn valid_model_summaries(service: OpenCodeService, models: &[OpenCodeModelSummary]) -> bool {
@@ -829,6 +837,45 @@ where
             return Err(ApplicationClientError::EventScopeMismatch);
         }
         Ok(selection)
+    }
+
+    pub async fn application_settings(
+        &mut self,
+    ) -> Result<ApplicationSettings, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::GetApplicationSettings)
+            .await?;
+        let ApplicationResponse::ApplicationSettings { settings } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        if !valid_subagent_model_setting(&settings.subagent_model) {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(settings)
+    }
+
+    pub async fn set_subagent_model_setting(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        setting: SubagentModelSetting,
+    ) -> Result<ApplicationSettings, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::SetSubagentModelSetting {
+                mutation_request_id,
+                setting: setting.clone(),
+            })
+            .await?;
+        let ApplicationResponse::ApplicationSettingsUpdated { settings } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        if settings.subagent_model != setting
+            || !valid_subagent_model_setting(&settings.subagent_model)
+        {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(settings)
     }
 
     pub async fn set_default_open_code_model(

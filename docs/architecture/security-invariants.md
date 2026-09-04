@@ -46,7 +46,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 ## Subagents
 
 - `task` accepts one explicit bounded shared context and one to three bounded self-contained assignments. It is the only subagent admission surface.
-- Children use the parent's exact reviewed service, model, credential generation, and selected directory. They cannot select an endpoint, provider, credential, model, directory, or additional capability.
+- Children use the parent's exact reviewed service and model by default. A server-authoritative owner setting may instead pin one exact reviewed child service/model/protocol pair per task batch; children still use the parent's accepted credential generation and selected directory. Prompts, repositories, skills, and children cannot select an endpoint, credential, directory, unreviewed model, fallback, or additional capability.
 - A child receives only fixed server instructions, the selected directory, shared context, and its assignment. Parent history, compaction checkpoints, images, reasoning continuation, active skill bodies, IPython memory, and sibling context are not inherited implicitly.
 - Children receive only `read`, `write`, `edit`, `bash`, and `web_search`. They receive neither `task` nor `ipython`, so recursion depth is one and temporary kernel state is not shared.
 - Up to three siblings in one call execute concurrently under a global four-child limit. They share the real selected directory and may race; assignment guidance is not isolation or a security boundary.

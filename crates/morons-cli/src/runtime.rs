@@ -224,7 +224,7 @@ impl RuntimeState {
             credential_reconciliation_unknown: None,
             requested_session: None,
             session_generation: 0,
-            refresh_remaining: 5,
+            refresh_remaining: 6,
             request_worker,
             catalog_subscription: None,
             session_subscription: None,
@@ -242,7 +242,7 @@ impl RuntimeState {
             AppAction::Refresh => {
                 if self.refresh_remaining == 0 {
                     enqueue_initial_queries(commands)?;
-                    self.refresh_remaining = 5;
+                    self.refresh_remaining = 6;
                     if let Some(session_id) = self.requested_session {
                         send_command(commands, RequestCommand::LoadSession(session_id))?;
                     }
@@ -342,6 +342,19 @@ impl RuntimeState {
                 };
                 self.start_mutation(command, PendingOperation::SelectModel, commands)?;
                 self.app.set_status("Saving global default model");
+            }
+            AppAction::LoadSettings => {
+                send_command(commands, RequestCommand::LoadSettings)?;
+                self.app
+                    .set_status("Refreshing global application settings");
+            }
+            AppAction::SetSubagentModel { setting } => {
+                let command = RequestCommand::SetSubagentModel {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    setting,
+                };
+                self.start_mutation(command, PendingOperation::UpdateSettings, commands)?;
+                self.app.set_status("Saving global subagent model setting");
             }
             AppAction::ShowContext {
                 session_id,
@@ -531,6 +544,19 @@ impl RuntimeState {
                         crate::app::service_label(service)
                     )
                 });
+            }
+            RequestEvent::SettingsLoaded(settings) => {
+                self.complete_refresh_query();
+                self.app.install_settings(settings);
+                self.app.set_status("Application settings loaded");
+            }
+            RequestEvent::SettingsUpdated {
+                mutation_request_id,
+                settings,
+            } => {
+                self.finish_mutation(mutation_request_id)?;
+                self.app.install_settings(settings);
+                self.app.set_status("Global subagent model setting saved");
             }
             RequestEvent::CredentialStatusLoaded(status) => {
                 self.complete_refresh_query();
@@ -1143,6 +1169,7 @@ fn enqueue_initial_queries(
         RequestCommand::LoadSessions,
         RequestCommand::LoadCredentialStatus,
         RequestCommand::LoadDefaultModel,
+        RequestCommand::LoadSettings,
         RequestCommand::LoadModels(OpenCodeService::Zen),
         RequestCommand::LoadModels(OpenCodeService::Go),
     ] {
@@ -1256,6 +1283,24 @@ mod tests {
         assert!(matches!(
             command_receiver.try_recv(),
             Ok(RequestCommand::LoadSession(selected)) if selected == session_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn opening_settings_requests_fresh_server_authoritative_state() {
+        let request_worker = tokio::spawn(async {});
+        let mut runtime = RuntimeState::new("test-server".to_owned(), request_worker);
+        let (commands, mut command_receiver) = mpsc::channel(1);
+
+        assert!(
+            !runtime
+                .handle_action(AppAction::LoadSettings, &commands)
+                .await
+                .expect("settings action should succeed")
+        );
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(RequestCommand::LoadSettings)
         ));
     }
 

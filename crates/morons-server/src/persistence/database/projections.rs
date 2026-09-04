@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 
 use super::validate_integrity;
 use crate::persistence::{
-    PersistenceError, RunModelSelection, RunOpenCodeService, SessionId,
+    PersistenceError, RunModelSelection, RunOpenCodeService, SessionId, SubagentModelSetting,
     run_types::{
         CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, LEGACY_IMAGE_CONTEXT_POLICY_VERSION,
         LEGACY_SKILL_CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES,
@@ -14,7 +14,7 @@ use crate::persistence::{
         acknowledge_tool_uncertainty_fingerprint, cancel_run_fingerprint,
         create_session_fingerprint, create_session_with_directory_fingerprint,
         default_model_fingerprint, import_repository_fingerprint_from_digest,
-        provision_execution_image_fingerprint, stop_server_fingerprint,
+        provision_execution_image_fingerprint, stop_server_fingerprint, subagent_model_fingerprint,
         submit_session_input_fingerprint, submit_session_input_with_images_fingerprint,
         validate_display_name, validate_model_identifier, validate_model_selection,
         validate_user_text,
@@ -31,6 +31,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
     validate_session_archive_facts(connection)?;
     validate_session_delete_facts(connection)?;
     validate_default_model_facts(connection)?;
+    validate_subagent_model_facts(connection)?;
     validate_mutation_registry(connection)?;
     validate_local_command_facts(connection)?;
     validate_image_attachment_facts(connection)?;
@@ -321,6 +322,46 @@ fn validate_default_model_facts(connection: &Connection) -> Result<(), Persisten
     Ok(())
 }
 
+fn validate_subagent_model_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    let mut statement = connection.prepare(
+        "SELECT operation_fingerprint, selection_kind, open_code_service, model_id
+         FROM subagent_model_selections",
+    )?;
+    let selections = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, [u8; 32]>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (fingerprint, kind, service, model_id) in selections {
+        let setting = match (kind, service, model_id) {
+            (1, None, None) => SubagentModelSetting::InheritParent {},
+            (2, Some(service), Some(model_id)) => {
+                validate_model_identifier(&model_id)?;
+                SubagentModelSetting::OpenCode {
+                    service: RunOpenCodeService::from_record(service)?,
+                    model_id,
+                }
+            }
+            _ => {
+                return Err(PersistenceError::InvalidState {
+                    reason: "a persisted subagent model setting has an invalid shape",
+                });
+            }
+        };
+        if fingerprint != subagent_model_fingerprint(&setting) {
+            return Err(PersistenceError::InvalidState {
+                reason: "a persisted subagent model setting has invalid canonical input",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn validate_mutation_registry(connection: &Connection) -> Result<(), PersistenceError> {
     let invalid: bool = connection.query_row(
         "SELECT EXISTS (
@@ -434,6 +475,29 @@ fn validate_mutation_registry(connection: &Connection) -> Result<(), Persistence
     if invalid {
         return Err(PersistenceError::InvalidState {
             reason: "mutation requests conflict with their canonical operation records",
+        });
+    }
+    let invalid_subagent_setting: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN subagent_model_selections AS selection
+              ON selection.request_id = mutation.request_id
+            WHERE mutation.operation_kind = 16 AND (
+                selection.request_id IS NULL
+                OR mutation.accepted_sequence IS NOT selection.accepted_sequence
+                OR mutation.accepted_at_milliseconds IS NOT selection.accepted_at_milliseconds
+            )
+            UNION ALL
+            SELECT 1 FROM subagent_model_selections AS selection
+            LEFT JOIN mutation_requests AS mutation ON mutation.request_id = selection.request_id
+            WHERE mutation.operation_kind IS NOT 16
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid_subagent_setting {
+        return Err(PersistenceError::InvalidState {
+            reason: "subagent model mutations conflict with the mutation registry",
         });
     }
     Ok(())

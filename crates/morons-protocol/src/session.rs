@@ -285,6 +285,11 @@ pub enum ApplicationRequest {
         service: crate::OpenCodeService,
         model_id: String,
     },
+    GetApplicationSettings,
+    SetSubagentModelSetting {
+        mutation_request_id: MutationRequestId,
+        setting: crate::SubagentModelSetting,
+    },
     ListSessionSkills {
         session_id: SessionId,
     },
@@ -414,6 +419,15 @@ impl fmt::Debug for ApplicationRequest {
                 .field("mutation_request_id", mutation_request_id)
                 .field("service", service)
                 .field("model_id", model_id)
+                .finish(),
+            Self::GetApplicationSettings => formatter.write_str("GetApplicationSettings"),
+            Self::SetSubagentModelSetting {
+                mutation_request_id,
+                setting,
+            } => formatter
+                .debug_struct("SetSubagentModelSetting")
+                .field("mutation_request_id", mutation_request_id)
+                .field("setting", setting)
                 .finish(),
             Self::ListSessionSkills { session_id } => formatter
                 .debug_struct("ListSessionSkills")
@@ -563,6 +577,12 @@ pub enum ApplicationResponse {
     },
     DefaultOpenCodeModelUpdated {
         selection: crate::OpenCodeModelSelection,
+    },
+    ApplicationSettings {
+        settings: crate::ApplicationSettings,
+    },
+    ApplicationSettingsUpdated {
+        settings: crate::ApplicationSettings,
     },
     SessionSkillsListed {
         session_id: SessionId,

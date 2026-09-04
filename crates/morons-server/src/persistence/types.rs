@@ -11,6 +11,7 @@ use super::{
     paths::PathError,
     run_types::{
         MAX_MODEL_ID_BYTES, MAX_USER_MESSAGE_BYTES, RunId, RunModelSelection, RunOpenCodeService,
+        SubagentModelSetting,
     },
 };
 
@@ -26,6 +27,7 @@ const RENAME_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/rename-session/v1
 const ARCHIVE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/archive-session/v1\0";
 const DELETE_SESSION_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/delete-session/v1\0";
 const DEFAULT_MODEL_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/default-model/v1\0";
+const SUBAGENT_MODEL_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/subagent-model/v1\0";
 const SUBMIT_SESSION_INPUT_FINGERPRINT_CONTEXT: &[u8] = b"morons.dev/submit-session-input/v1\0";
 const SUBMIT_SESSION_INPUT_WITH_IMAGES_FINGERPRINT_CONTEXT: &[u8] =
     b"morons.dev/submit-session-input/v2\0";
@@ -505,6 +507,15 @@ pub(super) fn validate_model_identifier(model_id: &str) -> Result<(), Persistenc
     Ok(())
 }
 
+pub(super) fn validate_subagent_model_setting(
+    setting: &SubagentModelSetting,
+) -> Result<(), PersistenceError> {
+    if let SubagentModelSetting::OpenCode { model_id, .. } = setting {
+        validate_model_identifier(model_id)?;
+    }
+    Ok(())
+}
+
 pub(super) fn validate_model_selection(
     selection: &RunModelSelection,
 ) -> Result<(), PersistenceError> {
@@ -532,6 +543,26 @@ pub(super) fn default_model_fingerprint(
     }]);
     digest.update((model_id.len() as u16).to_be_bytes());
     digest.update(model_id.as_bytes());
+    digest.finalize().into()
+}
+
+pub(super) fn subagent_model_fingerprint(
+    setting: &SubagentModelSetting,
+) -> [u8; REQUEST_FINGERPRINT_BYTES] {
+    let mut digest = Sha256::new();
+    digest.update(SUBAGENT_MODEL_FINGERPRINT_CONTEXT);
+    match setting {
+        SubagentModelSetting::InheritParent {} => digest.update([0]),
+        SubagentModelSetting::OpenCode { service, model_id } => {
+            digest.update([1]);
+            digest.update([match service {
+                RunOpenCodeService::Zen => 1,
+                RunOpenCodeService::Go => 2,
+            }]);
+            digest.update((model_id.len() as u16).to_be_bytes());
+            digest.update(model_id.as_bytes());
+        }
+    }
     digest.finalize().into()
 }
 
