@@ -185,7 +185,7 @@ impl ManagedPythonRuntime {
                 OsString::from("--no-bin"),
                 OsString::from("--install-dir"),
                 managed_python.as_os_str().to_owned(),
-                OsString::from(PYTHON_VERSION),
+                OsString::from(managed_python_request()),
             ],
             cancellation,
             deadline,
@@ -300,8 +300,29 @@ impl ManagedPythonRuntime {
 
 fn runtime_manifest() -> String {
     format!(
-        "format=1\nuv={UV_VERSION}\npython={PYTHON_VERSION}\njupyter_client={JUPYTER_CLIENT_VERSION}\nipykernel={IPYKERNEL_VERSION}\nrequirements_sha256={REQUIREMENTS_SHA256}\n"
+        "format=1\nuv={UV_VERSION}\npython={PYTHON_VERSION}\npython_target={}\njupyter_client={JUPYTER_CLIENT_VERSION}\nipykernel={IPYKERNEL_VERSION}\nrequirements_sha256={REQUIREMENTS_SHA256}\n",
+        managed_python_target()
     )
+}
+
+fn managed_python_request() -> &'static str {
+    if cfg!(all(windows, target_arch = "aarch64")) {
+        "cpython-3.11.15-windows-x86_64-none"
+    } else {
+        PYTHON_VERSION
+    }
+}
+
+fn managed_python_target() -> &'static str {
+    match (env::consts::OS, env::consts::ARCH) {
+        ("windows", "aarch64") => "x86_64-pc-windows-msvc",
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        _ => "unsupported",
+    }
 }
 
 fn validate_python(python: &Path, cancellation: &ProviderCancellation, deadline: Instant) -> bool {
