@@ -32,6 +32,9 @@ use crate::{
     },
 };
 
+#[path = "tests/hardening.rs"]
+mod hardening;
+
 const TERMINAL_RUN_TEST_TIMEOUT: Duration = if cfg!(windows) {
     Duration::from_secs(45)
 } else {

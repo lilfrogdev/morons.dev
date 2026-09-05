@@ -9,6 +9,22 @@ fn decoder() -> ChatCompletionsDecoder {
 }
 
 #[test]
+fn invalid_cache_counts_return_error_without_panicking() {
+    for (prompt, cached, missed) in [(1_u64, 2_u64, 0_u64), (1, u64::MAX, 0), (2, 1, 2)] {
+        let stream = record(&serde_json::json!({
+            "id":"cache_error", "object":"chat.completion.chunk", "created":1, "model":"glm-5.3-flash",
+            "choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":prompt,"completion_tokens":1,"total_tokens":prompt + 1,
+                "prompt_cache_hit_tokens":cached,"prompt_cache_miss_tokens":missed}
+        }).to_string());
+        assert_eq!(
+            decoder().push(stream.as_bytes()).err(),
+            Some(ProviderError::MalformedResponse)
+        );
+    }
+}
+
+#[test]
 fn complete_text_stream_is_normalized_with_usage() {
     let mut decoder = decoder();
     let stream = [

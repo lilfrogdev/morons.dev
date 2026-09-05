@@ -576,7 +576,7 @@ impl ChatCompletionsDecoder {
             .is_none_or(|cache_tokens| cache_tokens > usage.prompt_tokens);
         let miss_mismatch = usage
             .prompt_cache_miss_tokens
-            .is_some_and(|miss| miss != usage.prompt_tokens - cached);
+            .is_some_and(|miss| usage.prompt_tokens.checked_sub(cached) != Some(miss));
         let invalid_reasoning = reasoning > usage.completion_tokens;
         if unsupported_usage
             || prompt_zero

@@ -741,7 +741,6 @@ impl ContextCheckpointId {
 pub(crate) struct ContextCheckpoint {
     pub id: ContextCheckpointId,
     pub source_entry_high_water: u64,
-    pub source_digest: [u8; 32],
     pub summary: String,
     pub estimated_summary_tokens: u32,
 }
@@ -752,7 +751,7 @@ pub(crate) struct CompactionPlan {
     pub user_guidance: Option<String>,
     pub source_entry_high_water: u64,
     pub source_digest: [u8; 32],
-    pub entries: Vec<TranscriptEntry>,
+    pub source: String,
     pub parent_summary: Option<String>,
     pub estimated_input_tokens: u32,
 }

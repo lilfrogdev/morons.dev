@@ -3,6 +3,7 @@ use std::{
     fmt,
 };
 
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -186,8 +187,16 @@ pub struct OpenCodeResponseRequest {
     model: &'static OpenCodeModel,
     estimated_input_tokens: u32,
     maximum_output_tokens: u32,
-    input: Vec<ProviderInputItem>,
-    tools: Vec<ProviderTool>,
+    input_items: usize,
+    tool_count: usize,
+    body: Bytes,
+}
+
+struct RequestEncoder<'a> {
+    model: &'static OpenCodeModel,
+    maximum_output_tokens: u32,
+    input: &'a [ProviderInputItem],
+    tools: &'a [ProviderTool],
 }
 
 impl fmt::Debug for OpenCodeResponseRequest {
@@ -198,8 +207,8 @@ impl fmt::Debug for OpenCodeResponseRequest {
             .field("model", &self.model.id)
             .field("estimated_input_tokens", &self.estimated_input_tokens)
             .field("maximum_output_tokens", &self.maximum_output_tokens)
-            .field("input_items", &self.input.len())
-            .field("tools", &self.tools.len())
+            .field("input_items", &self.input_items)
+            .field("tools", &self.tool_count)
             .finish()
     }
 }
@@ -237,16 +246,22 @@ impl OpenCodeResponseRequest {
             .finalize();
         let mut opencode_session_id = [0_u8; 16];
         opencode_session_id.copy_from_slice(&digest[..16]);
-        let request = Self {
+        let body = RequestEncoder {
+            model,
+            maximum_output_tokens,
+            input: &input,
+            tools: &tools,
+        }
+        .encode_body()?;
+        Ok(Self {
             opencode_session_id,
             model,
             estimated_input_tokens,
             maximum_output_tokens,
-            input,
-            tools,
-        };
-        request.encode_body()?;
-        Ok(request)
+            input_items: input.len(),
+            tool_count: tools.len(),
+            body: Bytes::from(body),
+        })
     }
 
     #[must_use]
@@ -265,7 +280,13 @@ impl OpenCodeResponseRequest {
         value
     }
 
-    pub(super) fn encode_body(&self) -> Result<Vec<u8>, ProviderError> {
+    pub(super) fn encoded_body(&self) -> Bytes {
+        self.body.clone()
+    }
+}
+
+impl RequestEncoder<'_> {
+    fn encode_body(&self) -> Result<Vec<u8>, ProviderError> {
         let body = match self.model.protocol {
             ProviderProtocol::Responses => self.encode_responses_body()?,
             ProviderProtocol::ChatCompletions => self.encode_chat_completions_body()?,
@@ -299,7 +320,7 @@ impl OpenCodeResponseRequest {
     }
 
     fn encode_chat_completions_body(&self) -> Result<Vec<u8>, ProviderError> {
-        let messages = chat_messages(&self.input, self.model.id.starts_with("deepseek-"))?;
+        let messages = chat_messages(self.input, self.model.id.starts_with("deepseek-"))?;
         let tools = self.tools.iter().map(ChatWireTool::from).collect();
         serde_json::to_vec(&ChatWireRequest {
             model: self.model.id,
@@ -315,7 +336,7 @@ impl OpenCodeResponseRequest {
     }
 
     fn encode_anthropic_messages_body(&self) -> Result<Vec<u8>, ProviderError> {
-        let (system, messages) = anthropic_messages(&self.input)?;
+        let (system, messages) = anthropic_messages(self.input)?;
         let tools = self.tools.iter().map(AnthropicWireTool::from).collect();
         serde_json::to_vec(&AnthropicWireRequest {
             model: self.model.id,
@@ -329,7 +350,7 @@ impl OpenCodeResponseRequest {
     }
 
     fn encode_gemini_body(&self) -> Result<Vec<u8>, ProviderError> {
-        let (system_instruction, contents) = gemini_contents(&self.input)?;
+        let (system_instruction, contents) = gemini_contents(self.input)?;
         let function_declarations = self
             .tools
             .iter()

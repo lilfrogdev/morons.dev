@@ -125,7 +125,7 @@ pub(crate) struct PreparedOpenCodeDispatch<'a> {
     credential: OpenCodeCredentialLease<'a>,
     client: &'a OpenCodeClient,
     request: &'a OpenCodeResponseRequest,
-    body: Vec<u8>,
+    body: Bytes,
 }
 
 impl PreparedOpenCodeDispatch<'_> {
@@ -188,7 +188,7 @@ impl OpenCodeProvider {
         expected_credential_generation: u64,
         request: &'a OpenCodeResponseRequest,
     ) -> Result<PreparedOpenCodeDispatch<'a>, ProviderError> {
-        let body = request.encode_body()?;
+        let body = request.encoded_body();
         let credential = self
             .sessions
             .lease_open_code_credential(expected_credential_generation)
@@ -315,7 +315,7 @@ impl OpenCodeClient {
         &self,
         credential: OpenCodeCredentialLease<'_>,
         request: &OpenCodeResponseRequest,
-        body: Vec<u8>,
+        body: Bytes,
         cancellation: &mut ProviderCancellation,
         on_event: F,
     ) -> Result<ProviderOutcome, ProviderError>
@@ -365,7 +365,7 @@ impl OpenCodeClient {
         &self,
         api_key: &[u8],
         request: &OpenCodeResponseRequest,
-        body: Vec<u8>,
+        body: Bytes,
         cancellation: &mut ProviderCancellation,
     ) -> Result<(Response<Incoming>, Instant), ProviderError> {
         if cancellation.is_cancelled() {
@@ -397,7 +397,7 @@ impl OpenCodeClient {
             }
         };
         let http_request = builder
-            .body(Full::new(Bytes::from(body)))
+            .body(Full::new(body))
             .map_err(|_| ProviderError::Transport)?;
         let deadline = Instant::now() + PROVIDER_TOTAL_TIMEOUT;
         let response = tokio::select! {
@@ -517,7 +517,7 @@ impl OpenCodeClient {
     where
         F: FnMut(ProviderStreamEvent),
     {
-        let body = request.encode_body()?;
+        let body = request.encoded_body();
         let (response, deadline) = self
             .send_inference(api_key, request, body, cancellation)
             .await?;
