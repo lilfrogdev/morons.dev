@@ -918,7 +918,7 @@ fn build_provider_request(
     }) {
         return Err(ProviderError::InvalidRequest);
     }
-    OpenCodeResponseRequest::new(
+    OpenCodeResponseRequest::with_prepared_tools(
         *context.run.session_id.as_bytes(),
         to_provider_service(context.run.service),
         &context.run.model_id,
@@ -926,9 +926,9 @@ fn build_provider_request(
         context.run.maximum_output_tokens,
         input,
         if tools_enabled {
-            provider_tools()
+            provider_tools()?
         } else {
-            Vec::new()
+            crate::provider::PreparedProviderTools::empty()
         },
     )
 }

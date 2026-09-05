@@ -766,6 +766,18 @@ impl fmt::Debug for ApplicationEvent {
     }
 }
 
+/// The last matching successful root call, not a session-wide bill. Excludes
+/// compaction, subagents and failed requests. Times are wall-clock observations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecentProviderUsage {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub elapsed_milliseconds: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextStatus {
@@ -774,6 +786,11 @@ pub struct SessionContextStatus {
     pub model_id: String,
     pub context_policy_version: u16,
     pub estimated_input_tokens: u32,
+    pub conservative_input_tokens: u32,
+    pub estimate_uses_provider_usage: bool,
+    pub latest_provider_usage: Option<RecentProviderUsage>,
+    pub completed_compactions: u64,
+    pub last_compaction_milliseconds: Option<u64>,
     pub maximum_input_tokens: u32,
     pub maximum_output_tokens: u32,
     pub compaction_threshold_tokens: u32,

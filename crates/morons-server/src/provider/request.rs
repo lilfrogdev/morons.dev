@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
+    sync::OnceLock,
 };
 
 use bytes::Bytes;
@@ -192,11 +193,63 @@ pub struct OpenCodeResponseRequest {
     body: Bytes,
 }
 
+/// Immutable, bounded tool definitions. Only Gemini's schema lowering needs a
+/// cached projection; other encoders borrow the original validated schema.
+pub(crate) struct PreparedProviderTools {
+    definitions: Vec<ProviderTool>,
+    gemini_parameters: OnceLock<Result<Vec<Option<Value>>, ProviderError>>,
+}
+
+impl fmt::Debug for PreparedProviderTools {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedProviderTools")
+            .field("tool_count", &self.definitions.len())
+            .field("gemini_projected", &self.gemini_parameters.get().is_some())
+            .finish()
+    }
+}
+
+impl PreparedProviderTools {
+    pub(crate) fn new(definitions: Vec<ProviderTool>) -> Result<Self, ProviderError> {
+        validate_tool_definitions(&definitions)?;
+        Ok(Self {
+            definitions,
+            gemini_parameters: OnceLock::new(),
+        })
+    }
+
+    pub(crate) fn empty() -> &'static Self {
+        static EMPTY: PreparedProviderTools = PreparedProviderTools {
+            definitions: Vec::new(),
+            gemini_parameters: OnceLock::new(),
+        };
+        &EMPTY
+    }
+
+    pub(crate) fn definitions(&self) -> &[ProviderTool] {
+        &self.definitions
+    }
+
+    fn gemini_parameters(&self) -> Result<&[Option<Value>], ProviderError> {
+        self.gemini_parameters
+            .get_or_init(|| {
+                self.definitions
+                    .iter()
+                    .map(|tool| gemini_tool_schema(&tool.parameters))
+                    .collect()
+            })
+            .as_ref()
+            .map(Vec::as_slice)
+            .map_err(|error| *error)
+    }
+}
+
 struct RequestEncoder<'a> {
     model: &'static OpenCodeModel,
     maximum_output_tokens: u32,
     input: &'a [ProviderInputItem],
-    tools: &'a [ProviderTool],
+    tools: &'a PreparedProviderTools,
 }
 
 impl fmt::Debug for OpenCodeResponseRequest {
@@ -223,6 +276,26 @@ impl OpenCodeResponseRequest {
         input: Vec<ProviderInputItem>,
         tools: Vec<ProviderTool>,
     ) -> Result<Self, ProviderError> {
+        Self::with_prepared_tools(
+            conversation_id,
+            service,
+            model_id,
+            estimated_input_tokens,
+            maximum_output_tokens,
+            input,
+            &PreparedProviderTools::new(tools)?,
+        )
+    }
+
+    pub(crate) fn with_prepared_tools(
+        conversation_id: [u8; 16],
+        service: OpenCodeService,
+        model_id: &str,
+        estimated_input_tokens: u32,
+        maximum_output_tokens: u32,
+        input: Vec<ProviderInputItem>,
+        tools: &PreparedProviderTools,
+    ) -> Result<Self, ProviderError> {
         let model =
             find_open_code_model(service, model_id).ok_or(ProviderError::UnsupportedModel)?;
         if conversation_id.iter().all(|byte| *byte == 0)
@@ -239,7 +312,9 @@ impl OpenCodeResponseRequest {
             return Err(ProviderError::InvalidRequest);
         }
         validate_input(&input, model)?;
-        validate_tools(&tools, model)?;
+        if !tools.definitions.is_empty() && !model.capabilities.tool_calls {
+            return Err(ProviderError::InvalidRequest);
+        }
         let digest = Sha256::new()
             .chain_update(OPENCODE_SESSION_FINGERPRINT_CONTEXT)
             .chain_update(conversation_id)
@@ -250,7 +325,7 @@ impl OpenCodeResponseRequest {
             model,
             maximum_output_tokens,
             input: &input,
-            tools: &tools,
+            tools,
         }
         .encode_body()?;
         Ok(Self {
@@ -259,7 +334,7 @@ impl OpenCodeResponseRequest {
             estimated_input_tokens,
             maximum_output_tokens,
             input_items: input.len(),
-            tool_count: tools.len(),
+            tool_count: tools.definitions.len(),
             body: Bytes::from(body),
         })
     }
@@ -301,7 +376,7 @@ impl RequestEncoder<'_> {
 
     fn encode_responses_body(&self) -> Result<Vec<u8>, ProviderError> {
         let input = self.input.iter().map(WireInputItem::from).collect();
-        let tools = self.tools.iter().map(WireTool::from).collect();
+        let tools = self.tools.definitions.iter().map(WireTool::from).collect();
         serde_json::to_vec(&WireRequest {
             model: self.model.id,
             include: self
@@ -321,7 +396,12 @@ impl RequestEncoder<'_> {
 
     fn encode_chat_completions_body(&self) -> Result<Vec<u8>, ProviderError> {
         let messages = chat_messages(self.input, self.model.id.starts_with("deepseek-"))?;
-        let tools = self.tools.iter().map(ChatWireTool::from).collect();
+        let tools = self
+            .tools
+            .definitions
+            .iter()
+            .map(ChatWireTool::from)
+            .collect();
         serde_json::to_vec(&ChatWireRequest {
             model: self.model.id,
             messages,
@@ -337,7 +417,12 @@ impl RequestEncoder<'_> {
 
     fn encode_anthropic_messages_body(&self) -> Result<Vec<u8>, ProviderError> {
         let (system, messages) = anthropic_messages(self.input)?;
-        let tools = self.tools.iter().map(AnthropicWireTool::from).collect();
+        let tools = self
+            .tools
+            .definitions
+            .iter()
+            .map(AnthropicWireTool::from)
+            .collect();
         serde_json::to_vec(&AnthropicWireRequest {
             model: self.model.id,
             system,
@@ -351,17 +436,17 @@ impl RequestEncoder<'_> {
 
     fn encode_gemini_body(&self) -> Result<Vec<u8>, ProviderError> {
         let (system_instruction, contents) = gemini_contents(self.input)?;
-        let function_declarations = self
+        let function_declarations: Vec<_> = self
             .tools
+            .definitions
             .iter()
-            .map(|tool| {
-                Ok(GeminiWireFunctionDeclaration {
-                    name: &tool.name,
-                    description: &tool.description,
-                    parameters: gemini_tool_schema(&tool.parameters)?,
-                })
+            .zip(self.tools.gemini_parameters()?)
+            .map(|(tool, parameters)| GeminiWireFunctionDeclaration {
+                name: &tool.name,
+                description: &tool.description,
+                parameters: parameters.as_ref(),
             })
-            .collect::<Result<Vec<_>, ProviderError>>()?;
+            .collect();
         let tools = (!function_declarations.is_empty()).then_some([GeminiWireTool {
             function_declarations,
         }]);
@@ -530,8 +615,8 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
     Ok(())
 }
 
-fn validate_tools(tools: &[ProviderTool], model: &OpenCodeModel) -> Result<(), ProviderError> {
-    if tools.len() > MAX_TOOL_COUNT || (!tools.is_empty() && !model.capabilities.tool_calls) {
+fn validate_tool_definitions(tools: &[ProviderTool]) -> Result<(), ProviderError> {
+    if tools.len() > MAX_TOOL_COUNT {
         return Err(ProviderError::InvalidRequest);
     }
     let mut names = BTreeSet::new();
@@ -1251,7 +1336,7 @@ struct GeminiWireFunctionDeclaration<'a> {
     name: &'a str,
     description: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    parameters: Option<Value>,
+    parameters: Option<&'a Value>,
 }
 
 #[derive(Serialize)]
@@ -1565,3 +1650,7 @@ fn gemini_project_schema(schema: &Value) -> Result<Option<Value>, ProviderError>
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "request/prepared_tests.rs"]
+mod prepared_tests;

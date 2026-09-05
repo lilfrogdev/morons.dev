@@ -61,6 +61,19 @@ pub(super) async fn spawn_compaction_provider() -> (
                 String::from_utf8(read_http_request(&mut stream).await)
                     .expect("request should be UTF-8"),
             );
+            let request = request_body(captured.last().unwrap());
+            assert_eq!(request["model"], "muse-spark-1.2");
+            assert_eq!(request["stream"], true);
+            assert_eq!(request["store"], false);
+            assert_eq!(request["input"][0]["role"], "developer");
+            if index == 0 {
+                assert!(request["tools"].as_array().unwrap().is_empty());
+                assert_eq!(request["max_output_tokens"], 4_096);
+                assert_eq!(request["input"].as_array().unwrap().len(), 2);
+                assert_eq!(request["input"][1]["role"], "user");
+            } else {
+                assert_eq!(request["tools"].as_array().unwrap().len(), 7);
+            }
             let response_id = format!("resp_compact_{}", index + 1);
             let message_id = format!("msg_compact_{}", index + 1);
             let output = format!(

@@ -17,6 +17,8 @@ pub(super) struct ContextBudget {
     pub bytes: u64,
     pub images: u64,
     pub image_bytes: u64,
+    // Advisory only; fits() always uses the independent conservative guard.
+    pub observed_input_tokens: Option<u64>,
 }
 
 impl ContextBudget {
@@ -28,8 +30,14 @@ impl ContextBudget {
             .saturating_add(CONTEXT_REQUEST_RESERVE)
     }
 
+    pub(super) fn estimated_tokens(&self, extra_bytes: usize) -> u64 {
+        self.observed_input_tokens
+            .unwrap_or_else(|| self.tokens(extra_bytes))
+    }
+
     pub(super) fn pressure(&self, maximum_input_tokens: u32, extra_bytes: usize) -> bool {
-        self.tokens(extra_bytes) >= u64::from(maximum_input_tokens) * 7 / 10
+        !self.fits(maximum_input_tokens, extra_bytes)
+            || self.estimated_tokens(extra_bytes) >= u64::from(maximum_input_tokens) * 7 / 10
             || self
                 .entries
                 .saturating_add(self.images)
@@ -102,6 +110,7 @@ pub(super) fn context_budget(
         bytes: nonnegative(bytes)?,
         images: nonnegative(images)?,
         image_bytes: nonnegative(image_bytes)?,
+        observed_input_tokens: None,
     })
 }
 

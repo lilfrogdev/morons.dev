@@ -20,6 +20,7 @@ impl Backend {
         checkpoint: Option<&ContextCheckpoint>,
         through: u64,
         skill_bytes: usize,
+        budget: &super::context_budget::ContextBudget,
     ) -> Result<Option<CompactionPlan>, PersistenceError> {
         // One compaction per run in schema v25; never repeat an uncertain request.
         let already_compacted: bool = self.connection.query_row(
@@ -37,7 +38,6 @@ impl Backend {
         )?;
         let manual = prompt == "/compact" || prompt.starts_with("/compact ");
         let covered = checkpoint.map_or(0, |checkpoint| checkpoint.source_entry_high_water);
-        let budget = self.context_budget(run.session_id, covered, through)?;
         if !manual
             && !budget.pressure(
                 run.maximum_input_tokens,

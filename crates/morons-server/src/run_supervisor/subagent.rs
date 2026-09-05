@@ -226,15 +226,17 @@ impl SubagentExecutor {
                     subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                 ));
             }
-            let request = match OpenCodeResponseRequest::new(
-                conversation_id,
-                to_provider_service(config.service),
-                &config.model_id,
-                estimated_input_tokens,
-                MAX_SUBAGENT_OUTPUT_TOKENS.min(config.maximum_output_tokens),
-                input.clone(),
-                subagent_provider_tools(),
-            ) {
+            let request = match subagent_provider_tools().and_then(|tools| {
+                OpenCodeResponseRequest::with_prepared_tools(
+                    conversation_id,
+                    to_provider_service(config.service),
+                    &config.model_id,
+                    estimated_input_tokens,
+                    MAX_SUBAGENT_OUTPUT_TOKENS.min(config.maximum_output_tokens),
+                    input.clone(),
+                    tools,
+                )
+            }) {
                 Ok(request) => request,
                 Err(error) => {
                     return Ok(failed_provider_result(

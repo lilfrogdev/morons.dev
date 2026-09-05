@@ -26,7 +26,7 @@ use tokio::sync::{Mutex, watch};
 use crate::{
     command_supervisor::CommandSupervisor,
     persistence::{
-        DefaultModelSelection, PersistenceError, PreparedImageAttachment, RunModelSelection,
+        DefaultModelSelection, PersistenceError, PreparedImageAttachment,
         SessionCatalogEventCursor, SessionCatalogEventKind, SessionEventCursor,
         SessionEventPayload, SessionId, SessionStore, TranscriptPageDirection,
     },
@@ -475,8 +475,7 @@ impl ServerApplication {
                     .sessions
                     .session_context_status(
                         to_persistence_session_id(session_id),
-                        model.maximum_input_tokens,
-                        model.maximum_output_tokens,
+                        to_run_model_selection(model),
                     )
                     .await
                     .map_err(to_application_error)?;
@@ -488,6 +487,19 @@ impl ServerApplication {
                             model_id,
                             context_policy_version: crate::persistence::CONTEXT_POLICY_VERSION,
                             estimated_input_tokens: status.estimated_input_tokens,
+                            conservative_input_tokens: status.conservative_input_tokens,
+                            estimate_uses_provider_usage: status.estimate_uses_provider_usage,
+                            latest_provider_usage: status.latest_provider_usage.map(|usage| {
+                                morons_protocol::RecentProviderUsage {
+                                    input_tokens: usage.input_tokens,
+                                    cached_input_tokens: usage.cached_input_tokens,
+                                    cache_write_input_tokens: usage.cache_write_input_tokens,
+                                    output_tokens: usage.output_tokens,
+                                    elapsed_milliseconds: usage.elapsed_milliseconds,
+                                }
+                            }),
+                            completed_compactions: status.completed_compactions,
+                            last_compaction_milliseconds: status.last_compaction_milliseconds,
                             maximum_input_tokens: status.maximum_input_tokens,
                             maximum_output_tokens: status.maximum_output_tokens,
                             compaction_threshold_tokens: status.compaction_threshold_tokens,
@@ -619,15 +631,7 @@ impl ServerApplication {
                         mutation_request_id,
                         session_id,
                         text,
-                        RunModelSelection {
-                            service: persistence_service,
-                            model_id,
-                            protocol_revision: model.protocol_revision,
-                            maximum_input_tokens: model.maximum_input_tokens,
-                            maximum_output_tokens: model.maximum_output_tokens,
-                            supports_tool_calls: model.capabilities.tool_calls,
-                            supports_image_input: model.capabilities.image_input,
-                        },
+                        to_run_model_selection(model),
                         skill_context,
                         prepared_attachments,
                     )

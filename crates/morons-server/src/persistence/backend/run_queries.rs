@@ -321,51 +321,6 @@ impl Backend {
         Ok(())
     }
 
-    pub(crate) fn session_context_status(
-        &self,
-        session_id: SessionId,
-        maximum_input_tokens: u32,
-        maximum_output_tokens: u32,
-    ) -> Result<crate::persistence::SessionContextStatus, PersistenceError> {
-        let exists: bool = self.connection.query_row(
-            "SELECT EXISTS (SELECT 1 FROM sessions WHERE session_id = ?1)",
-            [&session_id.as_bytes()[..]],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            return Err(PersistenceError::SessionNotFound);
-        }
-        let latest_run_id = self
-            .connection
-            .query_row(
-                "SELECT run_id FROM run_accepted_facts
-                 WHERE session_id = ?1 ORDER BY fact_sequence DESC LIMIT 1",
-                [&session_id.as_bytes()[..]],
-                |row| row.get::<_, [u8; 16]>(0),
-            )
-            .optional()?
-            .map(RunId::from_bytes);
-        let (estimated_input_tokens, checkpoint) = match latest_run_id {
-            Some(run_id) => {
-                let context = self.load_run_context(run_id)?;
-                (context.estimated_input_tokens, context.checkpoint)
-            }
-            None => (1, None),
-        };
-        Ok(crate::persistence::SessionContextStatus {
-            estimated_input_tokens,
-            maximum_input_tokens,
-            maximum_output_tokens,
-            compaction_threshold_tokens: maximum_input_tokens.saturating_mul(7) / 10,
-            checkpoint_source_entry_high_water: checkpoint
-                .as_ref()
-                .map(|checkpoint| checkpoint.source_entry_high_water),
-            checkpoint_estimated_summary_tokens: checkpoint
-                .as_ref()
-                .map(|checkpoint| checkpoint.estimated_summary_tokens),
-        })
-    }
-
     pub(crate) fn load_run_context(&self, run_id: RunId) -> Result<RunContext, PersistenceError> {
         self.ensure_context_integrity()?;
         let run = load_required_run(&self.connection, run_id)?;
@@ -420,8 +375,26 @@ impl Backend {
             [&run.session_id.as_bytes()[..]],
             |row| row.get::<_, Option<String>>(0),
         )?;
-        let budget =
+        let mut budget =
             self.context_budget(run.session_id, covered_high_water, current_entry_high_water)?;
+        if run.context_policy_version == CONTEXT_POLICY_VERSION
+            && run.tool_catalog_version == crate::tools::TOOL_CATALOG_VERSION
+            && run.tool_limits_version == crate::tools::TOOL_LIMITS_VERSION
+        {
+            budget.observed_input_tokens = self
+                .observe_context_usage(
+                    run.session_id,
+                    super::context_usage::ContextModel {
+                        service: run.service,
+                        model_id: &run.model_id,
+                        protocol_revision: run.protocol_revision,
+                    },
+                    checkpoint.as_ref(),
+                    current_entry_high_water,
+                    &skills,
+                )?
+                .map(|observation| observation.estimated_tokens);
+        }
         // Decide before loading image bytes or materializing a full/oversized suffix.
         if run.context_policy_version == CONTEXT_POLICY_VERSION
             && let Some(plan) = self.plan_context_compaction(
@@ -429,6 +402,7 @@ impl Backend {
                 checkpoint.as_ref(),
                 current_entry_high_water,
                 skill_context_bytes,
+                &budget,
             )?
         {
             return Ok(RunContext {
@@ -697,7 +671,7 @@ impl Backend {
     }
 }
 
-fn load_latest_checkpoint(
+pub(super) fn load_latest_checkpoint(
     connection: &rusqlite::Connection,
     session_id: SessionId,
     maximum_high_water: u64,

@@ -68,6 +68,17 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         model_id: "grok-4.6".to_owned(),
         context_policy_version: 4,
         estimated_input_tokens: 12_000,
+        conservative_input_tokens: 40_000,
+        estimate_uses_provider_usage: true,
+        latest_provider_usage: Some(morons_protocol::RecentProviderUsage {
+            input_tokens: 10_000,
+            cached_input_tokens: 8_000,
+            cache_write_input_tokens: 500,
+            output_tokens: 100,
+            elapsed_milliseconds: Some(1_500),
+        }),
+        completed_compactions: 1,
+        last_compaction_milliseconds: Some(2_000),
         maximum_input_tokens: 96_000,
         maximum_output_tokens: 32_000,
         compaction_threshold_tokens: 67_200,
@@ -84,6 +95,43 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         Some(12_000)
     );
 
+    assert_eq!(app.information_dialog, Some(InformationDialog::Context));
+    let backend = TestBackend::new(100, 28);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("cached 8000"));
+    assert!(rendered.contains("cache writes 500"));
+    assert!(rendered.contains("not a complete bill"));
+    let context = app
+        .session
+        .as_mut()
+        .unwrap()
+        .context_status
+        .as_mut()
+        .unwrap();
+    context.maximum_input_tokens = 0;
+    terminal.draw(|frame| app.render(frame)).unwrap(); // malformed zero capacity never divides by zero
+    let mut untrusted = app
+        .session
+        .as_ref()
+        .unwrap()
+        .context_status
+        .clone()
+        .unwrap();
+    untrusted.model_id = "\u{1b}]52;c;SECRET\u{7}safe\u{202e}".to_owned();
+    let description = super::super::context::description(Some(&untrusted));
+    assert!(!description.as_str().contains("SECRET"));
+    assert!(!description.as_str().contains('\u{1b}'));
+    assert!(!description.as_str().contains('\u{202e}'));
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.information_dialog.is_none());
     app.handle_paste("/compact preserve migration constraints");
     assert!(matches!(
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),

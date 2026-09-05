@@ -3,6 +3,8 @@ mod compaction;
 mod context_budget;
 mod context_compaction;
 mod context_history;
+mod context_status;
+mod context_usage;
 mod creation;
 mod credential_mutation;
 mod default_model;

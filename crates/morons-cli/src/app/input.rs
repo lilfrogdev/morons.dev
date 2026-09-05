@@ -29,7 +29,10 @@ impl AppState {
                 (InformationDialog::TrustNotice, KeyCode::Char('q') | KeyCode::Esc) => {
                     AppAction::Quit
                 }
-                (InformationDialog::Help, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?')) => {
+                (
+                    InformationDialog::Help | InformationDialog::Context,
+                    KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?'),
+                ) => {
                     self.information_dialog = None;
                     AppAction::None
                 }

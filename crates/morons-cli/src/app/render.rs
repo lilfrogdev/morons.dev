@@ -53,7 +53,14 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
         render_settings_dialog(frame, area, app);
     }
     if let Some(dialog) = app.information_dialog {
-        render_information_dialog(frame, area, dialog);
+        render_information_dialog(
+            frame,
+            area,
+            dialog,
+            app.session
+                .as_ref()
+                .and_then(|session| session.context_status.as_ref()),
+        );
     }
     if let Some(input) = app.rename_dialog.as_ref() {
         render_rename_dialog(frame, area, input.as_str());
@@ -520,8 +527,10 @@ fn render_model_disclosure(
                     context.service == model.model.service && context.model_id == model.model.id
                 })
                 .map_or_else(String::new, |context| {
-                    let percent = u64::from(context.estimated_input_tokens).saturating_mul(100)
-                        / u64::from(context.maximum_input_tokens);
+                    let percent = u64::from(context.estimated_input_tokens)
+                        .saturating_mul(100)
+                        .checked_div(u64::from(context.maximum_input_tokens))
+                        .unwrap_or(0);
                     format!(
                         " · context: ~{} / {} ({percent}%)",
                         context.estimated_input_tokens, context.maximum_input_tokens
@@ -833,8 +842,21 @@ fn render_rename_dialog(frame: &mut Frame<'_>, area: Rect, input: &str) {
     );
 }
 
-fn render_information_dialog(frame: &mut Frame<'_>, area: Rect, dialog: InformationDialog) {
+fn render_information_dialog(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    dialog: InformationDialog,
+    context: Option<&morons_protocol::SessionContextStatus>,
+) {
+    let context_message =
+        (dialog == InformationDialog::Context).then(|| super::context::description(context));
     let (title, message, width, height) = match dialog {
+        InformationDialog::Context => (
+            " Context observation ",
+            context_message.as_ref().map_or("", SafeText::as_str),
+            88,
+            21,
+        ),
         InformationDialog::TrustNotice => (
             " Trusted-local authority ",
             "Morons is not a sandbox. The model can read, change, delete, or disclose anything available to your user account through file, Bash, Python, network, Git, credentials, and subagents. Parallel subagents share the selected directory and may race. Cancellation cannot undo completed effects.\n\nFor containment, run the complete Morons application inside a container, VM, or restricted OS account.\n\nEnter acknowledge · q/Esc exit",

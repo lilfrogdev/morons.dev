@@ -1,3 +1,4 @@
+mod context;
 mod input;
 mod render;
 mod viewport;
@@ -49,6 +50,7 @@ pub(super) enum PendingOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InformationDialog {
+    Context,
     TrustNotice,
     Help,
 }
@@ -1334,6 +1336,7 @@ impl AppState {
             .install_context_status(context)?;
         if self.prompt.as_str() == "/context" {
             self.prompt.clear();
+            self.information_dialog = Some(InformationDialog::Context);
         }
         Ok(())
     }
