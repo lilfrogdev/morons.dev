@@ -53,6 +53,7 @@ impl Backend {
         } = context;
         validate_user_text(&text)?;
         validate_model_selection(&selection)?;
+        self.ensure_context_integrity()?;
         if let Some(existing) = resolve_existing_input(&self.connection, request_id, &fingerprint)?
         {
             return Ok(existing);
@@ -109,15 +110,17 @@ impl Backend {
             .ok_or(PersistenceError::ResourceLimit {
                 resource: PersistenceResourceLimit::Context,
             })?;
-        if !crate::persistence::images::image_context_capacity_available(
+        if (!crate::persistence::images::image_context_capacity_available(
             &self.connection,
             session_id,
             attachments.len(),
             attachment_bytes,
-        )? || !crate::persistence::images::attachment_storage_available(
-            &self.connection,
-            attachment_bytes,
-        )? {
+        )? && !has_uncompacted_history(&self.connection, session_id)?)
+            || !crate::persistence::images::attachment_storage_available(
+                &self.connection,
+                attachment_bytes,
+            )?
+        {
             return Err(PersistenceError::ResourceLimit {
                 resource: PersistenceResourceLimit::Context,
             });
@@ -644,11 +647,13 @@ fn estimate_context_tokens(
     let entry_count = u64::try_from(entry_count).map_err(|_| PersistenceError::InvalidState {
         reason: "the session context entry count is invalid",
     })?;
-    if entry_count
-        .checked_add(1)
-        .and_then(|entries| entries.checked_add(size.skill_count as u64))
-        .and_then(|entries| entries.checked_add(size.image_count as u64))
-        .is_none_or(|entries| entries > MAX_CONTEXT_ENTRIES as u64)
+    let can_compact = entry_count > u64::from(checkpoint.is_some());
+    if !can_compact
+        && entry_count
+            .checked_add(1)
+            .and_then(|entries| entries.checked_add(size.skill_count as u64))
+            .and_then(|entries| entries.checked_add(size.image_count as u64))
+            .is_none_or(|entries| entries > MAX_CONTEXT_ENTRIES as u64)
     {
         return Err(PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Context,
@@ -676,12 +681,43 @@ fn estimate_context_tokens(
             resource: PersistenceResourceLimit::Context,
         },
     )?;
-    if estimate == 0 || estimate > size.maximum_input_tokens {
+    let new_input_estimate = conservative_input_token_estimate(
+        (size.text_bytes as u64)
+            .saturating_add(size.skill_bytes as u64)
+            .saturating_add((size.image_count as u64).saturating_mul(8_192)),
+        1 + size.skill_count as u64 + size.image_count as u64,
+    )
+    .unwrap_or(u32::MAX);
+    if estimate == 0
+        || (!can_compact && estimate > size.maximum_input_tokens)
+        || u64::from(new_input_estimate)
+            .saturating_add(super::context_budget::CONTEXT_REQUEST_RESERVE)
+            > u64::from(size.maximum_input_tokens)
+    {
         return Err(PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Context,
         });
     }
-    Ok((estimate, checkpoint.map(|checkpoint| checkpoint.0)))
+    // Full-context admission is for pre-dispatch compaction, not permission to
+    // send an oversized provider request. Dispatch recomputes its actual budget.
+    Ok((
+        estimate.min(size.maximum_input_tokens),
+        checkpoint.map(|checkpoint| checkpoint.0),
+    ))
+}
+
+fn has_uncompacted_history(
+    connection: &rusqlite::Connection,
+    session_id: crate::persistence::SessionId,
+) -> Result<bool, PersistenceError> {
+    Ok(connection.query_row(
+        "WITH checkpoint(high_water) AS (SELECT COALESCE(MAX(source_entry_high_water), 0) FROM context_checkpoints WHERE session_id = ?1)
+         SELECT EXISTS (
+            SELECT 1 FROM session_entries WHERE session_id = ?1 AND entry_sequence > (SELECT high_water FROM checkpoint)
+            UNION ALL
+            SELECT 1 FROM local_commands WHERE session_id = ?1 AND entry_sequence > (SELECT high_water FROM checkpoint) AND state BETWEEN 3 AND 5 AND context_visible = 1
+         )", [&session_id.as_bytes()[..]], |row| row.get(0),
+    )?)
 }
 
 fn session_has_image_context(

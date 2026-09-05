@@ -367,6 +367,7 @@ impl Backend {
     }
 
     pub(crate) fn load_run_context(&self, run_id: RunId) -> Result<RunContext, PersistenceError> {
+        self.ensure_context_integrity()?;
         let run = load_required_run(&self.connection, run_id)?;
         if !matches!(
             run.context_policy_version,
@@ -394,56 +395,6 @@ impl Backend {
                 reason: "the current run context precedes its accepted source",
             });
         }
-        let mut statement = self.connection.prepare(
-            "SELECT
-                entry.entry_sequence,
-                entry.message_id,
-                entry.run_id,
-                entry.entry_kind,
-                entry.open_code_service,
-                entry.model_id,
-                entry.text,
-                entry.refusal,
-                entry.created_at_milliseconds,
-                entry.assistant_phase,
-                entry.tool_call_id,
-                call.operation_id,
-                call.provider_operation_id,
-                call.input_payload,
-                result.result_payload
-             FROM session_entries AS entry
-             LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
-             LEFT JOIN tool_operation_facts AS result
-               ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
-             WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2
-             ORDER BY entry.entry_sequence",
-        )?;
-        let entries = statement
-            .query_map(
-                params![
-                    &run.session_id.as_bytes()[..],
-                    sequence_to_sql(current_entry_high_water)?
-                ],
-                transcript_entry_from_row,
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut entries = entries;
-        self.attach_image_metadata(run.session_id, &mut entries)?;
-        entries.extend(self.list_local_command_entries(
-            run.session_id,
-            0,
-            current_entry_high_water,
-            session_event_high_water(&self.connection, run.session_id)?,
-            u16::try_from(crate::persistence::run_types::MAX_CONTEXT_ENTRIES).map_err(|_| {
-                PersistenceError::InvalidState {
-                    reason: "the context entry limit is invalid",
-                }
-            })?,
-        )?);
-        entries.sort_by_key(TranscriptEntry::entry_sequence);
-        let all_entries_reach_high_water =
-            entries.last().map(TranscriptEntry::entry_sequence) == Some(current_entry_high_water);
-        let canonical_entries = entries.clone();
         let checkpoint = load_latest_checkpoint(
             &self.connection,
             run.session_id,
@@ -457,27 +408,84 @@ impl Backend {
         let covered_high_water = checkpoint
             .as_ref()
             .map_or(0, |checkpoint| checkpoint.source_entry_high_water);
-        if let Some(checkpoint) = &checkpoint
-            && crate::persistence::compactions::context_source_digest(
-                &canonical_entries,
-                checkpoint.source_entry_high_water,
-            ) != Some(checkpoint.source_digest)
+        let skills = load_run_skills(&self.connection, run_id)?;
+        let skill_context_bytes =
+            skills
+                .context_bytes()
+                .ok_or(PersistenceError::ResourceLimit {
+                    resource: crate::persistence::PersistenceResourceLimit::Context,
+                })?;
+        let working_directory = self.connection.query_row(
+            "SELECT working_directory FROM sessions WHERE session_id = ?1",
+            [&run.session_id.as_bytes()[..]],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        let budget =
+            self.context_budget(run.session_id, covered_high_water, current_entry_high_water)?;
+        // Decide before loading image bytes or materializing a full/oversized suffix.
+        if run.context_policy_version == CONTEXT_POLICY_VERSION
+            && let Some(plan) = self.plan_context_compaction(
+                &run,
+                checkpoint.as_ref(),
+                current_entry_high_water,
+                skill_context_bytes,
+            )?
         {
-            return Err(PersistenceError::InvalidState {
-                reason: "a context checkpoint source digest is invalid",
+            return Ok(RunContext {
+                estimated_input_tokens: u32::try_from(
+                    budget.tokens(
+                        skill_context_bytes
+                            + checkpoint
+                                .as_ref()
+                                .map_or(0, |checkpoint| checkpoint.summary.len()),
+                    ),
+                )
+                .unwrap_or(u32::MAX),
+                run,
+                skills,
+                checkpoint,
+                compaction_plan: Some(plan),
+                entries: Vec::new(),
+                attachment_data: std::collections::HashMap::new(),
+                current_entry_high_water,
+                working_directory,
             });
         }
-        entries.retain(|entry| {
-            entry.entry_sequence() > covered_high_water
-                && !matches!(
+        if !budget.fits(
+            run.maximum_input_tokens,
+            skill_context_bytes
+                + checkpoint
+                    .as_ref()
+                    .map_or(0, |checkpoint| checkpoint.summary.len()),
+        ) {
+            return Err(PersistenceError::ResourceLimit {
+                resource: crate::persistence::PersistenceResourceLimit::Context,
+            });
+        }
+        let mut entries = Vec::new();
+        self.visit_context_entries(
+            run.session_id,
+            covered_high_water,
+            current_entry_high_water,
+            |entry| {
+                if !matches!(
                     entry,
                     TranscriptEntry::LocalCommand {
                         context_visible: false,
                         ..
                     }
-                )
-        });
-        if entries.is_empty() || !all_entries_reach_high_water {
+                ) {
+                    if entries.len() >= super::context_budget::MAX_ACTIVE_CONTEXT_ENTRIES {
+                        return Err(PersistenceError::ResourceLimit {
+                            resource: crate::persistence::PersistenceResourceLimit::Context,
+                        });
+                    }
+                    entries.push(entry);
+                }
+                Ok(true)
+            },
+        )?;
+        if entries.is_empty() {
             return Err(PersistenceError::InvalidState {
                 reason: "a run context high water is not present",
             });
@@ -575,19 +583,12 @@ impl Backend {
                 reason: "a legacy run unexpectedly contains image attachments",
             });
         }
-        let skills = load_run_skills(&self.connection, run_id)?;
         if run.context_policy_version == LEGACY_CONTEXT_POLICY_VERSION && !skills.skills.is_empty()
         {
             return Err(PersistenceError::InvalidState {
                 reason: "a legacy run unexpectedly contains a skill context",
             });
         }
-        let skill_context_bytes =
-            skills
-                .context_bytes()
-                .ok_or(PersistenceError::ResourceLimit {
-                    resource: crate::persistence::PersistenceResourceLimit::Context,
-                })?;
         let checkpoint_bytes = checkpoint
             .as_ref()
             .map_or(0_usize, |checkpoint| checkpoint.summary.len());
@@ -644,35 +645,12 @@ impl Backend {
             .ok_or(PersistenceError::ResourceLimit {
                 resource: crate::persistence::PersistenceResourceLimit::Context,
             })?;
-        let manual_compaction = manual_compaction_guidance(&canonical_entries, run.id);
-        let compaction_plan = if run.context_policy_version == CONTEXT_POLICY_VERSION
-            && (manual_compaction.is_some()
-                || estimated_input_tokens
-                    >= run
-                        .maximum_input_tokens
-                        .saturating_mul(7)
-                        .saturating_div(10))
-        {
-            build_compaction_plan(
-                &canonical_entries,
-                checkpoint.as_ref(),
-                run.source_entry_high_water,
-                run.maximum_input_tokens,
-                manual_compaction.flatten(),
-            )?
-        } else {
-            None
-        };
-        if estimated_input_tokens > run.maximum_input_tokens && compaction_plan.is_none() {
+        let compaction_plan = None;
+        if estimated_input_tokens > run.maximum_input_tokens {
             return Err(PersistenceError::ResourceLimit {
                 resource: crate::persistence::PersistenceResourceLimit::Context,
             });
         }
-        let working_directory = self.connection.query_row(
-            "SELECT working_directory FROM sessions WHERE session_id = ?1",
-            [&run.session_id.as_bytes()[..]],
-            |row| row.get::<_, Option<String>>(0),
-        )?;
         let legacy_workspace_exists: bool = self.connection.query_row(
             "SELECT EXISTS (
                 SELECT 1 FROM repository_import_requests
@@ -726,8 +704,7 @@ fn load_latest_checkpoint(
 ) -> Result<Option<crate::persistence::ContextCheckpoint>, PersistenceError> {
     connection
         .query_row(
-            "SELECT checkpoint_id, source_entry_high_water, source_digest,
-                    summary, estimated_summary_tokens
+            "SELECT checkpoint_id, source_entry_high_water, summary, estimated_summary_tokens
              FROM context_checkpoints
              WHERE session_id = ?1 AND source_entry_high_water <= ?2
              ORDER BY source_entry_high_water DESC LIMIT 1",
@@ -737,143 +714,19 @@ fn load_latest_checkpoint(
             ],
             |row| {
                 let high_water = row.get::<_, i64>(1)?;
-                let tokens = row.get::<_, i64>(4)?;
+                let tokens = row.get::<_, i64>(3)?;
                 Ok(crate::persistence::ContextCheckpoint {
                     id: crate::persistence::ContextCheckpointId::from_bytes(row.get(0)?),
                     source_entry_high_water: u64::try_from(high_water)
                         .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, high_water))?,
-                    source_digest: row.get(2)?,
-                    summary: row.get(3)?,
+                    summary: row.get(2)?,
                     estimated_summary_tokens: u32::try_from(tokens)
-                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(4, tokens))?,
+                        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(3, tokens))?,
                 })
             },
         )
         .optional()
         .map_err(PersistenceError::from)
-}
-
-fn manual_compaction_guidance(
-    canonical_entries: &[TranscriptEntry],
-    run_id: RunId,
-) -> Option<Option<String>> {
-    let text = canonical_entries.iter().find_map(|entry| match entry {
-        TranscriptEntry::UserMessage {
-            run_id: entry_run_id,
-            text,
-            ..
-        } if *entry_run_id == run_id => Some(text.as_str()),
-        _ => None,
-    })?;
-    if text == "/compact" {
-        return Some(None);
-    }
-    text.strip_prefix("/compact ")
-        .map(str::trim)
-        .filter(|guidance| !guidance.is_empty())
-        .map(|guidance| Some(guidance.to_owned()))
-}
-
-fn build_compaction_plan(
-    canonical_entries: &[TranscriptEntry],
-    checkpoint: Option<&crate::persistence::ContextCheckpoint>,
-    current_run_source: u64,
-    maximum_input_tokens: u32,
-    user_guidance: Option<String>,
-) -> Result<Option<crate::persistence::CompactionPlan>, PersistenceError> {
-    let covered = checkpoint.map_or(0, |checkpoint| checkpoint.source_entry_high_water);
-    let prior_users = canonical_entries
-        .iter()
-        .filter_map(|entry| match entry {
-            TranscriptEntry::UserMessage { entry_sequence, .. }
-                if *entry_sequence > covered && *entry_sequence < current_run_source =>
-            {
-                Some(*entry_sequence)
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if prior_users.len() < 3 {
-        return Ok(None);
-    }
-    let first_retained_user = prior_users[prior_users.len() - 2];
-    let source_entry_high_water = first_retained_user.saturating_sub(1);
-    if source_entry_high_water <= covered {
-        return Ok(None);
-    }
-    let entries = canonical_entries
-        .iter()
-        .filter(|entry| {
-            entry.entry_sequence() > covered
-                && entry.entry_sequence() <= source_entry_high_water
-                && !matches!(
-                    entry,
-                    TranscriptEntry::LocalCommand {
-                        context_visible: false,
-                        ..
-                    }
-                )
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    if entries.is_empty() {
-        return Ok(None);
-    }
-    let source_digest = crate::persistence::compactions::context_source_digest(
-        canonical_entries,
-        source_entry_high_water,
-    )
-    .ok_or(PersistenceError::InvalidState {
-        reason: "a compaction source prefix is not contiguous",
-    })?;
-    let bytes = entries
-        .iter()
-        .try_fold(
-            checkpoint
-                .as_ref()
-                .map_or(0_u64, |checkpoint| checkpoint.summary.len() as u64),
-            |bytes, entry| bytes.checked_add(context_entry_bytes(entry)? as u64),
-        )
-        .ok_or(PersistenceError::ResourceLimit {
-            resource: crate::persistence::PersistenceResourceLimit::Context,
-        })?;
-    let estimated_input_tokens = crate::persistence::run_types::conservative_input_token_estimate(
-        bytes,
-        entries.len() as u64 + u64::from(checkpoint.is_some()),
-    )
-    .filter(|tokens| *tokens < maximum_input_tokens)
-    .ok_or(PersistenceError::ResourceLimit {
-        resource: crate::persistence::PersistenceResourceLimit::Context,
-    })?;
-    Ok(Some(crate::persistence::CompactionPlan {
-        parent_checkpoint_id: checkpoint.map(|checkpoint| checkpoint.id),
-        user_guidance,
-        source_entry_high_water,
-        source_digest,
-        entries,
-        parent_summary: checkpoint.map(|checkpoint| checkpoint.summary.clone()),
-        estimated_input_tokens,
-    }))
-}
-
-fn context_entry_bytes(entry: &TranscriptEntry) -> Option<usize> {
-    match entry {
-        TranscriptEntry::UserMessage { text, .. }
-        | TranscriptEntry::AssistantMessage { text, .. } => Some(text.len()),
-        TranscriptEntry::ToolCall { input, .. } => serde_json::to_vec(input).ok().map(|v| v.len()),
-        TranscriptEntry::ToolResult { result, .. } => {
-            result.provider_output().ok().map(|value| value.len())
-        }
-        TranscriptEntry::LocalCommand {
-            command,
-            stdout,
-            stderr,
-            ..
-        } => command
-            .len()
-            .checked_add(stdout.len())?
-            .checked_add(stderr.len()),
-    }
 }
 
 pub(crate) fn load_run_skills(

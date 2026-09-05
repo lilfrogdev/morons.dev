@@ -1098,7 +1098,7 @@ impl ServerApplication {
         host_epoch: [u8; 16],
     ) -> Self {
         let command_supervisor = CommandSupervisor::new(Arc::clone(&sessions));
-        let (shutdown_requests, _) = watch::channel(false);
+        let shutdown_requests = run_supervisor.shutdown_requests();
         Self {
             sessions,
             open_code,

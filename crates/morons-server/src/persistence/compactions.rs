@@ -4,27 +4,32 @@ use super::TranscriptEntry;
 
 const CONTEXT_SOURCE_DIGEST: &[u8] = b"morons.dev/context-source/v1\0";
 
-pub(crate) fn context_source_digest(
-    entries: &[TranscriptEntry],
+/// Incremental implementation of the existing policy-v4 canonical prefix digest.
+/// Excluded commands are hashed for integrity, never projected into model context.
+pub(crate) struct ContextSourceHasher {
+    digest: Sha256,
     high_water: u64,
-) -> Option<[u8; 32]> {
-    let covered = entries
-        .iter()
-        .take_while(|entry| entry.entry_sequence() <= high_water)
-        .collect::<Vec<_>>();
-    if covered.is_empty()
-        || covered.last().map(|entry| entry.entry_sequence()) != Some(high_water)
-        || covered
-            .iter()
-            .enumerate()
-            .any(|(index, entry)| entry.entry_sequence() != index as u64 + 1)
-    {
-        return None;
+    next_sequence: u64,
+}
+
+impl ContextSourceHasher {
+    pub(crate) fn new(high_water: u64) -> Self {
+        let mut digest = Sha256::new();
+        digest.update(CONTEXT_SOURCE_DIGEST);
+        digest.update(high_water.to_be_bytes());
+        Self {
+            digest,
+            high_water,
+            next_sequence: 1,
+        }
     }
-    let mut digest = Sha256::new();
-    digest.update(CONTEXT_SOURCE_DIGEST);
-    digest.update(high_water.to_be_bytes());
-    for entry in covered {
+
+    pub(crate) fn push(&mut self, entry: &TranscriptEntry) -> Option<()> {
+        if entry.entry_sequence() != self.next_sequence || self.next_sequence > self.high_water {
+            return None;
+        }
+        self.next_sequence = self.next_sequence.checked_add(1)?;
+        let digest = &mut self.digest;
         digest.update(entry.entry_sequence().to_be_bytes());
         match entry {
             TranscriptEntry::UserMessage {
@@ -37,11 +42,11 @@ pub(crate) fn context_source_digest(
                 digest.update([1]);
                 digest.update(id.as_bytes());
                 digest.update(run_id.as_bytes());
-                update_text(&mut digest, text)?;
+                update_text(digest, text)?;
                 digest.update((attachments.len() as u32).to_be_bytes());
                 for attachment in attachments {
                     digest.update(attachment.id.as_bytes());
-                    update_text(&mut digest, &attachment.display_name)?;
+                    update_text(digest, &attachment.display_name)?;
                     digest.update(attachment.marker_start.to_be_bytes());
                     digest.update([crate::persistence::images::media_type_record(
                         attachment.media_type,
@@ -69,8 +74,8 @@ pub(crate) fn context_source_digest(
                     super::RunOpenCodeService::Zen => 1,
                     super::RunOpenCodeService::Go => 2,
                 }]);
-                update_text(&mut digest, model_id)?;
-                update_text(&mut digest, text)?;
+                update_text(digest, model_id)?;
+                update_text(digest, text)?;
                 digest.update([u8::from(*refusal)]);
                 digest.update([match phase {
                     super::AssistantMessagePhase::Commentary => 1,
@@ -92,8 +97,7 @@ pub(crate) fn context_source_digest(
                 digest.update(call_id.as_bytes());
                 digest.update(operation_id.as_bytes());
                 digest.update(provider_operation_id.as_bytes());
-                let payload = serde_json::to_vec(input).ok()?;
-                update_bytes(&mut digest, &payload)?;
+                update_bytes(digest, &serde_json::to_vec(input).ok()?)?;
             }
             TranscriptEntry::ToolResult {
                 id,
@@ -110,8 +114,7 @@ pub(crate) fn context_source_digest(
                 digest.update(call_id.as_bytes());
                 digest.update(operation_id.as_bytes());
                 digest.update(tool.to_record().to_be_bytes());
-                let payload = serde_json::to_vec(result).ok()?;
-                update_bytes(&mut digest, &payload)?;
+                update_bytes(digest, &serde_json::to_vec(result).ok()?)?;
             }
             TranscriptEntry::LocalCommand {
                 id,
@@ -128,7 +131,7 @@ pub(crate) fn context_source_digest(
                 digest.update([5]);
                 digest.update(id.as_bytes());
                 digest.update(command_id.as_bytes());
-                update_text(&mut digest, command)?;
+                update_text(digest, command)?;
                 digest.update([u8::from(*context_visible)]);
                 digest.update([match status {
                     super::LocalCommandStatus::Succeeded => 1,
@@ -138,12 +141,17 @@ pub(crate) fn context_source_digest(
                 }]);
                 digest.update(exit_code.unwrap_or(i32::MIN).to_be_bytes());
                 digest.update(signal.unwrap_or(u16::MAX).to_be_bytes());
-                update_text(&mut digest, stdout)?;
-                update_text(&mut digest, stderr)?;
+                update_text(digest, stdout)?;
+                update_text(digest, stderr)?;
             }
         }
+        Some(())
     }
-    Some(digest.finalize().into())
+
+    pub(crate) fn finish(self) -> Option<[u8; 32]> {
+        (self.high_water > 0 && self.next_sequence == self.high_water.checked_add(1)?)
+            .then(|| self.digest.finalize().into())
+    }
 }
 
 fn update_text(digest: &mut Sha256, value: &str) -> Option<()> {
@@ -155,3 +163,7 @@ fn update_bytes(digest: &mut Sha256, value: &[u8]) -> Option<()> {
     digest.update(value);
     Some(())
 }
+
+#[cfg(test)]
+#[path = "compactions/tests.rs"]
+mod tests;

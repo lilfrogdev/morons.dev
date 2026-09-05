@@ -151,6 +151,8 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-20 | Zen Claude completes plain text and a natural tool continuation through Anthropic Messages revision 3 with exact `x-api-key` scoping and bounded thinking suppression. |
 | RUN-21 | Zen Gemini completes plain text, normalized image input, and a natural tool continuation through revision 4 at the exact `streamGenerateContent?alt=sse` path; `x-goog-api-key`, usage, generated call identity, thought-signature replay, and session affinity are correct. |
 | RUN-22 | Representative current Zen models from all four protocol groups complete without substitution; live catalog-only entries either complete on their frozen route or surface the exact upstream rejection without retry. |
+| RUN-23 | Short-message entry pressure and image count/byte pressure trigger compaction below the token threshold; `/compact` remains usable for an older session at capacity. Retained tool call/results remain paired, canonical history stays intact, and `!!` content never enters the summary. Link deterministic regression evidence when constructing these histories manually is impractical. |
+| RUN-24 | A tool result that makes the current run alone exceed context terminates that run durably with a resource-limit failure; the session does not remain busy. Cancelling or failing compaction installs no partial checkpoint and never retries the provider. |
 
 ### Images
 

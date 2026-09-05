@@ -617,11 +617,34 @@ fn merge_cumulative(current: &mut Option<u64>, next: Option<u64>) -> Result<(), 
     }
 }
 
-fn validate_safety_ratings(ratings: Option<&Vec<Value>>) -> Result<(), ProviderError> {
-    if ratings.is_some_and(|ratings| {
-        ratings.len() > MAX_SAFETY_RATINGS || ratings.iter().any(|rating| !rating.is_object())
-    }) {
-        return Err(ProviderError::MalformedResponse);
+fn validate_safety_ratings(ratings: Option<&Vec<GeminiSafetyRating>>) -> Result<(), ProviderError> {
+    let Some(ratings) = ratings else {
+        return Ok(());
+    };
+    if ratings.len() > MAX_SAFETY_RATINGS {
+        return Err(ProviderError::ResponseLimitExceeded);
+    }
+    let mut categories = std::collections::BTreeSet::new();
+    for rating in ratings {
+        if !matches!(
+            rating.category.as_str(),
+            "HARM_CATEGORY_UNSPECIFIED"
+                | "HARM_CATEGORY_HARASSMENT"
+                | "HARM_CATEGORY_HATE_SPEECH"
+                | "HARM_CATEGORY_SEXUALLY_EXPLICIT"
+                | "HARM_CATEGORY_DANGEROUS_CONTENT"
+                | "HARM_CATEGORY_CIVIC_INTEGRITY"
+                | "HARM_CATEGORY_JAILBREAK"
+        ) || !matches!(
+            rating.probability.as_str(),
+            "HARM_PROBABILITY_UNSPECIFIED" | "NEGLIGIBLE" | "LOW" | "MEDIUM" | "HIGH"
+        ) || !categories.insert(rating.category.as_str())
+        {
+            return Err(ProviderError::MalformedResponse);
+        }
+        if rating.blocked == Some(true) {
+            return Err(ProviderError::ProviderExecutionFailed);
+        }
     }
     Ok(())
 }
@@ -765,7 +788,17 @@ struct GeminiEvent {
 struct GeminiPromptFeedback {
     block_reason: Option<String>,
     block_reason_message: Option<String>,
-    safety_ratings: Option<Vec<Value>>,
+    safety_ratings: Option<Vec<GeminiSafetyRating>>,
+}
+
+// Reviewed Google Generative Language v1beta discovery SafetyRating schema.
+// Vertex-only scores and PaLM-only categories are not part of this route.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GeminiSafetyRating {
+    category: String,
+    probability: String,
+    blocked: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -774,7 +807,7 @@ struct GeminiCandidate {
     content: Option<GeminiContent>,
     finish_reason: Option<String>,
     finish_message: Option<String>,
-    safety_ratings: Option<Vec<Value>>,
+    safety_ratings: Option<Vec<GeminiSafetyRating>>,
     citation_metadata: Option<Value>,
     token_count: Option<u64>,
     grounding_attributions: Option<Vec<Value>>,
@@ -840,3 +873,7 @@ struct GeminiModalityTokenCount {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "gemini/safety_tests.rs"]
+mod safety_tests;

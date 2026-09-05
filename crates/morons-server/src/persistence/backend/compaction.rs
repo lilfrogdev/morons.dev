@@ -10,14 +10,13 @@ use super::{
 use crate::persistence::{
     CompactionOperationId, CompactionPlan, ContextCheckpoint, ContextCheckpointId,
     PersistenceError, PersistenceResourceLimit, RunId, RunOpenCodeService, SessionId,
-    TranscriptEntry,
 };
 
 const STATE_PREPARED: i64 = 1;
 const STATE_DISPATCHED: i64 = 2;
 const STATE_FAILED: i64 = 4;
 const STATE_UNCERTAIN: i64 = 5;
-const MAX_SUMMARY_BYTES: usize = 128 * 1024;
+const MAX_SUMMARY_BYTES: usize = super::context_budget::MAX_COMPACTION_SUMMARY_BYTES;
 
 impl Backend {
     pub(super) fn validate_context_checkpoint_digests(&self) -> Result<(), PersistenceError> {
@@ -26,28 +25,24 @@ impl Backend {
                     summary, estimated_summary_tokens
              FROM context_checkpoints ORDER BY session_id, source_entry_high_water",
         )?;
-        let checkpoints = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, [u8; 16]>(0)?,
-                    row.get::<_, [u8; 16]>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, [u8; 32]>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        for (_, session_id, high_water, expected_digest, summary, summary_tokens) in checkpoints {
+        let checkpoints = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, [u8; 16]>(0)?,
+                row.get::<_, [u8; 16]>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, [u8; 32]>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        for checkpoint in checkpoints {
+            let (_, session_id, high_water, expected_digest, summary, summary_tokens) = checkpoint?;
             let session_id = SessionId::from_bytes(session_id);
             let high_water =
                 u64::try_from(high_water).map_err(|_| PersistenceError::InvalidState {
                     reason: "a context checkpoint high water is invalid",
                 })?;
-            let mut entries = self.load_canonical_entries_through(session_id, high_water)?;
-            self.attach_image_metadata(session_id, &mut entries)?;
-            if crate::persistence::compactions::context_source_digest(&entries, high_water)
-                != Some(expected_digest)
+            if self.context_digest_through(session_id, high_water)? != expected_digest
                 || crate::persistence::run_types::conservative_input_token_estimate(
                     summary.len() as u64,
                     1,
@@ -61,61 +56,12 @@ impl Backend {
         Ok(())
     }
 
-    fn load_canonical_entries_through(
-        &self,
-        session_id: SessionId,
-        high_water: u64,
-    ) -> Result<Vec<TranscriptEntry>, PersistenceError> {
-        let mut statement = self.connection.prepare(
-            "SELECT
-                entry.entry_sequence, entry.message_id, entry.run_id, entry.entry_kind,
-                entry.open_code_service, entry.model_id, entry.text, entry.refusal,
-                entry.created_at_milliseconds, entry.assistant_phase, entry.tool_call_id,
-                call.operation_id, call.provider_operation_id, call.input_payload,
-                result.result_payload
-             FROM session_entries AS entry
-             LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
-             LEFT JOIN tool_operation_facts AS result
-               ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
-             WHERE entry.session_id = ?1 AND entry.entry_sequence <= ?2
-             ORDER BY entry.entry_sequence",
-        )?;
-        let mut entries = statement
-            .query_map(
-                params![&session_id.as_bytes()[..], sequence_to_sql(high_water)?],
-                super::run_records::transcript_entry_from_row,
-            )?
-            .collect::<Result<Vec<_>, _>>()?;
-        let event_high_water =
-            super::session_events::session_event_high_water(&self.connection, session_id)?;
-        let mut after = 0_u64;
-        loop {
-            let page = self.list_local_command_entries(
-                session_id,
-                after,
-                high_water,
-                event_high_water,
-                u16::MAX,
-            )?;
-            let Some(last) = page.last().map(TranscriptEntry::entry_sequence) else {
-                break;
-            };
-            entries.extend(page);
-            if last >= high_water {
-                break;
-            }
-            after = last;
-        }
-        entries.sort_by_key(TranscriptEntry::entry_sequence);
-        Ok(entries)
-    }
-
     pub(crate) fn prepare_auto_compaction(
         &mut self,
         run_id: RunId,
         plan: &CompactionPlan,
     ) -> Result<CompactionOperationId, PersistenceError> {
-        if plan.entries.is_empty() || plan.source_entry_high_water == 0 {
+        if plan.source.is_empty() || plan.source_entry_high_water == 0 {
             return Err(PersistenceError::InvalidInput {
                 reason: "a compaction plan has no source prefix",
             });
@@ -148,6 +94,14 @@ impl Backend {
             return Ok(CompactionOperationId::from_bytes(existing.0));
         }
         let run = load_required_run(&self.connection, run_id)?;
+        if plan.source_entry_high_water >= run.source_entry_high_water
+            || self.context_digest_through(run.session_id, plan.source_entry_high_water)?
+                != plan.source_digest
+        {
+            return Err(PersistenceError::InvalidState {
+                reason: "a compaction source binding changed before preparation",
+            });
+        }
         if run.state != crate::persistence::RunState::Active {
             return Err(PersistenceError::InvalidState {
                 reason: "only an active run can prepare automatic compaction",
@@ -338,7 +292,6 @@ impl Backend {
                     reason: "a compaction source high water is invalid",
                 }
             })?,
-            source_digest: operation.3,
             summary,
             estimated_summary_tokens,
         })

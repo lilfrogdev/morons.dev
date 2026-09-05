@@ -40,14 +40,24 @@ fn request_for_conversation(conversation_id: [u8; 16]) -> OpenCodeResponseReques
 }
 
 #[test]
+fn encoded_body_is_immutable_and_shared_without_reserializing() {
+    let request = request();
+    let first = request.encoded_body();
+    let second = request.encoded_body();
+    assert_eq!(first, second);
+    assert_eq!(first.as_ptr(), second.as_ptr());
+    drop(request);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&second).unwrap()["model"],
+        "gpt-5.6-luna"
+    );
+}
+
+#[test]
 fn request_has_a_bounded_stable_responses_shape() {
     let request = request();
-    let body: Value = serde_json::from_slice(
-        &request
-            .encode_body()
-            .expect("request should serialize after validation"),
-    )
-    .expect("request body should be JSON");
+    let body: Value =
+        serde_json::from_slice(&request.encoded_body()).expect("request body should be JSON");
     assert_eq!(body["model"], "gpt-5.6-luna");
     assert_eq!(body["stream"], true);
     assert_eq!(body["store"], false);
@@ -108,8 +118,8 @@ fn chat_completions_request_has_bounded_compatible_messages_and_tools() {
         }],
     )
     .expect("chat request should validate");
-    let body: Value = serde_json::from_slice(&request.encode_body().expect("body should encode"))
-        .expect("chat body should be JSON");
+    let body: Value =
+        serde_json::from_slice(&request.encoded_body()).expect("chat body should be JSON");
     assert_eq!(body["model"], "glm-5.3-flash");
     assert_eq!(body["messages"][0]["role"], "system");
     assert_eq!(body["messages"][1]["role"], "user");
@@ -206,8 +216,8 @@ fn anthropic_messages_request_has_bounded_system_images_and_tool_blocks() {
         }],
     )
     .expect("Anthropic request should validate");
-    let body: Value = serde_json::from_slice(&request.encode_body().expect("body should encode"))
-        .expect("Anthropic body should be JSON");
+    let body: Value =
+        serde_json::from_slice(&request.encoded_body()).expect("Anthropic body should be JSON");
     assert_eq!(body["model"], "qwen3.8-max");
     assert_eq!(body["system"], "system guidance");
     assert_eq!(body["messages"][0]["role"], "user");
@@ -292,8 +302,8 @@ fn gemini_request_matches_the_reviewed_opencode_wire_shape() {
         }],
     )
     .expect("Gemini request should validate");
-    let body: Value = serde_json::from_slice(&request.encode_body().expect("body should encode"))
-        .expect("Gemini body should be JSON");
+    let body: Value =
+        serde_json::from_slice(&request.encoded_body()).expect("Gemini body should be JSON");
     assert!(body.get("model").is_none());
     assert!(body.get("stream").is_none());
     assert_eq!(
@@ -390,8 +400,8 @@ fn chat_vision_and_deepseek_tool_replay_use_reviewed_compatibility_shapes() {
         Vec::new(),
     )
     .expect("reviewed chat vision request should validate");
-    let body: Value = serde_json::from_slice(&vision.encode_body().expect("body should encode"))
-        .expect("chat body should be JSON");
+    let body: Value =
+        serde_json::from_slice(&vision.encoded_body()).expect("chat body should be JSON");
     assert_eq!(body["messages"][0]["content"][0]["type"], "image_url");
     assert!(
         body["messages"][0]["content"][0]["image_url"]["url"]
@@ -414,8 +424,8 @@ fn chat_vision_and_deepseek_tool_replay_use_reviewed_compatibility_shapes() {
         Vec::new(),
     )
     .expect("DeepSeek tool replay should validate");
-    let body: Value = serde_json::from_slice(&deepseek.encode_body().expect("body should encode"))
-        .expect("DeepSeek body should be JSON");
+    let body: Value =
+        serde_json::from_slice(&deepseek.encoded_body()).expect("DeepSeek body should be JSON");
     assert_eq!(body["messages"][0]["reasoning_content"], "");
 }
 
@@ -457,8 +467,7 @@ fn multimodal_request_uses_bounded_data_urls_only_for_reviewed_vision_models() {
         Vec::new(),
     )
     .expect("vision request should validate");
-    let body: Value = serde_json::from_slice(&request.encode_body().expect("body should encode"))
-        .expect("body should be JSON");
+    let body: Value = serde_json::from_slice(&request.encoded_body()).expect("body should be JSON");
     assert_eq!(body["input"][0]["content"][0]["type"], "input_text");
     assert_eq!(body["input"][0]["content"][1]["type"], "input_image");
     assert!(
@@ -498,12 +507,8 @@ fn request_preserves_bounded_ephemeral_reasoning_continuation() {
         Vec::new(),
     )
     .expect("reasoning continuation should be valid");
-    let body: Value = serde_json::from_slice(
-        &request
-            .encode_body()
-            .expect("request should serialize after validation"),
-    )
-    .expect("request body should be JSON");
+    let body: Value =
+        serde_json::from_slice(&request.encoded_body()).expect("request body should be JSON");
     assert_eq!(body["input"][0]["type"], "reasoning");
     assert_eq!(body["input"][0]["summary"][0]["text"], "summary");
     assert_eq!(body["input"][0]["encrypted_content"], "opaque-continuation");
