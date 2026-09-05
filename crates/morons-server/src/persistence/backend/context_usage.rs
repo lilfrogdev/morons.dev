@@ -30,6 +30,7 @@ impl Backend {
         checkpoint: Option<&ContextCheckpoint>,
         through: u64,
         skills: &RunSkillContext,
+        project: Option<&crate::project_context::RunProjectContext>,
     ) -> Result<Option<ContextObservation>, PersistenceError> {
         // Bound lookup independently of retained history. CROSS JOIN keeps the
         // tiny run window first; both fact lookups use the existing run index.
@@ -65,7 +66,9 @@ impl Backend {
         else {
             return Ok(None);
         };
-        if load_run_skills(&self.connection, run_id)? != *skills {
+        if load_run_skills(&self.connection, run_id)? != *skills
+            || super::project_context::load(&self.connection, run_id)?.as_ref() != project
+        {
             return Ok(None);
         }
         let (input, cached, written, output, total) = (

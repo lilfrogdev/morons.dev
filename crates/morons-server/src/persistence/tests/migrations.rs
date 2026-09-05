@@ -62,7 +62,7 @@ fn schema_version_one_migrates_to_current_version() {
         .expect("version one database should install");
 
     let connection = database::open(&paths).expect("version one database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let mutation_operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -134,7 +134,7 @@ fn schema_version_two_migrates_to_current_version() {
         .expect("version two database should install");
 
     let connection = database::open(&paths).expect("version two database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let operation: i64 = connection
         .query_row(
             "SELECT operation_kind FROM mutation_requests WHERE request_id = ?1",
@@ -186,7 +186,7 @@ fn schema_version_three_migrates_to_current_version() {
         .expect("version three database should install");
 
     let connection = database::open(&paths).expect("version three database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let stop_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'server_stop_requests'",
@@ -231,7 +231,7 @@ fn schema_version_four_migrates_to_current_version() {
         .expect("version four database should install");
 
     let connection = database::open(&paths).expect("version four database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let import_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -280,7 +280,7 @@ fn schema_version_five_migrates_to_current_version() {
         .expect("version five database should install");
 
     let connection = database::open(&paths).expect("version five database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let tool_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'tool_calls'",
@@ -325,7 +325,7 @@ fn schema_version_six_migrates_to_current_version() {
         .expect("version six database should install");
 
     let connection = database::open(&paths).expect("version six database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let image_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -372,7 +372,7 @@ fn schema_version_seven_migrates_to_current_version() {
         .install_database(&initialization_path)
         .expect("version seven database should install");
     let connection = database::open(&paths).expect("version seven database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let generation_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema
@@ -420,7 +420,7 @@ fn schema_version_eight_migrates_to_current_version() {
         .install_database(&initialization_path)
         .expect("version eight database should install");
     let connection = database::open(&paths).expect("version eight database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let column: String = connection
         .query_row(
             "SELECT name FROM pragma_table_info('run_accepted_facts')
@@ -468,7 +468,7 @@ fn schema_version_nine_migrates_to_current_version() {
         .install_database(&initialization_path)
         .expect("version nine database should install");
     let connection = database::open(&paths).expect("version nine database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let mode_version: String = connection
         .query_row(
             "SELECT name FROM pragma_table_info('repository_import_requests')
@@ -517,7 +517,7 @@ fn schema_version_ten_migrates_to_current_version() {
         .install_database(&initialization_path)
         .expect("version ten database should install");
     let connection = database::open(&paths).expect("version ten database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     for table in [
         "session_creation_requests",
         "session_created_facts",
@@ -573,7 +573,7 @@ fn schema_version_twelve_migrates_to_current_version() {
         .install_database(&initialization_path)
         .expect("version twelve database should install");
     let connection = database::open(&paths).expect("version twelve database should migrate");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let sql: String = connection
         .query_row(
             "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'tool_calls'",
@@ -606,6 +606,7 @@ fn schema_version_twenty_three_migrates_to_current_version() {
              DROP TABLE subagent_model_selections;
              DROP INDEX default_model_selections_by_sequence;
              DROP TABLE default_model_selections;
+             DROP TABLE run_project_contexts;
              CREATE TABLE mutation_requests_v23_fixture (
                 request_id BLOB PRIMARY KEY NOT NULL CHECK (length(request_id) = 16),
                 operation_kind INTEGER NOT NULL CHECK (operation_kind BETWEEN 1 AND 14),
@@ -624,7 +625,7 @@ fn schema_version_twenty_three_migrates_to_current_version() {
     let store = SessionStore::open_at(root.path()).expect("version 23 should migrate");
     drop(store);
     let connection = Connection::open(database_path).expect("migrated database should open");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let default_model_table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE name = 'default_model_selections'",
@@ -649,6 +650,7 @@ fn schema_version_twenty_four_migrates_to_current_version() {
              PRAGMA defer_foreign_keys = ON;
              DROP INDEX subagent_model_selections_by_sequence;
              DROP TABLE subagent_model_selections;
+             DROP TABLE run_project_contexts;
              CREATE TABLE mutation_requests_v24_fixture (
                 request_id BLOB PRIMARY KEY NOT NULL CHECK (length(request_id) = 16),
                 operation_kind INTEGER NOT NULL CHECK (operation_kind BETWEEN 1 AND 15),
@@ -667,7 +669,7 @@ fn schema_version_twenty_four_migrates_to_current_version() {
     let store = SessionStore::open_at(root.path()).expect("version 24 should migrate");
     drop(store);
     let connection = Connection::open(database_path).expect("migrated database should open");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 25);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 26);
     let table: String = connection
         .query_row(
             "SELECT name FROM sqlite_schema WHERE name = 'subagent_model_selections'",

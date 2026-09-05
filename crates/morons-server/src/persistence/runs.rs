@@ -84,6 +84,7 @@ impl SessionStore {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn accept_session_input_with_skills(
         &self,
         request_id: MutationRequestId,
@@ -93,10 +94,33 @@ impl SessionStore {
         skills: crate::skills::RunSkillContext,
         attachments: Vec<crate::persistence::PreparedImageAttachment>,
     ) -> Result<AcceptedRun, PersistenceError> {
+        self.accept_session_input_with_context(
+            request_id,
+            session_id,
+            text,
+            selection,
+            crate::persistence::RunInputContext {
+                skills,
+                attachments,
+                project: Default::default(),
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn accept_session_input_with_context(
+        &self,
+        request_id: MutationRequestId,
+        session_id: SessionId,
+        text: String,
+        selection: RunModelSelection,
+        context: crate::persistence::RunInputContext,
+    ) -> Result<AcceptedRun, PersistenceError> {
+        let attachments = &context.attachments;
         validate_request_id(request_id)?;
         validate_user_text(&text)?;
         validate_model_selection(&selection)?;
-        if !crate::persistence::images::validate_prepared_attachments(&text, &attachments) {
+        if !crate::persistence::images::validate_prepared_attachments(&text, attachments) {
             return Err(PersistenceError::InvalidInput {
                 reason: "image attachments are invalid",
             });
@@ -106,7 +130,7 @@ impl SessionStore {
             &text,
             selection.service,
             &selection.model_id,
-            &attachments,
+            attachments,
         );
         self.run_request(|response| RunWorkerRequest::AcceptInput {
             request_id,
@@ -114,8 +138,7 @@ impl SessionStore {
             session_id,
             text,
             selection,
-            skills,
-            attachments,
+            context,
             response,
         })
         .await
@@ -476,8 +499,7 @@ pub(super) enum RunWorkerRequest {
         session_id: SessionId,
         text: String,
         selection: RunModelSelection,
-        skills: crate::skills::RunSkillContext,
-        attachments: Vec<crate::persistence::PreparedImageAttachment>,
+        context: crate::persistence::RunInputContext,
         response: oneshot::Sender<Result<AcceptedRun, PersistenceError>>,
     },
     PrepareCompaction {
@@ -617,8 +639,7 @@ impl RunWorkerRequest {
                 session_id,
                 text,
                 selection,
-                skills,
-                attachments,
+                context,
                 response,
             } => {
                 let _ = response.send(backend.accept_session_input(
@@ -627,10 +648,7 @@ impl RunWorkerRequest {
                     session_id,
                     text,
                     selection,
-                    crate::persistence::RunInputContext {
-                        skills,
-                        attachments,
-                    },
+                    context,
                 ));
             }
             Self::PrepareCompaction {

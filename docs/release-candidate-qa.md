@@ -138,7 +138,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-07 | Two disjoint `task` children run concurrently, cannot recurse or use IPython, and return input-ordered bounded reports. |
 | RUN-08 | First IPython use automatically prepares Python 3.11.15 with `jupyter_client` 8.6.3 and `ipykernel` 6.30.1, evaluates a value, preserves it across cells/runs, starts in `QA_REPO`, and renders a traceback without ANSI fragments. |
 | RUN-09 | After successful setup, a companion restart reuses the validated runtime with network unavailable and without invoking `morons-uv`; a stale manifest is rejected and rebuilt under the lock when reviewed sources are available. |
-| RUN-10 | `/context` reports the reviewed model limit, threshold, reserves, and current checkpoint. |
+| RUN-10 | `/context` reports the reviewed model limit, threshold, reserves, current checkpoint, and last accepted run's project-guidance paths/warnings. Arrows/PageUp/PageDown/Home/End scroll longer metadata; paths and warnings render without terminal escapes. |
 | RUN-11 | `/compact <instructions>` commits a bounded source-bound checkpoint and continues without deleting canonical history. |
 | RUN-12 | Successful `web_search` returns bounded cited results when a key is available. Without a key, it fails as `CredentialNotConfigured` without network fallback. |
 | RUN-13 | A transcript exceeding 512 entries opens at its latest window; PageUp/wheel crosses older windows, Home reaches the first entry, PageDown returns through newer windows, and End restores current live output without unbounded rendering. |
@@ -153,6 +153,8 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-22 | Representative current Zen models from all four protocol groups complete without substitution; live catalog-only entries either complete on their frozen route or surface the exact upstream rejection without retry. |
 | RUN-23 | Short-message entry pressure and image count/byte pressure trigger compaction below the token threshold; `/compact` remains usable for an older session at capacity. Retained tool call/results remain paired, canonical history stays intact, and `!!` content never enters the summary. Link deterministic regression evidence when constructing these histories manually is impractical. |
 | RUN-24 | A tool result that makes the current run alone exceed context terminates that run durably with a resource-limit failure; the session does not remain busy. Cancelling or failing compaction installs no partial checkpoint and never retries the provider. |
+| RUN-25 | Global/ancestor `AGENTS.override.md`/`AGENTS.md`/`CLAUDE.md` discovery obeys precedence and limits, reports skips, pins guidance through a run and its children, refreshes only on new input, and honors the server-startup opt-out. Canonical history and source files remain unchanged by snapshot cleanup; link deterministic pinning/corruption/migration regressions. |
+| RUN-26 | Representative implementation requests use the selected main model to plan/review and the configured child model to execute/check; discussion and explicit direct-execution requests work without mandatory delegation. Record actual model behavior separately from prompt-composition tests; no prompt guarantees compliance. |
 
 ### Images
 

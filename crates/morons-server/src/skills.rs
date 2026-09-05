@@ -743,7 +743,7 @@ fn project_roots(working_directory: &Path) -> Vec<PathBuf> {
 }
 
 #[cfg(not(test))]
-fn home_directory() -> Option<PathBuf> {
+pub(crate) fn home_directory() -> Option<PathBuf> {
     #[cfg(windows)]
     let home = std::env::var_os("USERPROFILE");
     #[cfg(not(windows))]

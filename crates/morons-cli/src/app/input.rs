@@ -19,6 +19,26 @@ impl AppState {
         }
         if let Some(dialog) = self.information_dialog {
             return match (dialog, key.code) {
+                (InformationDialog::Context, KeyCode::Down | KeyCode::PageDown) => {
+                    self.information_scroll = self
+                        .information_scroll
+                        .saturating_add(if key.code == KeyCode::PageDown { 10 } else { 1 });
+                    AppAction::None
+                }
+                (InformationDialog::Context, KeyCode::Up | KeyCode::PageUp) => {
+                    self.information_scroll = self
+                        .information_scroll
+                        .saturating_sub(if key.code == KeyCode::PageUp { 10 } else { 1 });
+                    AppAction::None
+                }
+                (InformationDialog::Context, KeyCode::Home) => {
+                    self.information_scroll = 0;
+                    AppAction::None
+                }
+                (InformationDialog::Context, KeyCode::End) => {
+                    self.information_scroll = u16::MAX;
+                    AppAction::None
+                }
                 (InformationDialog::TrustNotice, KeyCode::Enter) => {
                     self.information_dialog = None;
                     self.set_status(

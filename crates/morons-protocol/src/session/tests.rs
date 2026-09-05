@@ -201,6 +201,7 @@ fn context_status_contract_has_stable_json_shapes() {
     );
     let response = ApplicationResponse::SessionContextFound {
         context: crate::SessionContextStatus {
+            project_context: None,
             session_id,
             service: OpenCodeService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
@@ -239,6 +240,7 @@ fn context_status_contract_has_stable_json_shapes() {
                 "latest_provider_usage": {"input_tokens":10000,"cached_input_tokens":8000,"cache_write_input_tokens":500,"output_tokens":100,"elapsed_milliseconds":1500},
                 "completed_compactions": 1,
                 "last_compaction_milliseconds": 2000,
+                "project_context": null,
                 "maximum_input_tokens": 96000,
                 "maximum_output_tokens": 32000,
                 "compaction_threshold_tokens": 67200,
@@ -247,6 +249,25 @@ fn context_status_contract_has_stable_json_shapes() {
             },
         })
     );
+}
+
+#[test]
+fn project_context_metadata_is_bounded_and_closed() {
+    let valid =
+        json!({"enabled": true, "files": ["/project/AGENTS.md"], "warnings": ["file skipped"]});
+    let decoded: crate::ProjectContextSummary = serde_json::from_value(valid.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), valid);
+    for (key, value) in [
+        ("files", json!(vec!["/AGENTS.md"; 17])),
+        ("files", json!(["x".repeat(4097)])),
+        ("warnings", json!(["x".repeat(513)])),
+        ("enabled", json!("true")),
+        ("content", json!("must not enter the DTO")),
+    ] {
+        let mut invalid = valid.clone();
+        invalid[key] = value;
+        assert!(serde_json::from_value::<crate::ProjectContextSummary>(invalid).is_err());
+    }
 }
 
 #[test]

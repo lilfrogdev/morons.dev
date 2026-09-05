@@ -781,6 +781,7 @@ pub struct RecentProviderUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextStatus {
+    pub project_context: Option<ProjectContextSummary>,
     pub session_id: SessionId,
     pub service: crate::OpenCodeService,
     pub model_id: String,
@@ -796,6 +797,45 @@ pub struct SessionContextStatus {
     pub compaction_threshold_tokens: u32,
     pub checkpoint_source_entry_high_water: Option<u64>,
     pub checkpoint_estimated_summary_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectContextSummary {
+    pub enabled: bool,
+    #[serde(deserialize_with = "project_paths")]
+    pub files: Vec<String>,
+    #[serde(deserialize_with = "project_warnings")]
+    pub warnings: Vec<String>,
+}
+
+fn project_paths<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    project_strings(deserializer, 4096)
+}
+
+fn project_warnings<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    project_strings(deserializer, 512)
+}
+
+fn project_strings<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    limit: usize,
+) -> Result<Vec<String>, D::Error> {
+    let strings = Vec::<String>::deserialize(deserializer)?;
+    if strings.len() > 16
+        || strings
+            .iter()
+            .any(|value| value.is_empty() || value.len() > limit)
+    {
+        return Err(serde::de::Error::custom(
+            "project context metadata exceeds its bounds",
+        ));
+    }
+    Ok(strings)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

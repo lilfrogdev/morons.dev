@@ -60,6 +60,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
             app.session
                 .as_ref()
                 .and_then(|session| session.context_status.as_ref()),
+            &mut app.information_scroll,
         );
     }
     if let Some(input) = app.rename_dialog.as_ref() {
@@ -847,6 +848,7 @@ fn render_information_dialog(
     area: Rect,
     dialog: InformationDialog,
     context: Option<&morons_protocol::SessionContextStatus>,
+    scroll: &mut u16,
 ) {
     let context_message =
         (dialog == InformationDialog::Context).then(|| super::context::description(context));
@@ -877,10 +879,19 @@ fn render_information_dialog(
         height: area.height.min(height),
     };
     frame.render_widget(Clear, popup);
+    let paragraph = Paragraph::new(message).wrap(Wrap { trim: false });
+    let maximum = paragraph
+        .line_count(popup.width.saturating_sub(2))
+        .saturating_sub(usize::from(popup.height.saturating_sub(2)));
+    *scroll = if dialog == InformationDialog::Context {
+        (*scroll).min(u16::try_from(maximum).unwrap_or(u16::MAX))
+    } else {
+        0
+    };
     frame.render_widget(
-        Paragraph::new(message)
-            .block(Block::default().borders(Borders::ALL).title(title))
-            .wrap(Wrap { trim: false }),
+        paragraph
+            .scroll((*scroll, 0))
+            .block(Block::default().borders(Borders::ALL).title(title)),
         popup,
     );
 }

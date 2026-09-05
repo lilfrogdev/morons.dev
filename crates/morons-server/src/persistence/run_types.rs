@@ -709,6 +709,7 @@ pub struct TranscriptWindowPage {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RunInputContext {
+    pub project: crate::project_context::RunProjectContext,
     pub skills: crate::skills::RunSkillContext,
     pub attachments: Vec<PreparedImageAttachment>,
 }
@@ -778,8 +779,9 @@ pub(crate) struct RecentProviderUsage {
     pub elapsed_milliseconds: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SessionContextStatus {
+    pub project_context: Option<crate::project_context::ProjectContextSummary>,
     pub estimated_input_tokens: u32,
     pub conservative_input_tokens: u32,
     pub estimate_uses_provider_usage: bool,
@@ -795,6 +797,7 @@ pub(crate) struct SessionContextStatus {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RunContext {
+    pub project: Option<crate::project_context::RunProjectContext>,
     pub run: Run,
     pub skills: crate::skills::RunSkillContext,
     pub attachment_data: std::collections::HashMap<ImageAttachmentId, Vec<u8>>,

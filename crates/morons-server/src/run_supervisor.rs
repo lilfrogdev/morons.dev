@@ -22,7 +22,7 @@ use crate::{
     persistence::{
         CompletedAssistant, CompletedToolTurn, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
         PersistenceError, PrepareOperationOutcome, ProviderOperationFailureState, ProviderUsage,
-        Run, RunFailureKind, RunId, RunOpenCodeService, SessionStore, ToolCallId, TranscriptEntry,
+        RunFailureKind, RunId, RunOpenCodeService, SessionStore, ToolCallId, TranscriptEntry,
     },
     provider::{
         OpenCodeProvider, OpenCodeResponseRequest, OpenCodeService, ProviderCancellation,
@@ -463,10 +463,11 @@ impl RunSupervisor {
                         });
                     let working_directory = context
                         .working_directory
+                        .as_ref()
                         .ok_or(PersistenceError::WorkingDirectoryUnavailable)?;
                     let terminal = self
                         .execute_tool_calls(
-                            &context.run,
+                            &context,
                             PathBuf::from(working_directory),
                             committed.calls,
                             find_open_code_model(
@@ -596,12 +597,13 @@ impl RunSupervisor {
 
     async fn execute_tool_calls(
         &self,
-        run: &Run,
+        context: &crate::persistence::RunContext,
         working_directory: PathBuf,
         calls: Vec<crate::persistence::CommittedToolCall>,
         supports_image_input: bool,
         cancellation: &ProviderCancellation,
     ) -> Result<bool, PersistenceError> {
+        let run = &context.run;
         let run_id = run.id;
         let session_id = run.session_id;
         for call in calls {
@@ -636,7 +638,7 @@ impl RunSupervisor {
             let result = if tool == ToolKind::Task {
                 self.subagents
                     .execute(
-                        run,
+                        context,
                         call.call_id,
                         execution_directory,
                         &execution_input,
@@ -785,6 +787,17 @@ fn build_provider_request(
                 "{}\nSelected working directory: {working_directory}",
                 developer_instruction()
             ),
+            phase: None,
+        });
+    }
+    if let Some(project) = context
+        .project
+        .as_ref()
+        .and_then(|project| project.developer_text())
+    {
+        input.push(ProviderInputItem::Message {
+            role: ProviderMessageRole::Developer,
+            text: project,
             phase: None,
         });
     }
