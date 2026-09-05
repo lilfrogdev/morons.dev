@@ -365,7 +365,9 @@ fn minimal_command(program: PathBuf, home: &PathBuf) -> Command {
         .current_dir(home)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // Keep test helper/server failures observable; these processes use a
+        // fresh, empty HOME and a cleared environment, never real credentials.
+        .stderr(Stdio::inherit());
     command
 }
 
