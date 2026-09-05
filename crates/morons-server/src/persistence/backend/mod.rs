@@ -10,6 +10,7 @@ mod credential_mutation;
 mod default_model;
 pub(super) mod image_attachment;
 pub(super) mod local_command;
+pub(super) mod project_context;
 mod queries;
 mod records;
 mod repository_import;

@@ -4,6 +4,7 @@ use super::*;
 async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
     let root = TestRoot::new("subagent-tool-loop");
     let selected = TestRoot::new("subagent-tool-directory");
+    fs::write(selected.path().join("AGENTS.md"), "PINNED_PROJECT_GUIDANCE").unwrap();
     fs::write(selected.path().join("alpha.txt"), "alpha source\n")
         .expect("subagent fixture file should be written");
     let store = SessionStore::open_for_test(root.path()).expect("session store should open");
@@ -52,6 +53,11 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
     else {
         panic!("input should return a run");
     };
+    fs::write(
+        selected.path().join("AGENTS.md"),
+        "CHANGED_AFTER_ACCEPTANCE",
+    )
+    .unwrap();
     assert_eq!(
         wait_for_terminal(&application, session_id, run.id).await,
         RunState::Succeeded
@@ -61,6 +67,19 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
         .expect("subagent provider fixture should finish");
     let requests = requests.await.expect("requests should be captured");
     assert_eq!(requests.len(), 5);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.contains("PINNED_PROJECT_GUIDANCE")
+                && !request.contains("CHANGED_AFTER_ACCEPTANCE"))
+    );
+    assert!(requests[0].contains("form a concise plan"));
+    assert!(
+        requests[1..4]
+            .iter()
+            .all(|request| request.contains("focused execution subagent")
+                && !request.contains("form a concise plan"))
+    );
     assert!(requests[0].contains("\"name\":\"task\""));
     assert!(
         requests[1..3]

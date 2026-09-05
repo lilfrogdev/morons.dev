@@ -19,10 +19,10 @@ impl Backend {
         run: &Run,
         checkpoint: Option<&ContextCheckpoint>,
         through: u64,
-        skill_bytes: usize,
+        instruction_bytes: usize,
         budget: &super::context_budget::ContextBudget,
     ) -> Result<Option<CompactionPlan>, PersistenceError> {
-        // One compaction per run in schema v25; never repeat an uncertain request.
+        // Never repeat a completed or uncertain compaction in the same run.
         let already_compacted: bool = self.connection.query_row(
             "SELECT EXISTS (SELECT 1 FROM compaction_operations WHERE run_id = ?1)",
             [&run.id.as_bytes()[..]],
@@ -41,7 +41,7 @@ impl Backend {
         if !manual
             && !budget.pressure(
                 run.maximum_input_tokens,
-                skill_bytes + checkpoint.map_or(0, |checkpoint| checkpoint.summary.len()),
+                instruction_bytes + checkpoint.map_or(0, |checkpoint| checkpoint.summary.len()),
             )
         {
             return Ok(None);
@@ -80,7 +80,7 @@ impl Backend {
                     .context_budget(run.session_id, high_water, through)?
                     .fits(
                         run.maximum_input_tokens,
-                        skill_bytes + MAX_COMPACTION_SUMMARY_BYTES,
+                        instruction_bytes + MAX_COMPACTION_SUMMARY_BYTES,
                     )
             {
                 source_high_water = Some(high_water);

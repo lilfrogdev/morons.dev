@@ -44,12 +44,21 @@ impl Backend {
             Some(id) => load_run_skills(&self.connection, RunId::from_bytes(id))?,
             None => crate::skills::RunSkillContext::default(),
         };
+        let project = latest_run
+            .map(|id| super::project_context::load(&self.connection, RunId::from_bytes(id)))
+            .transpose()?
+            .flatten();
         let checkpoint = load_latest_checkpoint(&self.connection, session_id, through)?;
         let extra_bytes = skills
             .context_bytes()
             .ok_or(PersistenceError::InvalidState {
                 reason: "a context skill snapshot has invalid bounds",
             })?
+            .saturating_add(
+                project
+                    .as_ref()
+                    .map_or(0, |project| project.context_bytes()),
+            )
             .saturating_add(
                 checkpoint
                     .as_ref()
@@ -72,6 +81,7 @@ impl Backend {
             checkpoint.as_ref(),
             through,
             &skills,
+            project.as_ref(),
         )?;
         budget.observed_input_tokens = observation
             .as_ref()
@@ -79,6 +89,7 @@ impl Backend {
         let (completed_compactions, last_compaction_milliseconds) =
             self.compaction_metrics(session_id, checkpoint.as_ref())?;
         Ok(SessionContextStatus {
+            project_context: project.as_ref().map(|project| project.summary()),
             estimated_input_tokens: u32::try_from(budget.estimated_tokens(extra_bytes))
                 .unwrap_or(u32::MAX),
             conservative_input_tokens: u32::try_from(budget.tokens(extra_bytes))

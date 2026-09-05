@@ -47,7 +47,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 
 - `task` accepts one explicit bounded shared context and one to three bounded self-contained assignments. It is the only subagent admission surface.
 - Children use the parent's exact reviewed service and model by default. A server-authoritative owner setting may instead pin one exact reviewed child service/model/protocol pair per task batch; children still use the parent's accepted credential generation and selected directory. Prompts, repositories, skills, and children cannot select an endpoint, credential, directory, unreviewed model, fallback, or additional capability.
-- A child receives only fixed server instructions, the selected directory, shared context, and its assignment. Parent history, compaction checkpoints, images, reasoning continuation, active skill bodies, IPython memory, and sibling context are not inherited implicitly.
+- A child receives fixed server instructions, the selected directory, the parent's pinned project guidance, shared context, and its assignment. Parent history, compaction checkpoints, images, reasoning continuation, active skill bodies, IPython memory, and sibling context are not inherited implicitly.
 - Children receive only `read`, `write`, `edit`, `bash`, and `web_search`. They receive neither `task` nor `ipython`, so recursion depth is one and temporary kernel state is not shared.
 - Up to three siblings in one call execute concurrently under a global four-child limit. They share the real selected directory and may race; assignment guidance is not isolation or a security boundary.
 - The parent tool loop blocks until every child terminates. There is no background child registry, messaging channel, idle revival, hidden result injection, or independently resumable child session.
@@ -65,6 +65,14 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - `!!` is a context-control feature only. It is not a secrecy guarantee, and its command and bounded output may persist in owner-controlled local session history.
 - Command mode is rejected while the same session has an active model run.
 - Both modes use the same selected directory, shell, environment, cancellation, deadline, output, terminal-safety, and process-tree rules as `bash`.
+
+## Project guidance and prompt defaults
+
+- A small coding core and role/tool guidance encourage main-model planning and child execution. This is a user-overridable prompt preference, not enforced tool separation or a security boundary.
+- Automatic guidance discovery reads only the documented global/ancestor candidates, within file/count/byte/deadline bounds, outside the storage worker. Final-component links/reparse points and special files are skipped, not followed. This is not confinement; OS filesystem calls may still block.
+- Guidance is untrusted text sent to the selected service. It never selects routes, models, credentials or capabilities. No `SYSTEM.md` replacement, scripts, referenced resources or other applications' configuration are loaded automatically. Do not place secrets in guidance files.
+- Each new tool-enabled run commits its instruction snapshot and run-bound digest atomically with input acceptance. Exact retries, later turns, task children and restart recovery never rediscover that run's guidance. Compaction does not summarize it. Independent context guards charge rendered guidance bytes, and usage observations require equal instruction snapshots.
+- `MORONS_NO_PROJECT_CONTEXT` is a server-startup owner-controlled opt-out. It is not a secrecy feature or a restriction on explicit tool reads. `/context` exposes last-accepted-run source paths/warnings, not file contents; all are terminal-sanitized. Deletion removes only Morons-owned records, never source files.
 
 ## Skills
 
@@ -93,7 +101,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 
 - The complete bounded canonical transcript remains durable. Context compaction never deletes, mutates, or replaces canonical messages, attachment references, tool calls, tool results, or local-command entries.
 - Provider context is reconstructed through a deterministic versioned server-owned policy and never depends on provider-hosted conversation retention.
-- Every root provider dispatch binds an exact canonical source-entry high water, selected model, context-policy version, limits, and active skill set. Each task-child dispatch instead binds the committed parent run selection, canonical outer task-call identity, child index, explicit shared context, assignment, and child limits.
+- Every root provider dispatch binds an exact canonical source-entry high water, selected model, context-policy version, limits, active skill set, and pinned project context. Each task-child dispatch instead binds the committed parent run selection, canonical outer task-call identity, child index, explicit shared context, assignment, and child limits.
 - Provider response identifiers and opaque continuation data are transient run state. Only continuation required by one live tool loop may remain in bounded trusted memory.
 - A compaction checkpoint covers an exact ordered source prefix, records its digest and high water, and contains a bounded model-generated summary. Invalid coverage or lineage is never used.
 - Context assembly retains current developer instructions, tool contracts, project instructions, active skill instructions, the newest valid summary, and an uncompacted recent tail in canonical order.

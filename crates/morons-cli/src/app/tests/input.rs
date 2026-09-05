@@ -63,6 +63,13 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         } if selected == session_id && model_id == "grok-4.6"
     ));
     app.context_status_loaded(SessionContextStatus {
+        project_context: Some(morons_protocol::ProjectContextSummary {
+            enabled: true,
+            files: (0..16)
+                .map(|index| format!("/workspace/module{index}/AGENTS.md"))
+                .collect(),
+            warnings: vec!["FIXTURE_WARNING".to_owned()],
+        }),
         session_id,
         service: OpenCodeService::Zen,
         model_id: "grok-4.6".to_owned(),
@@ -109,6 +116,20 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
     assert!(rendered.contains("cached 8000"));
     assert!(rendered.contains("cache writes 500"));
     assert!(rendered.contains("not a complete bill"));
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    assert!(app.information_scroll > 0 && app.information_scroll < u16::MAX);
+    let scrolled = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(scrolled.contains("module15/AGENTS.md"));
+    assert!(scrolled.contains("FIXTURE_WARNING"));
+    app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+    assert_eq!(app.information_scroll, 0);
     let context = app
         .session
         .as_mut()
@@ -126,6 +147,10 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         .clone()
         .unwrap();
     untrusted.model_id = "\u{1b}]52;c;SECRET\u{7}safe\u{202e}".to_owned();
+    untrusted.project_context.as_mut().unwrap().files[0] =
+        "\u{1b}]52;c;SECRET\u{7}/safe/AGENTS.md\u{202e}".to_owned();
+    untrusted.project_context.as_mut().unwrap().warnings[0] =
+        "\u{1b}]52;c;SECRET\u{7}safe warning\u{202e}".to_owned();
     let description = super::super::context::description(Some(&untrusted));
     assert!(!description.as_str().contains("SECRET"));
     assert!(!description.as_str().contains('\u{1b}'));

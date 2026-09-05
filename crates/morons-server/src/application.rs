@@ -48,6 +48,7 @@ pub struct ServerApplication {
     command_supervisor: Arc<CommandSupervisor>,
     session_event_hub: Arc<SessionEventHub>,
     skills: Arc<SkillDiscovery>,
+    project_context: crate::project_context::ProjectContextDiscovery,
     host_epoch: [u8; 16],
     stopping: AtomicBool,
     lifecycle_mutations: Mutex<()>,
@@ -500,6 +501,13 @@ impl ServerApplication {
                             }),
                             completed_compactions: status.completed_compactions,
                             last_compaction_milliseconds: status.last_compaction_milliseconds,
+                            project_context: status.project_context.map(|project| {
+                                morons_protocol::ProjectContextSummary {
+                                    enabled: project.enabled,
+                                    files: project.files,
+                                    warnings: project.warnings,
+                                }
+                            }),
                             maximum_input_tokens: status.maximum_input_tokens,
                             maximum_output_tokens: status.maximum_output_tokens,
                             compaction_threshold_tokens: status.compaction_threshold_tokens,
@@ -603,6 +611,11 @@ impl ServerApplication {
                     .ok_or(ApplicationError::SessionNotFound)?
                     .working_directory
                     .ok_or(ApplicationError::WorkingDirectoryUnavailable)?;
+                let project = self
+                    .project_context
+                    .discover(std::path::PathBuf::from(&working_directory))
+                    .await
+                    .map_err(|()| ApplicationError::ServiceUnavailable)?;
                 let skills = Arc::clone(&self.skills);
                 let skill_prompt = text.clone();
                 let skill_context = tokio::task::spawn_blocking(move || {
@@ -627,13 +640,16 @@ impl ServerApplication {
                 };
                 let accepted = self
                     .sessions
-                    .accept_session_input_with_skills(
+                    .accept_session_input_with_context(
                         mutation_request_id,
                         session_id,
                         text,
                         to_run_model_selection(model),
-                        skill_context,
-                        prepared_attachments,
+                        crate::persistence::RunInputContext {
+                            skills: skill_context,
+                            project,
+                            attachments: prepared_attachments,
+                        },
                     )
                     .await
                     .map_err(to_application_error)?;
@@ -1110,6 +1126,7 @@ impl ServerApplication {
             command_supervisor,
             session_event_hub,
             skills: Arc::new(application_skill_discovery()),
+            project_context: crate::project_context::ProjectContextDiscovery::new(),
             host_epoch,
             stopping: AtomicBool::new(false),
             lifecycle_mutations: Mutex::new(()),

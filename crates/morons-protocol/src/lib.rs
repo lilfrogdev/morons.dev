@@ -32,9 +32,10 @@ pub use run::{
 };
 pub use session::{
     APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
-    ApplicationResponse, MAX_WORKING_DIRECTORY_PATH_BYTES, MutationRequestId, RecentProviderUsage,
-    ResourceLimit, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId,
-    SessionListCursor, SessionSummary, SkillSource, SkillSummary,
+    ApplicationResponse, MAX_WORKING_DIRECTORY_PATH_BYTES, MutationRequestId,
+    ProjectContextSummary, RecentProviderUsage, ResourceLimit, SessionCatalogEventCursor,
+    SessionContextStatus, SessionEventCursor, SessionId, SessionListCursor, SessionSummary,
+    SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 37;
+pub const PROTOCOL_VERSION: u32 = 38;

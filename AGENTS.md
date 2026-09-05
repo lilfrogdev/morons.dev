@@ -27,6 +27,8 @@ The application consists of a long-running local server and a separate terminal 
 - Morons provides lifecycle supervision, bounded output, and cancellation, not a security sandbox or rollback boundary.
 - The terminal has `!command` context-bearing command mode and `!!command` context-excluded command mode, without a PTY or interactive subprocess terminal.
 - Skills use standards-compatible Markdown `SKILL.md` directories with progressive loading; exact installed `@name` tokens explicitly invoke skills.
+- Bounded global/ancestor project guidance is pinned with each tool-enabled run and supplied separately to the parent and children; it cannot override user instructions, model routing or harness constraints.
+- The shared coding core favors simple verified changes. Main-model planning and subagent implementation are prompt-led, user-overridable defaults, not enforced tool restrictions.
 - Images enter through clipboard paste, drag and drop, explicit paths, or `read`, appear as atomic filename markers, and persist as structured bounded session attachments.
 - OpenCode Zen and OpenCode Go use one concrete provider integration with reviewed Responses, Chat Completions, Anthropic Messages, and Gemini routes while remaining distinct service and billing identities.
 - A reviewed built-in manifest, not remote catalog metadata, defines supported service, model, protocol, image, tool, limit, and data-use combinations.

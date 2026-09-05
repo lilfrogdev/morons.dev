@@ -364,12 +364,16 @@ impl Backend {
             .as_ref()
             .map_or(0, |checkpoint| checkpoint.source_entry_high_water);
         let skills = load_run_skills(&self.connection, run_id)?;
-        let skill_context_bytes =
-            skills
-                .context_bytes()
-                .ok_or(PersistenceError::ResourceLimit {
-                    resource: crate::persistence::PersistenceResourceLimit::Context,
-                })?;
+        let project = super::project_context::load(&self.connection, run_id)?;
+        let project_bytes = project
+            .as_ref()
+            .map_or(0, |project| project.context_bytes());
+        let instruction_bytes = skills
+            .context_bytes()
+            .ok_or(PersistenceError::ResourceLimit {
+                resource: crate::persistence::PersistenceResourceLimit::Context,
+            })?
+            .saturating_add(project_bytes);
         let working_directory = self.connection.query_row(
             "SELECT working_directory FROM sessions WHERE session_id = ?1",
             [&run.session_id.as_bytes()[..]],
@@ -392,6 +396,7 @@ impl Backend {
                     checkpoint.as_ref(),
                     current_entry_high_water,
                     &skills,
+                    project.as_ref(),
                 )?
                 .map(|observation| observation.estimated_tokens);
         }
@@ -401,14 +406,14 @@ impl Backend {
                 &run,
                 checkpoint.as_ref(),
                 current_entry_high_water,
-                skill_context_bytes,
+                instruction_bytes,
                 &budget,
             )?
         {
             return Ok(RunContext {
                 estimated_input_tokens: u32::try_from(
                     budget.tokens(
-                        skill_context_bytes
+                        instruction_bytes
                             + checkpoint
                                 .as_ref()
                                 .map_or(0, |checkpoint| checkpoint.summary.len()),
@@ -417,6 +422,7 @@ impl Backend {
                 .unwrap_or(u32::MAX),
                 run,
                 skills,
+                project,
                 checkpoint,
                 compaction_plan: Some(plan),
                 entries: Vec::new(),
@@ -427,7 +433,7 @@ impl Backend {
         }
         if !budget.fits(
             run.maximum_input_tokens,
-            skill_context_bytes
+            instruction_bytes
                 + checkpoint
                     .as_ref()
                     .map_or(0, |checkpoint| checkpoint.summary.len()),
@@ -590,7 +596,7 @@ impl Backend {
                 };
                 total.checked_add(bytes as u64)
             })
-            .and_then(|bytes| bytes.checked_add(skill_context_bytes as u64))
+            .and_then(|bytes| bytes.checked_add(instruction_bytes as u64))
             .and_then(|bytes| bytes.checked_add(checkpoint_bytes as u64))
             .and_then(|bytes| bytes.checked_add((attachment_count as u64).checked_mul(8_192)?))
             .ok_or(PersistenceError::ResourceLimit {
@@ -598,7 +604,7 @@ impl Backend {
             })?;
         let context_items = entries
             .len()
-            .checked_add(skills.skills.len())
+            .checked_add(skills.skills.len() + usize::from(project_bytes > 0))
             .and_then(|items| items.checked_add(usize::from(checkpoint.is_some())))
             .and_then(|items| items.checked_add(attachment_count))
             .ok_or(PersistenceError::ResourceLimit {
@@ -660,6 +666,7 @@ impl Backend {
         Ok(RunContext {
             run,
             skills,
+            project,
             attachment_data,
             checkpoint,
             compaction_plan,

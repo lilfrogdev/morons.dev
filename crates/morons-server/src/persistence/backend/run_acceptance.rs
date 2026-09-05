@@ -49,6 +49,7 @@ impl Backend {
     ) -> Result<AcceptedRun, PersistenceError> {
         let RunInputContext {
             skills,
+            project,
             attachments,
         } = context;
         validate_user_text(&text)?;
@@ -58,11 +59,15 @@ impl Backend {
         {
             return Ok(existing);
         }
-        if !skills.is_valid() {
+        if !skills.is_valid()
+            || !project.is_valid()
+            || (!selection.supports_tool_calls && project != Default::default())
+        {
             return Err(PersistenceError::InvalidInput {
-                reason: "the accepted skill context is invalid",
+                reason: "the accepted instruction context is invalid or incompatible",
             });
         }
+        let project_bytes = project.context_bytes();
         if !crate::persistence::images::validate_prepared_attachments(&text, &attachments) {
             return Err(PersistenceError::InvalidInput {
                 reason: "the accepted image attachments are invalid",
@@ -193,12 +198,13 @@ impl Backend {
             entry_high_water,
             NewContextSize {
                 text_bytes: text.len(),
-                skill_bytes: skills
+                instruction_bytes: skills
                     .context_bytes()
                     .ok_or(PersistenceError::ResourceLimit {
                         resource: PersistenceResourceLimit::Context,
-                    })?,
-                skill_count: skills.skills.len(),
+                    })?
+                    .saturating_add(project_bytes),
+                instruction_items: skills.skills.len() + usize::from(project_bytes > 0),
                 image_count: attachments.len(),
                 maximum_input_tokens: selection.maximum_input_tokens,
             },
@@ -299,6 +305,9 @@ impl Backend {
             )?;
         }
         insert_run_skills(&transaction, run_id, &skills)?;
+        if tool_catalog_version == 9 {
+            super::project_context::insert(&transaction, run_id, &project)?;
+        }
         transaction.execute(
             "INSERT INTO session_entries (
                 fact_id,
@@ -581,8 +590,8 @@ fn insert_run_skills(
 
 struct NewContextSize {
     text_bytes: usize,
-    skill_bytes: usize,
-    skill_count: usize,
+    instruction_bytes: usize,
+    instruction_items: usize,
     image_count: usize,
     maximum_input_tokens: u32,
 }
@@ -651,7 +660,7 @@ fn estimate_context_tokens(
     if !can_compact
         && entry_count
             .checked_add(1)
-            .and_then(|entries| entries.checked_add(size.skill_count as u64))
+            .and_then(|entries| entries.checked_add(size.instruction_items as u64))
             .and_then(|entries| entries.checked_add(size.image_count as u64))
             .is_none_or(|entries| entries > MAX_CONTEXT_ENTRIES as u64)
     {
@@ -668,10 +677,10 @@ fn estimate_context_tokens(
     let text_bytes = u64::try_from(text_bytes).map_err(|_| PersistenceError::InvalidState {
         reason: "the session context byte count is invalid",
     })?;
-    let total_entries = entry_count + 1 + size.skill_count as u64 + size.image_count as u64;
+    let total_entries = entry_count + 1 + size.instruction_items as u64 + size.image_count as u64;
     let total_text_bytes = text_bytes
         .checked_add(size.text_bytes as u64)
-        .and_then(|bytes| bytes.checked_add(size.skill_bytes as u64))
+        .and_then(|bytes| bytes.checked_add(size.instruction_bytes as u64))
         .and_then(|bytes| bytes.checked_add((size.image_count as u64).checked_mul(8_192)?))
         .ok_or(PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Context,
@@ -683,9 +692,9 @@ fn estimate_context_tokens(
     )?;
     let new_input_estimate = conservative_input_token_estimate(
         (size.text_bytes as u64)
-            .saturating_add(size.skill_bytes as u64)
+            .saturating_add(size.instruction_bytes as u64)
             .saturating_add((size.image_count as u64).saturating_mul(8_192)),
-        1 + size.skill_count as u64 + size.image_count as u64,
+        1 + size.instruction_items as u64 + size.image_count as u64,
     )
     .unwrap_or(u32::MAX);
     if estimate == 0

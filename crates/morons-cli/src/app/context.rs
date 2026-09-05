@@ -27,8 +27,24 @@ pub(super) fn description(context: Option<&SessionContextStatus>) -> SafeText {
     let duration = context
         .last_compaction_milliseconds
         .map_or_else(|| "unavailable".to_owned(), |ms| format!("{ms} ms"));
+    let mut project = String::from("Project guidance (last accepted run):");
+    match &context.project_context {
+        None => project.push_str(" not captured"),
+        Some(context) if !context.enabled => project.push_str(" disabled by server owner"),
+        Some(context) => {
+            if context.files.is_empty() {
+                project.push_str(" no files loaded");
+            }
+            for path in &context.files {
+                project.push_str(&format!("\nLoaded: {path}"));
+            }
+            for warning in &context.warnings {
+                project.push_str(&format!("\nWarning: {warning}"));
+            }
+        }
+    }
     SafeText::from_untrusted(&format!(
-        "Model: {} / {}\nEstimate: ~{} / {} tokens ({source})\nConservative guard: {} / {} (hard limits unchanged)\nAuto threshold: {} · output reserve: {}\nEntry and image limits apply independently.\nCheckpoint: {checkpoint}\n\n{call}\nCompleted compactions: {} · last elapsed {duration}\nRoot usage excludes compaction, subagents and failed calls.\nThese observations are not a complete bill.\n\nEnter/Esc close",
+        "Model: {} / {}\nEstimate: ~{} / {} tokens ({source})\nConservative guard: {} / {} (hard limits unchanged)\nAuto threshold: {} · output reserve: {}\nEntry and image limits apply independently.\nCheckpoint: {checkpoint}\n\n{call}\nCompleted compactions: {} · last elapsed {duration}\nRoot usage excludes compaction, subagents and failed calls.\nThese observations are not a complete bill.\n\n{project}\n\nUp/Down/PageUp/PageDown/Home/End scroll · Enter/Esc close",
         super::service_label(context.service),
         context.model_id,
         context.estimated_input_tokens,

@@ -37,6 +37,7 @@ use crate::{
 
 mod hardening;
 mod observations;
+mod project_guidance;
 mod providers;
 use providers::*;
 

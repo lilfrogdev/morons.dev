@@ -76,7 +76,7 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `/settings`: inspect typed global settings and choose whether task subagents inherit the parent model or use one exact reviewed model
 - `/login`: configure or replace the OpenCode API credential through hidden input (`Ctrl+K` shortcut)
 - `/logout`: remove the locally stored OpenCode credential after explicit confirmation
-- `/context`: inspect advisory context use, hard-guard consumption, cache/timing observations, reserves, and the latest checkpoint
+- `/context`: inspect context/cache/timing observations and the last accepted run's project-guidance paths and warnings; use arrows, PageUp/PageDown, Home/End to scroll
 - `/compact [instructions]`: manually summarize an eligible old context prefix
 - `r` in the session browser: rename the selected durable session
 - `a` in the session browser: archive or unarchive the selected session
@@ -102,9 +102,23 @@ Context estimates reuse compatible successful provider usage plus a bounded new 
 
 Every OpenCode Zen and Go inference request carries one stable, derived `x-opencode-session` identifier for its Morons conversation. The root value remains constant across the durable session's runs, compaction, and tool turns. Each task child receives a distinct value stable across its own turns. These identifiers are not sent on public model-catalog requests.
 
+## Project guidance and coding defaults
+
+Morons combines a small shared coding core, parent/child role instructions, tool-specific guidance, and separately labeled project context. The defaults favor understanding the code, simple focused changes, reuse before new machinery, root-cause fixes, and honest verification—not code golf or removal of necessary safeguards/tests. Avoid redundant comments; new explanatory comments should fit on one line unless you request more. Required notices and documentation remain intact. Explicit user preferences override coding/workflow defaults, not harness constraints.
+
+Before each newly accepted input, Morons checks `~/.morons` for global guidance, then ancestor directories from filesystem root through the selected directory. In each directory, the first present `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, or `CLAUDE.MD` wins. An override shadows only its own directory's alternatives. Descendants are not recursively scanned; deeper guidance can be read explicitly. No `SYSTEM.md` replacement, script execution, reference following, or Pi/Codex configuration import occurs.
+
+Guidance is **sent to the selected model service** as untrusted context. Do not put secrets in these files. Discovery skips final-component links, special files, invalid UTF-8 and oversized files with warnings rather than silently truncating instructions or falling back past an invalid preferred file. Limits are 64 ancestors, 16 files, 16 KiB/file, 32 KiB total content, 16 warnings and 64 KiB serialized context; discovery has bounded job admission and a cooperative five-second deadline. Ordinary filesystem syscalls can still block in the OS.
+
+Files, warnings and enabled state are pinned in SQLite with each tool-enabled run. Later turns and task children receive that same guidance, not live rereads. New inputs refresh it; exact retries and recovery do not. `/context` shows the **last accepted run's** paths and warnings without reading source files or exposing their contents over IPC. Compaction does not summarize project guidance. Deleting a session never changes guidance files.
+
+To disable automatic discovery, set `MORONS_NO_PROJECT_CONTEXT` (any value) before the companion starts; unset it to enable. Stop an existing companion with `Ctrl+S` before changing this server environment setting. This disables automatic loading, not ordinary tool access or user-supplied instructions. See [ADR 0025](docs/adr/0025-project-guidance-and-prompt-led-delegation.md).
+
 ## Subagents
 
-The `task` tool follows a bounded OMP-style batch contract: the parent supplies shared context once and one to three self-contained assignments. By default children inherit the parent's model. `/settings` can instead pin one exact available reviewed service/model pair for later task calls, including a different family, service, or wire protocol such as Zen GPT 5.6 Sol with Go GLM-5.3-Flash. Morons never silently substitutes another child model; each completed report discloses the selected model and protocol revision. Children run concurrently, receive only `read`, `write`, `edit`, `bash`, and `web_search`, and return input-ordered bounded reports. They do not inherit the parent transcript, share IPython memory, recurse, continue in the background, or receive isolated worktrees. Children share the real selected directory, so parallel mutations can race.
+By default the main selected model plans implementation work, delegates implementation/checks, then reviews results and reports verification. Discussion-only requests can be answered directly. This is **prompt-led delegation**, not enforced planner-only mode: the main agent retains its normal tools and can follow explicit requests for direct execution. Model compliance is not guaranteed by a prompt.
+
+The `task` tool follows a bounded OMP-style batch contract: the parent supplies shared context once and one to three self-contained assignments. By default children inherit the parent's model. `/settings` can instead pin one exact available reviewed service/model pair for later task calls, including a different family, service, or wire protocol such as Zen GPT 5.6 Sol with Go GLM-5.3-Flash. Morons never silently substitutes another child model; each completed report discloses the selected model and protocol revision. Children run concurrently, receive the parent's pinned project guidance and only `read`, `write`, `edit`, `bash`, and `web_search` tools, and return input-ordered bounded reports. Active parent skills are not automatically inherited; include relevant task-specific context explicitly. They do not inherit the parent transcript, share IPython memory, recurse, continue in the background, or receive isolated worktrees. Children share the real selected directory, so parallel mutations can race.
 
 ## Skills
 

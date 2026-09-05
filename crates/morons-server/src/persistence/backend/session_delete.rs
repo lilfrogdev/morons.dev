@@ -216,6 +216,7 @@ impl Backend {
             "DELETE FROM run_cancellation_requests WHERE session_id = ?1",
             "DELETE FROM run_state_facts WHERE session_id = ?1",
             "DELETE FROM run_skill_snapshots WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1)",
+            "DELETE FROM run_project_contexts WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1)",
             "DELETE FROM session_entries WHERE session_id = ?1",
             "DELETE FROM run_accepted_facts WHERE session_id = ?1",
             "DELETE FROM local_command_audit_facts WHERE session_id = ?1",
