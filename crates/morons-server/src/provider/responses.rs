@@ -611,6 +611,7 @@ impl ResponsesDecoder {
                         provider_call_id: tool_call.call_id,
                         name: tool_call.name,
                         arguments: tool_call.arguments,
+                        opaque_continuation: None,
                     }));
                 }
                 _ => return Err(ProviderError::MalformedResponse),

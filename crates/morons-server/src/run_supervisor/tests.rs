@@ -136,6 +136,7 @@ fn tool_turn_validation_accepts_unphased_commentary_and_rejects_invalid_output()
             provider_call_id: "call_unknown".to_owned(),
             name: "unknown_tool".to_owned(),
             arguments: "{}".to_owned(),
+            opaque_continuation: None,
         })],
         usage,
     };
@@ -158,6 +159,7 @@ fn tool_turn_validation_accepts_unphased_commentary_and_rejects_invalid_output()
                 provider_call_id: "call_read".to_owned(),
                 name: "read".to_owned(),
                 arguments: r#"{"path":"note.txt"}"#.to_owned(),
+                opaque_continuation: None,
             }),
         ],
         usage,
@@ -188,6 +190,7 @@ fn tool_turn_validation_accepts_unphased_commentary_and_rejects_invalid_output()
                 provider_call_id: "call_read".to_owned(),
                 name: "read_file".to_owned(),
                 arguments: r#"{"path":"note.txt","start_line":1,"line_count":1}"#.to_owned(),
+                opaque_continuation: None,
             }),
         ],
         usage,
@@ -975,7 +978,7 @@ async fn image_submission_requires_vision_and_maps_durable_bytes_to_multimodal_c
             text: "see [puppies.png]".to_owned(),
             attachments: vec![upload.clone()],
             service: OpenCodeService::Zen,
-            model_id: "muse-spark-1.2".to_owned(),
+            model_id: "gpt-5.3-codex-spark".to_owned(),
         })
         .await;
     assert!(matches!(

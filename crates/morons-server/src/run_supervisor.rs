@@ -22,7 +22,7 @@ use crate::{
     persistence::{
         CompletedAssistant, CompletedToolTurn, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
         PersistenceError, PrepareOperationOutcome, ProviderOperationFailureState, ProviderUsage,
-        Run, RunFailureKind, RunId, RunOpenCodeService, SessionStore, TranscriptEntry,
+        Run, RunFailureKind, RunId, RunOpenCodeService, SessionStore, ToolCallId, TranscriptEntry,
     },
     provider::{
         OpenCodeProvider, OpenCodeResponseRequest, OpenCodeService, ProviderCancellation,
@@ -41,6 +41,11 @@ use crate::{
 const MAX_CONCURRENT_RUNS: usize = 4;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RUN_DURATION: Duration = Duration::from_secs(30 * 60);
+
+struct ProviderTurnContinuation {
+    reasoning: Option<([u8; 16], Vec<ProviderInputItem>)>,
+    tool_calls: Vec<(ToolCallId, String)>,
+}
 
 pub(crate) struct RunSupervisor {
     sessions: Arc<SessionStore>,
@@ -229,7 +234,7 @@ impl RunSupervisor {
             return Ok(());
         }
         let mut delta_sequence = 0_u64;
-        let mut reasoning_continuation = None;
+        let mut provider_continuation = None;
         let run_deadline = time::Instant::now() + MAX_RUN_DURATION;
         loop {
             if time::Instant::now() >= run_deadline {
@@ -267,7 +272,7 @@ impl RunSupervisor {
                     }
                 }
             }
-            let request = match build_provider_request(&context, reasoning_continuation.as_ref()) {
+            let request = match build_provider_request(&context, provider_continuation.as_ref()) {
                 Ok(request) => request,
                 Err(error) => {
                     self.sessions
@@ -422,8 +427,22 @@ impl RunSupervisor {
                         }
                         Err(error) => return Err(error),
                     };
-                    reasoning_continuation =
+                    let mut tool_calls = provider_continuation
+                        .take()
+                        .map(|continuation| continuation.tool_calls)
+                        .unwrap_or_default();
+                    tool_calls.extend(committed.calls.iter().filter_map(|call| {
+                        call.opaque_continuation
+                            .as_ref()
+                            .map(|continuation| (call.call_id, continuation.clone()))
+                    }));
+                    let reasoning =
                         (!reasoning.is_empty()).then_some((*operation_id.as_bytes(), reasoning));
+                    provider_continuation = (reasoning.is_some() || !tool_calls.is_empty())
+                        .then_some(ProviderTurnContinuation {
+                            reasoning,
+                            tool_calls,
+                        });
                     let working_directory = context
                         .working_directory
                         .ok_or(PersistenceError::WorkingDirectoryUnavailable)?;
@@ -756,7 +775,7 @@ fn enforce_image_capability(result: ToolResult, supports_image_input: bool) -> T
 
 fn build_provider_request(
     context: &crate::persistence::RunContext,
-    reasoning_continuation: Option<&([u8; 16], Vec<ProviderInputItem>)>,
+    provider_continuation: Option<&ProviderTurnContinuation>,
 ) -> Result<OpenCodeResponseRequest, ProviderError> {
     let tools_enabled = (
         context.run.tool_catalog_version,
@@ -802,19 +821,22 @@ fn build_provider_request(
             phase: None,
         });
     }
-    let mut continuation_inserted = false;
+    let mut reasoning_continuation_inserted = false;
+    let mut tool_continuations_inserted = 0_usize;
     for entry in &context.entries {
         if let (
             TranscriptEntry::ToolCall {
                 provider_operation_id,
                 ..
             },
-            Some((operation_id, reasoning)),
-        ) = (entry, reasoning_continuation)
+            Some(continuation),
+        ) = (entry, provider_continuation)
+            && let Some((operation_id, reasoning)) = &continuation.reasoning
             && provider_operation_id.as_bytes() == operation_id
+            && !reasoning_continuation_inserted
         {
             input.extend(reasoning.iter().cloned());
-            continuation_inserted = true;
+            reasoning_continuation_inserted = true;
         }
         input.push(match entry {
             TranscriptEntry::UserMessage {
@@ -839,13 +861,33 @@ fn build_provider_request(
                     }
                 }),
             },
-            TranscriptEntry::ToolCall { call_id, input, .. } => ProviderInputItem::FunctionCall {
-                call_id: deterministic_provider_call_id(*call_id),
-                name: input.kind().name().to_owned(),
-                arguments: input
-                    .provider_arguments()
-                    .map_err(|_| ProviderError::InvalidRequest)?,
-            },
+            TranscriptEntry::ToolCall {
+                call_id,
+                input,
+                ..
+            } => {
+                let opaque_continuation = provider_continuation
+                    .and_then(|continuation| {
+                        continuation
+                            .tool_calls
+                            .iter()
+                            .find(|(continuation_call_id, _)| continuation_call_id == call_id)
+                    })
+                    .map(|(_, continuation)| continuation.clone());
+                if opaque_continuation.is_some() {
+                    tool_continuations_inserted = tool_continuations_inserted
+                        .checked_add(1)
+                        .ok_or(ProviderError::InvalidRequest)?;
+                }
+                ProviderInputItem::FunctionCall {
+                    call_id: deterministic_provider_call_id(*call_id),
+                    name: input.kind().name().to_owned(),
+                    arguments: input
+                        .provider_arguments()
+                        .map_err(|_| ProviderError::InvalidRequest)?,
+                    opaque_continuation,
+                }
+            }
             TranscriptEntry::ToolResult {
                 call_id, result, ..
             } => ProviderInputItem::FunctionCallOutput {
@@ -886,7 +928,10 @@ fn build_provider_request(
             input.push(tool_image_message(image, &context.attachment_data)?);
         }
     }
-    if reasoning_continuation.is_some() && !continuation_inserted {
+    if provider_continuation.is_some_and(|continuation| {
+        (continuation.reasoning.is_some() && !reasoning_continuation_inserted)
+            || continuation.tool_calls.len() != tool_continuations_inserted
+    }) {
         return Err(ProviderError::InvalidRequest);
     }
     OpenCodeResponseRequest::new(

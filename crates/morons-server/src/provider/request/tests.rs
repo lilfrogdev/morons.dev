@@ -89,6 +89,7 @@ fn chat_completions_request_has_bounded_compatible_messages_and_tools() {
                 call_id: "call_1".to_owned(),
                 name: "read".to_owned(),
                 arguments: r#"{"path":"README.md"}"#.to_owned(),
+                opaque_continuation: None,
             },
             ProviderInputItem::FunctionCallOutput {
                 call_id: "call_1".to_owned(),
@@ -186,6 +187,7 @@ fn anthropic_messages_request_has_bounded_system_images_and_tool_blocks() {
                 call_id: "call_1".to_owned(),
                 name: "read".to_owned(),
                 arguments: r#"{"path":"README.md"}"#.to_owned(),
+                opaque_continuation: None,
             },
             ProviderInputItem::FunctionCallOutput {
                 call_id: "call_1".to_owned(),
@@ -231,6 +233,141 @@ fn anthropic_messages_request_has_bounded_system_images_and_tool_blocks() {
 }
 
 #[test]
+fn gemini_request_matches_the_reviewed_opencode_wire_shape() {
+    let image = morons_image::normalize_rgba(1, 1, vec![10, 20, 30, 255])
+        .expect("fixture should normalize");
+    let request = OpenCodeResponseRequest::new(
+        [0x36; 16],
+        OpenCodeService::Zen,
+        "gemini-3.8-flash",
+        512,
+        1_024,
+        vec![
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::Developer,
+                text: "system guidance".to_owned(),
+                phase: None,
+            },
+            ProviderInputItem::MultimodalMessage {
+                role: ProviderMessageRole::User,
+                parts: vec![
+                    ProviderContentPart::Text("inspect".to_owned()),
+                    ProviderContentPart::Image {
+                        media_type: image.media_type,
+                        width: image.width,
+                        height: image.height,
+                        bytes: image.bytes,
+                    },
+                ],
+                phase: None,
+            },
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::Assistant,
+                text: "Checking.".to_owned(),
+                phase: Some(super::ProviderMessagePhase::Commentary),
+            },
+            ProviderInputItem::FunctionCall {
+                call_id: "gemini_call_0".to_owned(),
+                name: "read".to_owned(),
+                arguments: r#"{"path":"README.md"}"#.to_owned(),
+                opaque_continuation: Some("opaque-thought-signature".to_owned()),
+            },
+            ProviderInputItem::FunctionCallOutput {
+                call_id: "gemini_call_0".to_owned(),
+                output: "contents".to_owned(),
+            },
+        ],
+        vec![ProviderTool {
+            name: "read".to_owned(),
+            description: "Read one file".to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "limit": {"type": "integer", "enum": [1, 2]}
+                },
+                "required": ["path", "missing"],
+                "additionalProperties": false
+            }),
+        }],
+    )
+    .expect("Gemini request should validate");
+    let body: Value = serde_json::from_slice(&request.encode_body().expect("body should encode"))
+        .expect("Gemini body should be JSON");
+    assert!(body.get("model").is_none());
+    assert!(body.get("stream").is_none());
+    assert_eq!(
+        body["systemInstruction"]["parts"][0]["text"],
+        "system guidance"
+    );
+    assert_eq!(body["contents"][0]["role"], "user");
+    assert_eq!(body["contents"][0]["parts"][0]["text"], "inspect");
+    assert_eq!(
+        body["contents"][0]["parts"][1]["inlineData"]["mimeType"],
+        "image/png"
+    );
+    assert_eq!(body["contents"][1]["role"], "model");
+    assert_eq!(
+        body["contents"][1]["parts"][1]["functionCall"]["args"]["path"],
+        "README.md"
+    );
+    assert_eq!(
+        body["contents"][1]["parts"][1]["thoughtSignature"],
+        "opaque-thought-signature"
+    );
+    assert_eq!(body["contents"][2]["role"], "user");
+    assert_eq!(
+        body["contents"][2]["parts"][0]["functionResponse"]["name"],
+        "read"
+    );
+    assert_eq!(
+        body["contents"][2]["parts"][0]["functionResponse"]["response"]["content"],
+        "contents"
+    );
+    assert_eq!(body["generationConfig"]["maxOutputTokens"], 1_024);
+    assert_eq!(
+        body["tools"][0]["functionDeclarations"][0]["parameters"]["properties"]["limit"]["type"],
+        "string"
+    );
+    assert_eq!(
+        body["tools"][0]["functionDeclarations"][0]["parameters"]["properties"]["limit"]["enum"],
+        json!(["1", "2"])
+    );
+    assert_eq!(
+        body["tools"][0]["functionDeclarations"][0]["parameters"]["required"],
+        json!(["path"])
+    );
+    assert!(
+        body["tools"][0]["functionDeclarations"][0]["parameters"]
+            .get("additionalProperties")
+            .is_none()
+    );
+    assert!(
+        !format!("{request:?}").contains("opaque-thought-signature"),
+        "opaque Gemini continuation must be redacted"
+    );
+
+    assert_eq!(
+        OpenCodeResponseRequest::new(
+            [0x36; 16],
+            OpenCodeService::Go,
+            "glm-5.3-flash",
+            1,
+            1,
+            vec![ProviderInputItem::FunctionCall {
+                call_id: "call_1".to_owned(),
+                name: "read".to_owned(),
+                arguments: r#"{"path":"README.md"}"#.to_owned(),
+                opaque_continuation: Some("wrong protocol".to_owned()),
+            }],
+            Vec::new(),
+        )
+        .expect_err("Gemini continuation must not cross protocols"),
+        ProviderError::InvalidRequest
+    );
+}
+
+#[test]
 fn chat_vision_and_deepseek_tool_replay_use_reviewed_compatibility_shapes() {
     let image = morons_image::normalize_rgba(1, 1, vec![10, 20, 30, 255])
         .expect("fixture should normalize");
@@ -272,6 +409,7 @@ fn chat_vision_and_deepseek_tool_replay_use_reviewed_compatibility_shapes() {
             call_id: "call_1".to_owned(),
             name: "read".to_owned(),
             arguments: r#"{"path":"README.md"}"#.to_owned(),
+            opaque_continuation: None,
         }],
         Vec::new(),
     )
@@ -333,7 +471,7 @@ fn multimodal_request_uses_bounded_data_urls_only_for_reviewed_vision_models() {
         OpenCodeResponseRequest::new(
             [0x31; 16],
             OpenCodeService::Zen,
-            "muse-spark-1.2",
+            "gpt-5.3-codex-spark",
             8_192,
             512,
             vec![message],
@@ -420,6 +558,7 @@ fn request_rejects_unreviewed_models_and_malformed_tool_input() {
             call_id: "call_1".to_owned(),
             name: "read_file".to_owned(),
             arguments: "[]".to_owned(),
+            opaque_continuation: None,
         }],
         Vec::new(),
     );

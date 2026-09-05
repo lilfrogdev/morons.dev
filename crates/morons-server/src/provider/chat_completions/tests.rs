@@ -22,7 +22,7 @@ fn complete_text_stream_is_normalized_with_usage() {
             r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop","logprobs":null}],"usage":null}"#,
         ),
         record(
-            r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}"#,
+            r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning_content":null},"finish_reason":"stop","logprobs":null}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}"#,
         ),
         record(
             r#"{"id":"chat_1","object":"chat.completion.chunk","created":1,"model":"glm-5.3-flash","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,"prompt_tokens_details":{"cached_tokens":3,"cache_write_tokens":2},"completion_tokens_details":{"reasoning_tokens":1},"prompt_cache_hit_tokens":3,"prompt_cache_miss_tokens":7}}"#,
@@ -169,10 +169,10 @@ fn malformed_incomplete_and_oversized_streams_fail_closed() {
             .push(
                 [
                     record(
-                        r#"{"id":"chat_usage","object":"chat.completion.chunk","created":4,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
+                        r#"{"id":"chat_usage","object":"chat.completion.chunk","created":4,"model":"glm-5.3-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}"#,
                     ),
                     record(
-                        r#"{"id":"chat_usage","object":"chat.completion.chunk","created":4,"model":"glm-5.3-flash","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}"#,
+                        r#"{"id":"chat_usage","object":"chat.completion.chunk","created":4,"model":"glm-5.3-flash","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#,
                     ),
                 ]
                 .concat()

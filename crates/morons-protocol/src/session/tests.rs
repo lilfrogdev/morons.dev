@@ -441,6 +441,10 @@ fn model_catalog_contract_has_stable_json_shape() {
         json!("anthropic_messages")
     );
     assert_eq!(
+        serde_json::to_value(ProviderProtocol::Gemini).expect("protocol should encode"),
+        json!("gemini")
+    );
+    assert_eq!(
         serde_json::to_value(OpenCodeModelTrainingUse::MayUsePromptsAndCompletions)
             .expect("training use should encode"),
         json!("may_use_prompts_and_completions")

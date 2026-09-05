@@ -174,6 +174,7 @@ pub(crate) fn parse_provider_calls(
             Ok(ValidatedProviderCall {
                 provider_call_id: call.provider_call_id,
                 input,
+                opaque_continuation: call.opaque_continuation,
             })
         })
         .collect()
@@ -628,6 +629,7 @@ mod tests {
             provider_call_id: "call_1".to_owned(),
             name: name.to_owned(),
             arguments: arguments.to_owned(),
+            opaque_continuation: None,
         }
     }
 

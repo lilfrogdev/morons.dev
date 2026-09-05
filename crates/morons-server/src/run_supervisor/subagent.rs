@@ -337,6 +337,7 @@ impl SubagentExecutor {
                     }
                     for call in turn.calls {
                         let provider_call_id = call.provider_call_id;
+                        let opaque_continuation = call.opaque_continuation;
                         if !provider_call_ids.insert(provider_call_id.clone()) {
                             return Ok(subagent_result(
                                 index,
@@ -367,6 +368,7 @@ impl SubagentExecutor {
                             call_id: provider_call_id.clone(),
                             name: call.input.kind().name().to_owned(),
                             arguments,
+                            opaque_continuation,
                         });
                         let result = self
                             .execute_child_tool(
@@ -502,10 +504,12 @@ fn provider_item_bytes(item: &ProviderInputItem) -> Option<usize> {
             call_id,
             name,
             arguments,
+            opaque_continuation,
         } => call_id
             .len()
             .checked_add(name.len())?
-            .checked_add(arguments.len()),
+            .checked_add(arguments.len())?
+            .checked_add(opaque_continuation.as_ref().map_or(0, String::len)),
         ProviderInputItem::FunctionCallOutput { call_id, output } => {
             call_id.len().checked_add(output.len())
         }

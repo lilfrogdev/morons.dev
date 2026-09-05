@@ -28,7 +28,7 @@ The application consists of a long-running local server and a separate terminal 
 - The terminal has `!command` context-bearing command mode and `!!command` context-excluded command mode, without a PTY or interactive subprocess terminal.
 - Skills use standards-compatible Markdown `SKILL.md` directories with progressive loading; exact installed `@name` tokens explicitly invoke skills.
 - Images enter through clipboard paste, drag and drop, explicit paths, or `read`, appear as atomic filename markers, and persist as structured bounded session attachments.
-- OpenCode Zen and OpenCode Go use one concrete Responses-compatible integration while remaining distinct service and billing identities.
+- OpenCode Zen and OpenCode Go use one concrete provider integration with reviewed Responses, Chat Completions, Anthropic Messages, and Gemini routes while remaining distinct service and billing identities.
 - A reviewed built-in manifest, not remote catalog metadata, defines supported service, model, protocol, image, tool, limit, and data-use combinations.
 - Session identity and lifetime are independent of client connections and temporary runtimes.
 - Direct user input is durably attributed to `LocalOwner` and commits atomically with a new run identity.

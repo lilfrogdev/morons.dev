@@ -22,7 +22,7 @@ The manifest assigns globally unique protocol revisions:
 - OpenAI-compatible Chat Completions revision 2; and
 - Anthropic Messages revision 3.
 
-The reviewed Go Responses group is `gpt-5.6-luna`, `grok-4.5`, `grok-4.6`, `muse-spark-1.2-contributor`, and `muse-spark-1.3-contributor`. The reviewed Go Anthropic Messages group is `minimax-m2.5`, `minimax-m2.7`, `minimax-m3`, `qwen3.6-plus`, `qwen3.7-max`, `qwen3.7-plus`, `qwen3.8-flash`, and `qwen3.8-max`. Every other reviewed Go identifier uses Chat Completions revision 2. Zen has no admitted Anthropic Messages route under this decision.
+The reviewed Go Responses group is `gpt-5.6-luna`, `grok-4.5`, `grok-4.6`, `muse-spark-1.2-contributor`, and `muse-spark-1.3-contributor`. The reviewed Go Anthropic Messages group is `minimax-m2.5`, `minimax-m2.7`, `minimax-m3`, `qwen3.6-plus`, `qwen3.7-max`, `qwen3.7-plus`, `qwen3.8-flash`, and `qwen3.8-max`. Every other reviewed Go identifier uses Chat Completions revision 2. Zen has no admitted Anthropic Messages route under this decision; ADR 0021 subsequently reviews and admits Zen's separate Messages surface.
 
 All Go requests retain the conservative Morons limits of 96,000 estimated input tokens and 32,000 maximum output tokens even when upstream metadata advertises larger limits. Every admitted model supports text input, text output, reasoning, and function tools in the reviewed surface. Image input is enabled only for model/protocol pairs whose current model metadata documents an image modality and whose request conversion is covered by bounded fixtures. Audio, video, and PDF provider modalities are not admitted.
 
@@ -47,7 +47,7 @@ The revision-3 decoder accepts the ordered Messages stream state machine: `messa
 
 ### Chat Completions compatibility
 
-Revision 2 now supports bounded normalized image content for reviewed Go vision models. DeepSeek assistant replay includes an empty `reasoning_content` field when no portable reasoning content is retained, matching the documented compatibility requirement without persisting hidden reasoning. Current compatible gateway variants may emit nullable cache details, top-level cache hit/miss counts, cache-write counts, bounded `reasoning_details`, a no-op terminal usage choice, or a repeated usage envelope that enriches only cache/reasoning breakdowns while preserving primary totals. The decoder normalizes those variants but rejects contradictory totals, decreasing details, unsupported nonzero audio or prediction use, and visible duplicate output. Reasoning remains bounded, ignored, and unavailable as cross-turn continuation for Chat Completions and Anthropic Messages.
+Revision 2 now supports bounded normalized image content for reviewed Go vision models. DeepSeek assistant replay includes an empty `reasoning_content` field when no portable reasoning content is retained, matching the documented compatibility requirement without persisting hidden reasoning. Current compatible gateway variants may emit nullable cache details, top-level cache hit/miss counts, cache-write counts, bounded `reasoning_details`, a no-op terminal usage choice, or repeated cumulative usage envelopes. Input remains stable while primary output/total and cache/reasoning counters may only increase; each snapshot must remain internally consistent. The decoder normalizes those variants but rejects contradictory totals, decreasing counters, unsupported nonzero audio or prediction use, and visible duplicate output. Reasoning remains bounded, ignored, and unavailable as cross-turn continuation for Chat Completions and Anthropic Messages.
 
 ### Data-use disclosure
 
@@ -71,7 +71,9 @@ The latest first-party historical route rows are retained only for live catalog 
 - commit `bcbc1dba22f1524dbc2c8ade6b3f87d27a30da57` documents Chat Completions for `hy3-preview`; and
 - commit `c7af47f9ed3b70d7e1e5cf4b37c6d8ef6f83b3bc` is the latest documented migration of `grok-4.5` to Responses.
 
-Third-party catalogs and installed client data may corroborate modality and protocol research but are not routing, admission, or policy authorities. They cannot override these pinned first-party rows, add a live identifier, or turn missing privacy documentation into a favorable disclosure.
+A post-implementation interoperability audit also pinned OpenCode source commit `5cf9f517cfec3ef68d3e68a12a6a4b3163947f44`. Its `packages/web/src/content/docs/go.mdx` endpoint matrix, `packages/opencode/src/provider/provider.ts` SDK selection, `packages/opencode/src/session/llm/native-request.ts` dispatch, and `packages/llm/src/protocols/{openai-responses,openai-compatible-chat,anthropic-messages}.ts` wire implementations confirm the three fixed Go route families, bearer versus `x-api-key` scoping, `anthropic-version: 2023-06-01`, SSE framing, image encoding, function-call lowering, usage requests, and reasoning-field handling used by Morons. The same source requires a meaningful user agent and `x-opencode-session`; Morons supplies both. No Go route or request-shape correction was required by that audit.
+
+OpenCode's checked-in models.dev fixture and current runtime model metadata corroborate capabilities and old entries, but do not override the first-party endpoint rows and pinned historical routing evidence. Other third-party catalogs and installed client data likewise are not routing, admission, or policy authorities. They cannot add a live identifier, turn missing privacy documentation into a favorable disclosure, or change Morons' static route table.
 
 ## Consequences
 

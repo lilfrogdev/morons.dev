@@ -875,11 +875,27 @@ impl ToolOperationId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct CommittedToolCall {
     pub call_id: ToolCallId,
     pub operation_id: ToolOperationId,
     pub input: ToolInput,
+    pub opaque_continuation: Option<String>,
+}
+
+impl fmt::Debug for CommittedToolCall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CommittedToolCall")
+            .field("call_id", &self.call_id)
+            .field("operation_id", &self.operation_id)
+            .field("input", &self.input)
+            .field(
+                "opaque_continuation",
+                &self.opaque_continuation.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]

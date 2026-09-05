@@ -201,6 +201,7 @@ pub(super) fn to_protocol_model_summary(
             ProviderProtocol::Responses => ProtocolProviderProtocol::Responses,
             ProviderProtocol::ChatCompletions => ProtocolProviderProtocol::ChatCompletions,
             ProviderProtocol::AnthropicMessages => ProtocolProviderProtocol::AnthropicMessages,
+            ProviderProtocol::Gemini => ProtocolProviderProtocol::Gemini,
         },
         protocol_revision: model.protocol_revision,
         capabilities: OpenCodeModelCapabilities {

@@ -1211,12 +1211,18 @@ async fn startup_never_replays_a_dispatched_subagent_batch() {
                                 task: "inspect state".to_owned(),
                             }],
                         },
+                        opaque_continuation: Some("ephemeral-provider-continuation".to_owned()),
                     }],
                 },
             )
             .await
             .expect("task call should commit");
         let call = &committed.calls[0];
+        assert_eq!(
+            call.opaque_continuation.as_deref(),
+            Some("ephemeral-provider-continuation")
+        );
+        assert!(!format!("{call:?}").contains("ephemeral-provider-continuation"));
         store
             .prepare_tool_operation(accepted.run.id, call.call_id, call.operation_id, None)
             .await

@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -95,6 +98,7 @@ pub enum ProviderInputItem {
         call_id: String,
         name: String,
         arguments: String,
+        opaque_continuation: Option<String>,
     },
     FunctionCallOutput {
         call_id: String,
@@ -126,11 +130,16 @@ impl fmt::Debug for ProviderInputItem {
                 call_id,
                 name,
                 arguments,
+                opaque_continuation,
             } => formatter
                 .debug_struct("FunctionCall")
                 .field("call_id", call_id)
                 .field("name", name)
                 .field("argument_bytes", &arguments.len())
+                .field(
+                    "opaque_continuation",
+                    &opaque_continuation.as_ref().map(|_| "[REDACTED]"),
+                )
                 .finish(),
             Self::FunctionCallOutput { call_id, output } => formatter
                 .debug_struct("FunctionCallOutput")
@@ -261,6 +270,7 @@ impl OpenCodeResponseRequest {
             ProviderProtocol::Responses => self.encode_responses_body()?,
             ProviderProtocol::ChatCompletions => self.encode_chat_completions_body()?,
             ProviderProtocol::AnthropicMessages => self.encode_anthropic_messages_body()?,
+            ProviderProtocol::Gemini => self.encode_gemini_body()?,
         };
         if body.len() > MAX_PROVIDER_REQUEST_BYTES {
             return Err(ProviderError::InvalidRequest);
@@ -314,6 +324,33 @@ impl OpenCodeResponseRequest {
             tools,
             maximum_output_tokens: self.maximum_output_tokens,
             stream: true,
+        })
+        .map_err(|_| ProviderError::InvalidRequest)
+    }
+
+    fn encode_gemini_body(&self) -> Result<Vec<u8>, ProviderError> {
+        let (system_instruction, contents) = gemini_contents(&self.input)?;
+        let function_declarations = self
+            .tools
+            .iter()
+            .map(|tool| {
+                Ok(GeminiWireFunctionDeclaration {
+                    name: &tool.name,
+                    description: &tool.description,
+                    parameters: gemini_tool_schema(&tool.parameters)?,
+                })
+            })
+            .collect::<Result<Vec<_>, ProviderError>>()?;
+        let tools = (!function_declarations.is_empty()).then_some([GeminiWireTool {
+            function_declarations,
+        }]);
+        serde_json::to_vec(&GeminiWireRequest {
+            contents,
+            system_instruction,
+            tools,
+            generation_config: GeminiWireGenerationConfig {
+                max_output_tokens: self.maximum_output_tokens,
+            },
         })
         .map_err(|_| ProviderError::InvalidRequest)
     }
@@ -406,10 +443,19 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
                 call_id,
                 name,
                 arguments,
+                opaque_continuation,
             } => {
                 validate_identifier(call_id, MAX_PROVIDER_CALL_ID_BYTES)?;
                 validate_tool_name(name)?;
-                if arguments.is_empty() || arguments.len() > MAX_TOOL_ARGUMENT_BYTES {
+                if arguments.is_empty()
+                    || arguments.len() > MAX_TOOL_ARGUMENT_BYTES
+                    || opaque_continuation.as_ref().is_some_and(|continuation| {
+                        model.protocol != ProviderProtocol::Gemini
+                            || !model.capabilities.reasoning_continuation
+                            || continuation.is_empty()
+                            || continuation.len() > MAX_ENCRYPTED_REASONING_BYTES
+                    })
+                {
                     return Err(ProviderError::InvalidRequest);
                 }
                 let decoded_arguments = parse_strict_value(arguments.as_bytes())
@@ -417,7 +463,10 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
                 if !decoded_arguments.is_object() {
                     return Err(ProviderError::InvalidRequest);
                 }
-                call_id.len() + name.len() + arguments.len()
+                call_id.len()
+                    + name.len()
+                    + arguments.len()
+                    + opaque_continuation.as_ref().map_or(0, String::len)
             }
             ProviderInputItem::FunctionCallOutput { call_id, output } => {
                 validate_identifier(call_id, MAX_PROVIDER_CALL_ID_BYTES)?;
@@ -602,6 +651,7 @@ impl<'a> From<&'a ProviderInputItem> for WireInputItem<'a> {
                 call_id,
                 name,
                 arguments,
+                opaque_continuation: _,
             } => Self::FunctionCall(WireFunctionCall {
                 item_type: "function_call",
                 call_id,
@@ -845,6 +895,7 @@ fn chat_messages(
                     call_id,
                     name,
                     arguments,
+                    opaque_continuation: _,
                 }) = input.get(index)
                 {
                     calls.push(ChatWireToolCall {
@@ -1079,6 +1130,7 @@ fn append_anthropic_tool_uses<'a>(
         call_id,
         name,
         arguments,
+        opaque_continuation: _,
     }) = input.get(*index)
     {
         let arguments =
@@ -1091,6 +1143,403 @@ fn append_anthropic_tool_uses<'a>(
         *index += 1;
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiWireRequest<'a> {
+    contents: Vec<GeminiWireContent<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_instruction: Option<GeminiWireSystemInstruction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<[GeminiWireTool<'a>; 1]>,
+    generation_config: GeminiWireGenerationConfig,
+}
+
+#[derive(Serialize)]
+struct GeminiWireSystemInstruction {
+    parts: [GeminiWireOwnedTextPart; 1],
+}
+
+#[derive(Serialize)]
+struct GeminiWireOwnedTextPart {
+    text: String,
+}
+
+#[derive(Serialize)]
+struct GeminiWireContent<'a> {
+    role: &'static str,
+    parts: Vec<GeminiWirePart<'a>>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum GeminiWirePart<'a> {
+    Text {
+        text: &'a str,
+    },
+    InlineData {
+        #[serde(rename = "inlineData")]
+        inline_data: GeminiWireInlineData,
+    },
+    FunctionCall {
+        #[serde(rename = "functionCall")]
+        function_call: GeminiWireFunctionCall<'a>,
+        #[serde(rename = "thoughtSignature", skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<&'a str>,
+    },
+    FunctionResponse {
+        #[serde(rename = "functionResponse")]
+        function_response: GeminiWireFunctionResponse<'a>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiWireInlineData {
+    mime_type: &'static str,
+    data: String,
+}
+
+#[derive(Serialize)]
+struct GeminiWireFunctionCall<'a> {
+    name: &'a str,
+    args: Value,
+}
+
+#[derive(Serialize)]
+struct GeminiWireFunctionResponse<'a> {
+    name: &'a str,
+    response: GeminiWireFunctionResponseBody<'a>,
+}
+
+#[derive(Serialize)]
+struct GeminiWireFunctionResponseBody<'a> {
+    name: &'a str,
+    content: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiWireTool<'a> {
+    function_declarations: Vec<GeminiWireFunctionDeclaration<'a>>,
+}
+
+#[derive(Serialize)]
+struct GeminiWireFunctionDeclaration<'a> {
+    name: &'a str,
+    description: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<Value>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiWireGenerationConfig {
+    max_output_tokens: u32,
+}
+
+fn gemini_contents(
+    input: &[ProviderInputItem],
+) -> Result<
+    (
+        Option<GeminiWireSystemInstruction>,
+        Vec<GeminiWireContent<'_>>,
+    ),
+    ProviderError,
+> {
+    let mut system_parts = Vec::new();
+    let mut contents = Vec::new();
+    let mut call_names = BTreeMap::new();
+    let mut index = 0_usize;
+    while index < input.len() {
+        match &input[index] {
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::Developer,
+                text,
+                phase: _,
+            } => {
+                if !contents.is_empty() {
+                    return Err(ProviderError::InvalidRequest);
+                }
+                system_parts.push(text.as_str());
+                index += 1;
+            }
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::User,
+                text,
+                phase: _,
+            } => {
+                contents.push(GeminiWireContent {
+                    role: "user",
+                    parts: vec![GeminiWirePart::Text { text }],
+                });
+                index += 1;
+            }
+            ProviderInputItem::Message {
+                role: ProviderMessageRole::Assistant,
+                text,
+                phase: _,
+            } => {
+                let mut parts = vec![GeminiWirePart::Text { text }];
+                index += 1;
+                append_gemini_function_calls(input, &mut index, &mut parts, &mut call_names)?;
+                contents.push(GeminiWireContent {
+                    role: "model",
+                    parts,
+                });
+            }
+            ProviderInputItem::MultimodalMessage { parts, .. } => {
+                contents.push(GeminiWireContent {
+                    role: "user",
+                    parts: parts
+                        .iter()
+                        .map(|part| match part {
+                            ProviderContentPart::Text(text) => GeminiWirePart::Text { text },
+                            ProviderContentPart::Image {
+                                media_type, bytes, ..
+                            } => GeminiWirePart::InlineData {
+                                inline_data: GeminiWireInlineData {
+                                    mime_type: media_type.as_str(),
+                                    data: morons_image::encode_base64(bytes),
+                                },
+                            },
+                        })
+                        .collect(),
+                });
+                index += 1;
+            }
+            ProviderInputItem::FunctionCall { .. } => {
+                let mut parts = Vec::new();
+                append_gemini_function_calls(input, &mut index, &mut parts, &mut call_names)?;
+                contents.push(GeminiWireContent {
+                    role: "model",
+                    parts,
+                });
+            }
+            ProviderInputItem::FunctionCallOutput { .. } => {
+                let mut parts = Vec::new();
+                while let Some(ProviderInputItem::FunctionCallOutput { call_id, output }) =
+                    input.get(index)
+                {
+                    let name = call_names
+                        .get(call_id.as_str())
+                        .copied()
+                        .ok_or(ProviderError::InvalidRequest)?;
+                    parts.push(GeminiWirePart::FunctionResponse {
+                        function_response: GeminiWireFunctionResponse {
+                            name,
+                            response: GeminiWireFunctionResponseBody {
+                                name,
+                                content: output,
+                            },
+                        },
+                    });
+                    index += 1;
+                }
+                contents.push(GeminiWireContent {
+                    role: "user",
+                    parts,
+                });
+            }
+            ProviderInputItem::Reasoning { .. } => return Err(ProviderError::InvalidRequest),
+        }
+    }
+    if contents.is_empty() {
+        return Err(ProviderError::InvalidRequest);
+    }
+    Ok((
+        (!system_parts.is_empty()).then(|| GeminiWireSystemInstruction {
+            parts: [GeminiWireOwnedTextPart {
+                text: system_parts.join("\n\n"),
+            }],
+        }),
+        contents,
+    ))
+}
+
+fn append_gemini_function_calls<'a>(
+    input: &'a [ProviderInputItem],
+    index: &mut usize,
+    parts: &mut Vec<GeminiWirePart<'a>>,
+    call_names: &mut BTreeMap<&'a str, &'a str>,
+) -> Result<(), ProviderError> {
+    while let Some(ProviderInputItem::FunctionCall {
+        call_id,
+        name,
+        arguments,
+        opaque_continuation,
+    }) = input.get(*index)
+    {
+        if call_names.insert(call_id, name).is_some() {
+            return Err(ProviderError::InvalidRequest);
+        }
+        let args =
+            parse_strict_value(arguments.as_bytes()).map_err(|_| ProviderError::InvalidRequest)?;
+        parts.push(GeminiWirePart::FunctionCall {
+            function_call: GeminiWireFunctionCall { name, args },
+            thought_signature: opaque_continuation.as_deref(),
+        });
+        *index += 1;
+    }
+    Ok(())
+}
+
+fn gemini_tool_schema(schema: &Value) -> Result<Option<Value>, ProviderError> {
+    let object = schema.as_object().ok_or(ProviderError::InvalidRequest)?;
+    let empty_object = object.get("type").and_then(Value::as_str) == Some("object")
+        && object
+            .get("properties")
+            .and_then(Value::as_object)
+            .is_none_or(serde_json::Map::is_empty)
+        && !object
+            .get("additionalProperties")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    if empty_object {
+        Ok(None)
+    } else {
+        gemini_project_schema(schema)
+    }
+}
+
+fn gemini_project_schema(schema: &Value) -> Result<Option<Value>, ProviderError> {
+    let object = schema.as_object().ok_or(ProviderError::InvalidRequest)?;
+    let mut result = serde_json::Map::new();
+    for key in ["description", "format", "minLength"] {
+        if let Some(value) = object.get(key) {
+            result.insert(key.to_owned(), value.clone());
+        }
+    }
+
+    let schema_type = object.get("type");
+    let nullable = schema_type
+        .and_then(Value::as_array)
+        .is_some_and(|types| types.iter().any(|value| value.as_str() == Some("null")));
+    let projected_type = match schema_type {
+        Some(Value::String(value)) => Some(value.clone()),
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|value| *value != "null")
+            .map(str::to_owned),
+        Some(_) => return Err(ProviderError::InvalidRequest),
+        None => None,
+    };
+
+    let raw_enum = object
+        .get("const")
+        .map(|value| vec![value.clone()])
+        .or_else(|| object.get("enum").and_then(Value::as_array).cloned());
+    let numeric_enum =
+        matches!(projected_type.as_deref(), Some("integer" | "number")) && raw_enum.is_some();
+    if let Some(schema_type) = projected_type {
+        result.insert(
+            "type".to_owned(),
+            Value::String(if numeric_enum {
+                "string".to_owned()
+            } else {
+                schema_type
+            }),
+        );
+    }
+    if nullable {
+        result.insert("nullable".to_owned(), Value::Bool(true));
+    }
+    if let Some(values) = raw_enum {
+        result.insert(
+            "enum".to_owned(),
+            Value::Array(if numeric_enum {
+                values
+                    .into_iter()
+                    .map(|value| match value {
+                        Value::String(value) => Ok(Value::String(value)),
+                        Value::Number(value) => Ok(Value::String(value.to_string())),
+                        Value::Bool(value) => Ok(Value::String(value.to_string())),
+                        Value::Null => Ok(Value::String("null".to_owned())),
+                        Value::Array(_) | Value::Object(_) => Err(ProviderError::InvalidRequest),
+                    })
+                    .collect::<Result<Vec<_>, ProviderError>>()?
+            } else {
+                values
+            }),
+        );
+    }
+
+    let allows_properties = !matches!(
+        result.get("type").and_then(Value::as_str),
+        Some(schema_type) if schema_type != "object"
+    ) || ["anyOf", "oneOf", "allOf"]
+        .iter()
+        .any(|key| object.contains_key(*key));
+    if allows_properties && let Some(properties) = object.get("properties") {
+        let properties = properties
+            .as_object()
+            .ok_or(ProviderError::InvalidRequest)?;
+        let mut projected = serde_json::Map::new();
+        for (name, value) in properties {
+            if let Some(value) = gemini_project_schema(value)? {
+                projected.insert(name.clone(), value);
+            }
+        }
+        if !projected.is_empty() {
+            let required = object
+                .get("required")
+                .map(|value| {
+                    Ok(value
+                        .as_array()
+                        .ok_or(ProviderError::InvalidRequest)?
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .filter(|name| projected.contains_key(*name))
+                        .map(|name| Value::String(name.to_owned()))
+                        .collect::<Vec<_>>())
+                })
+                .transpose()?
+                .unwrap_or_default();
+            result.insert("properties".to_owned(), Value::Object(projected));
+            if !required.is_empty() {
+                result.insert("required".to_owned(), Value::Array(required));
+            }
+        }
+    }
+
+    if result.get("type").and_then(Value::as_str) == Some("array") {
+        let items = match object.get("items") {
+            Some(Value::Array(values)) => Value::Array(
+                values
+                    .iter()
+                    .map(gemini_project_schema)
+                    .collect::<Result<Vec<_>, ProviderError>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            ),
+            Some(value) => gemini_project_schema(value)?
+                .unwrap_or_else(|| serde_json::json!({"type": "string"})),
+            None => serde_json::json!({"type": "string"}),
+        };
+        result.insert("items".to_owned(), items);
+    }
+
+    for key in ["allOf", "anyOf", "oneOf"] {
+        if let Some(values) = object.get(key) {
+            let values = values
+                .as_array()
+                .ok_or(ProviderError::InvalidRequest)?
+                .iter()
+                .map(gemini_project_schema)
+                .collect::<Result<Vec<_>, ProviderError>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            if !values.is_empty() {
+                result.insert(key.to_owned(), Value::Array(values));
+            }
+        }
+    }
+
+    Ok((!result.is_empty()).then_some(Value::Object(result)))
 }
 
 #[cfg(test)]

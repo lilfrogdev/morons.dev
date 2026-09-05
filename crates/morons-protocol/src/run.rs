@@ -277,6 +277,7 @@ pub enum ProviderProtocol {
     Responses,
     ChatCompletions,
     AnthropicMessages,
+    Gemini,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
