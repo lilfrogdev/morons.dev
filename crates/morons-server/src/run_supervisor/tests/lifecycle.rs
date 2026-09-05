@@ -1,0 +1,437 @@
+use super::*;
+
+#[test]
+fn global_run_capacity_is_bounded_without_queueing() {
+    let root = TestRoot::new("global-capacity");
+    let sessions =
+        Arc::new(SessionStore::open_for_test(root.path()).expect("session store should open"));
+    let provider = Arc::new(OpenCodeProvider::for_test(
+        Arc::clone(&sessions),
+        "http://127.0.0.1:9",
+    ));
+    let supervisor = RunSupervisor::new(sessions, provider, SessionEventHub::new());
+    let permits = (0..4)
+        .map(|_| supervisor.try_reserve().expect("capacity should remain"))
+        .collect::<Vec<_>>();
+    assert!(supervisor.try_reserve().is_none());
+    drop(permits);
+    assert!(supervisor.try_reserve().is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn changed_credential_generation_fails_before_network_dispatch() {
+    let root = TestRoot::new("credential-generation");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x71; 16]),
+            0,
+            b"not-a-real-original-key".to_vec(),
+        )
+        .await
+        .expect("original credential should be configured");
+    let session = store
+        .create_session(PersistenceMutationRequestId::from_bytes([0x72; 16]), None)
+        .await
+        .expect("session should be created");
+    let accepted = store
+        .accept_session_input(
+            PersistenceMutationRequestId::from_bytes([0x73; 16]),
+            session.id,
+            "bind the original generation".to_owned(),
+            RunModelSelection {
+                service: RunOpenCodeService::Zen,
+                model_id: "muse-spark-1.2".to_owned(),
+                protocol_revision: 1,
+                maximum_input_tokens: 96_000,
+                maximum_output_tokens: 32_000,
+                supports_tool_calls: true,
+                supports_image_input: false,
+            },
+        )
+        .await
+        .expect("run should bind generation one");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x74; 16]),
+            1,
+            b"not-a-real-replacement-key".to_vec(),
+        )
+        .await
+        .expect("credential should be replaced");
+    assert_eq!(
+        store
+            .activate_run(accepted.run.id)
+            .await
+            .expect("run should activate"),
+        ActivationOutcome::Active
+    );
+    let context = store
+        .load_run_context(accepted.run.id)
+        .await
+        .expect("run context should load");
+    let request = build_provider_request(&context, None).expect("request should build");
+    let operation_id = match store
+        .prepare_provider_operation(
+            accepted.run.id,
+            context.current_entry_high_water,
+            context.estimated_input_tokens,
+        )
+        .await
+        .expect("provider operation should prepare")
+    {
+        PrepareOperationOutcome::Prepared(operation_id) => operation_id,
+        other => panic!("unexpected preparation outcome: {other:?}"),
+    };
+    let sessions = Arc::new(store);
+    let provider = OpenCodeProvider::for_test(Arc::clone(&sessions), "http://127.0.0.1:9");
+    let error = match provider
+        .prepare_dispatch(accepted.run.credential_generation, &request)
+        .await
+    {
+        Ok(_) => panic!("changed generation must not prepare network dispatch"),
+        Err(error) => error,
+    };
+    assert_eq!(error, ProviderError::CredentialGenerationChanged);
+    let failed = sessions
+        .finish_run_failure(
+            accepted.run.id,
+            Some(operation_id),
+            RunFailureKind::CredentialChanged,
+            ProviderOperationFailureState::Failed,
+        )
+        .await
+        .expect("run should fail durably");
+    assert_eq!(failed.state, PersistenceRunState::Failed);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn accepted_run_outlives_request_and_commits_complete_assistant() {
+    let root = TestRoot::new("supervised-success");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x01; 16]),
+            0,
+            b"not-a-real-supervisor-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session(PersistenceMutationRequestId::from_bytes([0x02; 16]), None)
+        .await
+        .expect("session should be created");
+    let (base, captured_request, complete_provider, server) = spawn_successful_provider().await;
+    let application = Arc::new(ServerApplication::from_session_store_for_test(store, &base));
+    let protocol_session_id = SessionId::from_bytes(*session.id.as_bytes());
+    let snapshot = application
+        .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+            session_id: protocol_session_id,
+            cursor: None,
+            direction: morons_protocol::TranscriptPageDirection::Newer,
+            limit: 1,
+        })
+        .await
+        .expect("initial session snapshot should load");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+        event_cursor,
+        ..
+    }) = snapshot
+    else {
+        panic!("initial session snapshot should return a page");
+    };
+
+    let (subscription_connection, mut subscription_server_connection) =
+        tokio::io::duplex(1024 * 1024);
+    let subscription_application = Arc::clone(&application);
+    let subscription_requests = tokio::spawn(async move {
+        handle_local_owner_requests(
+            &mut subscription_server_connection,
+            &subscription_application,
+        )
+        .await
+    });
+    let subscription_client =
+        ApplicationClient::from_negotiated_connection(subscription_connection);
+    let mut subscription = subscription_client
+        .subscribe_to_session(protocol_session_id, event_cursor)
+        .await
+        .expect("session subscription should start");
+
+    let (client_connection, mut server_connection) = tokio::io::duplex(1024 * 1024);
+    let server_application = Arc::clone(&application);
+    let requests = tokio::spawn(async move {
+        handle_local_owner_requests(&mut server_connection, &server_application).await
+    });
+    let mut client = ApplicationClient::from_negotiated_connection(client_connection);
+    let accepted = client
+        .submit_session_input(
+            MutationRequestId::from_bytes([0x03; 16]),
+            protocol_session_id,
+            "return a durable answer".to_owned(),
+            OpenCodeService::Zen,
+            "muse-spark-1.2".to_owned(),
+        )
+        .await
+        .expect("input should be accepted over the application transport");
+    let run = accepted.run;
+    drop(client);
+    requests
+        .await
+        .expect("request task should join")
+        .expect("client disconnect should close the request loop cleanly");
+
+    let captured = time::timeout(Duration::from_secs(5), captured_request)
+        .await
+        .expect("provider request should be dispatched")
+        .expect("provider request capture should complete");
+    assert!(captured.contains("POST /zen/v1/responses HTTP/1.1"));
+    assert!(captured.contains("authorization: Bearer not-a-real-supervisor-key"));
+    let mut saw_user = false;
+    let mut saw_accepted = false;
+    let mut saw_active = false;
+    loop {
+        let event = time::timeout(Duration::from_secs(5), subscription.next_event())
+            .await
+            .expect("live session event should arrive")
+            .expect("live session event should be valid");
+        match event {
+            ApplicationEvent::SessionTranscriptEntryCommitted {
+                entry: morons_protocol::TranscriptEntry::UserMessage { run_id, .. },
+                ..
+            } if run_id == run.id => saw_user = true,
+            ApplicationEvent::SessionRunChanged { run: changed, .. }
+                if changed.id == run.id && changed.state == RunState::Accepted =>
+            {
+                saw_accepted = true;
+            }
+            ApplicationEvent::SessionRunChanged { run: changed, .. }
+                if changed.id == run.id && changed.state == RunState::Active =>
+            {
+                saw_active = true;
+            }
+            ApplicationEvent::SessionAssistantDelta {
+                run_id,
+                sequence: 1,
+                delta,
+                ..
+            } if run_id == run.id && delta == "durable answer" => break,
+            other => panic!("unexpected live session event: {other:?}"),
+        }
+    }
+    assert!(saw_user && saw_accepted && saw_active);
+    complete_provider
+        .send(())
+        .unwrap_or_else(|_| panic!("provider completion should be released"));
+    server.await.expect("provider fixture should finish");
+
+    let mut saw_assistant = false;
+    let terminal = loop {
+        let event = time::timeout(Duration::from_secs(5), subscription.next_event())
+            .await
+            .expect("terminal session event should arrive")
+            .expect("terminal session event should be valid");
+        match event {
+            ApplicationEvent::SessionTranscriptEntryCommitted {
+                entry: morons_protocol::TranscriptEntry::AssistantMessage { text, .. },
+                ..
+            } if text == "durable answer" => saw_assistant = true,
+            ApplicationEvent::SessionRunChanged { run: changed, .. }
+                if changed.id == run.id && changed.state.is_terminal() =>
+            {
+                break changed.state;
+            }
+            other => panic!("unexpected terminal session event: {other:?}"),
+        }
+    };
+    assert!(saw_assistant);
+    assert_eq!(terminal, RunState::Succeeded);
+    let first = application
+        .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+            session_id: run.session_id,
+            cursor: None,
+            direction: morons_protocol::TranscriptPageDirection::Newer,
+            limit: 1,
+        })
+        .await
+        .expect("first transcript page should load");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+        entries,
+        newer_cursor,
+        ..
+    }) = first
+    else {
+        panic!("transcript should return a page");
+    };
+    assert_eq!(entries.len(), 1);
+    let second = application
+        .execute_for_local_owner(ApplicationRequest::ListSessionTranscript {
+            session_id: run.session_id,
+            cursor: newer_cursor,
+            direction: morons_protocol::TranscriptPageDirection::Newer,
+            limit: 1,
+        })
+        .await
+        .expect("second transcript page should load");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionTranscriptListed {
+        entries,
+        newer_cursor,
+        ..
+    }) = second
+    else {
+        panic!("transcript should return a page");
+    };
+    assert!(newer_cursor.is_none());
+    assert!(matches!(
+        &entries[..],
+        [morons_protocol::TranscriptEntry::AssistantMessage { text, .. }]
+            if text == "durable answer"
+    ));
+    drop(subscription);
+    subscription_requests
+        .await
+        .expect("subscription task should join")
+        .expect("subscription disconnect should be clean");
+    application.shutdown().await;
+    drop(application);
+    let database = fs::read(root.path().join("data").join("sessions.sqlite3"))
+        .expect("database should be readable");
+    assert!(!contains_bytes(&database, b"not-a-real-supervisor-key"));
+    assert!(!contains_bytes(&database, b"response.completed"));
+    assert!(!contains_bytes(&database, b"Bearer "));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn exact_cancellation_stops_the_supervised_provider_task() {
+    let root = TestRoot::new("supervised-cancellation");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x11; 16]),
+            0,
+            b"not-a-real-cancellation-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session(PersistenceMutationRequestId::from_bytes([0x12; 16]), None)
+        .await
+        .expect("session should be created");
+    let (base, dispatched, server) = spawn_stalled_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x13; 16]),
+            session_id: SessionId::from_bytes(*session.id.as_bytes()),
+            text: "cancel the network request".to_owned(),
+            attachments: Vec::new(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("input should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run acceptance");
+    };
+    time::timeout(Duration::from_secs(5), dispatched)
+        .await
+        .expect("provider request should dispatch")
+        .expect("dispatch signal should arrive");
+
+    let cancellation = application
+        .execute_for_local_owner(ApplicationRequest::CancelRun {
+            mutation_request_id: MutationRequestId::from_bytes([0x14; 16]),
+            session_id: run.session_id,
+            run_id: run.id,
+        })
+        .await
+        .expect("cancellation should commit");
+    assert!(matches!(
+        cancellation,
+        ApplicationOutcome::Response(ApplicationResponse::RunCancellationResolved {
+            run_id,
+            cancellation_requested: true,
+            ..
+        }) if run_id == run.id
+    ));
+    assert_eq!(
+        wait_for_terminal(&application, run.session_id, run.id).await,
+        RunState::Cancelled
+    );
+    server
+        .await
+        .expect("stalled provider should observe closure");
+    application.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn graceful_shutdown_interrupts_run_without_owner_cancellation() {
+    let root = TestRoot::new("supervised-shutdown");
+    let store = SessionStore::open_for_test(root.path()).expect("session store should open");
+    store
+        .set_open_code_credential(
+            PersistenceMutationRequestId::from_bytes([0x21; 16]),
+            0,
+            b"not-a-real-shutdown-key".to_vec(),
+        )
+        .await
+        .expect("credential should be configured");
+    let session = store
+        .create_session(PersistenceMutationRequestId::from_bytes([0x22; 16]), None)
+        .await
+        .expect("session should be created");
+    let (base, dispatched, server) = spawn_stalled_provider().await;
+    let application = ServerApplication::from_session_store_for_test(store, &base);
+    let accepted = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x23; 16]),
+            session_id: SessionId::from_bytes(*session.id.as_bytes()),
+            text: "interrupt on shutdown".to_owned(),
+            attachments: Vec::new(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .expect("input should be accepted");
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        accepted
+    else {
+        panic!("input should return a run acceptance");
+    };
+    time::timeout(Duration::from_secs(5), dispatched)
+        .await
+        .expect("provider request should dispatch")
+        .expect("dispatch signal should arrive");
+
+    application.shutdown().await;
+    server.await.expect("provider should observe shutdown");
+    let outcome = application
+        .execute_for_local_owner(ApplicationRequest::GetRun {
+            session_id: run.session_id,
+            run_id: run.id,
+        })
+        .await
+        .expect("interrupted run should remain queryable");
+    assert!(matches!(
+        outcome,
+        ApplicationOutcome::Response(ApplicationResponse::RunFound { run })
+            if run.state == RunState::Interrupted
+    ));
+    let error = match application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0x24; 16]),
+            session_id: run.session_id,
+            text: "must not start during shutdown".to_owned(),
+            attachments: Vec::new(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+    {
+        Ok(_) => panic!("shutdown should reject new run input"),
+        Err(error) => error,
+    };
+    assert_eq!(error, ApplicationError::ServiceUnavailable);
+}

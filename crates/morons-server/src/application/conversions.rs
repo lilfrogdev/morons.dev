@@ -29,6 +29,23 @@ use crate::{
     },
 };
 
+pub(super) fn to_run_model_selection(
+    model: &crate::provider::OpenCodeModel,
+) -> crate::persistence::RunModelSelection {
+    crate::persistence::RunModelSelection {
+        service: match model.service {
+            OpenCodeService::Zen => RunOpenCodeService::Zen,
+            OpenCodeService::Go => RunOpenCodeService::Go,
+        },
+        model_id: model.id.to_owned(),
+        protocol_revision: model.protocol_revision,
+        maximum_input_tokens: model.maximum_input_tokens,
+        maximum_output_tokens: model.maximum_output_tokens,
+        supports_tool_calls: model.capabilities.tool_calls,
+        supports_image_input: model.capabilities.image_input,
+    }
+}
+
 pub(super) fn input_accepted_response(accepted: AcceptedRun) -> ApplicationOutcome {
     ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted {
         user_message_id: ProtocolMessageId::from_bytes(*accepted.user_message_id.as_bytes()),
@@ -201,6 +218,7 @@ pub(super) fn to_protocol_model_summary(
             ProviderProtocol::Responses => ProtocolProviderProtocol::Responses,
             ProviderProtocol::ChatCompletions => ProtocolProviderProtocol::ChatCompletions,
             ProviderProtocol::AnthropicMessages => ProtocolProviderProtocol::AnthropicMessages,
+            ProviderProtocol::Gemini => ProtocolProviderProtocol::Gemini,
         },
         protocol_revision: model.protocol_revision,
         capabilities: OpenCodeModelCapabilities {

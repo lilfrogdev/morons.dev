@@ -159,6 +159,7 @@ impl ChatCompletionsDecoder {
                 provider_call_id: id,
                 name,
                 arguments: call.arguments,
+                opaque_continuation: None,
             }));
         }
         Ok(ProviderOutcome {
@@ -304,6 +305,16 @@ impl ChatCompletionsDecoder {
             let usage = self.validate_usage(usage)?;
             match self.usage {
                 Some(existing) if !usage_refines(existing, usage) => {
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "chat usage refinement rejected: input_changed={} output_decreased={} total_decreased={} cached_decreased={} cache_write_decreased={} reasoning_decreased={}",
+                        existing.input_tokens != usage.input_tokens,
+                        existing.output_tokens > usage.output_tokens,
+                        existing.total_tokens > usage.total_tokens,
+                        existing.cached_input_tokens > usage.cached_input_tokens,
+                        existing.cache_write_input_tokens > usage.cache_write_input_tokens,
+                        existing.reasoning_output_tokens > usage.reasoning_output_tokens,
+                    );
                     return Err(ProviderError::MalformedResponse);
                 }
                 Some(_) | None => self.usage = Some(usage),
@@ -521,6 +532,8 @@ impl ChatCompletionsDecoder {
             .unwrap_or(0);
         let cached = match (detailed_cached, usage.prompt_cache_hit_tokens) {
             (Some(detailed), Some(top_level)) if detailed != top_level => {
+                #[cfg(debug_assertions)]
+                eprintln!("chat usage rejection: cache sources disagree");
                 return Err(ProviderError::MalformedResponse);
             }
             (Some(detailed), _) => detailed,
@@ -550,22 +563,35 @@ impl ChatCompletionsDecoder {
                     .flatten()
                     .any(|tokens| tokens != 0)
                 });
+        let prompt_zero = usage.prompt_tokens == 0;
+        let completion_zero = usage.completion_tokens == 0;
+        let input_limit = usage.prompt_tokens > u64::from(self.maximum_input_tokens)
+            || usage.prompt_tokens > MAX_USAGE_TOKENS;
+        let output_limit = usage.completion_tokens > u64::from(self.maximum_output_tokens)
+            || usage.completion_tokens > MAX_USAGE_TOKENS;
+        let total_mismatch =
+            usage.prompt_tokens.checked_add(usage.completion_tokens) != Some(usage.total_tokens);
+        let invalid_cache = cached
+            .checked_add(cache_write)
+            .is_none_or(|cache_tokens| cache_tokens > usage.prompt_tokens);
+        let miss_mismatch = usage
+            .prompt_cache_miss_tokens
+            .is_some_and(|miss| usage.prompt_tokens.checked_sub(cached) != Some(miss));
+        let invalid_reasoning = reasoning > usage.completion_tokens;
         if unsupported_usage
-            || usage.prompt_tokens == 0
-            || usage.completion_tokens == 0
-            || usage.prompt_tokens > u64::from(self.maximum_input_tokens)
-            || usage.completion_tokens > u64::from(self.maximum_output_tokens)
-            || usage.prompt_tokens > MAX_USAGE_TOKENS
-            || usage.completion_tokens > MAX_USAGE_TOKENS
-            || usage.prompt_tokens.checked_add(usage.completion_tokens) != Some(usage.total_tokens)
-            || cached
-                .checked_add(cache_write)
-                .is_none_or(|cache_tokens| cache_tokens > usage.prompt_tokens)
-            || usage
-                .prompt_cache_miss_tokens
-                .is_some_and(|miss| miss != usage.prompt_tokens - cached)
-            || reasoning > usage.completion_tokens
+            || prompt_zero
+            || completion_zero
+            || input_limit
+            || output_limit
+            || total_mismatch
+            || invalid_cache
+            || miss_mismatch
+            || invalid_reasoning
         {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "chat usage rejection flags: unsupported={unsupported_usage} prompt_zero={prompt_zero} completion_zero={completion_zero} input_limit={input_limit} output_limit={output_limit} total_mismatch={total_mismatch} invalid_cache={invalid_cache} miss_mismatch={miss_mismatch} invalid_reasoning={invalid_reasoning}"
+            );
             return Err(ProviderError::MalformedResponse);
         }
         Ok(ProviderUsage {
@@ -742,8 +768,8 @@ fn diagnose_unknown_chunk_fields(value: &Value) {
 
 const fn usage_refines(previous: ProviderUsage, next: ProviderUsage) -> bool {
     previous.input_tokens == next.input_tokens
-        && previous.output_tokens == next.output_tokens
-        && previous.total_tokens == next.total_tokens
+        && previous.output_tokens <= next.output_tokens
+        && previous.total_tokens <= next.total_tokens
         && previous.cached_input_tokens <= next.cached_input_tokens
         && previous.cache_write_input_tokens <= next.cache_write_input_tokens
         && previous.reasoning_output_tokens <= next.reasoning_output_tokens

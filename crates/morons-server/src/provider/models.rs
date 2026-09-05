@@ -19,6 +19,7 @@ pub enum ProviderProtocol {
     Responses,
     ChatCompletions,
     AnthropicMessages,
+    Gemini,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +69,7 @@ pub struct OpenCodeModel {
 pub const RESPONSES_PROTOCOL_REVISION: u16 = 1;
 pub const CHAT_COMPLETIONS_PROTOCOL_REVISION: u16 = 2;
 pub const ANTHROPIC_MESSAGES_PROTOCOL_REVISION: u16 = 3;
+pub const GEMINI_PROTOCOL_REVISION: u16 = 4;
 pub const MAXIMUM_INPUT_TOKENS: u32 = 96_000;
 pub const MAXIMUM_OUTPUT_TOKENS: u32 = 32_000;
 pub const MAXIMUM_CONTEXT_TOKENS: u32 = MAXIMUM_INPUT_TOKENS + MAXIMUM_OUTPUT_TOKENS;
@@ -84,7 +86,15 @@ const VISION_CAPABILITIES: ModelCapabilities = ModelCapabilities {
     image_input: true,
     ..RESPONSES_CAPABILITIES
 };
+const OPENAI_TEXT_RESPONSES_CAPABILITIES: ModelCapabilities = ModelCapabilities {
+    reasoning_continuation: true,
+    ..RESPONSES_CAPABILITIES
+};
 const OPENAI_RESPONSES_CAPABILITIES: ModelCapabilities = ModelCapabilities {
+    image_input: true,
+    ..OPENAI_TEXT_RESPONSES_CAPABILITIES
+};
+const GEMINI_CAPABILITIES: ModelCapabilities = ModelCapabilities {
     reasoning_continuation: true,
     ..VISION_CAPABILITIES
 };
@@ -105,15 +115,6 @@ const UNDOCUMENTED_DATA_USE: ModelDataUse = ModelDataUse {
     retention: ModelRetention::NotDocumented,
 };
 
-const fn model(
-    service: OpenCodeService,
-    id: &'static str,
-    display_name: &'static str,
-    data_use: ModelDataUse,
-) -> OpenCodeModel {
-    model_with_capabilities(service, id, display_name, data_use, RESPONSES_CAPABILITIES)
-}
-
 const fn openai_model(
     service: OpenCodeService,
     id: &'static str,
@@ -126,6 +127,21 @@ const fn openai_model(
         display_name,
         data_use,
         OPENAI_RESPONSES_CAPABILITIES,
+    )
+}
+
+const fn openai_text_model(
+    service: OpenCodeService,
+    id: &'static str,
+    display_name: &'static str,
+    data_use: ModelDataUse,
+) -> OpenCodeModel {
+    model_with_capabilities(
+        service,
+        id,
+        display_name,
+        data_use,
+        OPENAI_TEXT_RESPONSES_CAPABILITIES,
     )
 }
 
@@ -206,6 +222,23 @@ const fn anthropic_vision_model(
     )
 }
 
+const fn gemini_vision_model(
+    service: OpenCodeService,
+    id: &'static str,
+    display_name: &'static str,
+    data_use: ModelDataUse,
+) -> OpenCodeModel {
+    protocol_model(
+        service,
+        id,
+        display_name,
+        data_use,
+        GEMINI_CAPABILITIES,
+        ProviderProtocol::Gemini,
+        GEMINI_PROTOCOL_REVISION,
+    )
+}
+
 const fn model_with_capabilities(
     service: OpenCodeService,
     id: &'static str,
@@ -247,6 +280,120 @@ const fn protocol_model(
 }
 
 static MODELS: &[OpenCodeModel] = &[
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-fable-5",
+        "Claude Fable 5",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-fable-5-1",
+        "Claude Fable 5.1",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-opus-5",
+        "Claude Opus 5",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-opus-4-8",
+        "Claude Opus 4.8",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-opus-4-7",
+        "Claude Opus 4.7",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-opus-4-6",
+        "Claude Opus 4.6",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-opus-4-5",
+        "Claude Opus 4.5",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-sonnet-5",
+        "Claude Sonnet 5",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-sonnet-4-6",
+        "Claude Sonnet 4.6",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-sonnet-4-5",
+        "Claude Sonnet 4.5",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-sonnet-4",
+        "Claude Sonnet 4",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "claude-haiku-4-5",
+        "Claude Haiku 4.5",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    gemini_vision_model(
+        OpenCodeService::Zen,
+        "gemini-3.6-flash",
+        "Gemini 3.6 Flash",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    gemini_vision_model(
+        OpenCodeService::Zen,
+        "gemini-3.8-flash",
+        "Gemini 3.8 Flash",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    gemini_vision_model(
+        OpenCodeService::Zen,
+        "gemini-3.7-flash",
+        "Gemini 3.7 Flash",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    gemini_vision_model(
+        OpenCodeService::Zen,
+        "gemini-3.5-flash-lite",
+        "Gemini 3.5 Flash Lite",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    gemini_vision_model(
+        OpenCodeService::Zen,
+        "gemini-3.5-flash",
+        "Gemini 3.5 Flash",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    gemini_vision_model(
+        OpenCodeService::Zen,
+        "gemini-3.1-pro",
+        "Gemini 3.1 Pro",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    gemini_vision_model(
+        OpenCodeService::Zen,
+        "gemini-3-flash",
+        "Gemini 3 Flash",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
     openai_model(
         OpenCodeService::Zen,
         "gpt-5.6-sol",
@@ -301,16 +448,16 @@ static MODELS: &[OpenCodeModel] = &[
         "GPT 5.4 Nano",
         NO_TRAINING_THIRTY_DAY_RETENTION,
     ),
-    openai_model(
+    openai_text_model(
         OpenCodeService::Zen,
-        "gpt-5.3-codex",
-        "GPT 5.3 Codex",
+        "gpt-5.3-codex-spark",
+        "GPT 5.3 Codex Spark",
         NO_TRAINING_THIRTY_DAY_RETENTION,
     ),
     openai_model(
         OpenCodeService::Zen,
-        "gpt-5.3-codex-spark",
-        "GPT 5.3 Codex Spark",
+        "gpt-5.3-codex",
+        "GPT 5.3 Codex",
         NO_TRAINING_THIRTY_DAY_RETENTION,
     ),
     openai_model(
@@ -321,8 +468,32 @@ static MODELS: &[OpenCodeModel] = &[
     ),
     openai_model(
         OpenCodeService::Zen,
+        "gpt-5.2-codex",
+        "GPT 5.2 Codex",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    openai_model(
+        OpenCodeService::Zen,
         "gpt-5.1",
         "GPT 5.1",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    openai_model(
+        OpenCodeService::Zen,
+        "gpt-5.1-codex-max",
+        "GPT 5.1 Codex Max",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    openai_model(
+        OpenCodeService::Zen,
+        "gpt-5.1-codex",
+        "GPT 5.1 Codex",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    openai_model(
+        OpenCodeService::Zen,
+        "gpt-5.1-codex-mini",
+        "GPT 5.1 Codex Mini",
         NO_TRAINING_THIRTY_DAY_RETENTION,
     ),
     openai_model(
@@ -333,32 +504,176 @@ static MODELS: &[OpenCodeModel] = &[
     ),
     openai_model(
         OpenCodeService::Zen,
+        "gpt-5-codex",
+        "GPT 5 Codex",
+        NO_TRAINING_THIRTY_DAY_RETENTION,
+    ),
+    openai_model(
+        OpenCodeService::Zen,
         "gpt-5-nano",
         "GPT 5 Nano",
         NO_TRAINING_THIRTY_DAY_RETENTION,
     ),
-    model(
-        OpenCodeService::Zen,
-        "grok-4.6",
-        "Grok 4.6",
-        NO_TRAINING_ZERO_RETENTION,
-    ),
-    model(
-        OpenCodeService::Zen,
-        "grok-4.5",
-        "Grok 4.5",
-        NO_TRAINING_ZERO_RETENTION,
-    ),
-    model(
+    vision_model(
         OpenCodeService::Zen,
         "grok-build-0.1",
         "Grok Build 0.1",
         NO_TRAINING_ZERO_RETENTION,
     ),
-    model(
+    vision_model(
+        OpenCodeService::Zen,
+        "grok-4.6",
+        "Grok 4.6",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    vision_model(
+        OpenCodeService::Zen,
+        "grok-4.5",
+        "Grok 4.5",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    vision_model(
         OpenCodeService::Zen,
         "muse-spark-1.2",
         "Muse Spark 1.2",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "deepseek-v4-pro",
+        "DeepSeek V4 Pro",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "deepseek-v4-flash",
+        "DeepSeek V4 Flash",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "glm-5.2",
+        "GLM-5.2",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "glm-5.1",
+        "GLM-5.1",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "glm-5",
+        "GLM-5",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Zen,
+        "minimax-m3",
+        "MiniMax M3",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "minimax-m2.7",
+        "MiniMax M2.7",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "minimax-m2.5",
+        "MiniMax M2.5",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Zen,
+        "kimi-k3",
+        "Kimi K3",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Zen,
+        "kimi-k2.7-code",
+        "Kimi K2.7 Code",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Zen,
+        "kimi-k2.6",
+        "Kimi K2.6",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Zen,
+        "kimi-k2.5",
+        "Kimi K2.5",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "qwen3.6-plus",
+        "Qwen3.6 Plus",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    anthropic_vision_model(
+        OpenCodeService::Zen,
+        "qwen3.5-plus",
+        "Qwen3.5 Plus",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "big-pickle",
+        "Big Pickle",
+        TRAINING_NOT_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "deepseek-v4-flash-free",
+        "DeepSeek V4 Flash Free",
+        NO_TRAINING_ZERO_RETENTION,
+    ),
+    vision_model(
+        OpenCodeService::Zen,
+        "muse-spark-1.3-contributor-free",
+        "Muse Spark 1.3 Contributor Free",
+        TRAINING_NOT_ZERO_RETENTION,
+    ),
+    vision_model(
+        OpenCodeService::Zen,
+        "muse-spark-1.2-contributor-free",
+        "Muse Spark 1.2 Contributor Free",
+        TRAINING_NOT_ZERO_RETENTION,
+    ),
+    chat_vision_model(
+        OpenCodeService::Zen,
+        "mimo-v2.5-free",
+        "MiMo V2.5 Free",
+        TRAINING_NOT_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "ling-3.0-flash-fin-free",
+        "Ling 3.0 Flash Fin Free",
+        TRAINING_NOT_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "nemotron-3-ultra-free",
+        "Nemotron 3 Ultra Free",
+        TRAINING_NOT_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "nemotron-3.5-lightning-free",
+        "Nemotron 3.5 Lightning Free",
+        TRAINING_NOT_ZERO_RETENTION,
+    ),
+    chat_model(
+        OpenCodeService::Zen,
+        "laguna-s-2.1-free",
+        "Laguna S 2.1 Free",
         NO_TRAINING_ZERO_RETENTION,
     ),
     vision_model(
@@ -594,8 +909,9 @@ mod tests {
 
     use super::{
         ANTHROPIC_MESSAGES_PROTOCOL_REVISION, CHAT_COMPLETIONS_PROTOCOL_REVISION,
-        MAXIMUM_CONTEXT_TOKENS, ModelRetention, ModelTrainingUse, OpenCodeService,
-        ProviderProtocol, RESPONSES_PROTOCOL_REVISION, find_open_code_model, open_code_models,
+        GEMINI_PROTOCOL_REVISION, MAXIMUM_CONTEXT_TOKENS, ModelRetention, ModelTrainingUse,
+        OpenCodeService, ProviderProtocol, RESPONSES_PROTOCOL_REVISION, find_open_code_model,
+        open_code_models,
     };
 
     #[test]
@@ -617,6 +933,7 @@ mod tests {
                     ProviderProtocol::Responses => RESPONSES_PROTOCOL_REVISION,
                     ProviderProtocol::ChatCompletions => CHAT_COMPLETIONS_PROTOCOL_REVISION,
                     ProviderProtocol::AnthropicMessages => ANTHROPIC_MESSAGES_PROTOCOL_REVISION,
+                    ProviderProtocol::Gemini => GEMINI_PROTOCOL_REVISION,
                 }
             );
             assert!(pairs.insert((model.service.as_str(), model.id)));
@@ -655,19 +972,25 @@ mod tests {
         );
         assert!(
             find_open_code_model(OpenCodeService::Zen, "muse-spark-1.2")
+                .is_some_and(|model| model.capabilities.image_input)
+        );
+        assert!(
+            find_open_code_model(OpenCodeService::Zen, "gpt-5.3-codex-spark")
                 .is_some_and(|model| !model.capabilities.image_input)
         );
         assert!(find_open_code_model(OpenCodeService::Zen, "Gpt-5.6-luna").is_none());
-        for model_id in [
-            "big-pickle",
-            "mimo-v2.5-free",
-            "ling-3.0-flash-fin-free",
-            "nemotron-3-ultra-free",
-            "nemotron-3.5-lightning-free",
-            "muse-spark-1.2-contributor-free",
-        ] {
-            assert!(find_open_code_model(OpenCodeService::Zen, model_id).is_none());
-        }
+        assert!(
+            find_open_code_model(OpenCodeService::Zen, "gemini-3.8-flash")
+                .is_some_and(|model| model.protocol == ProviderProtocol::Gemini)
+        );
+        assert!(
+            find_open_code_model(OpenCodeService::Zen, "claude-sonnet-5")
+                .is_some_and(|model| model.protocol == ProviderProtocol::AnthropicMessages)
+        );
+        assert!(
+            find_open_code_model(OpenCodeService::Zen, "big-pickle")
+                .is_some_and(|model| model.protocol == ProviderProtocol::ChatCompletions)
+        );
         let contributor = find_open_code_model(OpenCodeService::Go, "muse-spark-1.2-contributor")
             .expect("current Go contributor model should be reviewed");
         assert_eq!(
@@ -683,6 +1006,237 @@ mod tests {
                 .is_some_and(|model| model.protocol == ProviderProtocol::AnthropicMessages)
         );
         assert!(find_open_code_model(OpenCodeService::Go, "ox-alpha-free").is_none());
+    }
+
+    #[test]
+    fn reviewed_zen_manifest_covers_the_complete_live_catalog_snapshot() {
+        let actual = open_code_models()
+            .iter()
+            .filter(|model| model.service == OpenCodeService::Zen)
+            .map(|model| model.id)
+            .collect::<BTreeSet<_>>();
+        let expected = [
+            "big-pickle",
+            "claude-fable-5",
+            "claude-fable-5-1",
+            "claude-haiku-4-5",
+            "claude-opus-4-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-sonnet-4",
+            "claude-sonnet-4-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-free",
+            "deepseek-v4-pro",
+            "gemini-3-flash",
+            "gemini-3.1-pro",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-3.7-flash",
+            "gemini-3.8-flash",
+            "glm-5",
+            "glm-5.1",
+            "glm-5.2",
+            "gpt-5",
+            "gpt-5-codex",
+            "gpt-5-nano",
+            "gpt-5.1",
+            "gpt-5.1-codex",
+            "gpt-5.1-codex-max",
+            "gpt-5.1-codex-mini",
+            "gpt-5.2",
+            "gpt-5.2-codex",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5.4-pro",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "grok-4.5",
+            "grok-4.6",
+            "grok-build-0.1",
+            "kimi-k2.5",
+            "kimi-k2.6",
+            "kimi-k2.7-code",
+            "kimi-k3",
+            "laguna-s-2.1-free",
+            "ling-3.0-flash-fin-free",
+            "mimo-v2.5-free",
+            "minimax-m2.5",
+            "minimax-m2.7",
+            "minimax-m3",
+            "muse-spark-1.2",
+            "muse-spark-1.2-contributor-free",
+            "muse-spark-1.3-contributor-free",
+            "nemotron-3-ultra-free",
+            "nemotron-3.5-lightning-free",
+            "qwen3.5-plus",
+            "qwen3.6-plus",
+        ]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected);
+
+        let protocols = |protocol| {
+            open_code_models()
+                .iter()
+                .filter(|model| model.service == OpenCodeService::Zen && model.protocol == protocol)
+                .map(|model| model.id)
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            protocols(ProviderProtocol::Responses),
+            [
+                "gpt-5",
+                "gpt-5-codex",
+                "gpt-5-nano",
+                "gpt-5.1",
+                "gpt-5.1-codex",
+                "gpt-5.1-codex-max",
+                "gpt-5.1-codex-mini",
+                "gpt-5.2",
+                "gpt-5.2-codex",
+                "gpt-5.3-codex",
+                "gpt-5.3-codex-spark",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.4-nano",
+                "gpt-5.4-pro",
+                "gpt-5.5",
+                "gpt-5.5-pro",
+                "gpt-5.6-luna",
+                "gpt-5.6-sol",
+                "gpt-5.6-terra",
+                "grok-4.5",
+                "grok-4.6",
+                "grok-build-0.1",
+                "muse-spark-1.2",
+                "muse-spark-1.2-contributor-free",
+                "muse-spark-1.3-contributor-free",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(
+            protocols(ProviderProtocol::ChatCompletions),
+            [
+                "big-pickle",
+                "deepseek-v4-flash",
+                "deepseek-v4-flash-free",
+                "deepseek-v4-pro",
+                "glm-5",
+                "glm-5.1",
+                "glm-5.2",
+                "kimi-k2.5",
+                "kimi-k2.6",
+                "kimi-k2.7-code",
+                "kimi-k3",
+                "laguna-s-2.1-free",
+                "ling-3.0-flash-fin-free",
+                "mimo-v2.5-free",
+                "minimax-m2.5",
+                "minimax-m2.7",
+                "minimax-m3",
+                "nemotron-3-ultra-free",
+                "nemotron-3.5-lightning-free",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(
+            protocols(ProviderProtocol::AnthropicMessages),
+            [
+                "claude-fable-5",
+                "claude-fable-5-1",
+                "claude-haiku-4-5",
+                "claude-opus-4-5",
+                "claude-opus-4-6",
+                "claude-opus-4-7",
+                "claude-opus-4-8",
+                "claude-opus-5",
+                "claude-sonnet-4",
+                "claude-sonnet-4-5",
+                "claude-sonnet-4-6",
+                "claude-sonnet-5",
+                "qwen3.5-plus",
+                "qwen3.6-plus",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert_eq!(
+            protocols(ProviderProtocol::Gemini),
+            [
+                "gemini-3-flash",
+                "gemini-3.1-pro",
+                "gemini-3.5-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.6-flash",
+                "gemini-3.7-flash",
+                "gemini-3.8-flash",
+            ]
+            .into_iter()
+            .collect()
+        );
+
+        let training_eligible = open_code_models()
+            .iter()
+            .filter(|model| {
+                model.service == OpenCodeService::Zen
+                    && model.data_use.training == ModelTrainingUse::MayUsePromptsAndCompletions
+            })
+            .map(|model| model.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            training_eligible,
+            [
+                "big-pickle",
+                "ling-3.0-flash-fin-free",
+                "mimo-v2.5-free",
+                "muse-spark-1.2-contributor-free",
+                "muse-spark-1.3-contributor-free",
+                "nemotron-3-ultra-free",
+                "nemotron-3.5-lightning-free",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert!(training_eligible.iter().all(|model_id| {
+            find_open_code_model(OpenCodeService::Zen, model_id).is_some_and(|model| {
+                model.data_use.retention == ModelRetention::NotZeroDataRetention
+            })
+        }));
+        assert_eq!(
+            find_open_code_model(OpenCodeService::Zen, "gpt-5.6-luna")
+                .expect("Zen GPT should be reviewed")
+                .data_use
+                .retention,
+            ModelRetention::UpToThirtyDays
+        );
+        assert_eq!(
+            find_open_code_model(OpenCodeService::Zen, "claude-sonnet-5")
+                .expect("Zen Claude should be reviewed")
+                .data_use
+                .retention,
+            ModelRetention::UpToThirtyDays
+        );
+        assert_eq!(
+            find_open_code_model(OpenCodeService::Zen, "gemini-3.8-flash")
+                .expect("Zen Gemini should be reviewed")
+                .data_use
+                .retention,
+            ModelRetention::None
+        );
     }
 
     #[test]

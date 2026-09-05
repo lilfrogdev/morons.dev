@@ -215,6 +215,11 @@ impl ClientEndpoint {
         }
         validate_private_file(&host_lock_path, None)?;
         let host_lock_is_held = host_lock_is_held(&host_lock_path)?;
+        // An initializer may still be writing its first key. Without a published
+        // endpoint this grants no authority; wait instead of reading partial data.
+        if host_lock_is_held && !paths.registration_path().try_exists()? {
+            return Ok(ClientEndpointDiscovery::Starting);
+        }
         if !paths.authentication_key_path().try_exists()? {
             return if !paths.registration_path().try_exists()? {
                 Ok(if host_lock_is_held {

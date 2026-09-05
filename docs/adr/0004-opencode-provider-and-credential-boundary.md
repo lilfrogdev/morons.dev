@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted as amended by ADRs 0012, 0013, and 0017
+Accepted as amended by ADRs 0012, 0013, 0017, 0020, and 0021
 
 ## Context
 
@@ -10,7 +10,7 @@ The trusted local server will invoke a model provider on behalf of durable agent
 
 The MVP needs one concrete provider integration. OpenCode documents direct API access to OpenCode Zen and OpenCode Go, a shared API-key credential convention, model-catalog endpoints, and model-specific inference endpoints. The two services have different billing and model availability even though they use the same OpenCode account credential.
 
-Morons supports only reviewed service/model/protocol combinations at fixed OpenCode endpoints. ADR 0017 adds bounded Chat Completions, and ADR 0020 adds bounded Anthropic Messages plus the complete reviewed Go catalog snapshot, without allowing catalogs or repository state to select a wire protocol.
+Morons supports only reviewed service/model/protocol combinations at fixed OpenCode endpoints. ADR 0017 adds bounded Chat Completions, ADR 0020 adds bounded Anthropic Messages plus the complete reviewed Go catalog snapshot, and ADR 0021 adds the complete reviewed Zen snapshot plus bounded Gemini, without allowing catalogs or repository state to select a wire protocol.
 
 Provider execution requires final local credential custody and mutation semantics. Environment inheritance is difficult to constrain once the server launches untrusted tools and subprocesses, and the existing security invariants exclude credentials from environments.
 
@@ -22,14 +22,17 @@ The MVP will support OpenCode Zen and OpenCode Go as distinct application-level 
 
 Production requests use only these documented HTTPS origins and paths:
 
-- OpenCode Zen inference: `https://opencode.ai/zen/v1/responses`
+- OpenCode Zen Responses inference: `https://opencode.ai/zen/v1/responses`
+- OpenCode Zen Chat Completions inference: `https://opencode.ai/zen/v1/chat/completions`
+- OpenCode Zen Anthropic Messages inference: `https://opencode.ai/zen/v1/messages`
+- OpenCode Zen Gemini inference: `https://opencode.ai/zen/v1/models/{reviewed-model-id}:streamGenerateContent?alt=sse`
 - OpenCode Zen catalog: `https://opencode.ai/zen/v1/models`
 - OpenCode Go Responses inference: `https://opencode.ai/zen/go/v1/responses`
 - OpenCode Go Chat Completions inference: `https://opencode.ai/zen/go/v1/chat/completions`
 - OpenCode Go Anthropic Messages inference: `https://opencode.ai/zen/go/v1/messages`
 - OpenCode Go catalog: `https://opencode.ai/zen/go/v1/models`
 
-OpenAI Responses-compatible streaming remains a permanent supported capability. ADR 0017 admits bounded OpenAI-compatible Chat Completions streaming, and ADR 0020 admits bounded Anthropic Messages streaming, for explicitly reviewed models.
+OpenAI Responses-compatible streaming remains a permanent supported capability. ADR 0017 admits bounded OpenAI-compatible Chat Completions streaming, ADR 0020 admits bounded Anthropic Messages streaming, and ADR 0021 admits bounded Google Gemini streaming, for explicitly reviewed models.
 
 ### Model admission and disclosure
 
@@ -117,7 +120,7 @@ Implementation requires:
 
 - real cross-platform credential filesystem tests for ownership, modes, DACLs, links, replacement, synchronization, malformed state, stale temporary files, removal, and restart reconciliation;
 - protocol tests proving authentication precedes secret transfer and secret-bearing messages and errors are redacted;
-- deterministic Responses, Chat Completions, and Anthropic Messages request/SSE fixture tests covering valid text, images, tool calls, usage, malformed order, duplicate termination, truncation, oversize fields, timeout, cancellation, and unknown events;
+- deterministic Responses, Chat Completions, Anthropic Messages, and Gemini request/SSE fixture tests covering valid text, images, tool calls, usage, malformed order, duplicate termination, truncation, oversize fields, timeout, cancellation, and unknown events;
 - HTTP boundary tests covering fixed routing, authorization-header scoping, disabled redirects, TLS and content-type failures, bounded error bodies, and absence of automatic retries;
 - persistence tests covering prepared, dispatched, completed, failed, cancelled, interrupted, and uncertain provider operations without raw provider payloads or credentials;
 - log and audit tests that search for complete and partial credential values; and
@@ -127,8 +130,8 @@ Any HTTP, TLS, secret-memory, or terminal-input dependencies must be pinned exac
 
 ## Consequences
 
-- The MVP has two OpenCode service choices through reviewed bounded Responses, Chat Completions, and Anthropic Messages protocol surfaces.
-- Responses support remains stable; Chat Completions and Anthropic Messages admission is model-specific under ADRs 0017 and 0020.
+- The MVP has two OpenCode service choices through reviewed bounded Responses, Chat Completions, Anthropic Messages, and Gemini protocol surfaces.
+- Responses support remains stable; Chat Completions, Anthropic Messages, and Gemini admission is model-specific under ADRs 0017, 0020, and 0021.
 - A remote model catalog can only narrow the reviewed model manifest.
 - Credential handling uses its final local custody boundary from the first implementation.
 - Owner-only local storage works consistently on macOS, Linux, Windows, and headless systems.

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::LazyLock};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -11,7 +11,9 @@ use super::{
     TextReplacement, ToolInput, ToolKind, ToolPath, ValidatedProviderCall, WorktreePath,
     valid_subagent_name, validate_ipython_cell,
 };
-use crate::provider::{ProviderTool, ProviderToolCall, json::parse_strict_value};
+use crate::provider::{
+    PreparedProviderTools, ProviderError, ProviderTool, ProviderToolCall, json::parse_strict_value,
+};
 
 pub(crate) const TOOL_CATALOG_VERSION: u16 = 8;
 pub(crate) const LEGACY_SANDBOX_TOOL_CATALOG_VERSION: u16 = 2;
@@ -28,7 +30,13 @@ pub(crate) fn developer_instruction() -> &'static str {
     DEVELOPER_INSTRUCTION
 }
 
-pub(crate) fn provider_tools() -> Vec<ProviderTool> {
+pub(crate) fn provider_tools() -> Result<&'static PreparedProviderTools, ProviderError> {
+    static TOOLS: LazyLock<Result<PreparedProviderTools, ProviderError>> =
+        LazyLock::new(|| PreparedProviderTools::new(tool_definitions()));
+    TOOLS.as_ref().map_err(|error| *error)
+}
+
+fn tool_definitions() -> Vec<ProviderTool> {
     vec![
         ProviderTool {
             name: ToolKind::Read.name().to_owned(),
@@ -134,11 +142,18 @@ pub(crate) fn provider_tools() -> Vec<ProviderTool> {
     ]
 }
 
-pub(crate) fn subagent_provider_tools() -> Vec<ProviderTool> {
-    provider_tools()
-        .into_iter()
-        .filter(|tool| !matches!(tool.name.as_str(), "ipython" | "task"))
-        .collect()
+pub(crate) fn subagent_provider_tools() -> Result<&'static PreparedProviderTools, ProviderError> {
+    static TOOLS: LazyLock<Result<PreparedProviderTools, ProviderError>> = LazyLock::new(|| {
+        PreparedProviderTools::new(
+            provider_tools()?
+                .definitions()
+                .iter()
+                .filter(|tool| !matches!(tool.name.as_str(), "ipython" | "task"))
+                .cloned()
+                .collect(),
+        )
+    });
+    TOOLS.as_ref().map_err(|error| *error)
 }
 
 pub(crate) fn validate_canonical_input(input: &ToolInput) -> bool {
@@ -174,6 +189,7 @@ pub(crate) fn parse_provider_calls(
             Ok(ValidatedProviderCall {
                 provider_call_id: call.provider_call_id,
                 input,
+                opaque_continuation: call.opaque_continuation,
             })
         })
         .collect()
@@ -628,12 +644,13 @@ mod tests {
             provider_call_id: "call_1".to_owned(),
             name: name.to_owned(),
             arguments: arguments.to_owned(),
+            opaque_continuation: None,
         }
     }
 
     #[test]
     fn catalog_is_fixed_strict_and_complete() {
-        let tools = provider_tools();
+        let tools = provider_tools().unwrap().definitions();
         assert_eq!(tools.len(), 7);
         assert_eq!(
             tools

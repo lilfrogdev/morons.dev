@@ -206,6 +206,17 @@ fn context_status_contract_has_stable_json_shapes() {
             model_id: "muse-spark-1.2".to_owned(),
             context_policy_version: 4,
             estimated_input_tokens: 12_000,
+            conservative_input_tokens: 40_000,
+            estimate_uses_provider_usage: true,
+            latest_provider_usage: Some(crate::RecentProviderUsage {
+                input_tokens: 10_000,
+                cached_input_tokens: 8_000,
+                cache_write_input_tokens: 500,
+                output_tokens: 100,
+                elapsed_milliseconds: Some(1_500),
+            }),
+            completed_compactions: 1,
+            last_compaction_milliseconds: Some(2_000),
             maximum_input_tokens: 96_000,
             maximum_output_tokens: 32_000,
             compaction_threshold_tokens: 67_200,
@@ -223,6 +234,11 @@ fn context_status_contract_has_stable_json_shapes() {
                 "model_id": "muse-spark-1.2",
                 "context_policy_version": 4,
                 "estimated_input_tokens": 12000,
+                "conservative_input_tokens": 40000,
+                "estimate_uses_provider_usage": true,
+                "latest_provider_usage": {"input_tokens":10000,"cached_input_tokens":8000,"cache_write_input_tokens":500,"output_tokens":100,"elapsed_milliseconds":1500},
+                "completed_compactions": 1,
+                "last_compaction_milliseconds": 2000,
                 "maximum_input_tokens": 96000,
                 "maximum_output_tokens": 32000,
                 "compaction_threshold_tokens": 67200,
@@ -439,6 +455,10 @@ fn model_catalog_contract_has_stable_json_shape() {
     assert_eq!(
         serde_json::to_value(ProviderProtocol::AnthropicMessages).expect("protocol should encode"),
         json!("anthropic_messages")
+    );
+    assert_eq!(
+        serde_json::to_value(ProviderProtocol::Gemini).expect("protocol should encode"),
+        json!("gemini")
     );
     assert_eq!(
         serde_json::to_value(OpenCodeModelTrainingUse::MayUsePromptsAndCompletions)

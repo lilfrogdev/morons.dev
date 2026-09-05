@@ -741,7 +741,6 @@ impl ContextCheckpointId {
 pub(crate) struct ContextCheckpoint {
     pub id: ContextCheckpointId,
     pub source_entry_high_water: u64,
-    pub source_digest: [u8; 32],
     pub summary: String,
     pub estimated_summary_tokens: u32,
 }
@@ -752,7 +751,7 @@ pub(crate) struct CompactionPlan {
     pub user_guidance: Option<String>,
     pub source_entry_high_water: u64,
     pub source_digest: [u8; 32],
-    pub entries: Vec<TranscriptEntry>,
+    pub source: String,
     pub parent_summary: Option<String>,
     pub estimated_input_tokens: u32,
 }
@@ -771,8 +770,22 @@ impl CompactionOperationId {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecentProviderUsage {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub elapsed_milliseconds: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SessionContextStatus {
     pub estimated_input_tokens: u32,
+    pub conservative_input_tokens: u32,
+    pub estimate_uses_provider_usage: bool,
+    pub latest_provider_usage: Option<RecentProviderUsage>,
+    pub completed_compactions: u64,
+    pub last_compaction_milliseconds: Option<u64>,
     pub maximum_input_tokens: u32,
     pub maximum_output_tokens: u32,
     pub compaction_threshold_tokens: u32,
@@ -875,11 +888,27 @@ impl ToolOperationId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct CommittedToolCall {
     pub call_id: ToolCallId,
     pub operation_id: ToolOperationId,
     pub input: ToolInput,
+    pub opaque_continuation: Option<String>,
+}
+
+impl fmt::Debug for CommittedToolCall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CommittedToolCall")
+            .field("call_id", &self.call_id)
+            .field("operation_id", &self.operation_id)
+            .field("input", &self.input)
+            .field(
+                "opaque_continuation",
+                &self.opaque_continuation.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]

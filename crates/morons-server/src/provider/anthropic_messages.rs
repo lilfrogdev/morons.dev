@@ -527,6 +527,7 @@ impl AnthropicMessagesDecoder {
                         provider_call_id: id,
                         name,
                         arguments,
+                        opaque_continuation: None,
                     }));
             }
             ActiveBlock::Thinking { .. } => {}

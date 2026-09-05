@@ -112,6 +112,8 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | MOD-06 | Every selected/default model remains an available reviewed service/model pair; unavailable saved state falls back visibly. |
 | MOD-07 | `/model go glm` exposes reviewed Go `glm-5.3-flash` with the expected zero-retention disclosure and persists it as the global default. |
 | MOD-08 | The Go picker equals the intersection of the 35-entry reviewed snapshot and the current public catalog; Responses, Chat Completions, and Anthropic Messages entries disclose protocol revisions 1, 2, and 3, while contributor entries and entries lacking current privacy rows show their exact non-ZDR or undocumented policy labels. |
+| MOD-09 | The Zen picker equals the intersection of the 66-entry reviewed snapshot and the current public catalog; Responses, Chat Completions, Anthropic Messages, and Gemini entries disclose protocol revisions 1, 2, 3, and 4. |
+| MOD-10 | Zen GPT and Claude entries disclose 30-day retention; the seven documented training-eligible free/contributor entries disclose training and non-ZDR use; other reviewed Zen entries disclose no training and zero retention. |
 
 ### Settings
 
@@ -144,6 +146,13 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-15 | Go `glm-5.3-flash` completes plain text, a normalized image request, and a natural `read` tool loop through Chat Completions, with bounded reasoning ignored and no duplicate terminal output. |
 | RUN-16 | Go `qwen3.8-max` completes plain text and a natural `read` tool loop through Anthropic Messages revision 3; usage, thinking suppression, exact tool arguments, fixed route, `x-api-key` scoping, and `x-opencode-session` affinity are correct. |
 | RUN-17 | Representative current Go models from every protocol group complete a plain response without fallback; one Responses, one Chat Completions, and one Anthropic Messages model complete tool continuations. Catalog-only models either complete on their pinned reviewed route or surface the exact upstream rejection without retry or substitution. |
+| RUN-18 | Zen GPT completes plain text and a natural tool continuation through Responses revision 1 without fallback. |
+| RUN-19 | Zen DeepSeek or MiniMax completes plain text and a natural tool continuation through Chat Completions revision 2 without duplicate terminal output. |
+| RUN-20 | Zen Claude completes plain text and a natural tool continuation through Anthropic Messages revision 3 with exact `x-api-key` scoping and bounded thinking suppression. |
+| RUN-21 | Zen Gemini completes plain text, normalized image input, and a natural tool continuation through revision 4 at the exact `streamGenerateContent?alt=sse` path; `x-goog-api-key`, usage, generated call identity, thought-signature replay, and session affinity are correct. |
+| RUN-22 | Representative current Zen models from all four protocol groups complete without substitution; live catalog-only entries either complete on their frozen route or surface the exact upstream rejection without retry. |
+| RUN-23 | Short-message entry pressure and image count/byte pressure trigger compaction below the token threshold; `/compact` remains usable for an older session at capacity. Retained tool call/results remain paired, canonical history stays intact, and `!!` content never enters the summary. Link deterministic regression evidence when constructing these histories manually is impractical. |
+| RUN-24 | A tool result that makes the current run alone exceed context terminates that run durably with a resource-limit failure; the session does not remain busy. Cancelling or failing compaction installs no partial checkpoint and never retries the provider. |
 
 ### Images
 
@@ -154,6 +163,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | IMG-03 | A reviewed text-only Go model such as `glm-5.3` rejects image submission clearly while retaining the draft and attachment. |
 | IMG-04 | Reviewed Go vision models on Responses, Chat Completions, and Anthropic Messages each accept the same normalized image and complete an image-aware response. |
 | IMG-05 | A Luna `read` of an image produces bounded dimensions, type, byte count, and a usable multimodal result. |
+| IMG-06 | Reviewed Zen vision entries on Responses, Chat Completions, Anthropic Messages, and Gemini each accept the same normalized image; a reviewed text-only Zen entry retains and rejects it clearly. |
 
 ### Cancellation, recovery, and terminal behavior
 

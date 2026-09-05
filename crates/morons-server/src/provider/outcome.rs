@@ -28,6 +28,7 @@ pub struct ProviderToolCall {
     pub provider_call_id: String,
     pub name: String,
     pub arguments: String,
+    pub opaque_continuation: Option<String>,
 }
 
 impl fmt::Debug for ProviderToolCall {
@@ -38,6 +39,10 @@ impl fmt::Debug for ProviderToolCall {
             .field("provider_call_id", &self.provider_call_id)
             .field("name", &self.name)
             .field("argument_bytes", &self.arguments.len())
+            .field(
+                "opaque_continuation",
+                &self.opaque_continuation.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }

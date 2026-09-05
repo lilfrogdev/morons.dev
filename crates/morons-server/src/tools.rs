@@ -476,10 +476,25 @@ pub(crate) struct TextReplacement {
     pub new_text: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ValidatedProviderCall {
     pub provider_call_id: String,
     pub input: ToolInput,
+    pub opaque_continuation: Option<String>,
+}
+
+impl fmt::Debug for ValidatedProviderCall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValidatedProviderCall")
+            .field("provider_call_id", &self.provider_call_id)
+            .field("input", &self.input)
+            .field(
+                "opaque_continuation",
+                &self.opaque_continuation.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

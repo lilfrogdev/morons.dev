@@ -1,5 +1,10 @@
 pub(super) mod command_execution;
 mod compaction;
+mod context_budget;
+mod context_compaction;
+mod context_history;
+mod context_status;
+mod context_usage;
 mod creation;
 mod credential_mutation;
 mod default_model;
@@ -31,6 +36,7 @@ pub(crate) struct Backend {
     pub(super) connection: Connection,
     pub(super) credentials: CredentialStore,
     pub(super) paths: StoragePaths,
+    context_data_version: std::cell::Cell<Option<i64>>,
 }
 
 impl Backend {
@@ -42,9 +48,10 @@ impl Backend {
             connection,
             credentials,
             paths,
+            context_data_version: std::cell::Cell::new(None),
         };
         backend.reconcile_image_attachments()?;
-        backend.validate_context_checkpoint_digests()?;
+        backend.ensure_context_integrity()?;
         backend.recover_compaction_operations()?;
         backend.recover_credential_mutations()?;
         backend.recover_incomplete_session_creations()?;

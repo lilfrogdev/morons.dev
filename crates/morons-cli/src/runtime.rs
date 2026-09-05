@@ -574,26 +574,14 @@ impl RuntimeState {
                     .saturating_mul(100)
                     .checked_div(u64::from(context.maximum_input_tokens))
                     .unwrap_or(0);
-                let checkpoint = context.checkpoint_source_entry_high_water.map_or_else(
-                    || "no checkpoint".to_owned(),
-                    |high_water| {
-                        format!(
-                            "checkpoint through entry {high_water} · ~{} summary tokens",
-                            context.checkpoint_estimated_summary_tokens.unwrap_or(0)
-                        )
-                    },
-                );
-                self.app.context_status_loaded(context.clone())?;
-                self.app.set_status(format!(
-                    "Context ~{} / {} tokens ({percent}%) · compacts at {} · reserves {} input and up to {} output · {checkpoint}",
+                let status = format!(
+                    "Context ~{} / {} ({percent}%) · guard {} · /context for estimates and cache observations",
                     context.estimated_input_tokens,
                     context.maximum_input_tokens,
-                    context.compaction_threshold_tokens,
-                    context
-                        .maximum_input_tokens
-                        .saturating_sub(context.compaction_threshold_tokens),
-                    context.maximum_output_tokens,
-                ));
+                    context.conservative_input_tokens,
+                );
+                self.app.context_status_loaded(context)?;
+                self.app.set_status(status);
             }
             RequestEvent::SessionLoaded(snapshot) => {
                 let skill_warning = snapshot.skill_warnings.first().cloned();
