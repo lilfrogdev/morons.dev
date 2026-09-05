@@ -770,8 +770,22 @@ impl CompactionOperationId {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RecentProviderUsage {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub elapsed_milliseconds: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SessionContextStatus {
     pub estimated_input_tokens: u32,
+    pub conservative_input_tokens: u32,
+    pub estimate_uses_provider_usage: bool,
+    pub latest_provider_usage: Option<RecentProviderUsage>,
+    pub completed_compactions: u64,
+    pub last_compaction_milliseconds: Option<u64>,
     pub maximum_input_tokens: u32,
     pub maximum_output_tokens: u32,
     pub compaction_threshold_tokens: u32,

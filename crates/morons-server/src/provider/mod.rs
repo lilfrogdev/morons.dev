@@ -28,6 +28,7 @@ pub use outcome::{
     ProviderAssistantMessage, ProviderOutcome, ProviderOutputItem, ProviderReasoning,
     ProviderStreamEvent, ProviderToolCall, ProviderUsage,
 };
+pub(crate) use request::PreparedProviderTools;
 pub use request::{
     OpenCodeResponseRequest, ProviderContentPart, ProviderInputItem, ProviderMessagePhase,
     ProviderMessageRole, ProviderTool,

@@ -1,6 +1,6 @@
 use super::*;
 
-async fn fixture(
+pub(super) async fn fixture(
     label: &str,
 ) -> (
     TestRoot,
@@ -117,7 +117,7 @@ async fn image_pressure_compacts_before_loading_an_oversized_image_context() {
         .unwrap();
 }
 
-fn selection() -> RunModelSelection {
+pub(super) fn selection() -> RunModelSelection {
     RunModelSelection {
         service: RunOpenCodeService::Zen,
         model_id: "muse-spark-1.2".to_owned(),
@@ -164,7 +164,7 @@ async fn entry_pressure_compacts_automatically_and_manual_recovery_works_at_capa
                 .await;
         }
         let status = store
-            .session_context_status(session, 96_000, 32_000)
+            .session_context_status(session, selection())
             .await
             .unwrap();
         assert!(status.estimated_input_tokens < status.compaction_threshold_tokens);

@@ -402,13 +402,11 @@ impl SessionStore {
     pub(crate) async fn session_context_status(
         &self,
         session_id: SessionId,
-        maximum_input_tokens: u32,
-        maximum_output_tokens: u32,
+        selection: RunModelSelection,
     ) -> Result<crate::persistence::SessionContextStatus, PersistenceError> {
         self.run_request(|response| RunWorkerRequest::ContextStatus {
             session_id,
-            maximum_input_tokens,
-            maximum_output_tokens,
+            selection,
             response,
         })
         .await
@@ -593,8 +591,7 @@ pub(super) enum RunWorkerRequest {
     },
     ContextStatus {
         session_id: SessionId,
-        maximum_input_tokens: u32,
-        maximum_output_tokens: u32,
+        selection: RunModelSelection,
         response:
             oneshot::Sender<Result<crate::persistence::SessionContextStatus, PersistenceError>>,
     },
@@ -809,15 +806,10 @@ impl RunWorkerRequest {
             }
             Self::ContextStatus {
                 session_id,
-                maximum_input_tokens,
-                maximum_output_tokens,
+                selection,
                 response,
             } => {
-                let _ = response.send(backend.session_context_status(
-                    session_id,
-                    maximum_input_tokens,
-                    maximum_output_tokens,
-                ));
+                let _ = response.send(backend.session_context_status(session_id, &selection));
             }
             Self::LoadContext { run_id, response } => {
                 let _ = response.send(backend.load_run_context(run_id));

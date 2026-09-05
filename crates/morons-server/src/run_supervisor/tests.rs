@@ -36,6 +36,7 @@ use crate::{
 };
 
 mod hardening;
+mod observations;
 mod providers;
 use providers::*;
 
@@ -153,6 +154,13 @@ async fn wait_for_terminal(
     .expect("run should terminate")
 }
 
+fn request_body(request: &str) -> serde_json::Value {
+    let (_, body) = request
+        .split_once("\r\n\r\n")
+        .expect("HTTP request headers should terminate");
+    serde_json::from_str(body).expect("provider request body should be valid JSON")
+}
+
 fn request_header(request: &str, name: &str) -> String {
     let prefix = format!("{}:", name.to_ascii_lowercase());
     request
@@ -189,6 +197,10 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
             })
         })
         .unwrap_or(0);
+    assert!(
+        content_length <= 16 * 1024 * 1024,
+        "fixture request body exceeds the provider limit"
+    );
     while received.len() - header_end < content_length {
         let mut chunk = [0_u8; 4096];
         let bytes = stream.read(&mut chunk).await.expect("body should read");
