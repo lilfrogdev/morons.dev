@@ -483,6 +483,9 @@ impl ServerApplication {
                 Ok(ApplicationOutcome::Response(
                     ApplicationResponse::SessionContextFound {
                         context: morons_protocol::SessionContextStatus {
+                            background_compaction: to_background_status(
+                                status.background_compaction,
+                            ),
                             session_id,
                             service,
                             model_id,
@@ -656,7 +659,8 @@ impl ServerApplication {
                 drop(lifecycle_guard);
                 if accepted.newly_accepted {
                     let run_id = accepted.run.id;
-                    if let Err(error) = self.run_supervisor.start(run_id, permit).await {
+                    if let Err(error) = self.run_supervisor.start(run_id, session_id, permit).await
+                    {
                         eprintln!("accepted run could not start: {error}");
                         self.sessions
                             .finish_run_stopped(run_id, None)

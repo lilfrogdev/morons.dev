@@ -36,6 +36,7 @@ use crate::{
 };
 
 mod hardening;
+pub(crate) mod maintenance;
 mod observations;
 mod project_guidance;
 mod providers;
@@ -227,7 +228,7 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-struct TestRoot(PathBuf);
+pub(crate) struct TestRoot(PathBuf);
 
 impl TestRoot {
     fn new(label: &str) -> Self {

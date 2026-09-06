@@ -63,6 +63,10 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         } if selected == session_id && model_id == "grok-4.6"
     ));
     app.context_status_loaded(SessionContextStatus {
+        background_compaction: morons_protocol::BackgroundCompactionStatus {
+            enabled: false,
+            latest: None,
+        },
         project_context: Some(morons_protocol::ProjectContextSummary {
             enabled: true,
             files: (0..16)
@@ -151,7 +155,23 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         "\u{1b}]52;c;SECRET\u{7}/safe/AGENTS.md\u{202e}".to_owned();
     untrusted.project_context.as_mut().unwrap().warnings[0] =
         "\u{1b}]52;c;SECRET\u{7}safe warning\u{202e}".to_owned();
+    untrusted.background_compaction = morons_protocol::BackgroundCompactionStatus {
+        enabled: true,
+        latest: Some(morons_protocol::BackgroundCompactionJob {
+            state: morons_protocol::BackgroundCompactionState::Ready,
+            service: OpenCodeService::Go,
+            model_id: "\u{1b}]52;c;SECRET\u{7}safe-model\u{202e}".to_owned(),
+            source_entry_high_water: 4,
+            usage: None,
+        }),
+    };
     let description = super::super::context::description(Some(&untrusted));
+    assert!(
+        description
+            .as_str()
+            .contains("additional billable inference")
+    );
+    assert!(description.as_str().contains("safe-model"));
     assert!(!description.as_str().contains("SECRET"));
     assert!(!description.as_str().contains('\u{1b}'));
     assert!(!description.as_str().contains('\u{202e}'));

@@ -1,6 +1,7 @@
 mod application;
 mod command_supervisor;
 mod connection;
+mod maintenance_supervisor;
 mod persistence;
 mod project_context;
 mod prompts;

@@ -419,7 +419,7 @@ async fn unexpected_integrity_failure_requests_shutdown_instead_of_abandoning_ad
     let supervisor = RunSupervisor::new(store, provider, SessionEventHub::new());
     let mut shutdown = supervisor.shutdown_requests().subscribe();
     supervisor
-        .start(accepted.run.id, supervisor.try_reserve().unwrap())
+        .start(accepted.run.id, session, supervisor.try_reserve().unwrap())
         .await
         .unwrap();
     time::timeout(TERMINAL_RUN_TEST_TIMEOUT, shutdown.changed())

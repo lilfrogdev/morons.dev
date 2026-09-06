@@ -107,6 +107,22 @@ impl Backend {
                 reason: "only an active run can prepare automatic compaction",
             });
         }
+        let prompt: String = self.connection.query_row(
+            "SELECT text FROM session_entries WHERE run_id = ?1 AND entry_kind = 1",
+            [&run_id.as_bytes()[..]],
+            |row| row.get(0),
+        )?;
+        let manual = prompt == "/compact" || prompt.starts_with("/compact ");
+        if manual {
+            super::maintenance::ensure_drained(&self.connection, run.session_id)?;
+        }
+        if !manual
+            && self.compaction_prefix_was_attempted(run.session_id, plan.source_entry_high_water)?
+        {
+            return Err(PersistenceError::InvalidState {
+                reason: "automatic compaction cannot repeat an attempted source prefix",
+            });
+        }
         let operation_id = CompactionOperationId::from_bytes(random_identifier()?);
         let now = current_time_milliseconds()?;
         let transaction = self

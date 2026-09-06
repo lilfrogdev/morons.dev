@@ -186,9 +186,9 @@ impl GeminiDecoder {
         {
             self.diagnostic_stage = "decoding the Gemini event structure";
         }
-        let event: GeminiEvent = serde_json::from_value(value).map_err(|error| {
+        let event: GeminiEvent = serde_json::from_value(value).map_err(|_error| {
             #[cfg(debug_assertions)]
-            emit_unknown_field_diagnostic(&error);
+            emit_unknown_field_diagnostic(&_error);
             ProviderError::MalformedResponse
         })?;
         if event.candidates.is_none()

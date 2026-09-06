@@ -4,7 +4,7 @@ Use Rust unit tests beside the module they verify. Larger suites use a module-lo
 
 - Provider adapters: request/stream contracts and malformed-input tests beside each adapter.
 - Persistence: separate migrations, session lifecycle, integrity, subscriptions, and run admission/history tests.
-- Run supervisor: separate lifecycle, selection, context, compaction, tools, and subagents; shared loopback provider fixtures in `tests/providers.rs`.
+- Run supervisor: separate lifecycle, selection, context, compaction, maintenance, tools, and subagents; shared loopback provider fixtures in `tests/providers.rs`.
 - Terminal application: separate input, transcript, presentation, session, model, and credential tests.
 - Crate-root `tests/`: public-API/process integration, such as authenticated IPC and companion lifecycle.
 
@@ -41,5 +41,7 @@ On macOS ARM64 / Rust 1.98.0, medians of three consecutive warm runs were:
 | 200 observations with four 2×2 image attachments | 56.75 ms full context loads | 19.31 ms metadata status |
 
 These compare paths in the same release build, not whole-application before/after latency. They exclude real provider latency/cost; fixtures use temporary state and fake credentials. No timing ratio is asserted in CI. Large histories, cold disks, other architectures and provider caching need separate qualification.
+
+The [background-compaction procedure](background-compaction-qa.md) adds a non-network maintenance timing probe and separates deterministic lifecycle evidence from explicitly authorized live inference. Background compaction defaults on; use `MORONS_BACKGROUND_COMPACTION=0` for controlled comparison or to opt out. Default selection is not a substitute for live or release qualification.
 
 Retain migration tests while their source schemas remain supported, including obsolete workspace-era fixtures: these protect safe upgrades and non-interference with selected directories. Name migration tests for their actual target (`..._migrates_to_current_version`) rather than leaving a historical destination in the name.

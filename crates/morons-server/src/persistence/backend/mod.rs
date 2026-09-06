@@ -10,6 +10,7 @@ mod credential_mutation;
 mod default_model;
 pub(super) mod image_attachment;
 pub(super) mod local_command;
+mod maintenance;
 pub(super) mod project_context;
 mod queries;
 mod records;
@@ -38,6 +39,7 @@ pub(crate) struct Backend {
     pub(super) credentials: CredentialStore,
     pub(super) paths: StoragePaths,
     context_data_version: std::cell::Cell<Option<i64>>,
+    maintenance_enabled: bool,
 }
 
 impl Backend {
@@ -50,11 +52,13 @@ impl Backend {
             credentials,
             paths,
             context_data_version: std::cell::Cell::new(None),
+            maintenance_enabled: false,
         };
         backend.reconcile_image_attachments()?;
         backend.ensure_context_integrity()?;
         backend.recover_compaction_operations()?;
         backend.recover_credential_mutations()?;
+        backend.recover_maintenance_jobs()?;
         backend.recover_incomplete_session_creations()?;
         backend.recover_tool_operations()?;
         backend.recover_local_commands()?;

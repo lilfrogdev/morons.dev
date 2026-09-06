@@ -208,6 +208,8 @@ impl Backend {
             "DELETE FROM tool_uncertainty_acknowledgements WHERE session_id = ?1",
             "DELETE FROM tool_calls WHERE session_id = ?1",
             "DELETE FROM image_attachments WHERE session_id = ?1",
+            "DELETE FROM compaction_maintenance_events WHERE job_id IN (SELECT job_id FROM compaction_maintenance_jobs WHERE session_id = ?1)",
+            "DELETE FROM compaction_maintenance_jobs WHERE session_id = ?1",
             "DELETE FROM compaction_operations WHERE session_id = ?1",
             "DELETE FROM run_accepted_checkpoints WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1)",
             "DELETE FROM context_checkpoints WHERE session_id = ?1",
@@ -371,6 +373,7 @@ fn ensure_session_idle(
     transaction: &rusqlite::Transaction<'_>,
     session_id: SessionId,
 ) -> Result<(), PersistenceError> {
+    super::maintenance::ensure_drained(transaction, session_id)?;
     let active_run = transaction
         .query_row(
             "SELECT active_run_id FROM session_run_states WHERE session_id = ?1",

@@ -43,8 +43,39 @@ pub(super) fn description(context: Option<&SessionContextStatus>) -> SafeText {
             }
         }
     }
+    let background = &context.background_compaction;
+    let enabled = if background.enabled {
+        "enabled (additional billable inference)"
+    } else {
+        "disabled"
+    };
+    let latest = background.latest.as_ref().map_or_else(
+        || "No maintenance attempt.".to_owned(),
+        |job| {
+            let usage = job.usage.as_ref().map_or_else(
+                || "No completed usage; a dispatched request may still incur cost.".to_owned(),
+                |usage| {
+                    format!(
+                        "Input {} · cached {} · cache writes {} · output {} · elapsed {} ms",
+                        usage.input_tokens,
+                        usage.cached_input_tokens,
+                        usage.cache_write_input_tokens,
+                        usage.output_tokens,
+                        usage.elapsed_milliseconds.unwrap_or(0)
+                    )
+                },
+            );
+            format!(
+                "Last maintenance: {:?} · {} / {} · source through {}\n{usage}",
+                job.state,
+                super::service_label(job.service),
+                job.model_id,
+                job.source_entry_high_water
+            )
+        },
+    );
     SafeText::from_untrusted(&format!(
-        "Model: {} / {}\nEstimate: ~{} / {} tokens ({source})\nConservative guard: {} / {} (hard limits unchanged)\nAuto threshold: {} · output reserve: {}\nEntry and image limits apply independently.\nCheckpoint: {checkpoint}\n\n{call}\nCompleted compactions: {} · last elapsed {duration}\nRoot usage excludes compaction, subagents and failed calls.\nThese observations are not a complete bill.\n\n{project}\n\nUp/Down/PageUp/PageDown/Home/End scroll · Enter/Esc close",
+        "Model: {} / {}\nEstimate: ~{} / {} tokens ({source})\nConservative guard: {} / {} (hard limits unchanged)\nAuto threshold: {} · output reserve: {}\nEntry and image limits apply independently.\nCheckpoint: {checkpoint}\n\n{call}\nCompleted foreground compactions: {} · latest checkpoint foreground elapsed {duration}\nRoot usage excludes compaction, subagents and failed calls.\nThese observations are not a complete bill.\n\nBackground compaction: {enabled}\n{latest}\nUnused summaries can still cost quota/money. Status refreshes when this view is reopened.\n\n{project}\n\nUp/Down/PageUp/PageDown/Home/End scroll · Enter/Esc close",
         super::service_label(context.service),
         context.model_id,
         context.estimated_input_tokens,

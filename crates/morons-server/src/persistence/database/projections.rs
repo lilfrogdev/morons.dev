@@ -2011,7 +2011,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
 
 fn validate_logical_sequences(connection: &Connection) -> Result<(), PersistenceError> {
     let invalid: bool = connection.query_row(
-        "WITH canonical_sequences(sequence) AS (
+        "WITH earlier_sequences(sequence) AS (
             SELECT accepted_sequence FROM session_creation_requests
             UNION ALL SELECT fact_sequence FROM workspace_operation_facts
             UNION ALL SELECT fact_sequence FROM session_created_facts
@@ -2028,6 +2028,10 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
             UNION ALL SELECT fact_sequence FROM provider_operation_facts
             UNION ALL SELECT audit_sequence FROM run_audit_facts
             UNION ALL SELECT fact_sequence FROM worktree_generation_facts
+         ), canonical_sequences(sequence) AS (
+            SELECT sequence FROM earlier_sequences
+            UNION ALL SELECT prepared_sequence FROM compaction_maintenance_jobs
+            UNION ALL SELECT fact_sequence FROM compaction_maintenance_events
          )
          SELECT EXISTS (
             SELECT 1 FROM canonical_sequences
