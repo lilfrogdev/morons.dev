@@ -255,6 +255,9 @@ impl Backend {
                 ),
             });
         }
+        if request.1 == 1 {
+            super::maintenance::drain_for_archive(&transaction, session_id)?;
+        }
         transaction.execute(
             "INSERT INTO delivery_events (
                 event_id, event_sequence, session_id, event_kind,

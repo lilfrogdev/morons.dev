@@ -110,7 +110,9 @@ mod tests {
         assert!(
             models
                 .iter()
-                .all(|entry| entry.model.id != "muse-spark-1.2-contributor")
+                .find(|entry| entry.model.id == "muse-spark-1.2-contributor")
+                .expect("reviewed contributor model should be listed")
+                .available
         );
         assert!(
             models

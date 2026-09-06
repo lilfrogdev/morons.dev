@@ -240,6 +240,7 @@ impl Backend {
                 call_id,
                 operation_id: tool_operation_id,
                 input: call.input,
+                opaque_continuation: call.opaque_continuation,
             });
         }
         if next_entry != final_entry_high_water {

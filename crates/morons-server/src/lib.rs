@@ -1,7 +1,10 @@
 mod application;
 mod command_supervisor;
 mod connection;
+mod maintenance_supervisor;
 mod persistence;
+mod project_context;
+mod prompts;
 pub mod provider;
 mod run_supervisor;
 mod skills;

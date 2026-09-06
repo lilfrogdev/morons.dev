@@ -29,6 +29,23 @@ use crate::{
     },
 };
 
+pub(super) fn to_run_model_selection(
+    model: &crate::provider::OpenCodeModel,
+) -> crate::persistence::RunModelSelection {
+    crate::persistence::RunModelSelection {
+        service: match model.service {
+            OpenCodeService::Zen => RunOpenCodeService::Zen,
+            OpenCodeService::Go => RunOpenCodeService::Go,
+        },
+        model_id: model.id.to_owned(),
+        protocol_revision: model.protocol_revision,
+        maximum_input_tokens: model.maximum_input_tokens,
+        maximum_output_tokens: model.maximum_output_tokens,
+        supports_tool_calls: model.capabilities.tool_calls,
+        supports_image_input: model.capabilities.image_input,
+    }
+}
+
 pub(super) fn input_accepted_response(accepted: AcceptedRun) -> ApplicationOutcome {
     ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted {
         user_message_id: ProtocolMessageId::from_bytes(*accepted.user_message_id.as_bytes()),
@@ -178,11 +195,16 @@ pub(super) fn to_protocol_model_summary(
     let model = availability.model;
     let training_use = match model.data_use.training {
         ModelTrainingUse::NotUsed => OpenCodeModelTrainingUse::NotUsed,
-        ModelTrainingUse::MayUsePromptsAndCompletions => return None,
+        ModelTrainingUse::MayUsePromptsAndCompletions => {
+            OpenCodeModelTrainingUse::MayUsePromptsAndCompletions
+        }
+        ModelTrainingUse::NotDocumented => OpenCodeModelTrainingUse::NotDocumented,
     };
     let retention = match model.data_use.retention {
         ModelRetention::None => OpenCodeModelRetention::None,
         ModelRetention::UpToThirtyDays => OpenCodeModelRetention::UpToThirtyDays,
+        ModelRetention::NotZeroDataRetention => OpenCodeModelRetention::NotZeroDataRetention,
+        ModelRetention::NotDocumented => OpenCodeModelRetention::NotDocumented,
     };
     Some(OpenCodeModelSummary {
         service: match model.service {
@@ -195,6 +217,8 @@ pub(super) fn to_protocol_model_summary(
         protocol: match model.protocol {
             ProviderProtocol::Responses => ProtocolProviderProtocol::Responses,
             ProviderProtocol::ChatCompletions => ProtocolProviderProtocol::ChatCompletions,
+            ProviderProtocol::AnthropicMessages => ProtocolProviderProtocol::AnthropicMessages,
+            ProviderProtocol::Gemini => ProtocolProviderProtocol::Gemini,
         },
         protocol_revision: model.protocol_revision,
         capabilities: OpenCodeModelCapabilities {
@@ -465,6 +489,40 @@ const fn protocol_tool_result_status(
             ..
         } => ProtocolToolResultStatus::Interrupted,
         crate::tools::ToolResult::Error { .. } => ProtocolToolResultStatus::Failed,
+    }
+}
+
+pub(super) fn to_background_status(
+    status: crate::persistence::maintenance::MaintenanceObservation,
+) -> morons_protocol::BackgroundCompactionStatus {
+    use crate::persistence::maintenance::MaintenanceState as Stored;
+    use morons_protocol::BackgroundCompactionState as Wire;
+    morons_protocol::BackgroundCompactionStatus {
+        enabled: status.enabled,
+        latest: status
+            .latest
+            .map(|job| morons_protocol::BackgroundCompactionJob {
+                state: match job.state {
+                    Stored::Prepared => Wire::Prepared,
+                    Stored::Dispatched => Wire::Dispatched,
+                    Stored::Ready => Wire::Ready,
+                    Stored::Failed => Wire::Failed,
+                    Stored::Cancelled => Wire::Cancelled,
+                    Stored::Uncertain => Wire::Uncertain,
+                    Stored::Discarded => Wire::Discarded,
+                    Stored::Installed => Wire::Installed,
+                },
+                service: to_protocol_service(job.service),
+                model_id: job.model_id,
+                source_entry_high_water: job.source_entry_high_water,
+                usage: job.usage.map(|usage| morons_protocol::RecentProviderUsage {
+                    input_tokens: usage.input_tokens,
+                    cached_input_tokens: usage.cached_input_tokens,
+                    cache_write_input_tokens: usage.cache_write_input_tokens,
+                    output_tokens: usage.output_tokens,
+                    elapsed_milliseconds: usage.elapsed_milliseconds,
+                }),
+            }),
     }
 }
 

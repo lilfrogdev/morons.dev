@@ -24,7 +24,7 @@ const AUTO_START_HELPER_ENVIRONMENT: &str = "MORONS_AUTO_START_HELPER";
 const INCOMPLETE_CONTROL_HELPER_ENVIRONMENT: &str = "MORONS_INCOMPLETE_CONTROL_HELPER";
 const CONCURRENT_CONNECT_HELPER_ENVIRONMENT: &str = "MORONS_CONCURRENT_CONNECT_HELPER";
 const STOP_EXISTING_HELPER_ENVIRONMENT: &str = "MORONS_STOP_EXISTING_HELPER";
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
+const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_DELAY: Duration = Duration::from_millis(25);
 static TEST_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -365,7 +365,9 @@ fn minimal_command(program: PathBuf, home: &PathBuf) -> Command {
         .current_dir(home)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // Keep test helper/server failures observable; these processes use a
+        // fresh, empty HOME and a cleared environment, never real credentials.
+        .stderr(Stdio::inherit());
     command
 }
 

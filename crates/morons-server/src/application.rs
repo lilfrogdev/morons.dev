@@ -26,7 +26,7 @@ use tokio::sync::{Mutex, watch};
 use crate::{
     command_supervisor::CommandSupervisor,
     persistence::{
-        DefaultModelSelection, PersistenceError, PreparedImageAttachment, RunModelSelection,
+        DefaultModelSelection, PersistenceError, PreparedImageAttachment,
         SessionCatalogEventCursor, SessionCatalogEventKind, SessionEventCursor,
         SessionEventPayload, SessionId, SessionStore, TranscriptPageDirection,
     },
@@ -48,6 +48,7 @@ pub struct ServerApplication {
     command_supervisor: Arc<CommandSupervisor>,
     session_event_hub: Arc<SessionEventHub>,
     skills: Arc<SkillDiscovery>,
+    project_context: crate::project_context::ProjectContextDiscovery,
     host_epoch: [u8; 16],
     stopping: AtomicBool,
     lifecycle_mutations: Mutex<()>,
@@ -475,19 +476,41 @@ impl ServerApplication {
                     .sessions
                     .session_context_status(
                         to_persistence_session_id(session_id),
-                        model.maximum_input_tokens,
-                        model.maximum_output_tokens,
+                        to_run_model_selection(model),
                     )
                     .await
                     .map_err(to_application_error)?;
                 Ok(ApplicationOutcome::Response(
                     ApplicationResponse::SessionContextFound {
                         context: morons_protocol::SessionContextStatus {
+                            background_compaction: to_background_status(
+                                status.background_compaction,
+                            ),
                             session_id,
                             service,
                             model_id,
                             context_policy_version: crate::persistence::CONTEXT_POLICY_VERSION,
                             estimated_input_tokens: status.estimated_input_tokens,
+                            conservative_input_tokens: status.conservative_input_tokens,
+                            estimate_uses_provider_usage: status.estimate_uses_provider_usage,
+                            latest_provider_usage: status.latest_provider_usage.map(|usage| {
+                                morons_protocol::RecentProviderUsage {
+                                    input_tokens: usage.input_tokens,
+                                    cached_input_tokens: usage.cached_input_tokens,
+                                    cache_write_input_tokens: usage.cache_write_input_tokens,
+                                    output_tokens: usage.output_tokens,
+                                    elapsed_milliseconds: usage.elapsed_milliseconds,
+                                }
+                            }),
+                            completed_compactions: status.completed_compactions,
+                            last_compaction_milliseconds: status.last_compaction_milliseconds,
+                            project_context: status.project_context.map(|project| {
+                                morons_protocol::ProjectContextSummary {
+                                    enabled: project.enabled,
+                                    files: project.files,
+                                    warnings: project.warnings,
+                                }
+                            }),
                             maximum_input_tokens: status.maximum_input_tokens,
                             maximum_output_tokens: status.maximum_output_tokens,
                             compaction_threshold_tokens: status.compaction_threshold_tokens,
@@ -591,6 +614,11 @@ impl ServerApplication {
                     .ok_or(ApplicationError::SessionNotFound)?
                     .working_directory
                     .ok_or(ApplicationError::WorkingDirectoryUnavailable)?;
+                let project = self
+                    .project_context
+                    .discover(std::path::PathBuf::from(&working_directory))
+                    .await
+                    .map_err(|()| ApplicationError::ServiceUnavailable)?;
                 let skills = Arc::clone(&self.skills);
                 let skill_prompt = text.clone();
                 let skill_context = tokio::task::spawn_blocking(move || {
@@ -615,28 +643,24 @@ impl ServerApplication {
                 };
                 let accepted = self
                     .sessions
-                    .accept_session_input_with_skills(
+                    .accept_session_input_with_context(
                         mutation_request_id,
                         session_id,
                         text,
-                        RunModelSelection {
-                            service: persistence_service,
-                            model_id,
-                            protocol_revision: model.protocol_revision,
-                            maximum_input_tokens: model.maximum_input_tokens,
-                            maximum_output_tokens: model.maximum_output_tokens,
-                            supports_tool_calls: model.capabilities.tool_calls,
-                            supports_image_input: model.capabilities.image_input,
+                        to_run_model_selection(model),
+                        crate::persistence::RunInputContext {
+                            skills: skill_context,
+                            project,
+                            attachments: prepared_attachments,
                         },
-                        skill_context,
-                        prepared_attachments,
                     )
                     .await
                     .map_err(to_application_error)?;
                 drop(lifecycle_guard);
                 if accepted.newly_accepted {
                     let run_id = accepted.run.id;
-                    if let Err(error) = self.run_supervisor.start(run_id, permit).await {
+                    if let Err(error) = self.run_supervisor.start(run_id, session_id, permit).await
+                    {
                         eprintln!("accepted run could not start: {error}");
                         self.sessions
                             .finish_run_stopped(run_id, None)
@@ -1098,7 +1122,7 @@ impl ServerApplication {
         host_epoch: [u8; 16],
     ) -> Self {
         let command_supervisor = CommandSupervisor::new(Arc::clone(&sessions));
-        let (shutdown_requests, _) = watch::channel(false);
+        let shutdown_requests = run_supervisor.shutdown_requests();
         Self {
             sessions,
             open_code,
@@ -1106,6 +1130,7 @@ impl ServerApplication {
             command_supervisor,
             session_event_hub,
             skills: Arc::new(application_skill_discovery()),
+            project_context: crate::project_context::ProjectContextDiscovery::new(),
             host_epoch,
             stopping: AtomicBool::new(false),
             lifecycle_mutations: Mutex::new(()),

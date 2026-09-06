@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 25;
+const SCHEMA_VERSION: i64 = 27;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -48,6 +48,8 @@ const SCHEMA_V22: &str = include_str!("../schema_v22.sql");
 const SCHEMA_V23: &str = include_str!("../schema_v23.sql");
 const SCHEMA_V24: &str = include_str!("../schema_v24.sql");
 const SCHEMA_V25: &str = include_str!("../schema_v25.sql");
+const SCHEMA_V26: &str = include_str!("../schema_v26.sql");
+const SCHEMA_V27: &str = include_str!("../schema_v27.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -56,6 +58,14 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("credential_mutation_requests", "table"),
     ("credential_mutation_requests_by_state", "index"),
     ("compaction_operations", "table"),
+    ("compaction_operations_by_prefix", "index"),
+    ("compaction_maintenance_jobs", "table"),
+    ("compaction_maintenance_by_session", "index"),
+    ("compaction_maintenance_events", "table"),
+    ("compaction_maintenance_events_by_job", "index"),
+    ("compaction_maintenance_installed_checkpoint", "index"),
+    ("compaction_maintenance_one_pending_session", "index"),
+    ("compaction_maintenance_one_dispatched", "index"),
     ("context_checkpoints", "table"),
     ("context_checkpoints_by_session", "index"),
     ("credential_operation_facts", "table"),
@@ -102,6 +112,7 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("run_state_facts", "table"),
     ("run_state_facts_by_run", "index"),
     ("run_skill_snapshots", "table"),
+    ("run_project_contexts", "table"),
     ("runs", "table"),
     ("server_audit_facts", "table"),
     ("server_stop_requests", "table"),
@@ -203,6 +214,8 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V23)?;
     connection.execute_batch(SCHEMA_V24)?;
     connection.execute_batch(SCHEMA_V25)?;
+    connection.execute_batch(SCHEMA_V26)?;
+    connection.execute_batch(SCHEMA_V27)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -318,6 +331,8 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (23, SCHEMA_V23),
         (24, SCHEMA_V24),
         (25, SCHEMA_V25),
+        (26, SCHEMA_V26),
+        (27, SCHEMA_V27),
     ] {
         if version > schema_version {
             migrate_schema(connection, schema)?;

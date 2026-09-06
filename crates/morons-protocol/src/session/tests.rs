@@ -17,6 +17,25 @@ use crate::{
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
 
 #[test]
+fn background_metadata_is_closed_bounded_and_never_accepts_summary_bodies() {
+    let valid = json!({"enabled":true,"latest":{"state":"ready","service":"zen","model_id":"muse-spark-1.2","source_entry_high_water":4,"usage":null}});
+    let status: crate::BackgroundCompactionStatus = serde_json::from_value(valid.clone()).unwrap();
+    assert_eq!(
+        status.latest.unwrap().state,
+        crate::BackgroundCompactionState::Ready
+    );
+    for (field, value) in [
+        ("state", json!("invented")),
+        ("model_id", json!("x".repeat(129))),
+        ("summary", json!("not metadata")),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["latest"][field] = value;
+        assert!(serde_json::from_value::<crate::BackgroundCompactionStatus>(invalid).is_err());
+    }
+}
+
+#[test]
 fn application_request_has_stable_json_shape() {
     let request = ApplicationRequest::CreateSession {
         mutation_request_id: MutationRequestId::from_bytes([0x11; 16]),
@@ -201,11 +220,27 @@ fn context_status_contract_has_stable_json_shapes() {
     );
     let response = ApplicationResponse::SessionContextFound {
         context: crate::SessionContextStatus {
+            background_compaction: crate::BackgroundCompactionStatus {
+                enabled: false,
+                latest: None,
+            },
+            project_context: None,
             session_id,
             service: OpenCodeService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
             context_policy_version: 4,
             estimated_input_tokens: 12_000,
+            conservative_input_tokens: 40_000,
+            estimate_uses_provider_usage: true,
+            latest_provider_usage: Some(crate::RecentProviderUsage {
+                input_tokens: 10_000,
+                cached_input_tokens: 8_000,
+                cache_write_input_tokens: 500,
+                output_tokens: 100,
+                elapsed_milliseconds: Some(1_500),
+            }),
+            completed_compactions: 1,
+            last_compaction_milliseconds: Some(2_000),
             maximum_input_tokens: 96_000,
             maximum_output_tokens: 32_000,
             compaction_threshold_tokens: 67_200,
@@ -218,11 +253,18 @@ fn context_status_contract_has_stable_json_shapes() {
         json!({
             "result": "session_context_found",
             "context": {
+                "background_compaction": {"enabled": false, "latest": null},
                 "session_id": "ses_19191919191919191919191919191919",
                 "service": "zen",
                 "model_id": "muse-spark-1.2",
                 "context_policy_version": 4,
                 "estimated_input_tokens": 12000,
+                "conservative_input_tokens": 40000,
+                "estimate_uses_provider_usage": true,
+                "latest_provider_usage": {"input_tokens":10000,"cached_input_tokens":8000,"cache_write_input_tokens":500,"output_tokens":100,"elapsed_milliseconds":1500},
+                "completed_compactions": 1,
+                "last_compaction_milliseconds": 2000,
+                "project_context": null,
                 "maximum_input_tokens": 96000,
                 "maximum_output_tokens": 32000,
                 "compaction_threshold_tokens": 67200,
@@ -231,6 +273,25 @@ fn context_status_contract_has_stable_json_shapes() {
             },
         })
     );
+}
+
+#[test]
+fn project_context_metadata_is_bounded_and_closed() {
+    let valid =
+        json!({"enabled": true, "files": ["/project/AGENTS.md"], "warnings": ["file skipped"]});
+    let decoded: crate::ProjectContextSummary = serde_json::from_value(valid.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), valid);
+    for (key, value) in [
+        ("files", json!(vec!["/AGENTS.md"; 17])),
+        ("files", json!(["x".repeat(4097)])),
+        ("warnings", json!(["x".repeat(513)])),
+        ("enabled", json!("true")),
+        ("content", json!("must not enter the DTO")),
+    ] {
+        let mut invalid = valid.clone();
+        invalid[key] = value;
+        assert!(serde_json::from_value::<crate::ProjectContextSummary>(invalid).is_err());
+    }
 }
 
 #[test]
@@ -436,6 +497,35 @@ fn server_stop_contract_has_stable_json_shape() {
 
 #[test]
 fn model_catalog_contract_has_stable_json_shape() {
+    assert_eq!(
+        serde_json::to_value(ProviderProtocol::AnthropicMessages).expect("protocol should encode"),
+        json!("anthropic_messages")
+    );
+    assert_eq!(
+        serde_json::to_value(ProviderProtocol::Gemini).expect("protocol should encode"),
+        json!("gemini")
+    );
+    assert_eq!(
+        serde_json::to_value(OpenCodeModelTrainingUse::MayUsePromptsAndCompletions)
+            .expect("training use should encode"),
+        json!("may_use_prompts_and_completions")
+    );
+    assert_eq!(
+        serde_json::to_value(OpenCodeModelTrainingUse::NotDocumented)
+            .expect("training use should encode"),
+        json!("not_documented")
+    );
+    assert_eq!(
+        serde_json::to_value(OpenCodeModelRetention::NotZeroDataRetention)
+            .expect("retention should encode"),
+        json!("not_zero_data_retention")
+    );
+    assert_eq!(
+        serde_json::to_value(OpenCodeModelRetention::NotDocumented)
+            .expect("retention should encode"),
+        json!("not_documented")
+    );
+
     let request = ApplicationRequest::ListOpenCodeModels {
         service: OpenCodeService::Go,
     };

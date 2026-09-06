@@ -14,13 +14,12 @@ Do not use production credentials with untrusted repositories unless you accept 
 
 ## Build and run
 
-Requirements:
+Source-build requirements:
 
 - Rust 1.98 (selected by `rust-toolchain.toml`)
-- a Bash-compatible shell; Windows requires Git Bash or compatible Bash configuration
-- an OpenCode Zen or Go API key
-- internet access for the first managed IPython setup and for `web_search`
-- `BRAVE_SEARCH_API_KEY` for `web_search`
+- a Bash-compatible shell
+
+Packaged use does not require Rust or a preinstalled Python. Bash is required for the `bash` tool and `!`/`!!` command modes; on Windows, Morons discovers a normal Git for Windows installation or uses the expert `MORONS_BASH` override set before the companion starts. An OpenCode Zen or Go API key is required only for model inference, not for launch or local session management. First managed-IPython setup and provider operations require network access. Successful `web_search` additionally requires `BRAVE_SEARCH_API_KEY` in the companion's inherited environment.
 
 Build the Rust client and server companion:
 
@@ -36,7 +35,7 @@ From a clean checkout, create a checksummed archive for the current Rust host ta
 
 Pass one of the six reviewed target triples as the first argument when its Rust target and linker are available.
 
-Keep the resulting `morons`, `morons-server`, and `morons-uv` executables together. From a source checkout, change to the directory you want a new session to use and launch the client by path:
+Keep the complete extracted package together; in particular, `morons`, `morons-server`, and `morons-uv` must remain exact siblings. Executable names have an `.exe` suffix on Windows. From a source checkout, change to the directory you want a new session to use and launch the client by path:
 
 ```sh
 cd /path/to/project
@@ -50,15 +49,15 @@ cd /path/to/project
 /path/to/extracted-morons-package/morons
 ```
 
-Before installing an archive, verify it against the release's `SHA256SUMS`. Keep all three executables in one owner-controlled directory that is not writable by other users. You may add that directory to `PATH`, but invoke only `morons`; `morons-server` and `morons-uv` are internal companions.
+Before installing an archive, verify it against the release's `SHA256SUMS` and inspect its `MANIFEST.txt`. Keep the complete package in one owner-controlled directory that is not writable by other users. You may add that directory to `PATH`, but invoke only `morons`; `morons-server` and `morons-uv` are internal companions.
 
-To update, stop the running companion with `Ctrl+S`, verify and extract the new archive, replace all three executables before relaunching, and never mix companions from different versions. Database migrations are forward-only; downgrading an existing state directory is unsupported.
+To update, stop the running companion with `Ctrl+S`, verify and extract the new archive into a new complete installation directory, and launch that directory's `morons`. Do not copy individual executables over an old package or mix companions from different versions. Durable state remains in the application state directory and migrates forward on the next start. Database migrations are forward-only; downgrading an existing state directory is unsupported.
 
-On first launch, read and acknowledge the trusted-local authority notice. Configure the OpenCode credential with `/login`; `Ctrl+K` opens the same dialog as a shortcut. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
+On every client launch, read and acknowledge the trusted-local authority notice. Configure or replace the server-owned OpenCode credential with `/login`; `Ctrl+K` opens the same non-echoing dialog as a shortcut. `/logout` removes the local credential after confirmation but does not revoke the API key at OpenCode; revoke it through the provider account when needed. Credentials live in dedicated owner-controlled state outside SQLite and are never intentionally exposed to tools or kernels. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
 
 ### Managed IPython runtime
 
-Release archives include a checksummed `morons-uv` helper. On the first `ipython` call, the companion uses it to prepare Morons-owned Python 3.11.15 with hash-locked `jupyter_client` 8.6.3 and `ipykernel` 6.30.1. Initial setup requires internet access to the reviewed Python and PyPI sources. The versioned runtime and download cache live under `~/.morons/python` on macOS/Linux or `%LOCALAPPDATA%\\morons.dev\\python` on Windows; later use works without network access. Interrupted, stale, or invalid staging state is rebuilt under a process lock and never becomes the active runtime.
+Release archives include a checksummed `morons-uv` helper. On the first `ipython` call, the companion uses it to prepare Morons-owned Python 3.11.15 with hash-locked `jupyter_client` 8.6.3 and `ipykernel` 6.30.1. Initial setup requires internet access to the reviewed Python and PyPI sources. The versioned runtime and download cache live under `~/.morons/python` on macOS/Linux or `%LOCALAPPDATA%\\morons.dev\\python` on Windows; after setup succeeds, ordinary reuse of that validated runtime does not require network access. Interrupted, stale, or invalid staging state is rebuilt under a process lock and never becomes the active runtime.
 
 Normal use does not require Python or `pip` to be installed. `MORONS_PYTHON` remains an expert override: when set before the companion starts, Morons bypasses managed setup and uses that executable, which must provide `jupyter_client` and `ipykernel`. Stop an existing companion with `Ctrl+S` before changing the override.
 
@@ -77,7 +76,7 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `/settings`: inspect typed global settings and choose whether task subagents inherit the parent model or use one exact reviewed model
 - `/login`: configure or replace the OpenCode API credential through hidden input (`Ctrl+K` shortcut)
 - `/logout`: remove the locally stored OpenCode credential after explicit confirmation
-- `/context`: inspect approximate context use, limits, reserves, and the latest checkpoint
+- `/context`: inspect context/cache/timing observations and the last accepted run's project-guidance paths and warnings; use arrows, PageUp/PageDown, Home/End to scroll
 - `/compact [instructions]`: manually summarize an eligible old context prefix
 - `r` in the session browser: rename the selected durable session
 - `a` in the session browser: archive or unarchive the selected session
@@ -91,19 +90,41 @@ Direct source-tree binaries do not automatically download build companions. Main
 
 Commands are noninteractive: standard input is closed, no PTY is provided, and output and runtime are bounded. `bash` and `ipython` still have your ordinary filesystem, environment, network, Git, credential-helper, and agent access.
 
+`read` uses one-based line offsets and at most 200 lines per call. `write` requires an existing parent directory; create needed directories with `bash` first. Read-only preflight failures do not mutate the target, while failures after a possible mutation remain uncertain and are not automatically retried.
+
 ## Sessions and context
 
 Each session is durably bound to one absolute working directory. Switching sessions or closing the client does not cancel server-owned work. Multiple sessions may use the same directory, so their filesystem effects can race even though their histories are independent.
 
-The most recently selected or used reviewed model is the global default across sessions and client restarts. Opening an older session does not restore that session's historical model. If the saved default is unavailable, Morons uses another currently available reviewed model and reports the fallback. Each service/model pair also pins its reviewed wire protocol: existing models use Responses, while Go `glm-5.3-flash` uses bounded Chat Completions.
+The most recently selected or used reviewed model is the global default across sessions and client restarts. Opening an older session does not restore that session's historical model. If the saved default is unavailable, Morons uses another currently available reviewed model and reports the fallback. Each service/model pair pins its reviewed wire protocol. The built-in snapshots cover all 35 Go identifiers and all 66 Zen identifiers exposed by their public catalogs at review time across bounded Responses, Chat Completions, Anthropic Messages, and Gemini adapters; live catalogs may only mark reviewed entries available or unavailable. Training-eligible, non-ZDR, and privacy-undocumented models remain visible with explicit policy disclosures rather than being silently omitted or assigned a favorable classification.
 
-Canonical transcript history remains durable. The terminal opens at the newest bounded window and pages older or newer history on demand, rendering only visible transcript blocks during steady-state frames. Automatic and manual compaction create source-bound lossy summaries for provider context without deleting canonical messages or image attachments. `!!` content is never included in provider context or summaries.
+Canonical transcript history remains durable. The terminal opens at the newest bounded window and pages older or newer history on demand, rendering only visible transcript blocks during steady-state frames. Automatic and manual compaction create source-bound lossy summaries for provider context without deleting canonical messages or image attachments. Compaction checks token, entry-count, and image budgets before dispatch, keeps recent complete turns when they fit, and leaves `/compact` available when old history fills ordinary context. Oversized old prefixes are summarized from explicitly bounded excerpts; summaries can lose detail. If the current run alone cannot fit, it fails durably rather than dropping current information or leaving the session busy. `!!` content is never included in provider context or summaries.
 
-Every OpenCode Zen and Go inference request carries one stable, derived `x-opencode-session` identifier for its Morons conversation. The root value remains constant across the durable session's runs, compaction, and tool turns. Each task child receives a distinct value stable across its own turns. These identifiers are not sent on public model-catalog requests.
+Background compaction is **on by default**. It can make additional inference requests using the successful run's exact service/model and billing identity; unused or discarded summaries can still consume quota or money. To opt out, stop the running server through its matching authenticated client, then launch with `MORONS_BACKGROUND_COMPACTION=0 morons`. An unset value or exactly `1` enables it; empty/invalid values disable it. The server captures this setting at startup, not from later clients. No other application's login or credentials are imported.
+
+When enabled, one supervised background request globally can prepare a bounded older-prefix summary after a successful run. New input acceptance does not wait for that provider request. A ready result is not an active checkpoint: Morons installs it only before a later run's first provider request, after checking source, parent, model, credentials, guidance and every tail limit. Later arrivals wait for another run; stale or unhelpful results are discarded. Manual `/compact` drains background work and preserves its new guidance. Hard context jumps may still pause or fail. SQLite preparation uses the shared storage worker, and existing credential-dispatch coordination can delay foreground inference while a request is establishing its response. This is not a guarantee of lower bills or zero pauses. `/context` shows a bounded, query-time maintenance observation separately from foreground usage; reopen it to refresh. See [ADR 0026](docs/adr/0026-background-compaction-maintenance.md).
+
+Context estimates reuse compatible successful provider usage plus a bounded new tail when available; conservative byte/item/image guards still apply independently. `/context` shows the estimate's source and the latest matching successful root call's cache and timing counters. Those counters exclude compaction, subagents, and failed requests and are not a complete bill. Foreground compaction counts and elapsed times are reported separately from the latest background job.
+
+Every OpenCode Zen and Go inference request carries one stable, derived `x-opencode-session` identifier for its Morons conversation. The root value remains constant across the durable session's runs, foreground compaction, and tool turns. Each task child receives a distinct value stable across its own turns. Each background compaction request has a separate job conversation identity. These identifiers are not sent on public model-catalog requests.
+
+## Project guidance and coding defaults
+
+Morons combines a small shared coding core, parent/child role instructions, tool-specific guidance, and separately labeled project context. The defaults favor understanding the code, simple focused changes, reuse before new machinery, root-cause fixes, and honest verification—not code golf or removal of necessary safeguards/tests. Avoid redundant comments; new explanatory comments should fit on one line unless you request more. Required notices and documentation remain intact. Explicit user preferences override coding/workflow defaults, not harness constraints.
+
+Before each newly accepted input, Morons checks `~/.morons` for global guidance, then ancestor directories from filesystem root through the selected directory. In each directory, the first present `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, or `CLAUDE.MD` wins. An override shadows only its own directory's alternatives. Descendants are not recursively scanned; deeper guidance can be read explicitly. No `SYSTEM.md` replacement, script execution, reference following, or Pi/Codex configuration import occurs.
+
+Guidance is **sent to the selected model service** as untrusted context. Do not put secrets in these files. Discovery skips final-component links, special files, invalid UTF-8 and oversized files with warnings rather than silently truncating instructions or falling back past an invalid preferred file. Limits are 64 ancestors, 16 files, 16 KiB/file, 32 KiB total content, 16 warnings and 64 KiB serialized context; discovery has bounded job admission and a cooperative five-second deadline. Ordinary filesystem syscalls can still block in the OS.
+
+Files, warnings and enabled state are pinned in SQLite with each tool-enabled run. Later turns and task children receive that same guidance, not live rereads. New inputs refresh it; exact retries and recovery do not. `/context` shows the **last accepted run's** paths and warnings without reading source files or exposing their contents over IPC. Compaction does not summarize project guidance. Deleting a session never changes guidance files.
+
+To disable automatic discovery, set `MORONS_NO_PROJECT_CONTEXT` (any value) before the companion starts; unset it to enable. Stop an existing companion with `Ctrl+S` before changing this server environment setting. This disables automatic loading, not ordinary tool access or user-supplied instructions. See [ADR 0025](docs/adr/0025-project-guidance-and-prompt-led-delegation.md).
 
 ## Subagents
 
-The `task` tool follows a bounded OMP-style batch contract: the parent supplies shared context once and one to three self-contained assignments. By default children inherit the parent's model. `/settings` can instead pin one exact available reviewed service/model pair for later task calls, including a different family, service, or wire protocol such as Zen GPT 5.6 Sol with Go GLM-5.3-Flash. Morons never silently substitutes another child model; each completed report discloses the selected model and protocol revision. Children run concurrently, receive only `read`, `write`, `edit`, `bash`, and `web_search`, and return input-ordered bounded reports. They do not inherit the parent transcript, share IPython memory, recurse, continue in the background, or receive isolated worktrees. Children share the real selected directory, so parallel mutations can race.
+By default the main selected model inspects and plans implementation work, uses one implementation child for a small change, then reviews changed code and runs relevant checks. Only independent assignments should run in parallel; dependent implementation and verification should not race. After a child failure, the prompt asks the parent to report partial progress and stop rather than retry or take over without explicit user direction. Children are told their existing budget of eight provider responses (including a final report), 24 tool calls and eight mutations. Discussion-only requests can be answered directly. This is **prompt-led delegation**, not enforced planner-only mode: the main agent retains its normal tools and can follow explicit requests for direct execution. Model compliance is not guaranteed by a prompt. See [ADR 0027](docs/adr/0027-tool-feedback-and-provider-output-validation.md).
+
+The `task` tool follows a bounded OMP-style batch contract: the parent supplies shared context once and one to three self-contained assignments. By default children inherit the parent's model. `/settings` can instead pin one exact available reviewed service/model pair for later task calls, including a different family, service, or wire protocol such as Zen GPT 5.6 Sol with Go GLM-5.3-Flash. Morons never silently substitutes another child model; each completed report discloses the selected model and protocol revision. Children run concurrently, receive the parent's pinned project guidance and only `read`, `write`, `edit`, `bash`, and `web_search` tools, and return input-ordered bounded reports. Active parent skills are not automatically inherited; include relevant task-specific context explicitly. They do not inherit the parent transcript, share IPython memory, recurse, continue in the background, or receive isolated worktrees. Children share the real selected directory, so parallel mutations can race.
 
 ## Skills
 
@@ -111,7 +132,7 @@ Morons reads standard `SKILL.md` directories from bundled, user, and project roo
 
 ## Platforms
 
-The intended targets are x86_64 and aarch64 on macOS, Linux, and Windows. CI exercises Linux, macOS, and Windows plus Linux and Windows aarch64 coverage. Native Intel macOS validation remains required before claiming release support for that target; see [ADR 0007](docs/adr/0007-supported-processor-architectures.md).
+The intended package targets are x86_64 and aarch64 on macOS, Linux, and Windows. CI runs natively on Linux x86_64/aarch64, macOS aarch64, and Windows x86_64/aarch64, and cross-checks the Intel macOS build. The `x86_64-apple-darwin` archive must also pass the native checklist on reviewed Intel hardware before Morons claims release support for it; cross-compilation is not that qualification. See [ADR 0007](docs/adr/0007-supported-processor-architectures.md).
 
 ## License
 

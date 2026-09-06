@@ -766,19 +766,118 @@ impl fmt::Debug for ApplicationEvent {
     }
 }
 
+/// The last matching successful root call, not a session-wide bill. Excludes
+/// compaction, subagents and failed requests. Times are wall-clock observations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecentProviderUsage {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub elapsed_milliseconds: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextStatus {
+    pub background_compaction: BackgroundCompactionStatus,
+    pub project_context: Option<ProjectContextSummary>,
     pub session_id: SessionId,
     pub service: crate::OpenCodeService,
     pub model_id: String,
     pub context_policy_version: u16,
     pub estimated_input_tokens: u32,
+    pub conservative_input_tokens: u32,
+    pub estimate_uses_provider_usage: bool,
+    pub latest_provider_usage: Option<RecentProviderUsage>,
+    pub completed_compactions: u64,
+    pub last_compaction_milliseconds: Option<u64>,
     pub maximum_input_tokens: u32,
     pub maximum_output_tokens: u32,
     pub compaction_threshold_tokens: u32,
     pub checkpoint_source_entry_high_water: Option<u64>,
     pub checkpoint_estimated_summary_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackgroundCompactionStatus {
+    pub enabled: bool,
+    pub latest: Option<BackgroundCompactionJob>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackgroundCompactionJob {
+    pub state: BackgroundCompactionState,
+    pub service: crate::OpenCodeService,
+    #[serde(deserialize_with = "background_model")]
+    pub model_id: String,
+    pub source_entry_high_water: u64,
+    pub usage: Option<RecentProviderUsage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundCompactionState {
+    Prepared,
+    Dispatched,
+    Ready,
+    Failed,
+    Cancelled,
+    Uncertain,
+    Discarded,
+    Installed,
+}
+
+fn background_model<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    if value.is_empty() || value.len() > 128 {
+        return Err(serde::de::Error::custom(
+            "background model metadata exceeds its bounds",
+        ));
+    }
+    Ok(value)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectContextSummary {
+    pub enabled: bool,
+    #[serde(deserialize_with = "project_paths")]
+    pub files: Vec<String>,
+    #[serde(deserialize_with = "project_warnings")]
+    pub warnings: Vec<String>,
+}
+
+fn project_paths<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    project_strings(deserializer, 4096)
+}
+
+fn project_warnings<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<String>, D::Error> {
+    project_strings(deserializer, 512)
+}
+
+fn project_strings<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+    limit: usize,
+) -> Result<Vec<String>, D::Error> {
+    let strings = Vec::<String>::deserialize(deserializer)?;
+    if strings.len() > 16
+        || strings
+            .iter()
+            .any(|value| value.is_empty() || value.len() > limit)
+    {
+        return Err(serde::de::Error::custom(
+            "project context metadata exceeds its bounds",
+        ));
+    }
+    Ok(strings)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

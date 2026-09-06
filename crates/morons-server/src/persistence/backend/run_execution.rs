@@ -151,7 +151,12 @@ impl Backend {
                 .ok_or(PersistenceError::ResourceLimit {
                     resource: PersistenceResourceLimit::Context,
                 })?;
-        if operation_pending || turn_index > crate::tools::MAX_PROVIDER_TURNS_PER_RUN {
+        if turn_index > crate::tools::MAX_PROVIDER_TURNS_PER_RUN {
+            return Err(PersistenceError::ResourceLimit {
+                resource: PersistenceResourceLimit::Context,
+            });
+        }
+        if operation_pending {
             return Err(PersistenceError::InvalidState {
                 reason: "a run cannot prepare another provider operation",
             });

@@ -106,6 +106,45 @@ async fn prepared_server_is_not_discoverable_before_explicit_publication() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn unpublished_key_write_is_starting_but_published_or_abandoned_corruption_fails_closed() {
+    let paths = temporary_control_paths("key-publication");
+    let mut server = ServerEndpoint::prepare_with_paths(paths.clone()).unwrap();
+    // The observable state between create_new and write_all on first startup.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(paths.authentication_key_path())
+        .unwrap();
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone()).unwrap(),
+        ClientEndpointDiscovery::Starting
+    ));
+    assert!(matches!(
+        ServerEndpoint::prepare_with_paths(paths.clone()),
+        Err(ControlError::HostAlreadyRunning)
+    ));
+    std::fs::write(
+        paths.authentication_key_path(),
+        server.authentication_key().as_bytes(),
+    )
+    .unwrap();
+    server.publish().unwrap();
+    assert!(matches!(
+        ClientEndpoint::discover_with_paths(paths.clone()).unwrap(),
+        ClientEndpointDiscovery::Registered(_)
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(paths.authentication_key_path())
+        .unwrap();
+    assert!(ClientEndpoint::discover_with_paths(paths.clone()).is_err());
+    drop(server);
+    assert!(ClientEndpoint::discover_with_paths(paths.clone()).is_err());
+    std::fs::remove_dir_all(paths.root_directory).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn duplicate_server_is_rejected_by_lifetime_lock() {
     let paths = temporary_control_paths("duplicate-lock");
     let server =

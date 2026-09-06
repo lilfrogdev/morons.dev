@@ -1,3 +1,4 @@
+mod context;
 mod input;
 mod render;
 mod viewport;
@@ -49,6 +50,7 @@ pub(super) enum PendingOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InformationDialog {
+    Context,
     TrustNotice,
     Help,
 }
@@ -421,6 +423,7 @@ pub(super) struct AppState {
     pub(super) credential: Option<OpenCodeCredentialStatus>,
     pub(super) credential_dialog: Option<CredentialDialog>,
     pub(super) information_dialog: Option<InformationDialog>,
+    pub(super) information_scroll: u16,
     pub(super) rename_dialog: Option<PromptBuffer>,
     pub(super) view: View,
     pub(super) session: Option<SessionView>,
@@ -452,6 +455,7 @@ impl AppState {
             credential: None,
             credential_dialog: None,
             information_dialog: initial_information_dialog(),
+            information_scroll: 0,
             rename_dialog: None,
             view: View::Sessions,
             session: None,
@@ -1334,6 +1338,8 @@ impl AppState {
             .install_context_status(context)?;
         if self.prompt.as_str() == "/context" {
             self.prompt.clear();
+            self.information_dialog = Some(InformationDialog::Context);
+            self.information_scroll = 0;
         }
         Ok(())
     }
