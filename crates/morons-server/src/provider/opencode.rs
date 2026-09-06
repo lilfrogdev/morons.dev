@@ -7,11 +7,6 @@ use http::{
 };
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::{Frame, Incoming};
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
-use hyper_util::{
-    client::legacy::{Client, connect::HttpConnector},
-    rt::TokioExecutor,
-};
 use tokio::time::{self, Instant};
 use zeroize::Zeroizing;
 
@@ -24,6 +19,7 @@ use super::{
     catalog::{MAX_CATALOG_BODY_BYTES, parse_catalog},
     chat_completions::ChatCompletionsDecoder,
     gemini::GeminiDecoder,
+    http_client::{ProviderHttpClient, bounded_client},
     responses::ResponsesDecoder,
 };
 use crate::persistence::{PersistenceError, SessionStore};
@@ -40,7 +36,6 @@ const GO_CATALOG_URI: &str = "https://opencode.ai/zen/go/v1/models";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const USER_AGENT_VALUE: &str = concat!("morons-server/", env!("CARGO_PKG_VERSION"));
 const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const STREAM_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
 const PROVIDER_TOTAL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -48,8 +43,6 @@ const CATALOG_TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RESPONSE_HEADERS: usize = 64;
 const MAX_RESPONSE_HEADER_BYTES: usize = 16 * 1024;
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
-
-type ProviderHttpClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 #[derive(Clone)]
 struct EndpointSet {
@@ -526,23 +519,8 @@ impl OpenCodeClient {
     }
 
     fn build(endpoints: EndpointSet, allow_http: bool) -> Self {
-        let mut http = HttpConnector::new();
-        http.enforce_http(false);
-        http.set_connect_timeout(Some(CONNECT_TIMEOUT));
-        http.set_nodelay(true);
-        let tls = HttpsConnectorBuilder::new().with_webpki_roots();
-        let tls = if allow_http {
-            tls.https_or_http()
-        } else {
-            tls.https_only()
-        };
-        let connector = tls.enable_http1().wrap_connector(http);
-        let mut builder = Client::builder(TokioExecutor::new());
-        builder.retry_canceled_requests(false);
-        builder.pool_idle_timeout(Duration::from_secs(30));
-        builder.pool_max_idle_per_host(2);
         Self {
-            client: builder.build(connector),
+            client: bounded_client(allow_http, None),
             endpoints,
             #[cfg(test)]
             emit_decoder_diagnostics: false,

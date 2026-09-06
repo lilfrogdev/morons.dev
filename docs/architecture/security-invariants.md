@@ -143,9 +143,12 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Event subscriptions are scoped to a session, resumable through server-validated durable cursors, and composed with snapshots without losing committed events.
 - Ephemeral assistant deltas identify an exact session and run, remain bounded and ordered, are never replayed, and are replaced by one complete committed assistant message.
 - Subscriber queues are bounded; slow consumers are disconnected rather than allowed unbounded memory growth.
-- Authenticated local IPC remains the only application transport. A network listener requires another architecture decision and threat-model update.
+- Authenticated local IPC remains the only application transport. ADR 0019 permits only an ephemeral, bounded loopback OAuth callback, not a general HTTP application transport; the initial OAuth core is not exposed through IPC or tools.
 
 ## Provider credentials and model egress
+
+- ADR 0019 admits a native ChatGPT OAuth core at fixed reviewed authorization/token routes with S256 PKCE, independent random state, exact loopback callback validation, bounded non-retried exchanges and redacted zeroizing owned buffers. It imports no other-app credentials and does not yet expose login, token persistence, refresh dispatch or OpenAI inference in the application.
+- OAuth URLs are ephemeral browser-interaction data, not ordinary logs/status/history. Codes and tokens never cross application IPC. Token claims from the fixed TLS exchange supply bounded account routing/expiry only; no cryptographic JWT, entitlement, training or retention assurance is inferred. Durable provider-specific custody/refresh recovery must precede application admission.
 
 - Only trusted server provider code reads Morons-managed OpenCode credentials or attaches provider authorization headers.
 - Persistent provider credentials remain in dedicated owner-controlled state separate from SQLite, backups, configuration, attachments, and local IPC control state.

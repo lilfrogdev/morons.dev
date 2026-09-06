@@ -999,6 +999,7 @@ dependencies = [
 name = "morons-server"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "fence-windows",
  "getrandom 0.4.3",

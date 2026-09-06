@@ -1,186 +1,84 @@
-# ADR 0019: OpenAI subscription authentication and hosted search
+# ADR 0019: Native OpenAI ChatGPT subscription authentication
 
-- Status: Proposed — implementation blocked on the approval gates below
-- Date: 2026-09-04
+## Status
 
-## Context
+Accepted for staged implementation, revised 2026-09-06. Supersedes this draft's search-only scope and dedicated-client-registration gate. Browser sign-in and credentialed inference remain unqualified until deliberate owner testing. The initial increment supplies the OAuth core only; it does not enable application login, persistence, refresh dispatch or model selection.
 
-Morons currently stores one server-owned OpenCode API key and sends `web_search` queries to Brave Search using the ordinary `BRAVE_SEARCH_API_KEY` environment variable. The intended replacement is OpenAI-hosted web search authenticated by a user's ChatGPT subscription, without reading or reusing credentials owned by Pi, Codex, a browser profile, or another application.
+## Context and provenance
 
-This is not just a search-adapter change. It introduces a second managed credential authority, browser authentication, rotating access and refresh tokens, an unauthenticated loopback callback, account-scoped request headers, another billable model request, token revocation, and policy-dependent data use. Those boundaries must be settled before any endpoint, client identity, token format, or hosted-search request is admitted.
+The owner requested native Pi-like ChatGPT subscription authentication after completing the QA repairs and background compaction, and authorized implementation without importing another application's login. This is a separate credential and billing identity from OpenCode Zen/Go and an OpenAI Platform API key.
 
-### Researched contracts
+OpenAI's [Codex for OSS guidance](https://developers.openai.com/community/codex-for-oss), reviewed 2026-09-06, explicitly supports developers using Pi, OpenCode, Cline and other tools. [Authentication documentation](https://developers.openai.com/codex/auth) distinguishes ChatGPT subscription access from API-key billing and describes account/workspace-controlled data handling. These sources do not establish a Morons-specific support agreement or guarantee endpoint stability. They also do not establish that a separately registered client is a technical prerequisite.
 
-OpenAI's [Codex authentication documentation](https://developers.openai.com/codex/auth) documents ChatGPT subscription login for the ChatGPT desktop app, Codex CLI, and IDE extension. It says ChatGPT-authenticated use follows ChatGPT workspace permissions, retention, residency, and data controls; tokens are refreshed automatically; logout clears local credentials; and file storage contains sensitive plaintext tokens.
+Implementation references are Pi 0.84.2 (`@earendil-works/pi-ai`, `auth/oauth/openai-codex.js`) and OMP commit [`0fcdbb30`](https://github.com/can1357/oh-my-pi/blob/0fcdbb30f6b532365d9b7ec7e38c86ae2fae91ec/packages/ai/src/registry/oauth/openai-codex.ts). They use the same native public client identity, authorization-code/S256 flow and token endpoint. References establish interoperability provenance, not a dependency, credential source or full security audit. Morons independently implements the bounded Rust flow and identifies itself as Morons, not Pi or Codex.
 
-At OpenAI Codex commit [`8e6a44b`](https://github.com/openai/codex/tree/8e6a44b428e31f91b21edc97904fcdf4f0931ade), the official client:
+The prior draft combined authentication with hosted search, required a dedicated client ID and mandatory OIDC/JWKS verification, and excluded ordinary coding inference. Those were draft design choices, not proven provider requirements. This revision explicitly changes them rather than silently bypassing a recorded boundary.
 
-- creates a loopback authorization-code flow with S256 PKCE and random state in [`codex-rs/login/src/server.rs`](https://github.com/openai/codex/blob/8e6a44b428e31f91b21edc97904fcdf4f0931ade/codex-rs/login/src/server.rs);
-- exchanges and refreshes tokens through OpenAI auth endpoints, serializes refreshes, preserves rotated refresh tokens, and distinguishes permanent refresh-token failures in [`codex-rs/login/src/auth/manager.rs`](https://github.com/openai/codex/blob/8e6a44b428e31f91b21edc97904fcdf4f0931ade/codex-rs/login/src/auth/manager.rs); and
-- attempts one best-effort token revocation while still clearing local state in [`codex-rs/login/src/auth/revoke.rs`](https://github.com/openai/codex/blob/8e6a44b428e31f91b21edc97904fcdf4f0931ade/codex-rs/login/src/auth/revoke.rs).
+## Scope and fixed contract
 
-OpenAI's current [OIDC discovery document](https://auth.openai.com/.well-known/openid-configuration) advertises authorization-code and refresh-token grants, S256 PKCE, public clients with token-endpoint authentication method `none`, RS256 ID tokens, revocation, and a JWKS URI. Its advertised `/api/accounts/...` endpoints differ from paths used by current Codex source. This reinforces that Morons must use an issued, documented contract rather than infer routes from another client.
+The intended integration is **OpenAI ChatGPT subscription coding inference**, including root runs, compaction and explicitly selected children. No automatic model selection follows login. Brave remains the only shipped `web_search` adapter; hosted search, device login, API-key login, browser-cookie access and other-app credential import are outside this increment.
 
-Pi is useful non-normative comparison: it currently implements browser and device-code subscription login, five-minute refresh preflight, account-ID extraction, Codex backend headers, and OpenAI-hosted `web_search`. Morons will not import Pi's implementation, read Pi's token store, use Pi as an auth broker, or assume that Pi's working client identity grants Morons permission.
+OAuth compatibility revision 1 fixes:
 
-No reviewed OpenAI source found during this design establishes a general third-party native-client registration process or expressly authorizes an independent coding agent to reuse the Codex CLI client ID and private ChatGPT backend contract. Absence of a discovered document is not proof that no program exists, but it is insufficient authorization for Morons to ship the integration.
+| Purpose | Value |
+| --- | --- |
+| Authorization | `https://auth.openai.com/oauth/authorize` |
+| Token exchange and refresh | `https://auth.openai.com/oauth/token` |
+| Public client ID | `app_EMoamEEZ73f0CkXaXp7hrann` |
+| Redirect | `http://localhost:1455/auth/callback` |
+| Listener | `127.0.0.1:1455`, no wildcard or alternate port |
+| Scope | `openid profile email offline_access` |
+| Application originator | `morons` |
+| Extra authorization fields | `id_token_add_organizations=true`, `codex_cli_simplified_flow=true` |
+| PKCE | S256, 32 random verifier bytes encoded base64url without padding |
+| State | Independent 32 random bytes encoded base64url without padding |
 
-A second policy dimension is data use. OpenAI documents that ChatGPT-authenticated Codex follows the selected ChatGPT workspace and account controls. Personal ChatGPT data may be used to improve models when the account setting permits it, while business offerings have different defaults and controls. Morons cannot infer a fixed no-training guarantee merely from possession of an access token or an unverified plan claim.
+The public client ID is not a secret or an imported credential. This deliberately follows the reviewed native-client compatibility flow without claiming a private Morons registration. If the provider rejects Morons' identity or requires registration, report the blocker; do not silently impersonate another originator, change client IDs, fall back to an API key or copy another application's login.
 
-### Data-use product decision
+The later coding adapter must separately review `https://chatgpt.com/backend-api/codex/responses`, `store: false`, account-scoped headers, exact supported models, tools/images, output limits, reasoning continuation and strict Responses decoding. The token endpoint cannot select or redirect to this or any other origin. No inference route or model is enabled by the OAuth-core increment.
 
-The owner approved support for reviewed providers and models that may use inputs or outputs for training and that may retain data on 2026-09-04. Training eligibility and non-zero retention are disclosed user routing preferences, not project-wide admission prohibitions or OpenAI implementation approval gates.
+## OAuth core
 
-Morons will add two independent typed global opt-in restrictions when the first relevant provider or model is implemented:
+Only trusted server code initiates a login. Application integration must first authenticate the local owner, enforce one global nonqueued attempt, capture the observed OpenAI identity generation, and own the task until cancellation/shutdown has drained. The initial core is not reachable through IPC or tools.
 
-- **Block training use**, disabled by default, permits only entries whose reviewed classification says content is not used for training.
-- **Require zero data retention**, disabled by default, permits only entries whose reviewed classification establishes zero data retention.
+- Bind the fixed loopback listener before returning an authorization URL. Port conflict is an error; never kill, connect to, replace or discover credentials from the port owner.
+- A login object owns its verifier, state, listener and ten-minute monotonic deadline. Its consuming completion future must be promptly polled under application supervision; an unpolled Rust object does not run a timer. Completion permits at most one code exchange. Drop closes its listener. Cancellation wins before polling exchange work or returning tokens; no automatic retry.
+- The URL is deliberately exposed only for browser interaction. It contains state and a challenge, not the verifier, code or tokens. Redact it in `Debug`; never persist it, put it in model input or general status/log messages. The future client displays it in a dedicated terminal-safe ephemeral dialog. No shell-based launcher, callback paste or code entry is admitted here.
+- Callback HTTP is a small fixed grammar, not an application server: HTTP/1.1 GET, exact `/auth/callback`, exact `Host: localhost:1455`, no body/transfer encoding, no origin-form ambiguity, duplicate headers or duplicate query fields. Bound request bytes to 8 KiB, headers to 32, each connection to five seconds and the whole attempt to ten minutes. Accept at most 16 connections sequentially; mismatched/invalid requests cannot consume a valid code or renew the deadline. Responses are static, have no reflected query values, disable caching and have a restrictive CSP. Receiving a code is not reported as completed credential installation.
+- Compare decoded state in constant time. Accept one bounded visible-ASCII code and matching state, or a bounded provider error with matching state. Unknown query fields, malformed escapes, duplicate/contradictory results and controls reject. No code, verifier, token, query target or raw error is logged.
+- The exchange uses one form-encoded POST with fixed grant, client and redirect. TLS uses the existing reviewed web-PKI Hyper stack; no redirects, ambient proxy/certificate override, generic URL input, cookies, automatic retry or SDK discovery.
+- The exchange has a 30-second total limit, ten-second connect/header/inactivity limits, 32 headers/8 KiB header bound and 64 KiB body bound. Header-parser allocation is bounded as well as validated decoded headers. Reuse the existing HTTPS constructor without changing OpenCode's parser settings or error classifications. Non-200, malformed, oversized, timed-out or interrupted replies fail without replay. Uncertain exchange means start a new owner-authorized login, not reuse the code.
+- Token responses have closed duplicate-rejecting fields: access/refresh tokens, integer `expires_in`, and optional reviewed `token_type`, `scope`, `id_token`. Each secret is at most 16 KiB of visible ASCII. A present token type must be Bearer; a returned scope must equal the requested set without additions or duplicates. Lifetime must exceed the five-minute refresh margin and be at most 30 days. Discard an optional ID token after bounded decoding of the envelope; do not store email/profile/plan data.
 
-With both restrictions disabled, neither possible training nor non-zero retention blocks an otherwise reviewed entry. A user may enable either restriction or both. The restrictions cannot establish a provider guarantee beyond the reviewed contract, cannot be changed by repositories or models, and never cause silent provider or model substitution.
+### Token trust, account routing and memory
 
-Once accepted and implemented, this decision supersedes ADR 0004's blanket exclusion of models documented as using prompts or completions for training. Every service/model/protocol combination still requires ordinary route, capability, limit, billing, policy, and live-qualification review.
+This is OAuth resource access, not a general OIDC identity verifier. Tokens are accepted only from the fixed authenticated TLS exchange of the retained code/verifier. There is no IPC/token-string import API. No JWKS fetch, ID-token signature claim, OIDC nonce or ID-token identity assertion is added merely to imitate a draft. This is an explicit change from the original proposal.
 
-## Approval gates
+The access token's bounded JWT payload is decoded solely for the required `https://api.openai.com/auth.chatgpt_account_id` routing value and expiration. JSON duplicate keys reject at every level. The account is an opaque bounded header value, not proof of local authority, entitlement, training policy or workspace settings. Use the earlier of token-response and JWT expiration; reject expired, missing or malformed required claims. A refresh must retain the exact account. Signature verification is left to the resource server; Morons does not claim it verified a JWT cryptographically.
 
-No implementation may begin, and Brave Search remains the only shipped search adapter, until all of the following are recorded in this ADR or a superseding accepted ADR:
+Secret-bearing types have redacted `Debug`, no general serialization/clone API and zeroizing owned buffers, including form bodies retained by the HTTP request. The decoder minimizes retained strings and clears the successfully parsed claim tree after extraction or validation failure. Parser, transport and allocator copies may remain; this is not protection against crash dumps or same-user processes. See [security invariants](../architecture/security-invariants.md).
 
-1. **OpenAI authorization:** OpenAI documentation or written authorization confirms that Morons may act as a native public OAuth client and invoke the intended ChatGPT subscription backend and hosted web-search capability.
-2. **Dedicated client identity:** Morons receives or registers its own reviewed public client ID, exact loopback redirect URI set, and originator/application identity. Morons will not ship Codex's `app_EMoamEEZ73f0CkXaXp7hrann`, Pi's identity, or another application's client ID.
-3. **Exact provider contract:** Authorization, token, JWKS, revocation, inference/search origins, paths, scopes, required headers, supported hosted-search models, rate limits, and response shapes are confirmed. Production routes remain hard-coded reviewed HTTPS values and cannot come from OIDC discovery, repository files, environment overrides, protocol input, model output, or remote catalogs.
-4. **Product approval:** The owner approves this complete design, including the refresh uncertainty and logout behavior below.
+## Credential persistence and lifecycle integration
 
-Approval for the OpenAI contract gates must identify the contract revision or dated correspondence being relied on. A successful experiment, another open-source client's behavior, or a token accepted by an endpoint is not approval. The data-use product decision above is already approved and does not satisfy or depend on those external contract gates.
+Before exposing login in the application, implement a distinct versioned `openai-chatgpt.state` under the dedicated credential root using the existing bounded storage worker and private-file/atomic-replacement controls. Existing OpenCode file bytes, generations and histories must remain valid. The original credential-directory validator currently rejects unknown files; it must be deliberately extended with exact new active/temporary grammars, never relaxed to accept arbitrary files.
 
-## Proposed decision after approval
+Store only required access/refresh tokens, opaque account, expiry, identity generation, token revision and non-secret recovery marker/state. Never store these secrets or account/expiry/revision in SQLite, backups, protocol status, prompts, tool arguments, environments or logs. Credential status reports only provider, configured/reauthentication-required and identity generation. Configure/remove operations need existing durable non-secret prepared/dispatched/outcome evidence and reconciliation; URL/code exchange remains ephemeral and non-replayable.
 
-### Scope and provider identity
+A successful same-account refresh increments token revision, not owner identity generation. Serialize OpenAI credential dispatch/mutation with one provider-specific lease. Before refresh transmission, durably mark its source revision dispatched in credential state. After crash, uncertain transport, malformed response, cancellation or account mismatch, require reauthentication and never replay the old refresh token. A consumed refresh grant/core helper is not sufficient durable recovery evidence; no production refresh caller is admitted until this file transition exists. Do not replay the inference that returned 401.
 
-The first implementation supports **OpenAI ChatGPT subscription** as a distinct managed credential provider used only by OpenAI-hosted `web_search`. It does not automatically admit OpenAI as a root inference provider, add OpenAI models to `/model`, or add an OpenAI subagent setting. Those changes require separate model, wire-protocol, limit, context, data-use, billing, and live-qualification review.
+Login/account replacement/logout change identity generation, invalidating later stale dispatches. Logout is deliberate provider-specific local removal with explicit disclosure that remote authorization may remain; no unreviewed revocation endpoint is contacted and no remote-revocation guarantee is made. Local removal is not forensic erasure and cannot retract dispatched work. Existing configured credentials remain intact if a login is cancelled or fails before installation.
 
-OpenCode and OpenAI credential identities remain separate. `/login` becomes a typed provider chooser when more than one provider is supported. `/logout` lists configured providers when necessary and confirms one exact provider and observed identity generation. Existing OpenCode behavior and files remain backward compatible.
+## Coding integration and data use
 
-A new typed `/settings` row selects the web-search service and exact reviewed search model. Merely logging in does not express a model or billing preference. Migration retains Brave as the effective adapter until the owner deliberately selects an approved OpenAI pair. No catalog ordering, repository setting, prompt, skill, or model call can make that selection. The eventual removal of Brave requires a later release decision after OpenAI search is qualified.
+Do not disguise OpenAI as a third OpenCode billing service. Introduce explicit provider/credential identity at model selection, run acceptance, prepared dispatch, children and maintenance boundaries; preserve historical OpenCode encodings and validation. A cross-provider child requires its own exact credential generation bound durably to the outer task before dispatch, not reuse of an unrelated parent's generation. Maintenance inherits its trigger's exact provider/account generation and cannot reroute.
 
-The two global data-use restrictions apply consistently to root, subagent, compaction, and hosted-search selections. Both are disabled by default. **Block training use** makes training-eligible or unverifiably account-controlled entries unavailable for new selection. **Require zero data retention** independently makes entries with non-zero or unverifiable retention unavailable. An incompatible dispatch is rejected without fallback. If a saved exact selection becomes incompatible after the user enables either restriction, it remains visible as blocked until the user changes the selection or restriction; Morons does not rewrite it silently.
+Reviewed manifests, not token claims/catalogs, define models, protocol revisions, image/tool limits and account-controlled data-use disclosure. Neither `store: false` nor a business-plan claim proves no training or zero retention. Preserve the owner's earlier product choice: independently optional Block training use and Require zero data retention restrictions, both default off. Account-controlled/unverifiable entries cannot pass either restrictive policy by assuming a favorable account setting. Implement consistent admission across every enabled selection/dispatch surface before adding OpenAI models.
 
-### Login flow
+## Stages and qualification
 
-Only the long-running authenticated server owns OAuth state and token exchange.
+1. OAuth core, private loopback tests, redaction/bounds/cancellation/one-exchange tests; no user login yet.
+2. Provider-specific custody, durable mutation/refresh recovery, authenticated login/status/cancel/logout and ephemeral terminal interaction. No real credentials in tests/CI, no retained QA migration without an approved plan.
+3. Exact reviewed coding model/Responses integration and policy controls across root/child/compaction. No generic endpoint/provider plugin mechanism or silent fallback.
+4. Owner browser sign-in plus a separately approved small request budget; test text/tools/images, refresh/account change/cancellation and restart. Preserve failures and keep reports outside Git. Only then claim live readiness.
 
-1. An authenticated local-owner request starts one bounded OpenAI login attempt. The server creates a random 256-bit attempt ID, random 256-bit OAuth state, random PKCE verifier, S256 challenge, and OIDC nonce. Secret-like values have redacted `Debug` implementations and never enter logs, SQLite, session history, commands, kernels, or model context.
-2. The server binds one short-lived callback listener only to the exact approved loopback address and port. It never cancels, connects to, or replaces an unknown process occupying that port. Port conflict fails clearly.
-3. The server returns a bounded authorization URL to the requesting authenticated client. The URL necessarily contains state and challenge and is treated as ephemeral sensitive interaction data: it is never durable, logged, included in errors, or returned after the attempt ends.
-4. The client may open that exact URL with a reviewed no-shell platform browser launcher. If launch fails, it presents a terminal-safe bounded URL for deliberate manual opening. Browser launch is convenience, not token custody.
-5. The callback listener accepts only bounded HTTP/1.1 `GET` requests for the exact callback path and approved `Host`, with bounded headers, target, query keys, connection count, and total deadline. State is checked in constant time and consumed once. Error responses are static escaped HTML and never reflect arbitrary query text.
-6. The authorization code remains server-side. Morons does not accept codes, redirect URLs, access tokens, refresh tokens, or ID tokens through normal terminal text or IPC. Headless device login is omitted unless the approved OpenAI contract explicitly documents it for Morons.
-7. The server dispatches one bounded authorization-code exchange with the retained PKCE verifier and exact redirect URI. It never retries after dispatch. A timeout, disconnect, malformed response, crash, or uncertain outcome ends the attempt; the user starts a new browser authorization rather than replaying a possibly consumed code.
-8. Before installation, Morons verifies the ID token signature against keys from the fixed reviewed JWKS origin, issuer, audience, nonce, expiry, and required bounded account claim. JWKS responses and cache lifetime are bounded; discovery metadata cannot redirect requests. Access/refresh token and expiry fields are strictly bounded. Unknown account identity, implausible expiry, unsupported algorithm, missing rotated material, or validation failure rejects the login.
-9. Only after full validation does the server perform the existing prepared/dispatched/installed credential mutation and publish sanitized configured status.
-
-The attempt expires after at most ten minutes, supports exact cancellation, and is terminated on server shutdown or initiating-connection loss. It is ephemeral and never resumed after restart.
-
-### Credential custody and representation
-
-OpenAI OAuth material lives in a separately versioned `openai-chatgpt.state` beneath the existing dedicated credential root. It uses the same ordinary-file, ownership/DACL, link, bounded-size, synchronization, staged-write, atomic-replacement, and startup fail-closed controls as `opencode.state`.
-
-The secret record contains only the minimum required access token, refresh token, validated account identifier, absolute expiry, identity generation, internal token revision, mutation marker, and refresh state. Morons does not retain email, profile, browser cookies, authorization codes, PKCE material, raw JWT claims, provider bodies, or an ID token after required validation unless the approved contract proves an ID token is needed for refresh or revocation.
-
-Credential status exposes only provider kind, configured/reauthentication-required state, and a non-secret identity generation. It never exposes account ID, plan, token revision, expiry, token fragments, hashes, headers, or credential-derived identifiers.
-
-Owner-only files do not protect tokens from arbitrary same-user processes. Morons still minimizes copies, wraps owned secret buffers in zeroizing types where review can establish it, and never claims forensic erasure or crash-dump protection.
-
-### Identity generation and token refresh
-
-Identity generation changes only when the owner logs in, replaces an account, logs out, or recovery completes such a deliberate identity mutation. A successful same-account token refresh preserves identity generation and increments an internal token revision. This prevents ordinary access-token rotation from invalidating work already bound to the same account while still making logout/account replacement observable.
-
-Before an OpenAI request, the server acquires one provider-specific credential lease. If the access token has less than five minutes of validated lifetime, one process-wide refresh lock performs a double-checked preflight. Refresh uses the exact fixed token endpoint and one request only.
-
-Refresh-token rotation is an uncertain external effect. The credential record therefore moves through source-bound `active → refresh_prepared → refresh_dispatched → active` states while retaining the old tokens:
-
-- startup can safely clear `refresh_prepared`, because dispatch had not begun;
-- startup, timeout, cancellation, transport loss, malformed response, or crash after `refresh_dispatched` changes the status to `reauthentication_required` and never retries the old refresh token;
-- a valid response must preserve the validated account identity, provide a usable access token, and preserve or rotate the refresh token according to the approved contract before atomic installation; and
-- explicit permanent failures such as expired, reused, revoked, or `invalid_grant` also require login.
-
-A refresh failure never falls back to an environment variable, Pi/Codex state, OpenCode, Brave, another account, another model, or a stale access token. A 401 from a dispatched search may trigger refresh preparation for later work only if the contract safely permits it; the already dispatched search is never replayed automatically.
-
-### Logout and revocation
-
-`/logout` confirms the exact provider and last observed identity generation. For OpenAI OAuth, the server attempts at most one fixed-endpoint revocation of the refresh token (or access token only if the approved contract specifies that fallback) and never retries an uncertain revocation.
-
-Local logout is not conditional on successful remote revocation. Once accepted, recovery must converge on removal of local OAuth material and incremented identity generation even if revocation fails, times out, or the server crashes after pessimistically marking dispatch. The UI reports one of `remote revocation confirmed`, `remote revocation not supported`, or `remote revocation uncertain; review the OpenAI account` without provider bodies or tokens. Local removal is not represented as forensic erasure and cannot retract an already dispatched request.
-
-### Hosted web search
-
-The approved adapter uses one exact reviewed OpenAI subscription service/model/protocol entry selected through `/settings` and permitted by the current data-use restrictions. Every search result records and displays that selection and its data-use classification. Unavailable, unauthorized, or preference-incompatible selection fails without fallback.
-
-Each call sends only the bounded search query and fixed server-owned search instructions to the fixed OpenAI hosted-search route. It does not send the parent transcript, selected directory, attachments, skill body, command output, environment, or arbitrary model-selected provider options. The request uses `store: false`, one hosted `web_search` tool, a required tool choice, fixed source inclusion, fixed output/token limits, and no client-supplied URL or headers.
-
-The token and validated account identifier are scoped only to the exact approved origin/path. Redirects, ambient proxies, custom certificate roots, environment endpoint overrides, and remote route discovery are disabled. Search requests have independent connect, header, inactivity, and total deadlines and are never retried after dispatch.
-
-The decoder bounds and strictly validates SSE framing, JSON depth and duplicate keys, event order, model text, citations, source count, URL/title/snippet lengths, usage, and terminal events. It accepts only reviewed hosted-search output variants. Raw requests, responses, headers, account identifiers, provider response IDs, reasoning, and error bodies are not persisted or logged. Canonical tool output contains a bounded answer, de-duplicated cited sources, selected search service/model/protocol, truncation state, and safe failure classification.
-
-OpenAI and any upstream search providers receive the query and may apply external retention, residency, safety, and data-use policies. `store: false` is a request option, not a no-retention or no-training guarantee.
-
-### Data-use presentation
-
-Morons adds a distinct `ChatGPT workspace/account controlled` manifest classification rather than labelling it `not used for training`. The UI must state, before first selection and in settings disclosure:
-
-> Data use follows the selected ChatGPT workspace and account controls. Personal-account content may be used to improve models when that setting is enabled. Morons cannot verify the account setting.
-
-With both opt-in restrictions disabled, this deliberate selection is permitted after disclosure. **Block training use** rejects the account-controlled training classification because Morons cannot verify the effective account toggle. **Require zero data retention** separately rejects account-controlled retention unless the reviewed provider contract establishes ZDR. A separate acknowledgement may record that the owner made a routing choice, but it is preference confirmation, not proof of provider policy. Business/Enterprise claims from a token do not silently upgrade either classification.
-
-### Protocol, persistence, and audit boundaries
-
-Implementation requires a protocol revision for typed provider-specific login attempts, sanitized credential statuses, exact cancellation, provider-specific logout, the two global data-use restrictions, and web-search settings. Secret-bearing request/response types must have manually reviewed redacted `Debug` behavior.
-
-SQLite may store only non-secret provider kind, mutation identity, generation, state transition, timestamp, idempotency, audit classification, and search service/model/protocol facts. It never stores OAuth URLs, state, nonce, verifier, authorization code, account ID, token revision, expiry, tokens, token hashes, JWT claims, request headers, or provider bodies. Credential files remain authoritative for secret state and refresh recovery; published status follows successful filesystem installation and any required SQLite reconciliation.
-
-Login, token exchange, refresh, revocation, and hosted search are distinct external effects. None is automatically replayed after an uncertain dispatch. Sanitized errors use stable categories such as `login_cancelled`, `callback_invalid`, `token_exchange_uncertain`, `reauthentication_required`, `authentication_or_entitlement`, `rate_limited`, and `provider_unavailable`.
-
-## Implementation sequence after approval
-
-Each boundary remains a separate reviewed PR:
-
-1. provider-neutral credential status/selector protocol and storage migration without network activity;
-2. bounded server-owned OAuth login/callback/token validation with test-only injected origins;
-3. serialized source-bound refresh and provider-specific `/logout` revocation/recovery;
-4. typed opt-in training and ZDR restrictions, reviewed OpenAI hosted-search manifest, explicit settings selection, bounded adapter, and Brave coexistence;
-5. packaged clean-home and credentialed live qualification; and
-6. only then, a separate decision on removing Brave.
-
-No PR may combine a new credential origin with a new model inference origin merely for implementation convenience.
-
-## Required validation
-
-- entropy, PKCE, state, nonce, one-time callback, host/path/method, malformed query, request-count, port-conflict, timeout, cancellation, shutdown, and static HTML tests;
-- exact authorization/token/JWKS/revocation URL and header scoping, redirect denial, TLS, bounded body, duplicate-key, JWT signature/issuer/audience/nonce/expiry/account, and no-retry tests;
-- Unix ownership/mode/link/race/sync and Windows DACL/reparse/inheritance tests for every active, staged, removed, and refresh-state file;
-- login, replacement, refresh rotation, concurrent refresh, account mismatch, permanent failure, uncertain refresh, crash recovery, logout, uncertain revocation, and generation tests;
-- protocol, debug, log, audit, panic, subprocess-environment, command-argument, SQLite, backup, transcript, attachment, and kernel scans for complete and partial token fixtures;
-- hosted-search request/SSE/source/citation/usage/limit/cancellation/uncertainty tests with one fixed private test injection boundary;
-- default-off and independently enabled training/ZDR restriction tests covering every selection surface, composition, existing incompatible selections, durable restart, repository/model mutation attempts, and absence of fallback;
-- six-target CI and packaging checks; and
-- deliberate live login/search/logout without copying credentials to fixtures, commands, environment variables, screenshots, logs, or reports.
-
-## Consequences
-
-- The desired subscription-backed search has a complete proposed security and lifecycle shape, but no unsupported OAuth identity or backend route is shipped.
-- Brave remains in place until the contract and product gates are approved and implementation is qualified.
-- OpenAI OAuth tokens would receive the same dedicated server custody as OpenCode credentials while requiring stronger refresh and callback recovery state.
-- Normal refresh can continue same-account work without changing owner identity generation; uncertain rotation fails closed and may require a new login.
-- Search model choice and data-use disclosure become explicit owner preferences rather than consequences of credential access or catalog order.
-- Reviewed training-eligible and non-ZDR models are permitted by default after deliberate selection and disclosure; users can independently opt into blocking training use, requiring ZDR, or both without relying on unverifiable account claims.
-
-## Alternatives rejected
-
-- **Reuse Codex's or Pi's OAuth client ID or credential files:** misrepresents application identity, lacks reviewed authorization, and crosses credential-custody boundaries.
-- **Treat a successful endpoint experiment as a provider contract:** cannot establish permission, stability, data use, or future compatibility.
-- **Paste tokens or callback URLs into `/login`:** moves secret OAuth material into terminal/client protocol handling and weakens PKCE/state ownership.
-- **Use browser cookies or automate ChatGPT pages:** scrapes an undocumented surface and exposes a much broader credential.
-- **Automatically retry refresh, search, or inference after dispatch:** may consume a rotating token or duplicate billable work.
-- **Fall back to Brave, OpenCode, an API key, or another model after OpenAI failure:** changes provider, credential, policy, or billing without owner intent.
-- **Infer no-training status from `store: false`, plan text, or token claims:** none proves the effective workspace/account data controls.
-- **Exclude every training-eligible or non-ZDR model globally:** removes legitimate user routing choices; Morons instead defaults to disclosed reviewed entries and offers independent opt-in training and retention restrictions.
-- **Use an OpenAI Platform API key as if it were subscription auth:** the documented API route is technically simpler, but it uses separate usage-based billing and does not satisfy the selected ChatGPT-subscription goal; it remains a possible separate decision.
-- **Replace Brave in the authentication PR:** combines credential, provider, search, migration, and release risks and removes the known fallback before qualification.
+Run formatting, all-target checks, warnings-denied Clippy, dependency policy and deterministic tests for every increment. Expand loopback fixtures for hostile callbacks, port conflicts, slow/incomplete connections, cancellation before/after code receipt, wrong state, duplicate fields, token/claim bounds, content types, redirects, fixed route/form fields, lifetime, account mismatch, and no automatic retry. Persistence integration additionally needs native ownership/DACL, torn replacement, crash/recovery and secret-exclusion coverage. Platform CI, sampled live behavior and exact native/release artifacts remain distinct gates.

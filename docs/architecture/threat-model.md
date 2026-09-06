@@ -28,6 +28,7 @@ The final category is user-owned authority that Morons deliberately grants to lo
 - Packaged uv binaries, managed Python downloads, PyPI metadata, hash-locked wheels, runtime caches, staging directories, and bootstrap manifests
 - Terminal key, paste, resize, mouse, and rendering input
 - Provider model catalogs, HTTP headers, error bodies, SSE records, usage, identifiers, and content
+- ADR 0019 OAuth callback connections, targets, hosts, query fields, state/code/error values, token envelopes and JWT routing claims; the core is not yet admitted through application IPC
 
 ## Trust assumptions
 
@@ -124,6 +125,12 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - A malformed web query, redirect, proxy setting, or response causes the Brave Search credential to be sent outside its fixed reviewed endpoint, or the credential is persisted, logged, audited, rendered, or included in model context. The environment-supplied credential remains deliberately visible to same-user child execution.
 - A missing or rotating `x-opencode-session` value defeats OpenCode routing and prompt-cache affinity, while reusing one value across unrelated root or child conversations creates unintended correlation and traffic concentration.
 - Concurrent child inference multiplies provider usage, exceeds expected spend, or lets credential replacement race a later child turn.
+
+## OAuth callback and token threats
+
+ADR 0019's bounded native OAuth core introduces a narrow loopback boundary, not a second application transport. Port occupation, forged/duplicate callbacks, wrong state, request smuggling, slow connections, browser-origin probes and query reflection must not authorize login or exhaust unbounded resources. Bind only the fixed loopback socket, consume at most one matching code, cap connections/bytes/time, return static non-caching responses and never take over the port owner.
+
+A public client ID is not a secret or proof of a Morons-specific provider agreement. Use the reviewed compatibility identity with Morons attribution; provider rejection is a blocker, not permission to spoof another originator. Fixed TLS token exchange, PKCE and state establish the response provenance; bounded JWT account claims are routing metadata, not local authorization, policy or cryptographic identity proof. Do not import callback URLs/tokens, invoke another agent, follow redirects or retry exchanges. Before application admission, separately implement dedicated custody and durable no-replay refresh/mutation recovery. Same-user processes, browser history, screenshots and transport copies remain residual confidentiality risks.
 
 ## Skills and prompt threats
 

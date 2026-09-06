@@ -24,6 +24,14 @@ Two test threads match CI and reduce SQLite-heavy fixture contention. Timing pro
 
 Ignored live provider tests intentionally require non-echoing credential input and billable inference; Python gates require an installed or downloaded Jupyter runtime. Never run every ignored test indiscriminately. Follow `docs/release-candidate-qa.md` and obtain authorization before billable requests or credential-state changes.
 
+## OpenAI OAuth core
+
+```sh
+cargo test -p morons-server --lib --locked openai_auth -- --test-threads 2
+```
+
+These tests use ephemeral loopback ports and synthetic tokens. They do not bind the production callback port, contact OpenAI, read credential files or migrate retained state. They cover fixed PKCE/form fields, callback ambiguity and connection bounds, invalid-state rejection, cancellation/drop/deadlines, token envelopes/claims, redaction, header limits and absence of retries/redirect following. They are not JWT-signature, durable-refresh, live-login or inference qualification. [ADR 0019](adr/0019-openai-subscription-authentication-and-hosted-search.md) requires custody, authenticated application/UI integration and a separately reviewed coding adapter before owner live testing.
+
 ## Local performance probes
 
 Run only these explicitly named, non-network probes (not the billable ignored tests):
