@@ -1,10 +1,12 @@
 mod backend;
 mod compactions;
+mod credential_types;
 mod credentials;
 mod database;
 pub(crate) mod images;
 mod local_commands;
 pub(crate) mod maintenance;
+mod openai;
 mod paths;
 mod run_types;
 mod runs;
@@ -35,6 +37,9 @@ use self::{
 };
 
 pub use self::{
+    credential_types::{
+        CredentialIdentityStatus, CredentialKind, OpenAiCredentialState, OpenAiCredentialStatus,
+    },
     run_types::{
         AcceptedLocalCommand, AcceptedRun, DefaultModelSelection, ImageAttachment,
         ImageAttachmentId, LocalCommandCancellationResult, LocalCommandId, LocalCommandStatus,
@@ -51,6 +56,7 @@ pub use self::{
     },
 };
 
+pub(crate) use self::openai::PreparedOpenAiCredential;
 pub(crate) use self::types::{ExecutionTargetArch, ExecutionTargetOs};
 
 pub(crate) use self::run_types::{
@@ -70,6 +76,7 @@ pub struct SessionStore {
     sender: Option<mpsc::Sender<WorkerRequest>>,
     worker: Option<thread::JoinHandle<()>>,
     credential_dispatch_lock: Mutex<()>,
+    openai_dispatch_lock: Mutex<()>,
     event_notifications: watch::Sender<u64>,
 }
 
@@ -147,6 +154,7 @@ impl SessionStore {
             sender: Some(sender),
             worker: Some(worker),
             credential_dispatch_lock: Mutex::new(()),
+            openai_dispatch_lock: Mutex::new(()),
             event_notifications,
         })
     }
@@ -672,6 +680,7 @@ impl Drop for SessionStore {
 }
 
 enum WorkerRequest {
+    OpenAi(openai::OpenAiWorkerRequest),
     Maintenance(maintenance::MaintenanceRequest),
     LocalCommand(local_commands::LocalCommandWorkerRequest),
     CreateSession {
@@ -786,6 +795,7 @@ fn run_worker(
         let mut force_event_notification = false;
         match request {
             WorkerRequest::Maintenance(request) => request.execute(&mut backend),
+            WorkerRequest::OpenAi(request) => request.execute(&mut backend),
             WorkerRequest::LocalCommand(request) => request.execute(&mut backend),
             WorkerRequest::CreateSession {
                 request_id,

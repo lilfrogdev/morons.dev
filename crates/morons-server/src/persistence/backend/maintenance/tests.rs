@@ -489,7 +489,7 @@ async fn schema_26_migrates_without_scheduling_historical_sessions() {
         .connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 27);
+    assert_eq!(version, 28);
     let jobs: i64 = backend
         .connection
         .query_row(

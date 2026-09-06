@@ -1,5 +1,6 @@
 //! Server-side OAuth primitives; not an IPC surface or a credential-store replacement.
 mod callback;
+mod credentials;
 mod token;
 mod transport;
 
@@ -19,7 +20,9 @@ use zeroize::Zeroizing;
 
 use super::ProviderCancellation;
 use callback::Callback;
+pub use credentials::{OpenAiCredentialError, OpenAiCredentialLease, OpenAiCredentialProvider};
 pub use token::OAuthTokens;
+pub(crate) use token::{OAuthRefreshGrant, OpenAiAuthorization};
 use transport::TokenClient;
 
 const AUTHORIZE_URI: &str = "https://auth.openai.com/oauth/authorize";
@@ -257,4 +260,4 @@ fn now_seconds() -> Result<u64, OAuthError> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

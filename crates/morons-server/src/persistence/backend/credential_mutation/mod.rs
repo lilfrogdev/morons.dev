@@ -1,4 +1,6 @@
 mod records;
+mod target;
+use target::CredentialUpdate;
 
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
@@ -21,8 +23,8 @@ use super::{
     },
 };
 use crate::persistence::{
-    MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
-    credentials::StoredOpenCodeApiKey,
+    CredentialIdentityStatus, CredentialKind, MutationRequestId, OpenCodeCredentialStatus,
+    PersistenceError, PersistenceResourceLimit, credentials::StoredOpenCodeApiKey,
 };
 
 const MAX_CREDENTIAL_MUTATIONS: i64 = 10_000;
@@ -44,10 +46,10 @@ impl Backend {
     ) -> Result<OpenCodeCredentialStatus, PersistenceError> {
         self.mutate_credential(
             request_id,
-            MUTATION_OPERATION_CREDENTIAL_SET,
             expected_generation,
-            Some(api_key),
+            CredentialUpdate::OpenCode(Some(api_key)),
         )
+        .map(Into::into)
     }
 
     pub(crate) fn remove_open_code_credential(
@@ -57,19 +59,20 @@ impl Backend {
     ) -> Result<OpenCodeCredentialStatus, PersistenceError> {
         self.mutate_credential(
             request_id,
-            MUTATION_OPERATION_CREDENTIAL_REMOVE,
             expected_generation,
-            None,
+            CredentialUpdate::OpenCode(None),
         )
+        .map(Into::into)
     }
 
     fn mutate_credential(
         &mut self,
         request_id: MutationRequestId,
-        operation_kind: i64,
         expected_generation: u64,
-        api_key: Option<StoredOpenCodeApiKey>,
-    ) -> Result<OpenCodeCredentialStatus, PersistenceError> {
+        update: CredentialUpdate,
+    ) -> Result<CredentialIdentityStatus, PersistenceError> {
+        let kind = update.kind();
+        let operation_kind = update.operation();
         self.recover_credential_mutations()?;
         match load_mutation_operation(&self.connection, request_id)? {
             Some(existing_operation) if existing_operation != operation_kind => {
@@ -77,27 +80,30 @@ impl Backend {
             }
             Some(_) => {
                 let existing = load_required_credential_request(&self.connection, request_id)?;
-                validate_request_identity(&existing, operation_kind, expected_generation)?;
+                validate_request_identity(&existing, kind, operation_kind, expected_generation)?;
                 return completed_request_result(&existing);
             }
             None => {}
         }
 
-        if self.credentials.status().generation != expected_generation {
+        if self.credential_identity(kind).generation != expected_generation {
             return Err(PersistenceError::CredentialGenerationConflict);
         }
         next_credential_generation(expected_generation)?;
-        let request =
-            self.prepare_credential_mutation(request_id, operation_kind, expected_generation)?;
+        let request = self.prepare_credential_mutation(
+            request_id,
+            kind,
+            operation_kind,
+            expected_generation,
+        )?;
         if let Err(error) = self.dispatch_credential_mutation(&request) {
             self.recover_credential_mutations()?;
             return Err(error);
         }
         if let Err(error) =
-            self.credentials
-                .apply(expected_generation, *request_id.as_bytes(), api_key)
+            self.apply_credential(update, expected_generation, *request_id.as_bytes())
         {
-            if self.credentials.is_consistent() {
+            if self.credential_consistent(kind) {
                 self.recover_credential_mutations()?;
             }
             return Err(error);
@@ -114,6 +120,7 @@ impl Backend {
     fn prepare_credential_mutation(
         &mut self,
         request_id: MutationRequestId,
+        kind: CredentialKind,
         operation_kind: i64,
         expected_generation: u64,
     ) -> Result<CredentialMutationRequest, PersistenceError> {
@@ -160,8 +167,9 @@ impl Backend {
                 accepted_at_milliseconds,
                 state,
                 result_generation,
-                result_configured
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL)",
+                result_configured,
+                credential_kind
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7)",
             params![
                 &request_id.as_bytes()[..],
                 operation_kind,
@@ -169,6 +177,7 @@ impl Backend {
                 sequence_to_sql(accepted_sequence)?,
                 time_to_sql(accepted_at_milliseconds)?,
                 CREDENTIAL_REQUEST_PREPARED,
+                kind as i64,
             ],
         )?;
         transaction.execute(
@@ -191,6 +200,7 @@ impl Backend {
         transaction.commit()?;
         Ok(CredentialMutationRequest {
             request_id,
+            kind,
             operation_kind,
             expected_generation,
             accepted_sequence,
@@ -253,12 +263,12 @@ impl Backend {
     fn complete_credential_mutation(
         &mut self,
         request: &CredentialMutationRequest,
-    ) -> Result<OpenCodeCredentialStatus, PersistenceError> {
-        let status = self.credentials.status();
+    ) -> Result<CredentialIdentityStatus, PersistenceError> {
+        let status = self.credential_identity(request.kind);
         let expected_generation = next_credential_generation(request.expected_generation)?;
         if status.generation != expected_generation
             || status.configured != (request.operation_kind == MUTATION_OPERATION_CREDENTIAL_SET)
-            || self.credentials.state().mutation_marker() != request.request_id.as_bytes()
+            || self.credential_marker(request.kind) != request.request_id.as_bytes()
         {
             return Err(PersistenceError::InvalidState {
                 reason: "credential state does not match its dispatched mutation",
@@ -304,6 +314,7 @@ impl Backend {
 
     pub(super) fn recover_credential_mutations(&mut self) -> Result<(), PersistenceError> {
         self.credentials.ensure_consistent()?;
+        self.openai_credentials.ensure_consistent()?;
         validate_credential_request_records(&self.connection)?;
         let requests = load_incomplete_credential_requests(&self.connection)?;
         for request in requests {
@@ -312,14 +323,13 @@ impl Backend {
                     self.mark_credential_mutation_not_applied(&request)?
                 }
                 CREDENTIAL_REQUEST_DISPATCHED => {
-                    let status = self.credentials.status();
+                    let status = self.credential_identity(request.kind);
                     let installed_generation =
                         next_credential_generation(request.expected_generation)?;
                     let installed = status.generation == installed_generation
                         && status.configured
                             == (request.operation_kind == MUTATION_OPERATION_CREDENTIAL_SET)
-                        && self.credentials.state().mutation_marker()
-                            == request.request_id.as_bytes();
+                        && self.credential_marker(request.kind) == request.request_id.as_bytes();
                     if installed {
                         self.complete_credential_mutation(&request)?;
                     } else if status.generation == request.expected_generation {
@@ -384,55 +394,59 @@ impl Backend {
 
     fn validate_credential_state(&self) -> Result<(), PersistenceError> {
         self.credentials.ensure_consistent()?;
+        self.openai_credentials.ensure_consistent()?;
         validate_credential_request_records(&self.connection)?;
-        let status = self.credentials.status();
-        let completed_count = self.connection.query_row(
-            "SELECT COUNT(*) FROM credential_mutation_requests WHERE state = ?1",
-            [CREDENTIAL_REQUEST_COMPLETED],
+        for kind in [CredentialKind::OpenCode, CredentialKind::OpenAiChatGpt] {
+            let status = self.credential_identity(kind);
+            let completed_count = self.connection.query_row(
+            "SELECT COUNT(*) FROM credential_mutation_requests WHERE state = ?1 AND credential_kind = ?2",
+            [CREDENTIAL_REQUEST_COMPLETED, kind as i64],
             |row| nonnegative_integer_from_row(row, 0),
         )?;
-        if completed_count != status.generation {
-            return Err(PersistenceError::InvalidState {
-                reason: "credential generations are not contiguous",
-            });
-        }
-        let latest = self
-            .connection
-            .query_row(
-                "SELECT request_id, result_generation, result_configured
+            if completed_count != status.generation {
+                return Err(PersistenceError::InvalidState {
+                    reason: "credential generations are not contiguous",
+                });
+            }
+            let latest = self
+                .connection
+                .query_row(
+                    "SELECT request_id, result_generation, result_configured
                  FROM credential_mutation_requests
-                 WHERE state = ?1
+                 WHERE state = ?1 AND credential_kind = ?2
                  ORDER BY result_generation DESC
                  LIMIT 1",
-                [CREDENTIAL_REQUEST_COMPLETED],
-                |row| {
-                    Ok((
-                        row.get::<_, [u8; 16]>(0)?,
-                        nonnegative_integer_from_row(row, 1)?,
-                        row.get::<_, i64>(2)? != 0,
-                    ))
-                },
-            )
-            .optional()?;
-        match latest {
-            None if status
-                == (OpenCodeCredentialStatus {
-                    configured: false,
-                    generation: 0,
-                }) =>
-            {
-                Ok(())
-            }
-            Some((request_id, generation, configured))
-                if generation == status.generation
-                    && configured == status.configured
-                    && &request_id == self.credentials.state().mutation_marker() =>
-            {
-                Ok(())
-            }
-            _ => Err(PersistenceError::InvalidState {
-                reason: "credential file state conflicts with durable mutation history",
-            }),
+                    [CREDENTIAL_REQUEST_COMPLETED, kind as i64],
+                    |row| {
+                        Ok((
+                            row.get::<_, [u8; 16]>(0)?,
+                            nonnegative_integer_from_row(row, 1)?,
+                            row.get::<_, i64>(2)? != 0,
+                        ))
+                    },
+                )
+                .optional()?;
+            match latest {
+                None if status
+                    == (CredentialIdentityStatus {
+                        configured: false,
+                        generation: 0,
+                    }) =>
+                {
+                    Ok(())
+                }
+                Some((request_id, generation, configured))
+                    if generation == status.generation
+                        && configured == status.configured
+                        && &request_id == self.credential_marker(kind) =>
+                {
+                    Ok(())
+                }
+                _ => Err(PersistenceError::InvalidState {
+                    reason: "credential file state conflicts with durable mutation history",
+                }),
+            }?;
         }
+        Ok(())
     }
 }

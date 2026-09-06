@@ -44,6 +44,7 @@ const SESSION_REPLAY_PAGE_SIZE: u16 = 8;
 pub struct ServerApplication {
     sessions: Arc<SessionStore>,
     open_code: Arc<OpenCodeProvider>,
+    openai_credentials: crate::provider::openai_auth::OpenAiCredentialProvider,
     run_supervisor: Arc<RunSupervisor>,
     command_supervisor: Arc<CommandSupervisor>,
     session_event_hub: Arc<SessionEventHub>,
@@ -104,6 +105,15 @@ impl ServerApplication {
         service: OpenCodeService,
     ) -> Result<Vec<OpenCodeModelAvailability>, ProviderError> {
         self.open_code.fetch_catalog(service).await
+    }
+
+    pub async fn openai_credential_status(
+        &self,
+    ) -> Result<
+        crate::persistence::OpenAiCredentialStatus,
+        crate::provider::openai_auth::OpenAiCredentialError,
+    > {
+        self.openai_credentials.status().await
     }
 
     pub fn subscribe_shutdown_requests(&self) -> watch::Receiver<bool> {
@@ -1123,8 +1133,11 @@ impl ServerApplication {
     ) -> Self {
         let command_supervisor = CommandSupervisor::new(Arc::clone(&sessions));
         let shutdown_requests = run_supervisor.shutdown_requests();
+        let openai_credentials =
+            crate::provider::openai_auth::OpenAiCredentialProvider::new(Arc::clone(&sessions));
         Self {
             sessions,
+            openai_credentials,
             open_code,
             run_supervisor,
             command_supervisor,

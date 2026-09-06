@@ -296,6 +296,7 @@ pub enum PersistenceError {
     WorkingDirectoryUnavailable,
     CredentialGenerationConflict,
     CredentialNotConfigured,
+    CredentialReauthenticationRequired,
     CredentialMutationNotApplied,
     ImageInputUnsupported,
     WorkspaceBlocked,
@@ -343,7 +344,10 @@ impl fmt::Display for PersistenceError {
                 formatter.write_str("the credential generation changed")
             }
             Self::CredentialNotConfigured => {
-                formatter.write_str("the OpenCode credential is not configured")
+                formatter.write_str("the provider credential is not configured")
+            }
+            Self::CredentialReauthenticationRequired => {
+                formatter.write_str("the provider credential requires a new login")
             }
             Self::CredentialMutationNotApplied => {
                 formatter.write_str("the credential mutation was not applied")
@@ -403,6 +407,7 @@ impl Error for PersistenceError {
             | Self::WorkingDirectoryUnavailable
             | Self::CredentialGenerationConflict
             | Self::CredentialNotConfigured
+            | Self::CredentialReauthenticationRequired
             | Self::CredentialMutationNotApplied
             | Self::ImageInputUnsupported
             | Self::WorkspaceBlocked

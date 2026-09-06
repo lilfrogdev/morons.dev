@@ -1,22 +1,16 @@
+mod files;
 mod format;
+pub(in crate::persistence) mod openai;
 
 use std::{
-    ffi::OsStr,
     fs::{self},
     path::{Path, PathBuf},
 };
 
-use zeroize::Zeroizing;
-
-use self::format::{
-    CredentialState, MAX_CREDENTIAL_FILE_BYTES, encode_state, read_state, validate_installed_state,
-};
+use self::format::{CredentialState, encode_state, read_state, validate_installed_state};
 use super::{
-    OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
-    paths::{
-        create_private_file, encode_hex, ensure_private_directory, path_entry_exists,
-        sync_directory, validate_private_file,
-    },
+    CredentialKind, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
+    paths::{ensure_private_directory, path_entry_exists, sync_directory, validate_private_file},
     types::IDENTIFIER_BYTES,
 };
 
@@ -24,8 +18,6 @@ pub(in crate::persistence) use self::format::StoredOpenCodeApiKey;
 
 const CREDENTIAL_DIRECTORY_NAME: &str = "credentials";
 const CREDENTIAL_FILE_NAME: &str = "opencode.state";
-const CREDENTIAL_TEMPORARY_PREFIX: &str = ".opencode.state-";
-const CREDENTIAL_TEMPORARY_SUFFIX: &str = ".tmp";
 const MAX_CREDENTIAL_GENERATION: u64 = i64::MAX as u64;
 
 pub(super) struct CredentialStore {
@@ -133,22 +125,28 @@ impl CredentialStore {
 
 fn cleanup_and_validate_directory(directory: &Path) -> Result<(), PersistenceError> {
     let mut removed_temporary_file = false;
-    for entry in fs::read_dir(directory)? {
+    for (index, entry) in fs::read_dir(directory)?.enumerate() {
+        if index >= 128 {
+            return Err(PersistenceError::InvalidState {
+                reason: "the credential directory exceeds its entry bound",
+            });
+        }
         let entry = entry?;
         let file_name = entry.file_name();
-        if file_name == OsStr::new(CREDENTIAL_FILE_NAME) {
-            validate_private_file(&entry.path(), Some(MAX_CREDENTIAL_FILE_BYTES as u64))?;
-            continue;
-        }
-        if is_temporary_file_name(&file_name) {
-            validate_private_file(&entry.path(), Some(MAX_CREDENTIAL_FILE_BYTES as u64))?;
+        let name = file_name.to_str().ok_or(PersistenceError::InvalidState {
+            reason: "the credential directory contains unexpected state",
+        })?;
+        let kind = [CredentialKind::OpenCode, CredentialKind::OpenAiChatGpt]
+            .into_iter()
+            .find(|kind| name == files::name(*kind) || files::is_temporary(name, *kind))
+            .ok_or(PersistenceError::InvalidState {
+                reason: "the credential directory contains unexpected state",
+            })?;
+        validate_private_file(&entry.path(), Some(files::maximum(kind) as u64))?;
+        if files::is_temporary(name, kind) {
             fs::remove_file(entry.path())?;
             removed_temporary_file = true;
-            continue;
         }
-        return Err(PersistenceError::InvalidState {
-            reason: "the credential directory contains unexpected state",
-        });
     }
     if removed_temporary_file {
         sync_directory(directory)?;
@@ -157,44 +155,12 @@ fn cleanup_and_validate_directory(directory: &Path) -> Result<(), PersistenceErr
 }
 
 fn write_state(directory: &Path, state: &CredentialState) -> Result<(), PersistenceError> {
-    let temporary_path = directory.join(format!(
-        "{CREDENTIAL_TEMPORARY_PREFIX}{}{CREDENTIAL_TEMPORARY_SUFFIX}",
-        encode_hex(state.mutation_marker())
-    ));
-    let credential_path = directory.join(CREDENTIAL_FILE_NAME);
-    let payload = Zeroizing::new(encode_state(state)?);
-    let mut file = create_private_file(&temporary_path)?;
-    let result = (|| -> Result<(), PersistenceError> {
-        use std::io::Write as _;
-
-        file.write_all(&payload)?;
-        file.sync_all()?;
-        drop(file);
-        validate_private_file(&temporary_path, Some(payload.len() as u64))?;
-        fs::rename(&temporary_path, &credential_path)?;
-        sync_directory(directory)?;
-        let installed = read_state(&credential_path)?;
-        validate_installed_state(&installed, state)
-    })();
-    if result.is_err() && path_entry_exists(&temporary_path).unwrap_or(false) {
-        let _ = fs::remove_file(&temporary_path);
-        let _ = sync_directory(directory);
-    }
-    result
-}
-
-fn is_temporary_file_name(file_name: &OsStr) -> bool {
-    let Some(file_name) = file_name.to_str() else {
-        return false;
-    };
-    let Some(encoded_marker) = file_name
-        .strip_prefix(CREDENTIAL_TEMPORARY_PREFIX)
-        .and_then(|name| name.strip_suffix(CREDENTIAL_TEMPORARY_SUFFIX))
-    else {
-        return false;
-    };
-    encoded_marker.len() == IDENTIFIER_BYTES * 2
-        && encoded_marker
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    let payload = zeroize::Zeroizing::new(encode_state(state)?);
+    files::replace(
+        directory,
+        CredentialKind::OpenCode,
+        state.mutation_marker(),
+        &payload,
+    )?;
+    validate_installed_state(&read_state(&directory.join(CREDENTIAL_FILE_NAME))?, state)
 }

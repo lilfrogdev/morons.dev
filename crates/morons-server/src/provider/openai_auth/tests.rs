@@ -54,7 +54,7 @@ async fn submit(address: std::net::SocketAddr, state: String, code: &str) -> Vec
     stream.read_to_end(&mut response).await.unwrap();
     response
 }
-async fn mock_request(stream: &mut TcpStream) -> String {
+pub(crate) async fn mock_request(stream: &mut TcpStream) -> String {
     let mut bytes = Vec::new();
     let mut chunk = [0_u8; 1024];
     loop {

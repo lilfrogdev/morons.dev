@@ -510,7 +510,7 @@ async fn insecure_existing_credential_state_fails_closed() {
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
 }
 
-fn insert_credential_request_fixture(
+pub(in crate::persistence) fn insert_credential_request_fixture(
     connection: &Connection,
     request_id: [u8; 16],
     dispatched: bool,
@@ -603,10 +603,10 @@ fn session_store_open_error(root: &TestRoot, message: &str) -> PersistenceError 
     }
 }
 
-struct TestRoot(PathBuf);
+pub(in crate::persistence) struct TestRoot(PathBuf);
 
 impl TestRoot {
-    fn new(label: &str) -> Self {
+    pub(in crate::persistence) fn new(label: &str) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("test clock should be after Unix epoch")
@@ -634,7 +634,7 @@ impl TestRoot {
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub(in crate::persistence) fn path(&self) -> &Path {
         &self.0
     }
 }

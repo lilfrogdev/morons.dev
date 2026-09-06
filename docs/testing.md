@@ -30,7 +30,9 @@ Ignored live provider tests intentionally require non-echoing credential input a
 cargo test -p morons-server --lib --locked openai_auth -- --test-threads 2
 ```
 
-These tests use ephemeral loopback ports and synthetic tokens. They do not bind the production callback port, contact OpenAI, read credential files or migrate retained state. They cover fixed PKCE/form fields, callback ambiguity and connection bounds, invalid-state rejection, cancellation/drop/deadlines, token envelopes/claims, redaction, header limits and absence of retries/redirect following. They are not JWT-signature, durable-refresh, live-login or inference qualification. [ADR 0019](adr/0019-openai-subscription-authentication-and-hosted-search.md) requires custody, authenticated application/UI integration and a separately reviewed coding adapter before owner live testing.
+These tests use ephemeral loopback ports, disposable storage and synthetic tokens. They do not bind the production callback port, contact OpenAI, read real credential files or migrate retained state. They cover fixed PKCE/form fields, hostile callbacks, cancellation/drop/deadlines, token envelopes/claims, redaction, bounded HTTP and no retry/redirect following. Custody tests cover provider-scoped identity/idempotency, private files/checksums, poisoning after failed writes, same-account single-flight refresh, cancellation/abandonment, restart without replay, secret exclusion from SQLite and schema-27 migration preserving OpenCode bytes. They do not establish JWT-signature verification, real token rotation, live login/inference or native-release qualification.
+
+The custody increment uses SQLite 28. Do not launch its binaries against retained QA state without a separately approved migration plan; deterministic fixtures do not authorize changing existing diagnostics. [ADR 0019](adr/0019-openai-subscription-authentication-and-hosted-search.md) still requires authenticated application/UI integration and the reviewed coding adapter before owner live testing.
 
 ## Local performance probes
 

@@ -574,7 +574,8 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::CredentialGenerationConflict => {
             ApplicationError::CredentialGenerationConflict
         }
-        PersistenceError::CredentialNotConfigured => {
+        PersistenceError::CredentialNotConfigured
+        | PersistenceError::CredentialReauthenticationRequired => {
             ApplicationError::OpenCodeCredentialNotConfigured
         }
         PersistenceError::CredentialMutationNotApplied => {
