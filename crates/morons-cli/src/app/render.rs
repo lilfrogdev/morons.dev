@@ -66,18 +66,24 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     if let Some(input) = app.rename_dialog.as_ref() {
         render_rename_dialog(frame, area, input.as_str());
     }
+    if let Some(dialog) = app.auth_dialog.as_ref() {
+        super::auth::render(frame, dialog, &mut app.auth_scroll);
+    }
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let credential = match app.credential {
         Some(status) if status.configured => {
-            format!("credential configured · generation {}", status.generation)
+            format!(
+                "OpenCode credential configured · generation {}",
+                status.generation
+            )
         }
         Some(status) => format!(
-            "credential not configured · generation {}",
+            "OpenCode credential not configured · generation {}",
             status.generation
         ),
-        None => "credential status loading".to_owned(),
+        None => "OpenCode credential status loading".to_owned(),
     };
     let line = Line::from(vec![
         Span::styled(" morons ", Style::default().add_modifier(Modifier::BOLD)),
@@ -867,7 +873,7 @@ fn render_information_dialog(
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure global subagent model · /login configure or replace the OpenCode credential · /logout remove it after confirmation · /context inspect · /compact [instructions] summarize · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure global subagent model · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             16,
         ),

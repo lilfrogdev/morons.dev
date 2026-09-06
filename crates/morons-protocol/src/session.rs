@@ -298,6 +298,18 @@ pub enum ApplicationRequest {
         service: crate::OpenCodeService,
         model_id: String,
     },
+    GetOpenAiCredentialStatus,
+    BeginOpenAiLogin {
+        mutation_request_id: MutationRequestId,
+        expected_generation: u64,
+    },
+    CancelOpenAiLogin {
+        attempt_id: MutationRequestId,
+    },
+    RemoveOpenAiCredential {
+        mutation_request_id: MutationRequestId,
+        expected_generation: u64,
+    },
     GetOpenCodeCredentialStatus,
     SetOpenCodeCredential {
         mutation_request_id: MutationRequestId,
@@ -443,6 +455,10 @@ impl fmt::Debug for ApplicationRequest {
                 .field("service", service)
                 .field("model_id", model_id)
                 .finish(),
+            Self::GetOpenAiCredentialStatus => formatter.write_str("GetOpenAiCredentialStatus"),
+            Self::BeginOpenAiLogin { .. } => formatter.write_str("BeginOpenAiLogin"),
+            Self::CancelOpenAiLogin { .. } => formatter.write_str("CancelOpenAiLogin"),
+            Self::RemoveOpenAiCredential { .. } => formatter.write_str("RemoveOpenAiCredential"),
             Self::GetOpenCodeCredentialStatus => formatter.write_str("GetOpenCodeCredentialStatus"),
             Self::SetOpenCodeCredential {
                 mutation_request_id,
@@ -591,6 +607,13 @@ pub enum ApplicationResponse {
     },
     SessionContextFound {
         context: SessionContextStatus,
+    },
+    OpenAiCredentialStatus {
+        credential: crate::OpenAiCredentialStatus,
+    },
+    OpenAiLoginStarted {
+        attempt_id: MutationRequestId,
+        url: crate::OpenAiAuthorizationUrl,
     },
     OpenCodeCredentialStatus {
         credential: crate::OpenCodeCredentialStatus,
@@ -908,6 +931,9 @@ pub enum ApplicationError {
     },
     WorkingDirectoryUnavailable,
     UnsupportedModel,
+    OpenAiLoginFailed {
+        failure: crate::OpenAiLoginFailure,
+    },
     OpenCodeCredentialNotConfigured,
     CredentialGenerationConflict,
     CredentialMutationNotApplied,

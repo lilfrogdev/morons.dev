@@ -69,7 +69,8 @@ Treat repositories, model output, commands, skills, protocol messages, images, a
 - Users needing isolation must run the complete application inside their own container, virtual machine, or restricted operating-system account.
 - Validate and bound data at process, filesystem, image-decoding, persistence, terminal, provider, and network boundaries without misrepresenting validation as confinement.
 - Keep Morons-managed provider credentials in dedicated owner-controlled server state outside SQLite, backups, attachments, configuration, and IPC control state.
-- Accept credentials only through authenticated local IPC after non-echoing terminal input; never deliberately inject them into command arguments or child environments.
+- Accept manually entered API keys only through authenticated local IPC after non-echoing terminal input. Native OAuth starts from authenticated owner intent; codes and tokens stay in the server's fixed callback/exchange flow, never token-paste or credential-import IPC.
+- Never deliberately inject Morons-managed credentials into command arguments or child environments. OAuth browser URLs belong only in a dedicated ephemeral terminal dialog, not prompts, history, ordinary status or logs.
 - Do not claim that owner-only files are confidential from arbitrary processes running as the same user. User environment credentials and credential agents are intentionally available to local commands.
 - Never intentionally expose Morons-managed credentials through kernels, model prompts, protocol responses, audit facts, errors, or logs.
 - Treat remote model catalogs and provider responses as untrusted input that cannot select an origin, protocol, capability, or credential scope.

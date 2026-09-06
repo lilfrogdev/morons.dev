@@ -1,3 +1,4 @@
+pub(crate) mod auth;
 mod context;
 mod input;
 mod render;
@@ -157,6 +158,14 @@ pub(super) enum AppAction {
         session_id: SessionId,
         command_id: LocalCommandId,
     },
+    OpenAiStatus,
+    OpenAiBegin {
+        expected_generation: u64,
+    },
+    OpenAiRemove {
+        expected_generation: u64,
+    },
+    OpenAiCancel,
     SetCredential {
         expected_generation: u64,
         api_key: OpenCodeApiKey,
@@ -266,6 +275,10 @@ impl fmt::Debug for AppAction {
                 .field("session_id", session_id)
                 .field("command_id", command_id)
                 .finish(),
+            Self::OpenAiStatus => formatter.write_str("OpenAiStatus"),
+            Self::OpenAiBegin { .. } => formatter.write_str("OpenAiBegin"),
+            Self::OpenAiRemove { .. } => formatter.write_str("OpenAiRemove"),
+            Self::OpenAiCancel => formatter.write_str("OpenAiCancel"),
             Self::SetCredential {
                 expected_generation,
                 ..
@@ -422,6 +435,8 @@ pub(super) struct AppState {
     pub(super) settings_dialog: Option<SettingsDialog>,
     pub(super) credential: Option<OpenCodeCredentialStatus>,
     pub(super) credential_dialog: Option<CredentialDialog>,
+    auth_dialog: Option<auth::AuthDialog>,
+    auth_scroll: u16,
     pub(super) information_dialog: Option<InformationDialog>,
     pub(super) information_scroll: u16,
     pub(super) rename_dialog: Option<PromptBuffer>,
@@ -454,6 +469,8 @@ impl AppState {
             settings_dialog: None,
             credential: None,
             credential_dialog: None,
+            auth_dialog: None,
+            auth_scroll: 0,
             information_dialog: initial_information_dialog(),
             information_scroll: 0,
             rename_dialog: None,
@@ -625,6 +642,7 @@ impl AppState {
         self.view == View::Session
             && self.pending.is_none()
             && self.credential_dialog.is_none()
+            && self.auth_dialog.is_none()
             && self.model_dialog.is_none()
             && self.settings_dialog.is_none()
             && !self.confirm_stop

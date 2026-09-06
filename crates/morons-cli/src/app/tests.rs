@@ -120,6 +120,7 @@ fn session_cursor(session_id: SessionId, sequence: u64) -> SessionEventCursor {
 
 mod credentials;
 mod input;
+mod openai_auth;
 mod presentation;
 mod selection;
 mod sessions;

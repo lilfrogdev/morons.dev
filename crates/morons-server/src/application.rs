@@ -1,5 +1,6 @@
-mod conversions;
+pub(crate) mod conversions;
 pub(crate) mod events;
+mod login;
 
 use std::{
     error::Error,
@@ -44,7 +45,8 @@ const SESSION_REPLAY_PAGE_SIZE: u16 = 8;
 pub struct ServerApplication {
     sessions: Arc<SessionStore>,
     open_code: Arc<OpenCodeProvider>,
-    openai_credentials: crate::provider::openai_auth::OpenAiCredentialProvider,
+    openai_credentials: Arc<crate::provider::openai_auth::OpenAiCredentialProvider>,
+    login_supervisor: Arc<crate::login_supervisor::LoginSupervisor>,
     run_supervisor: Arc<RunSupervisor>,
     command_supervisor: Arc<CommandSupervisor>,
     session_event_hub: Arc<SessionEventHub>,
@@ -79,6 +81,7 @@ pub(crate) enum ApplicationOutcome {
     Response(ApplicationResponse),
     SessionCatalogSubscription(SessionCatalogSubscription),
     SessionSubscription(SessionSubscription),
+    OpenAiLogin(crate::login_supervisor::LoginConnection),
     StopServerAccepted { current_server_stopping: bool },
 }
 
@@ -122,6 +125,7 @@ impl ServerApplication {
 
     pub async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.login_supervisor.shutdown().await;
         self.run_supervisor.shutdown().await;
         self.command_supervisor.shutdown().await;
     }
@@ -131,6 +135,12 @@ impl ServerApplication {
         request: ApplicationRequest,
     ) -> Result<ApplicationOutcome, ApplicationError> {
         match request {
+            request @ (ApplicationRequest::GetOpenAiCredentialStatus
+            | ApplicationRequest::BeginOpenAiLogin { .. }
+            | ApplicationRequest::CancelOpenAiLogin { .. }
+            | ApplicationRequest::RemoveOpenAiCredential { .. }) => {
+                self.execute_openai_auth(request).await
+            }
             ApplicationRequest::CreateSession {
                 mutation_request_id,
                 display_name,
@@ -1133,11 +1143,17 @@ impl ServerApplication {
     ) -> Self {
         let command_supervisor = CommandSupervisor::new(Arc::clone(&sessions));
         let shutdown_requests = run_supervisor.shutdown_requests();
-        let openai_credentials =
-            crate::provider::openai_auth::OpenAiCredentialProvider::new(Arc::clone(&sessions));
+        let openai_credentials = Arc::new(
+            crate::provider::openai_auth::OpenAiCredentialProvider::new(Arc::clone(&sessions)),
+        );
+        let login_supervisor = crate::login_supervisor::LoginSupervisor::new(
+            openai_credentials.clone(),
+            shutdown_requests.clone(),
+        );
         Self {
             sessions,
             openai_credentials,
+            login_supervisor,
             open_code,
             run_supervisor,
             command_supervisor,

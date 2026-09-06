@@ -9,7 +9,11 @@ use tokio::{
     sync::oneshot,
 };
 
-async fn login(uri: http::Uri, slot: &Arc<Semaphore>, lifetime: Duration) -> OpenAiLogin {
+pub(crate) async fn login(
+    uri: http::Uri,
+    slot: &Arc<Semaphore>,
+    lifetime: Duration,
+) -> OpenAiLogin {
     let callback = Callback::for_test().await;
     let redirect = format!(
         "http://localhost:{}/auth/callback",
@@ -24,7 +28,7 @@ async fn login(uri: http::Uri, slot: &Arc<Semaphore>, lifetime: Duration) -> Ope
     )
     .unwrap()
 }
-fn fields(query: &str) -> BTreeMap<String, String> {
+pub(crate) fn fields(query: &str) -> BTreeMap<String, String> {
     query
         .split('&')
         .map(|part| {
@@ -36,7 +40,7 @@ fn fields(query: &str) -> BTreeMap<String, String> {
         })
         .collect()
 }
-async fn submit(address: std::net::SocketAddr, state: String, code: &str) -> Vec<u8> {
+pub(crate) async fn submit(address: std::net::SocketAddr, state: String, code: &str) -> Vec<u8> {
     let mut stream = TcpStream::connect(address).await.unwrap();
     let query = form(&[("code", code), ("state", &state)]);
     stream

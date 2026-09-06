@@ -1,3 +1,4 @@
+mod auth;
 mod requests;
 mod subscriptions;
 
@@ -183,6 +184,9 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
                     break Ok(());
                 }
             }
+            event = runtime.auth.events.recv() => {
+                if let Some(event)=event {runtime.app.handle_auth_event(event);}
+            }
             event = subscription_event_receiver.recv() => {
                 if let Some(event) = event {
                     runtime.handle_subscription_event(
@@ -196,6 +200,7 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
     };
 
     drop(request_commands);
+    runtime.auth.shutdown().await;
     runtime.abort_background_tasks();
     drop(terminal_events);
     terminal.restore()?;
@@ -204,6 +209,7 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
 
 struct RuntimeState {
     app: AppState,
+    auth: auth::AuthRuntime,
     pending_command: Option<RequestCommand>,
     pending_credential_mutation: Option<MutationRequestId>,
     credential_reconciliation_unknown: Option<bool>,
@@ -219,6 +225,7 @@ impl RuntimeState {
     fn new(server_version: String, request_worker: JoinHandle<()>) -> Self {
         Self {
             app: AppState::new(&server_version),
+            auth: auth::AuthRuntime::default(),
             pending_command: None,
             pending_credential_mutation: None,
             credential_reconciliation_unknown: None,
@@ -423,6 +430,24 @@ impl RuntimeState {
                 };
                 self.start_mutation(command, PendingOperation::CancelLocalCommand, commands)?;
                 self.app.set_status("Requesting local command cancellation");
+            }
+            AppAction::OpenAiCancel => self.auth.cancel(),
+            action @ (AppAction::OpenAiStatus
+            | AppAction::OpenAiBegin { .. }
+            | AppAction::OpenAiRemove { .. }) => {
+                let command = match action {
+                    AppAction::OpenAiStatus => auth::Command::Status,
+                    AppAction::OpenAiBegin {
+                        expected_generation,
+                    } => auth::Command::Begin(expected_generation),
+                    AppAction::OpenAiRemove {
+                        expected_generation,
+                    } => auth::Command::Remove(expected_generation),
+                    _ => unreachable!(),
+                };
+                if !self.auth.start(command).await {
+                    self.app.handle_auth_event(auth::AuthEvent::Failed("An authentication operation is still draining. Reopen /login to reload status."));
+                }
             }
             AppAction::SetCredential {
                 expected_generation,

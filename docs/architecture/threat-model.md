@@ -4,7 +4,7 @@ ADR 0012 changes Morons from a sandboxed repository-copy system into a trusted-l
 
 ## Protected assets
 
-- Morons-managed OpenCode credentials and billable provider usage
+- Morons-managed OpenCode and ChatGPT credentials and billable provider usage
 - Local IPC authentication key, host lock, and endpoint registration
 - Durable session transcripts, selected-directory metadata, attachments, context checkpoints, and run state
 - Authoritative SQLite data, migration backups, and durable event history
@@ -28,7 +28,7 @@ The final category is user-owned authority that Morons deliberately grants to lo
 - Packaged uv binaries, managed Python downloads, PyPI metadata, hash-locked wheels, runtime caches, staging directories, and bootstrap manifests
 - Terminal key, paste, resize, mouse, and rendering input
 - Provider model catalogs, HTTP headers, error bodies, SSE records, usage, identifiers, and content
-- ADR 0019 OAuth callback connections, targets, hosts, query fields, state/code/error values, token envelopes and JWT routing claims; the core is not yet admitted through application IPC
+- ADR 0019 OAuth callback connections, targets, hosts, query fields, state/code/error values, token envelopes and JWT routing claims; only authenticated owner initiation is admitted through application IPC
 
 ## Trust assumptions
 
@@ -130,7 +130,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 
 ADR 0019's bounded native OAuth core introduces a narrow loopback boundary, not a second application transport. Port occupation, forged/duplicate callbacks, wrong state, request smuggling, slow connections, browser-origin probes and query reflection must not authorize login or exhaust unbounded resources. Bind only the fixed loopback socket, consume at most one matching code, cap connections/bytes/time, return static non-caching responses and never take over the port owner.
 
-A public client ID is not a secret or proof of a Morons-specific provider agreement. Use the reviewed compatibility identity with Morons attribution; provider rejection is a blocker, not permission to spoof another originator. Fixed TLS token exchange, PKCE and state establish the response provenance; bounded JWT account claims are routing metadata, not local authorization, policy or cryptographic identity proof. Do not import callback URLs/tokens, invoke another agent, follow redirects or retry exchanges. Before application admission, separately implement dedicated custody and durable no-replay refresh/mutation recovery. Same-user processes, browser history, screenshots and transport copies remain residual confidentiality risks.
+A public client ID is not a secret or proof of a Morons-specific provider agreement. Use the reviewed compatibility identity with Morons attribution; provider rejection is a blocker, not permission to spoof another originator. Fixed TLS token exchange, PKCE and state establish the response provenance; bounded JWT account claims are routing metadata, not local authorization, policy or cryptographic identity proof. Do not import callback URLs/tokens, invoke another agent, follow redirects or retry exchanges. Dedicated custody and durable no-replay refresh/mutation recovery precede application admission. A connection-owned login task must survive abandoned cleanup callers, cancel on disconnect, and drain before slot reuse/shutdown. Only its initiating connection receives the ephemeral URL; another client cannot cancel or inspect it by identifier. Client/server parser diagnostics must discard untrusted field names and values. A cancelled installation may still commit; an uncertain storage acknowledgement must never be reported as rollback or automatically replayed. Same-user processes, browser history, screenshots and transport copies remain residual confidentiality risks.
 
 ## Skills and prompt threats
 

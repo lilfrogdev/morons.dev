@@ -193,6 +193,9 @@ fn write_application_error(
         ApplicationError::UnsupportedModel => {
             formatter.write_str("selected OpenCode model is unsupported")
         }
+        ApplicationError::OpenAiLoginFailed { .. } => {
+            formatter.write_str("ChatGPT login could not start")
+        }
         ApplicationError::OpenCodeCredentialNotConfigured => {
             formatter.write_str("OpenCode credential is not configured")
         }
@@ -1198,6 +1201,7 @@ where
             ServerMessage::Hello { .. }
             | ServerMessage::ProtocolVersionMismatch { .. }
             | ServerMessage::Event { .. }
+            | ServerMessage::OpenAiLoginFinished { .. }
             | ServerMessage::SubscriptionEnded { .. } => {
                 self.usable = false;
                 Err(ApplicationClientError::UnexpectedServerMessage)

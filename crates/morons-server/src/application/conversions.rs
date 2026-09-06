@@ -536,7 +536,7 @@ pub(super) fn to_session_summary(session: Session) -> SessionSummary {
     }
 }
 
-pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError {
+pub(crate) fn to_application_error(error: PersistenceError) -> ApplicationError {
     if matches!(
         &error,
         PersistenceError::Io(_)

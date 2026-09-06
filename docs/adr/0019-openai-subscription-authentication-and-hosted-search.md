@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for staged implementation, revised 2026-09-06. Supersedes this draft's search-only scope and dedicated-client-registration gate. Browser sign-in and credentialed inference remain unqualified until deliberate owner testing. The current increment adds provider-specific custody and guarded refresh to the OAuth core. Application login/UI and coding-model selection remain separate, not yet enabled.
+Accepted for staged implementation, revised 2026-09-06. Supersedes this draft's search-only scope and dedicated-client-registration gate. Browser sign-in and credentialed inference remain unqualified until deliberate owner testing. The current increment connects the OAuth core and custody through supervised authenticated login controls and an ephemeral terminal dialog. Coding-model selection and inference remain separate, not yet enabled.
 
 ## Context and provenance
 
@@ -39,7 +39,7 @@ The later coding adapter must separately review `https://chatgpt.com/backend-api
 
 ## OAuth core
 
-Only trusted server code initiates a login. Application integration must first authenticate the local owner, enforce one global nonqueued attempt, capture the observed OpenAI identity generation, and own the task until cancellation/shutdown has drained. The initial core is not reachable through IPC or tools.
+Only trusted server code initiates a login. Application integration must first authenticate the local owner, enforce one global nonqueued attempt, capture the observed OpenAI identity generation, and own the task until cancellation/shutdown has drained. IPC may initiate the supervised core after local authentication; tools cannot initiate it.
 
 - Bind the fixed loopback listener before returning an authorization URL. Port conflict is an error; never kill, connect to, replace or discover credentials from the port owner.
 - A login object owns its verifier, state, listener and ten-minute monotonic deadline. Its consuming completion future must be promptly polled under application supervision; an unpolled Rust object does not run a timer. Completion permits at most one code exchange. Drop closes its listener. Cancellation wins before polling exchange work or returning tokens; no automatic retry.
@@ -69,6 +69,14 @@ The bounded binary credential file records Removed, Active, RefreshDispatched or
 Serialize OpenAI dispatch/mutation with one provider-specific lease, independent of OpenCode. An expiring access token causes a durable RefreshDispatched write before a one-use refresh grant leaves the worker. Refresh uses the fixed token endpoint and existing bounded decoder, requires a refresh token in the reply, and pins the account. Success installs the next revision before returning an access-only dispatch lease. Failure or abandoned ownership requires reauthentication without replay; old material remains in the disabled private state until deliberate replacement/logout. There is no separate prepared refresh file: a crash even just before network transmission may conservatively require login. Status queries do not recover a live dispatch. Startup, or a later caller holding the exclusive lease after prior ownership ended, may terminalize abandoned RefreshDispatched state. A 60-second lease-resolution deadline includes lock/worker waits and the 30-second exchange, with at most five additional seconds for cancellation/timeout persistence cleanup; cancellation never detaches a refresh task. Do not replay the inference that returned 401.
 
 Login/account replacement/logout change identity generation, invalidating later stale dispatches. Logout is deliberate provider-specific local removal with explicit disclosure that remote authorization may remain; no unreviewed revocation endpoint is contacted and no remote-revocation guarantee is made. Local removal is not forensic erasure and cannot retract dispatched work. Existing configured credentials remain intact if a login is cancelled or fails before installation.
+
+### Authenticated terminal control
+
+IPC 40 adds provider-specific credential status/removal and a dedicated login connection. Begin captures an exact observed OpenAI generation and an owner mutation identity; it does not accept codes, tokens, callback URLs or endpoints. One nonqueued supervisor slot owns the login task through completion, with cancellation on owning-connection loss, explicit exact-attempt cancellation or server shutdown. Only the initiating connection receives the redacted, bounded browser URL. Other connections cannot inspect or cancel its attempt by supplying an identifier. Login traffic is not a session event or canonical transcript entry.
+
+The dedicated connection receives a start response and one terminal login result. It is not multiplexed with ordinary requests or subscriptions. All writes are bounded; a slow/invalid/disconnected consumer loses its attempt, not a session or root run. The server retains the task and joins it before slot reuse or shutdown; a dropped connection handler signals cancellation synchronously rather than spawning detached cleanup. OAuth completion remains bounded to ten minutes. Installation has a separate 60-second wait bound: cancellation before installation preserves the old credential, but cancellation after installation begins waits for its outcome and can report Installed. A lost/timed-out storage acknowledgement is InstallationUncertain, never a claim of rollback, and requests fail-closed server shutdown; uncertain worker effects may still commit and are reconciled on restart, not retried.
+
+The client uses a separate owned, non-reconnecting authentication connection with bounded event delivery. `/login` and `/logout` choose OpenCode or ChatGPT explicitly; existing non-echoing OpenCode input remains. ChatGPT shows provider status and asks for confirmation before login/replacement or local removal. The URL is terminal-safe, ephemeral and manually opened in the owner's browser; there is no shell launcher, clipboard import, callback paste or automatic login/model selection. Esc clears the URL and requests cancellation; a disconnect/lost result instructs status reload rather than replay. Local logout warns that remote authorization and previously dispatched work may remain. Only synthetic isolated fixtures are used before the owner's deliberate live qualification.
 
 ## Coding integration and data use
 

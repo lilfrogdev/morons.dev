@@ -64,6 +64,7 @@ where
             ServerMessage::Hello { .. }
             | ServerMessage::ProtocolVersionMismatch { .. }
             | ServerMessage::Response { .. }
+            | ServerMessage::OpenAiLoginFinished { .. }
             | ServerMessage::RequestFailed { .. } => {
                 self.usable = false;
                 Err(ApplicationClientError::UnexpectedServerMessage)
@@ -118,6 +119,7 @@ where
             ServerMessage::Hello { .. }
             | ServerMessage::ProtocolVersionMismatch { .. }
             | ServerMessage::Response { .. }
+            | ServerMessage::OpenAiLoginFinished { .. }
             | ServerMessage::RequestFailed { .. } => {
                 self.usable = false;
                 Err(ApplicationClientError::UnexpectedServerMessage)

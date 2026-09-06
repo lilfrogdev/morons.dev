@@ -109,6 +109,9 @@ where
         };
 
         match application.execute_for_local_owner(request).await {
+            Ok(ApplicationOutcome::OpenAiLogin(login)) => {
+                return stream_openai_login(connection, request_id, login).await;
+            }
             Ok(ApplicationOutcome::Response(response)) => {
                 write_server_message(connection, &ServerMessage::response(request_id, response))
                     .await?;
@@ -166,6 +169,46 @@ where
             }
         }
     }
+}
+
+pub(crate) async fn stream_openai_login<S>(
+    connection: &mut S,
+    request_id: u64,
+    mut login: crate::login_supervisor::LoginConnection,
+) -> Result<(), ConnectionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let start = ApplicationResponse::OpenAiLoginStarted {
+        attempt_id: login.id,
+        url: login.url.take().expect("new login URL"),
+    };
+    write_subscription_message(connection, &ServerMessage::response(request_id, start)).await?;
+    let (mut reader, mut writer) = tokio::io::split(connection);
+    let incoming = read_client_message(&mut reader);
+    tokio::pin!(incoming);
+    let result = tokio::select! {
+        biased;
+        message=&mut incoming=> {
+            match message? {
+                Some(ClientMessage::Request {request:morons_protocol::ApplicationRequest::CancelOpenAiLogin {attempt_id},..})=>{
+                    login.cancel(attempt_id).map_err(|_|ConnectionError::UnexpectedClientMessage)?;
+                    login.finish().await
+                }
+                None=>return Ok(()),
+                _=>return Err(ConnectionError::UnexpectedClientMessage),
+            }
+        }
+        result=login.finish()=>result,
+    };
+    write_subscription_message(
+        &mut writer,
+        &ServerMessage::OpenAiLoginFinished {
+            attempt_id: login.id,
+            outcome: result,
+        },
+    )
+    .await
 }
 
 async fn stream_session_catalog_events<S>(

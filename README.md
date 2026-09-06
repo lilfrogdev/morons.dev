@@ -53,7 +53,7 @@ Before installing an archive, verify it against the release's `SHA256SUMS` and i
 
 To update, stop the running companion with `Ctrl+S`, verify and extract the new archive into a new complete installation directory, and launch that directory's `morons`. Do not copy individual executables over an old package or mix companions from different versions. Durable state remains in the application state directory and migrates forward on the next start. Database migrations are forward-only; downgrading an existing state directory is unsupported.
 
-On every client launch, read and acknowledge the trusted-local authority notice. Configure or replace the server-owned OpenCode credential with `/login`; `Ctrl+K` opens the same non-echoing dialog as a shortcut. `/logout` removes the local credential after confirmation but does not revoke the API key at OpenCode; revoke it through the provider account when needed. Credentials live in dedicated owner-controlled state outside SQLite and are never intentionally exposed to tools or kernels. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
+On every client launch, read and acknowledge the trusted-local authority notice. `/login` or `Ctrl+K` chooses OpenCode or ChatGPT. OpenCode API-key input remains non-echoing. The experimental ChatGPT flow shows a temporary browser URL after explicit confirmation; open it yourself and never paste callback codes or tokens. Esc requests cancellation, but a save already started may complete. **ChatGPT coding inference is not enabled yet, and browser interoperability is not live-qualified.** Login never changes the selected model. `/logout` chooses a provider for confirmed local removal; remote authorization and dispatched work may remain. Revoke access through the provider account when needed. Credentials live in dedicated owner-controlled state outside SQLite and are never intentionally exposed to tools or kernels. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
 
 ### Managed IPython runtime
 
@@ -74,8 +74,8 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `!!command`: execute Bash but exclude its command/result from model context
 - `/model [search]`: search available reviewed models and save one global default for every session
 - `/settings`: inspect typed global settings and choose whether task subagents inherit the parent model or use one exact reviewed model
-- `/login`: configure or replace the OpenCode API credential through hidden input (`Ctrl+K` shortcut)
-- `/logout`: remove the locally stored OpenCode credential after explicit confirmation
+- `/login`: choose OpenCode hidden API-key input or experimental ChatGPT browser login (`Ctrl+K` shortcut)
+- `/logout`: choose a provider for explicit, confirmed local credential removal
 - `/context`: inspect context/cache/timing observations and the last accepted run's project-guidance paths and warnings; use arrows, PageUp/PageDown, Home/End to scroll
 - `/compact [instructions]`: manually summarize an eligible old context prefix
 - `r` in the session browser: rename the selected durable session

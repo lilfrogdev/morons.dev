@@ -17,6 +17,9 @@ impl AppState {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return AppAction::None;
         }
+        if self.auth_dialog.is_some() {
+            return self.handle_auth_key(key.code, key.modifiers);
+        }
         if let Some(dialog) = self.information_dialog {
             return match (dialog, key.code) {
                 (InformationDialog::Context, KeyCode::Down | KeyCode::PageDown) => {
@@ -124,6 +127,7 @@ impl AppState {
             || self.model_dialog.is_some()
             || self.settings_dialog.is_some()
             || self.credential_dialog.is_some()
+            || self.auth_dialog.is_some()
             || self.rename_dialog.is_some()
             || self.confirm_stop
             || self.confirm_delete.is_some()
@@ -138,6 +142,9 @@ impl AppState {
     }
 
     pub(crate) fn handle_paste(&mut self, paste: &str) {
+        if self.auth_dialog.is_some() {
+            return;
+        }
         if self.model_dialog.is_some() {
             self.append_model_search(paste);
             return;
@@ -374,7 +381,8 @@ impl AppState {
     fn handle_control_key(&mut self, code: KeyCode) -> AppAction {
         match code {
             KeyCode::Char('k') if self.pending.is_none() => {
-                self.open_credential_dialog();
+                self.auth_scroll = 0;
+                self.auth_dialog = Some(super::auth::AuthDialog::Choose { logout: false });
                 AppAction::None
             }
             KeyCode::Char('l') => AppAction::Refresh,
@@ -454,7 +462,7 @@ impl AppState {
         }
     }
 
-    fn open_credential_dialog(&mut self) {
+    pub(super) fn open_credential_dialog(&mut self) {
         match self.credential {
             Some(status) if status.configured => {
                 self.credential_dialog = Some(CredentialDialog::ChooseAction);
@@ -471,7 +479,7 @@ impl AppState {
         }
     }
 
-    fn open_logout_dialog(&mut self) {
+    pub(super) fn open_logout_dialog(&mut self) {
         match self.credential {
             Some(status) if status.configured => {
                 self.credential_dialog = Some(CredentialDialog::ConfirmRemove);
@@ -694,12 +702,14 @@ impl AppState {
         }
         if prompt == "/login" {
             self.prompt.clear();
-            self.open_credential_dialog();
+            self.auth_scroll = 0;
+            self.auth_dialog = Some(super::auth::AuthDialog::Choose { logout: false });
             return AppAction::None;
         }
         if prompt == "/logout" {
             self.prompt.clear();
-            self.open_logout_dialog();
+            self.auth_scroll = 0;
+            self.auth_dialog = Some(super::auth::AuthDialog::Choose { logout: true });
             return AppAction::None;
         }
         if prompt == "/settings" {

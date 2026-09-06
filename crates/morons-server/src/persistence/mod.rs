@@ -993,7 +993,7 @@ fn run_worker(
 }
 
 #[cfg(test)]
-mod credential_tests;
+pub(crate) mod credential_tests;
 #[cfg(test)]
 mod local_command_tests;
 #[cfg(test)]

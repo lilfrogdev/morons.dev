@@ -603,10 +603,10 @@ fn session_store_open_error(root: &TestRoot, message: &str) -> PersistenceError 
     }
 }
 
-pub(in crate::persistence) struct TestRoot(PathBuf);
+pub(crate) struct TestRoot(PathBuf);
 
 impl TestRoot {
-    pub(in crate::persistence) fn new(label: &str) -> Self {
+    pub(crate) fn new(label: &str) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("test clock should be after Unix epoch")
@@ -634,7 +634,7 @@ impl TestRoot {
         Self(path)
     }
 
-    pub(in crate::persistence) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
