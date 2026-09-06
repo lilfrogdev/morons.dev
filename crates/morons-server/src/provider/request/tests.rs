@@ -23,6 +23,7 @@ fn request_for_conversation(conversation_id: [u8; 16]) -> OpenCodeResponseReques
             phase: None,
         }],
         vec![ProviderTool {
+            strict: false,
             name: "read_file".to_owned(),
             description: "Read one file".to_owned(),
             parameters: json!({
@@ -115,6 +116,7 @@ fn chat_completions_request_has_bounded_compatible_messages_and_tools() {
                 "required": ["path"],
                 "additionalProperties": false
             }),
+            strict: false,
         }],
     )
     .expect("chat request should validate");
@@ -213,6 +215,7 @@ fn anthropic_messages_request_has_bounded_system_images_and_tool_blocks() {
                 "required": ["path"],
                 "additionalProperties": false
             }),
+            strict: false,
         }],
     )
     .expect("Anthropic request should validate");
@@ -299,6 +302,7 @@ fn gemini_request_matches_the_reviewed_opencode_wire_shape() {
                 "required": ["path", "missing"],
                 "additionalProperties": false
             }),
+            strict: false,
         }],
     )
     .expect("Gemini request should validate");

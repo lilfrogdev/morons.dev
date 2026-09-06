@@ -2,6 +2,45 @@ use super::hardening::{fixture, selection};
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn policy_9_guidance_history_keeps_its_original_accepted_byte_estimate() {
+    let (root, _selected, store, session) = fixture("project-policy-nine").await;
+    let accepted = store
+        .accept_session_input_with_context(
+            PersistenceMutationRequestId::from_bytes([1; 16]),
+            session,
+            "old".to_owned(),
+            selection(),
+            crate::persistence::RunInputContext {
+                skills: Default::default(),
+                project: crate::project_context::RunProjectContext {
+                    enabled: false,
+                    ..Default::default()
+                },
+                attachments: Vec::new(),
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .finish_run_stopped(accepted.run.id, None)
+        .await
+        .unwrap();
+    drop(store);
+    let path = root.path().join("data/sessions.sqlite3");
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch("UPDATE run_accepted_facts SET tool_catalog_version = 9, tool_limits_version = 9, estimated_input_tokens = 417;
+        UPDATE runs SET tool_catalog_version = 9, tool_limits_version = 9, estimated_input_tokens = 417;").unwrap();
+    drop(connection);
+    let store = SessionStore::open_for_test(root.path())
+        .expect("v9 uses 382 guidance bytes, 3 user bytes and two 16-token item reserves");
+    drop(store);
+    let connection = rusqlite::Connection::open(path).unwrap();
+    connection.execute_batch("UPDATE run_accepted_facts SET estimated_input_tokens = 418; UPDATE runs SET estimated_input_tokens = 418;").unwrap();
+    drop(connection);
+    assert!(SessionStore::open_for_test(root.path()).is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn schema_25_history_migrates_without_retroactive_project_guidance() {
     let (root, selected, store, session) = fixture("project-migration").await;
     append_completed_context_run(&store, session, 1, "LEGACY", 0).await;
@@ -10,7 +49,7 @@ async fn schema_25_history_migrates_without_retroactive_project_guidance() {
     connection.execute_batch("DROP TABLE run_project_contexts;
         UPDATE run_accepted_facts SET tool_catalog_version = 8, tool_limits_version = 8;
         UPDATE runs SET tool_catalog_version = 8, tool_limits_version = 8;
-        UPDATE provider_operation_facts SET tool_catalog_version = 8, tool_limits_version = 8 WHERE tool_catalog_version = 9;
+        UPDATE provider_operation_facts SET tool_catalog_version = 8, tool_limits_version = 8 WHERE tool_catalog_version > 8;
         PRAGMA user_version = 25;").unwrap();
     drop(connection);
     fs::write(selected.path().join("AGENTS.md"), "NEW_GUIDANCE").unwrap();
@@ -41,7 +80,10 @@ async fn schema_25_history_migrates_without_retroactive_project_guidance() {
         )
         .await
         .unwrap();
-    assert_eq!(accepted.run.tool_catalog_version, 9);
+    assert_eq!(
+        accepted.run.tool_catalog_version,
+        crate::tools::TOOL_CATALOG_VERSION
+    );
     assert!(
         store
             .load_run_context(accepted.run.id)
@@ -122,7 +164,7 @@ async fn project_context_is_pinned_refreshed_retry_stable_and_usage_bound() {
         let mut requests = Vec::new();
         let (mut first, _) = listener.accept().await.unwrap();
         requests.push(read_http_request(&mut first).await);
-        write_provider_output(&mut first, "resp_first", r#"{"id":"msg_first","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"first answer","annotations":[]}]}"#).await;
+        write_provider_output(&mut first, "resp_first", r#"{"id":"msg_first","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"The old marker was ORIGINAL_GUIDANCE.","annotations":[]}]}"#).await;
         let (mut second, _) = listener.accept().await.unwrap();
         requests.push(read_http_request(&mut second).await);
         second_tx.send(()).unwrap();
@@ -181,6 +223,13 @@ async fn project_context_is_pinned_refreshed_retry_stable_and_usage_bound() {
         let body: serde_json::Value =
             serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
         let entries = body["input"].as_array().unwrap();
+        if index == 1 {
+            assert!(entries.iter().any(|entry| {
+                entry
+                    .to_string()
+                    .contains("The old marker was ORIGINAL_GUIDANCE.")
+            }));
+        }
         let project = entries
             .iter()
             .find(|entry| entry.to_string().contains("<project_context>"))

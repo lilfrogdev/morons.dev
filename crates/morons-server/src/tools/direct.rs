@@ -122,10 +122,12 @@ impl DirectToolExecutor {
         if content.len() as u64 > MAX_FILE_BYTES {
             return Err(ToolErrorKind::ResourceLimit);
         }
+        let target = self.resolve(path);
+        preflight_write(&target)?;
         if cancelled() {
             return Err(ToolErrorKind::Cancelled);
         }
-        fs::write(self.resolve(path), content.as_bytes()).map_err(|_| ToolErrorKind::Uncertain)?;
+        fs::write(target, content.as_bytes()).map_err(|_| ToolErrorKind::Uncertain)?;
         Ok(ToolOutput::Written {
             path: path.clone(),
             bytes: content.len() as u64,
@@ -151,6 +153,7 @@ impl DirectToolExecutor {
         }
         let source = String::from_utf8(bytes).map_err(|_| ToolErrorKind::InvalidUtf8)?;
         let edited = apply_replacements(&source, replacements)?;
+        preflight_write(&target)?;
         if cancelled() {
             return Err(ToolErrorKind::Cancelled);
         }
@@ -170,6 +173,19 @@ impl DirectToolExecutor {
         } else {
             self.working_directory.join(requested)
         }
+    }
+}
+
+fn preflight_write(path: &Path) -> Result<(), ToolErrorKind> {
+    let parent = path.parent().ok_or(ToolErrorKind::WrongNodeKind)?;
+    if !fs::metadata(parent).map_err(map_io)?.is_dir() {
+        return Err(ToolErrorKind::WrongNodeKind);
+    }
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(ToolErrorKind::WrongNodeKind),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(map_io(error)),
     }
 }
 
@@ -377,6 +393,70 @@ mod tests {
             fs::read_to_string(root.join("file.txt")).unwrap(),
             "after\nsecond\n"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn write_preflight_failures_do_not_create_directories_or_change_files() {
+        let root = test_directory("write-preflight");
+        let executor = DirectToolExecutor::new(root.clone());
+        fs::write(root.join("keep.txt"), "keep").unwrap();
+        for (path, error) in [
+            ("missing/file.txt", ToolErrorKind::NotFound),
+            ("keep.txt/file.txt", ToolErrorKind::WrongNodeKind),
+            (".", ToolErrorKind::WrongNodeKind),
+        ] {
+            assert_eq!(
+                executor.execute(
+                    &ToolInput::Write {
+                        path: ToolPath::parse(path).unwrap(),
+                        content: "new".to_owned(),
+                    },
+                    &|| false,
+                ),
+                ToolResult::error(error),
+            );
+        }
+        assert!(!root.join("missing").exists());
+        assert_eq!(fs::read_to_string(root.join("keep.txt")).unwrap(), "keep");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn write_cancellation_after_preflight_preserves_content_and_later_races_stay_uncertain() {
+        let root = test_directory("write-race");
+        let executor = DirectToolExecutor::new(root.clone());
+        fs::write(root.join("keep.txt"), "keep").unwrap();
+        let calls = std::cell::Cell::new(0);
+        let result = executor.execute(
+            &ToolInput::Write {
+                path: ToolPath::parse("keep.txt").unwrap(),
+                content: "new".to_owned(),
+            },
+            &|| {
+                calls.set(calls.get() + 1);
+                calls.get() == 2
+            },
+        );
+        assert_eq!(result, ToolResult::error(ToolErrorKind::Cancelled));
+        assert_eq!(fs::read_to_string(root.join("keep.txt")).unwrap(), "keep");
+        fs::create_dir(root.join("parent")).unwrap();
+        calls.set(0);
+        let result = executor.execute(
+            &ToolInput::Write {
+                path: ToolPath::parse("parent/new.txt").unwrap(),
+                content: "new".to_owned(),
+            },
+            &|| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 2 {
+                    fs::remove_dir(root.join("parent")).unwrap();
+                }
+                false
+            },
+        );
+        assert_eq!(result, ToolResult::error(ToolErrorKind::Uncertain));
+        assert!(!root.join("parent").exists());
         fs::remove_dir_all(root).unwrap();
     }
 

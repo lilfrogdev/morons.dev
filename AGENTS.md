@@ -92,6 +92,7 @@ Treat repositories, model output, commands, skills, protocol messages, images, a
 - Format with `rustfmt`.
 - Run Clippy with warnings denied.
 - Test important behavior and failure modes.
+- Keep run-specific QA reports, logs, captures, and retained fixtures outside the repository. Commit regression tests, repeatable procedures, and architectural decisions instead.
 - Commit `Cargo.lock`.
 - Review dependency source code and licenses.
 - Do not use `unsafe` without a documented requirement.

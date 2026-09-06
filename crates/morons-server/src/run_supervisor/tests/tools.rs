@@ -1,6 +1,63 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn missing_write_parent_returns_known_feedback_without_replaying_a_mutation() {
+    let (root, selected, store, session) = super::hardening::fixture("write-feedback").await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let provider = tokio::spawn(async move {
+        let (mut first, _) = listener.accept().await.unwrap();
+        read_http_request(&mut first).await;
+        let call = serde_json::json!({"type":"function_call", "id":"fc_write", "call_id":"call_write", "name":"write", "arguments":r#"{"path":"missing/file.txt","content":"new"}"#, "status":"completed"});
+        write_provider_output(&mut first, "resp_write", &call.to_string()).await;
+        let (mut second, _) = listener.accept().await.unwrap();
+        let request = String::from_utf8(read_http_request(&mut second).await).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let feedback = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "function_call_output")
+            .unwrap();
+        let feedback: serde_json::Value =
+            serde_json::from_str(feedback["output"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            feedback,
+            serde_json::json!({"status":"error", "error":"not_found"})
+        );
+        write_provider_output(&mut second, "resp_report", r#"{"id":"msg_report","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"The parent directory is missing; no write was performed.","annotations":[]}]}"#).await;
+    });
+    let application = ServerApplication::from_session_store_for_test(store, &origin);
+    let session_id = SessionId::from_bytes(*session.as_bytes());
+    let outcome = application
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([1; 16]),
+            session_id,
+            text: "Try writing missing/file.txt once and report the result.".to_owned(),
+            attachments: Vec::new(),
+            service: OpenCodeService::Zen,
+            model_id: "muse-spark-1.2".to_owned(),
+        })
+        .await
+        .unwrap();
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        outcome
+    else {
+        panic!("expected run");
+    };
+    assert_eq!(
+        wait_for_terminal(&application, session_id, run.id).await,
+        RunState::Succeeded
+    );
+    provider.await.unwrap();
+    assert!(!selected.path().join("missing").exists());
+    application.shutdown().await;
+    drop(application);
+    SessionStore::open_for_test(root.path()).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn direct_tool_loop_reads_edits_runs_bash_and_commits_durable_results() {
     let root = TestRoot::new("direct-tool-loop");
     let selected = TestRoot::new("direct-tool-directory");

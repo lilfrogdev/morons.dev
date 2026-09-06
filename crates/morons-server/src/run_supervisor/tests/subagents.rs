@@ -73,12 +73,13 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
             .all(|request| request.contains("PINNED_PROJECT_GUIDANCE")
                 && !request.contains("CHANGED_AFTER_ACCEPTANCE"))
     );
-    assert!(requests[0].contains("form a concise plan"));
+    assert!(requests[0].contains("use task before implementation"));
     assert!(
         requests[1..4]
             .iter()
             .all(|request| request.contains("focused execution subagent")
-                && !request.contains("form a concise plan"))
+                && request.contains("Child budget:")
+                && !request.contains("use task before implementation"))
     );
     assert!(requests[0].contains("\"name\":\"task\""));
     assert!(

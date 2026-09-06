@@ -22,6 +22,19 @@ fn context_records_reject_missing_extra_rebound_oversized_and_unknown_data() {
     let context = RunProjectContext::default();
     insert(&connection, current, &context).unwrap();
     assert_eq!(load(&connection, current).unwrap(), Some(context.clone()));
+    for version in [10, 11, 10] {
+        connection
+            .execute(
+                "UPDATE run_accepted_facts SET tool_catalog_version = ?1 WHERE run_id = ?2",
+                params![version, &current.as_bytes()[..]],
+            )
+            .unwrap();
+        if version == 11 {
+            assert!(load(&connection, current).is_err());
+        } else {
+            assert_eq!(load(&connection, current).unwrap(), Some(context.clone()));
+        }
+    }
     insert(&connection, legacy, &context).unwrap();
     assert!(load(&connection, legacy).is_err());
     connection.execute("UPDATE run_project_contexts SET source_digest = (SELECT source_digest FROM run_project_contexts WHERE run_id = ?1) WHERE run_id = ?2", params![&legacy.as_bytes()[..], &current.as_bytes()[..]]).unwrap();

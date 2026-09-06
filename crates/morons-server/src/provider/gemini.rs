@@ -368,20 +368,15 @@ impl GeminiDecoder {
                 return Err(ProviderError::ResponseLimitExceeded);
             }
             let thought = text_part.thought.unwrap_or(false);
-            if !thought && text_part.thought_signature.is_some() {
-                return Err(ProviderError::MalformedResponse);
-            }
+            self.ignored_reasoning_bytes = self
+                .ignored_reasoning_bytes
+                .checked_add(if thought { text_part.text.len() } else { 0 })
+                .and_then(|bytes| {
+                    bytes.checked_add(text_part.thought_signature.as_ref().map_or(0, String::len))
+                })
+                .filter(|bytes| *bytes <= MAX_IGNORED_REASONING_BYTES)
+                .ok_or(ProviderError::ResponseLimitExceeded)?;
             if thought {
-                self.ignored_reasoning_bytes = self
-                    .ignored_reasoning_bytes
-                    .checked_add(text_part.text.len())
-                    .and_then(|bytes| {
-                        bytes.checked_add(
-                            text_part.thought_signature.as_ref().map_or(0, String::len),
-                        )
-                    })
-                    .filter(|bytes| *bytes <= MAX_IGNORED_REASONING_BYTES)
-                    .ok_or(ProviderError::ResponseLimitExceeded)?;
                 return Ok(Vec::new());
             }
             if text_part.text.is_empty() {
@@ -511,22 +506,9 @@ impl GeminiDecoder {
 
 #[cfg(debug_assertions)]
 fn emit_unknown_field_diagnostic(error: &serde_json::Error) {
-    let message = error.to_string();
-    let Some(rest) = message.strip_prefix("unknown field `") else {
-        return;
-    };
-    let Some((field, _)) = rest.split_once('`') else {
-        return;
-    };
-    let digest = Sha256::digest(field.as_bytes());
-    let fingerprint = digest[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    eprintln!(
-        "Gemini decoder rejected unknown field bytes={} fingerprint={fingerprint}",
-        field.len()
-    );
+    if error.to_string().starts_with("unknown field `") {
+        eprintln!("Gemini decoder rejected an unknown field");
+    }
 }
 
 fn gemini_call_id(response_id: &str, index: usize) -> String {
