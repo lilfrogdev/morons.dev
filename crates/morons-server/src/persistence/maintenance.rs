@@ -5,6 +5,10 @@ use super::{
     Backend, CompactionPlan, PersistenceError, Run, RunId, SessionId, SessionStore, WorkerRequest,
 };
 
+pub(super) fn enabled_from_environment(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_none_or(|value| value == "1")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(i64)]
 pub(crate) enum MaintenanceState {
@@ -180,6 +184,21 @@ impl MaintenanceRequest {
             Self::Boundary { run, response } => {
                 let _ = response.send(backend.maintenance_boundary(run));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::enabled_from_environment;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn maintenance_defaults_on_and_explicit_or_invalid_opt_out_disables_it() {
+        assert!(enabled_from_environment(None));
+        assert!(enabled_from_environment(Some(OsStr::new("1"))));
+        for value in ["0", "", "true", "false", " 1", "01", "invalid"] {
+            assert!(!enabled_from_environment(Some(OsStr::new(value))));
         }
     }
 }

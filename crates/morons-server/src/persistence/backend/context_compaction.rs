@@ -81,6 +81,28 @@ impl Backend {
         maximum_input_tokens: u32,
         instruction_bytes: usize,
     ) -> Result<Option<u64>, PersistenceError> {
+        self.select_compaction_prefix_fitting(
+            session_id,
+            covered,
+            protected_from,
+            through,
+            |tail| {
+                tail.fits(
+                    maximum_input_tokens,
+                    instruction_bytes + MAX_COMPACTION_SUMMARY_BYTES,
+                )
+            },
+        )
+    }
+
+    pub(super) fn select_compaction_prefix_fitting(
+        &self,
+        session_id: SessionId,
+        covered: u64,
+        protected_from: u64,
+        through: u64,
+        accepts_tail: impl Fn(&super::context_budget::ContextBudget) -> bool,
+    ) -> Result<Option<u64>, PersistenceError> {
         if protected_from <= covered.saturating_add(1) || protected_from > through {
             return Ok(None);
         }
@@ -108,10 +130,7 @@ impl Backend {
         for boundary in boundaries {
             let high_water = boundary - 1;
             if high_water > covered
-                && self.context_budget(session_id, high_water, through)?.fits(
-                    maximum_input_tokens,
-                    instruction_bytes + MAX_COMPACTION_SUMMARY_BYTES,
-                )
+                && accepts_tail(&self.context_budget(session_id, high_water, through)?)
             {
                 return Ok(Some(high_water));
             }

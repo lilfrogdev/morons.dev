@@ -101,13 +101,18 @@ impl Backend {
         if !early_pressure(&before, run.maximum_input_tokens, old_extra) {
             return Ok(None);
         }
-        let Some(source) = self.select_compaction_prefix(
+        let Some(source) = self.select_compaction_prefix_fitting(
             run.session_id,
             covered,
             run.source_entry_high_water,
             through,
-            run.maximum_input_tokens,
-            instructions,
+            |tail| {
+                ready_budget(
+                    tail,
+                    run.maximum_input_tokens,
+                    instructions + MAX_COMPACTION_SUMMARY_BYTES,
+                )
+            },
         )?
         else {
             return Ok(None);
@@ -277,9 +282,18 @@ pub(super) fn useful(
         || before.image_bytes > after.image_bytes
 }
 
-fn early_pressure(budget: &ContextBudget, maximum: u32, extra: usize) -> bool {
+fn thresholds(maximum: u32) -> (u64, u64) {
     let soft = u64::from(maximum) * 7 / 10;
-    let lead = (soft / 8).clamp(8192, 32_000);
+    (soft, (soft / 8).clamp(8192, 32_000))
+}
+
+pub(super) fn ready_budget(budget: &ContextBudget, maximum: u32, extra: usize) -> bool {
+    let (soft, lead) = thresholds(maximum);
+    budget.tokens(extra) <= soft.saturating_sub(lead) && !budget.pressure(maximum, extra)
+}
+
+fn early_pressure(budget: &ContextBudget, maximum: u32, extra: usize) -> bool {
+    let (soft, lead) = thresholds(maximum);
     budget.pressure(maximum, extra)
         || budget.estimated_tokens(extra) >= soft.saturating_sub(lead)
         || budget.tokens(extra) >= u64::from(maximum).saturating_sub(lead)
@@ -292,6 +306,28 @@ fn early_pressure(budget: &ContextBudget, maximum: u32, extra: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn readiness_requires_headroom_below_independent_pressure() {
+        assert!(ready_budget(&ContextBudget::default(), 96_000, 16_384));
+        for budget in [
+            ContextBudget {
+                bytes: 60_000,
+                ..Default::default()
+            },
+            ContextBudget {
+                entries: 168,
+                ..Default::default()
+            },
+            ContextBudget {
+                image_bytes: crate::persistence::images::MAX_CONTEXT_IMAGE_BYTES * 3 / 4,
+                ..Default::default()
+            },
+        ] {
+            assert!(budget.fits(96_000, 0));
+            assert!(!ready_budget(&budget, 96_000, 0));
+        }
+    }
 
     #[test]
     fn low_advisory_usage_cannot_hide_the_approaching_conservative_guard() {

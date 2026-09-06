@@ -105,7 +105,9 @@ impl SessionStore {
     pub fn open(server: &ServerEndpoint) -> Result<Self, PersistenceError> {
         Self::open_configured(
             server.claim_persistence_root()?,
-            std::env::var_os("MORONS_BACKGROUND_COMPACTION").is_some_and(|value| value == "1"),
+            maintenance::enabled_from_environment(
+                std::env::var_os("MORONS_BACKGROUND_COMPACTION").as_deref(),
+            ),
         )
     }
 

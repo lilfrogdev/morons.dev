@@ -42,6 +42,6 @@ On macOS ARM64 / Rust 1.98.0, medians of three consecutive warm runs were:
 
 These compare paths in the same release build, not whole-application before/after latency. They exclude real provider latency/cost; fixtures use temporary state and fake credentials. No timing ratio is asserted in CI. Large histories, cold disks, other architectures and provider caching need separate qualification.
 
-The [background-compaction procedure](background-compaction-qa.md) adds a non-network maintenance timing probe and separates deterministic lifecycle evidence from explicitly authorized live inference. Keep background compaction off for routine use until those qualification gates are satisfied.
+The [background-compaction procedure](background-compaction-qa.md) adds a non-network maintenance timing probe and separates deterministic lifecycle evidence from explicitly authorized live inference. Background compaction defaults on; use `MORONS_BACKGROUND_COMPACTION=0` for controlled comparison or to opt out. Default selection is not a substitute for live or release qualification.
 
 Retain migration tests while their source schemas remain supported, including obsolete workspace-era fixtures: these protect safe upgrades and non-interference with selected directories. Name migration tests for their actual target (`..._migrates_to_current_version`) rather than leaving a historical destination in the name.

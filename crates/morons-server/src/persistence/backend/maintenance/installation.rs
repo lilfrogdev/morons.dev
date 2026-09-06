@@ -72,7 +72,8 @@ impl Backend {
             && latest_parent(&self.connection, job.session)?
                 == job.parent.as_ref().map(|parent| *parent.id.as_bytes())
             && self.maintenance_profile(&run)? == Some(job.instruction_digest)
-            && after.fits(
+            && execution::ready_budget(
+                &after,
                 run.maximum_input_tokens,
                 instructions + result.summary.len(),
             )

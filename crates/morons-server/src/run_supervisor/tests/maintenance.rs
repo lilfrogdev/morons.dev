@@ -1,5 +1,6 @@
 mod lifecycle;
 mod measurements;
+mod tool_results;
 
 use super::*;
 use crate::maintenance_supervisor::MaintenanceSupervisor;
@@ -147,7 +148,7 @@ async fn maintenance_prepares_before_hard_capacity_with_low_reported_tokens() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn background_requires_opt_in_and_new_input_cancels_undispatched_preparation() {
+async fn disabled_maintenance_skips_and_new_input_cancels_undispatched_preparation() {
     for enabled in [false, true] {
         let (_root, _selected, store, session, trigger) = eligible(enabled).await;
         let prepared = store.prepare_maintenance(trigger).await.unwrap();
@@ -393,23 +394,25 @@ async fn supervised_request_is_single_tools_free_and_cancellable_without_blockin
 
 #[tokio::test(flavor = "current_thread")]
 async fn ready_summary_cannot_bypass_the_receiving_tail_budget() {
-    let (_root, _selected, store, session, trigger) = eligible(true).await;
-    let work = store.prepare_maintenance(trigger).await.unwrap().unwrap();
-    assert!(store.dispatch_maintenance(work.id).await.unwrap());
-    store
-        .complete_maintenance(work.id, summary())
-        .await
-        .unwrap();
-    let run = next_run(&store, session, &"x".repeat(60_000), 6).await;
-    store.maintenance_boundary(run).await.unwrap();
-    wait_state(&store, session, MaintenanceState::Discarded).await;
-    let context = store.load_run_context(run).await.unwrap();
-    assert!(context.checkpoint.is_none());
-    assert!(
-        context.compaction_plan.unwrap().source_entry_high_water
-            > work.plan.source_entry_high_water
-    );
-    store.finish_run_stopped(run, None).await.unwrap();
+    for bytes in [30_000, 60_000] {
+        let (_root, _selected, store, session, trigger) = eligible(true).await;
+        let work = store.prepare_maintenance(trigger).await.unwrap().unwrap();
+        assert!(store.dispatch_maintenance(work.id).await.unwrap());
+        store
+            .complete_maintenance(work.id, summary())
+            .await
+            .unwrap();
+        let run = next_run(&store, session, &"x".repeat(bytes), 6).await;
+        store.maintenance_boundary(run).await.unwrap();
+        wait_state(&store, session, MaintenanceState::Discarded).await;
+        let context = store.load_run_context(run).await.unwrap();
+        assert!(context.checkpoint.is_none());
+        assert!(
+            context.compaction_plan.unwrap().source_entry_high_water
+                > work.plan.source_entry_high_water
+        );
+        store.finish_run_stopped(run, None).await.unwrap();
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

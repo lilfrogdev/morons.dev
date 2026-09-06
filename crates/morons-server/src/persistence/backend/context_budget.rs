@@ -83,7 +83,10 @@ pub(super) fn context_budget(
     ];
     let (entries, bytes): (i64, i64) = connection.query_row(
         "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM (
-            SELECT COALESCE(length(CAST(entry.text AS BLOB)), length(call.input_payload), length(result.result_payload), 0) AS bytes
+            SELECT CASE entry.entry_kind
+                WHEN 3 THEN length(call.input_payload)
+                WHEN 4 THEN length(result.result_payload)
+                ELSE length(CAST(entry.text AS BLOB)) END AS bytes
             FROM session_entries AS entry
             LEFT JOIN tool_calls AS call ON call.call_id = entry.tool_call_id
             LEFT JOIN tool_operation_facts AS result ON result.call_id = entry.tool_call_id AND result.fact_kind BETWEEN 3 AND 6
@@ -123,6 +126,54 @@ fn nonnegative(value: i64) -> Result<u64, PersistenceError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_result_budget_charges_result_bytes_instead_of_repeating_arguments() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE session_entries (session_id BLOB, entry_sequence INTEGER, entry_kind INTEGER, text TEXT, tool_call_id BLOB, message_id BLOB);
+            CREATE TABLE tool_calls (call_id BLOB, input_payload BLOB);
+            CREATE TABLE tool_operation_facts (call_id BLOB, fact_kind INTEGER, result_payload BLOB);
+            CREATE TABLE local_commands (session_id BLOB, entry_sequence INTEGER, context_visible INTEGER, state INTEGER, command_text TEXT, result_payload BLOB);
+            CREATE TABLE image_attachments (session_id BLOB, user_message_id BLOB, byte_count INTEGER);
+            CREATE TABLE tool_image_attachments (session_id BLOB, call_id BLOB, byte_count INTEGER);").unwrap();
+        let session = SessionId::from_bytes([1; 16]);
+        let arguments = b"small arguments";
+        let output = "large output ".repeat(5_000);
+        connection
+            .execute(
+                "INSERT INTO tool_calls VALUES (x'01', ?1)",
+                [&arguments[..]],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO tool_operation_facts VALUES (x'01', 3, ?1)",
+                [output.as_bytes()],
+            )
+            .unwrap();
+        for (sequence, kind, text) in [
+            (1, 1, Some("goal")),
+            (2, 3, None),
+            (3, 4, None),
+            (4, 2, Some("done")),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO session_entries VALUES (?1, ?2, ?3, ?4, x'01', NULL)",
+                    params![&session.as_bytes()[..], sequence, kind, text],
+                )
+                .unwrap();
+        }
+        let budget = context_budget(&connection, session, 0, 4).unwrap();
+        assert_eq!(budget.entries, 4);
+        assert_eq!(budget.bytes, (8 + arguments.len() + output.len()) as u64);
+        assert!(budget.pressure(96_000, 0));
+        assert_eq!(
+            context_budget(&connection, session, 2, 4).unwrap().bytes,
+            output.len() as u64 + 4
+        );
+        assert_eq!(context_budget(&connection, session, 3, 4).unwrap().bytes, 4);
+    }
 
     #[test]
     fn independent_context_budgets_trigger_before_hard_limits() {
