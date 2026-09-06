@@ -167,6 +167,8 @@ impl fmt::Debug for ProviderInputItem {
 
 #[derive(Clone)]
 pub struct ProviderTool {
+    /// Request strict Responses function schemas; other wire families ignore this flag.
+    pub strict: bool,
     pub name: String,
     pub description: String,
     pub parameters: Value,
@@ -869,8 +871,7 @@ impl<'a> From<&'a ProviderTool> for WireTool<'a> {
             name: &tool.name,
             description: &tool.description,
             parameters: &tool.parameters,
-            // Reviewed schemas contain optional fields; Morons validates returned arguments.
-            strict: false,
+            strict: tool.strict,
         }
     }
 }

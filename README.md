@@ -90,6 +90,8 @@ Direct source-tree binaries do not automatically download build companions. Main
 
 Commands are noninteractive: standard input is closed, no PTY is provided, and output and runtime are bounded. `bash` and `ipython` still have your ordinary filesystem, environment, network, Git, credential-helper, and agent access.
 
+`read` uses one-based line offsets and at most 200 lines per call. `write` requires an existing parent directory; create needed directories with `bash` first. Read-only preflight failures do not mutate the target, while failures after a possible mutation remain uncertain and are not automatically retried.
+
 ## Sessions and context
 
 Each session is durably bound to one absolute working directory. Switching sessions or closing the client does not cancel server-owned work. Multiple sessions may use the same directory, so their filesystem effects can race even though their histories are independent.
@@ -116,7 +118,7 @@ To disable automatic discovery, set `MORONS_NO_PROJECT_CONTEXT` (any value) befo
 
 ## Subagents
 
-By default the main selected model plans implementation work, delegates implementation/checks, then reviews results and reports verification. Discussion-only requests can be answered directly. This is **prompt-led delegation**, not enforced planner-only mode: the main agent retains its normal tools and can follow explicit requests for direct execution. Model compliance is not guaranteed by a prompt.
+By default the main selected model inspects and plans implementation work, uses one implementation child for a small change, then reviews changed code and runs relevant checks. Only independent assignments should run in parallel; dependent implementation and verification should not race. After a child failure, the prompt asks the parent to report partial progress and stop rather than retry or take over without explicit user direction. Children are told their existing budget of eight provider responses (including a final report), 24 tool calls and eight mutations. Discussion-only requests can be answered directly. This is **prompt-led delegation**, not enforced planner-only mode: the main agent retains its normal tools and can follow explicit requests for direct execution. Model compliance is not guaranteed by a prompt. See [ADR 0027](docs/adr/0027-tool-feedback-and-provider-output-validation.md).
 
 The `task` tool follows a bounded OMP-style batch contract: the parent supplies shared context once and one to three self-contained assignments. By default children inherit the parent's model. `/settings` can instead pin one exact available reviewed service/model pair for later task calls, including a different family, service, or wire protocol such as Zen GPT 5.6 Sol with Go GLM-5.3-Flash. Morons never silently substitutes another child model; each completed report discloses the selected model and protocol revision. Children run concurrently, receive the parent's pinned project guidance and only `read`, `write`, `edit`, `bash`, and `web_search` tools, and return input-ordered bounded reports. Active parent skills are not automatically inherited; include relevant task-specific context explicitly. They do not inherit the parent transcript, share IPython memory, recurse, continue in the background, or receive isolated worktrees. Children share the real selected directory, so parallel mutations can race.
 

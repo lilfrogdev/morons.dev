@@ -1098,7 +1098,8 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
             entry.entry_sequence,
             entry.message_id,
             entry.run_id,
-            entry.text
+            entry.text,
+            accepted.tool_catalog_version
          FROM run_input_requests AS request
          LEFT JOIN run_accepted_facts AS accepted ON accepted.request_id = request.request_id
          LEFT JOIN session_entries AS entry
@@ -1127,6 +1128,7 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
                 row.get::<_, Option<[u8; 16]>>(17)?,
                 row.get::<_, Option<[u8; 16]>>(18)?,
                 row.get::<_, Option<String>>(19)?,
+                row.get::<_, Option<u16>>(20)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1152,6 +1154,7 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
             Some(entry_message),
             Some(entry_run),
             Some(text),
+            Some(tool_catalog_version),
         ) = input
         else {
             return Err(PersistenceError::InvalidState {
@@ -1280,9 +1283,12 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
             connection,
             crate::persistence::RunId::from_bytes(request_run),
         )?;
-        let project_bytes = project
-            .as_ref()
-            .map_or(0, |project| project.context_bytes()) as u64;
+        let project_bytes = match project {
+            Some(project) => project
+                .context_bytes_for_policy(tool_catalog_version)
+                .ok_or_else(invalid_run_context)? as u64,
+            None => 0,
+        };
         let skill_bytes = u64::try_from(skills.context_bytes().ok_or_else(invalid_run_context)?)
             .map_err(|_| invalid_run_context())?
             .saturating_add(project_bytes);
@@ -1707,7 +1713,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                        AND image.state = 2
                  ))
                 OR
-                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9)
+                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10)
                  AND accepted.tool_limits_version = accepted.tool_catalog_version
                  AND accepted.execution_image_generation IS NULL
                  AND EXISTS (
@@ -1721,12 +1727,12 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
                OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
-               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7, 8, 9))
-               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7, 8, 9))
-               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7, 8, 9))
-               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7, 8, 9))
-               OR (call.tool_kind = 14 AND run.tool_catalog_version NOT IN (8, 9))
-               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9))
+               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7, 8, 9, 10))
+               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7, 8, 9, 10))
+               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7, 8, 9, 10))
+               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7, 8, 9, 10))
+               OR (call.tool_kind = 14 AND run.tool_catalog_version NOT IN (8, 9, 10))
+               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10))
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id

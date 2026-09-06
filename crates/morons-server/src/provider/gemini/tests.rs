@@ -40,6 +40,53 @@ fn decodes_text_reasoning_usage_and_identity() {
 }
 
 #[test]
+fn text_signatures_are_bounded_discarded_and_do_not_hide_visible_text() {
+    for thought in [None, Some(false)] {
+        let mut decoder = GeminiDecoder::new(96_000, 32_000);
+        for text in ["visible", ""] {
+            let mut part =
+                serde_json::json!({"text": text, "thoughtSignature": "opaque-text-signature"});
+            if let Some(thought) = thought {
+                part["thought"] = thought.into();
+            }
+            let event = serde_json::json!({
+                "candidates": [{"index": 0, "content": {"role": "model", "parts": [part]}}],
+                "responseId": "resp_1"
+            });
+            let events = decoder.push(&data(&event.to_string())).unwrap();
+            assert_eq!(events.len(), usize::from(!text.is_empty()));
+            assert!(!format!("{events:?}").contains("opaque-text-signature"));
+        }
+        decoder.push(&data(r#"{"candidates":[{"index":0,"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"responseId":"resp_1"}"#)).unwrap();
+        let outcome = decoder.finish().unwrap();
+        assert!(
+            matches!(&outcome.output[..], [ProviderOutputItem::AssistantMessage(message)] if message.text == "visible")
+        );
+        assert!(!format!("{outcome:?}").contains("opaque-text-signature"));
+    }
+
+    let mut decoder = GeminiDecoder::new(96_000, 32_000);
+    let part = serde_json::json!({"text": "", "thoughtSignature": "x".repeat(super::MAX_IGNORED_REASONING_BYTES / 2)});
+    decoder.process_part(part.clone()).unwrap();
+    decoder.process_part(part).unwrap();
+    assert_eq!(
+        decoder.process_part(serde_json::json!({"text": "", "thoughtSignature": "x"})),
+        Err(ProviderError::ResponseLimitExceeded)
+    );
+    let mut decoder = GeminiDecoder::new(96_000, 32_000);
+    assert_eq!(
+        decoder.process_part(serde_json::json!({"text": "", "thoughtSignature": ""})),
+        Err(ProviderError::ResponseLimitExceeded)
+    );
+    assert_eq!(
+        decoder.process_part(
+            serde_json::json!({"text": "", "thoughtSignature": "x", "unreviewed": true})
+        ),
+        Err(ProviderError::MalformedResponse)
+    );
+}
+
+#[test]
 fn decodes_function_calls_with_deterministic_local_ids() {
     let mut decoder = GeminiDecoder::new(96_000, 32_000);
     let event = data(
@@ -123,14 +170,6 @@ fn rejects_unknown_shapes_conflicting_identity_and_unrequested_grounding() {
         .expect("initial response identity should decode");
     assert_eq!(
         response_mismatch.push(&data(r#"{"candidates":[],"responseId":"resp_2"}"#)),
-        Err(ProviderError::MalformedResponse)
-    );
-
-    let mut visible_signature = GeminiDecoder::new(96_000, 32_000);
-    assert_eq!(
-        visible_signature.push(&data(
-            r#"{"candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"visible","thoughtSignature":"unexpected"}]}}],"responseId":"resp_1"}"#,
-        )),
         Err(ProviderError::MalformedResponse)
     );
 

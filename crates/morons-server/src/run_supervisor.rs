@@ -1091,7 +1091,13 @@ fn normalize_tool_provider_turn(
                 saw_call = true;
                 calls.push(call);
             }
-            ProviderOutputItem::AssistantMessage(_) => {
+            ProviderOutputItem::AssistantMessage(message) => {
+                eprintln!(
+                    "provider output rejected: tool-turn message; phase={:?}; after_call={saw_call}; duplicate={}; empty={}",
+                    message.phase,
+                    commentary.is_some(),
+                    message.text.is_empty(),
+                );
                 return Err(RunFailureKind::InvalidProviderOutput);
             }
         }
@@ -1130,17 +1136,23 @@ fn completed_assistant(outcome: ProviderOutcome) -> Result<CompletedAssistant, R
                 if message.phase != Some(ProviderMessagePhase::Commentary) =>
             {
                 if final_message.replace(message).is_some() {
+                    eprintln!("provider output rejected: multiple final messages");
                     return Err(RunFailureKind::InvalidProviderOutput);
                 }
             }
             ProviderOutputItem::AssistantMessage(_) | ProviderOutputItem::Reasoning(_) => {}
             ProviderOutputItem::ToolCall(_) => {
+                eprintln!("provider output rejected: tool call in final response");
                 return Err(RunFailureKind::InvalidProviderOutput);
             }
         }
     }
-    let message = final_message.ok_or(RunFailureKind::InvalidProviderOutput)?;
+    let message = final_message.ok_or_else(|| {
+        eprintln!("provider output rejected: missing final message");
+        RunFailureKind::InvalidProviderOutput
+    })?;
     if message.text.is_empty() {
+        eprintln!("provider output rejected: empty final message");
         return Err(RunFailureKind::InvalidProviderOutput);
     }
     if message.text.len() > MAX_TRANSCRIPT_TEXT_BYTES {

@@ -305,7 +305,7 @@ impl Backend {
             )?;
         }
         insert_run_skills(&transaction, run_id, &skills)?;
-        if tool_catalog_version == 9 {
+        if tool_catalog_version == TOOL_CATALOG_VERSION {
             super::project_context::insert(&transaction, run_id, &project)?;
         }
         transaction.execute(
