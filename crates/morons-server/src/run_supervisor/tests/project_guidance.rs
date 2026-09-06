@@ -46,7 +46,10 @@ async fn schema_25_history_migrates_without_retroactive_project_guidance() {
     append_completed_context_run(&store, session, 1, "LEGACY", 0).await;
     drop(store);
     let connection = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
-    connection.execute_batch("DROP TABLE run_project_contexts;
+    connection.execute_batch("DROP TABLE compaction_maintenance_events;
+        DROP TABLE compaction_maintenance_jobs;
+        DROP INDEX compaction_operations_by_prefix;
+        DROP TABLE run_project_contexts;
         UPDATE run_accepted_facts SET tool_catalog_version = 8, tool_limits_version = 8;
         UPDATE runs SET tool_catalog_version = 8, tool_limits_version = 8;
         UPDATE provider_operation_facts SET tool_catalog_version = 8, tool_limits_version = 8 WHERE tool_catalog_version > 8;

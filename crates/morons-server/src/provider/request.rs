@@ -357,7 +357,7 @@ impl OpenCodeResponseRequest {
         value
     }
 
-    pub(super) fn encoded_body(&self) -> Bytes {
+    pub(crate) fn encoded_body(&self) -> Bytes {
         self.body.clone()
     }
 }

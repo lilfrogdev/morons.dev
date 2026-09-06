@@ -4,7 +4,7 @@ use rusqlite::params;
 
 use super::{Backend, context_budget::MAX_COMPACTION_SUMMARY_BYTES, records::sequence_to_sql};
 use crate::persistence::{
-    CompactionPlan, ContextCheckpoint, PersistenceError, Run, TranscriptEntry,
+    CompactionPlan, ContextCheckpoint, PersistenceError, Run, SessionId, TranscriptEntry,
     compactions::ContextSourceHasher,
 };
 
@@ -46,12 +46,45 @@ impl Backend {
         {
             return Ok(None);
         }
-        if run.source_entry_high_water <= covered + 1 {
+        let Some(source_entry_high_water) = self.select_compaction_prefix(
+            run.session_id,
+            covered,
+            run.source_entry_high_water,
+            through,
+            run.maximum_input_tokens,
+            instruction_bytes,
+        )?
+        else {
+            return Ok(None);
+        };
+        if !manual
+            && self.compaction_prefix_was_attempted(run.session_id, source_entry_high_water)?
+        {
             return Ok(None);
         }
+        self.project_compaction_prefix(
+            run.session_id,
+            checkpoint,
+            source_entry_high_water,
+            prompt.strip_prefix("/compact "),
+        )
+        .map(Some)
+    }
 
-        // Try retaining the two newest complete prior user turns, then one, then
-        // only the current turn. No tool call/result or current run is split.
+    /// Select a whole-turn cut inside a caller-validated window, not permission to dispatch.
+    pub(super) fn select_compaction_prefix(
+        &self,
+        session_id: SessionId,
+        covered: u64,
+        protected_from: u64,
+        through: u64,
+        maximum_input_tokens: u32,
+        instruction_bytes: usize,
+    ) -> Result<Option<u64>, PersistenceError> {
+        if protected_from <= covered.saturating_add(1) || protected_from > through {
+            return Ok(None);
+        }
+        // Retain two prior turns, then one, then at least the protected turn.
         let mut statement = self.connection.prepare(
             "SELECT entry_sequence FROM session_entries WHERE session_id = ?1 AND entry_kind = 1
              AND entry_sequence > ?2 AND entry_sequence < ?3 ORDER BY entry_sequence DESC LIMIT 2",
@@ -59,9 +92,9 @@ impl Backend {
         let mut boundaries = statement
             .query_map(
                 params![
-                    &run.session_id.as_bytes()[..],
+                    &session_id.as_bytes()[..],
                     sequence_to_sql(covered)?,
-                    sequence_to_sql(run.source_entry_high_water)?
+                    sequence_to_sql(protected_from)?
                 ],
                 |row| {
                     let value: i64 = row.get(0)?;
@@ -71,30 +104,40 @@ impl Backend {
             )?
             .collect::<Result<Vec<_>, _>>()?;
         boundaries.reverse();
-        boundaries.push(run.source_entry_high_water);
-        let mut source_high_water = None;
+        boundaries.push(protected_from);
         for boundary in boundaries {
             let high_water = boundary - 1;
             if high_water > covered
-                && self
-                    .context_budget(run.session_id, high_water, through)?
-                    .fits(
-                        run.maximum_input_tokens,
-                        instruction_bytes + MAX_COMPACTION_SUMMARY_BYTES,
-                    )
+                && self.context_budget(session_id, high_water, through)?.fits(
+                    maximum_input_tokens,
+                    instruction_bytes + MAX_COMPACTION_SUMMARY_BYTES,
+                )
             {
-                source_high_water = Some(high_water);
-                break;
+                return Ok(Some(high_water));
             }
         }
-        let Some(source_entry_high_water) = source_high_water else {
-            return Ok(None);
-        };
+        Ok(None)
+    }
+
+    /// Project a fixed prefix; callers own lifecycle eligibility and checkpoint validation.
+    pub(super) fn project_compaction_prefix(
+        &self,
+        session_id: SessionId,
+        checkpoint: Option<&ContextCheckpoint>,
+        source_entry_high_water: u64,
+        user_guidance: Option<&str>,
+    ) -> Result<CompactionPlan, PersistenceError> {
+        let covered = checkpoint.map_or(0, |checkpoint| checkpoint.source_entry_high_water);
+        if source_entry_high_water <= covered {
+            return Err(PersistenceError::InvalidState {
+                reason: "a compaction prefix does not advance beyond its parent checkpoint",
+            });
+        }
         let mut digest = ContextSourceHasher::new(source_entry_high_water);
         let mut excerpts = VecDeque::new();
         let mut excerpt_bytes = 0;
         let mut omitted = false;
-        self.visit_context_entries(run.session_id, 0, source_entry_high_water, |entry| {
+        self.visit_context_entries(session_id, 0, source_entry_high_water, |entry| {
             digest.push(&entry).ok_or(PersistenceError::InvalidState {
                 reason: "a compaction source prefix is not contiguous",
             })?;
@@ -131,7 +174,7 @@ impl Backend {
                 .map_err(|_| PersistenceError::InvalidState {
                     reason: "a bounded compaction source estimate overflowed",
                 })?;
-        Ok(Some(CompactionPlan {
+        Ok(CompactionPlan {
             parent_checkpoint_id: checkpoint.map(|checkpoint| checkpoint.id),
             source_entry_high_water,
             source_digest: digest.finish().ok_or(PersistenceError::InvalidState {
@@ -139,13 +182,12 @@ impl Backend {
             })?,
             source,
             parent_summary,
-            user_guidance: prompt
-                .strip_prefix("/compact ")
+            user_guidance: user_guidance
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(|text| bounded_excerpt(text, MAX_GUIDANCE_BYTES)),
             estimated_input_tokens,
-        }))
+        })
     }
 }
 
@@ -218,15 +260,5 @@ fn bounded_excerpt(text: &str, maximum: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn excerpts_are_utf8_bounded_and_disclose_loss() {
-        let text = "🐸".repeat(10_000);
-        let excerpt = bounded_excerpt(&text, MAX_ENTRY_EXCERPT_BYTES);
-        assert!(excerpt.len() <= MAX_ENTRY_EXCERPT_BYTES);
-        assert!(excerpt.contains("Source excerpt truncated"));
-        assert!(excerpt.starts_with('🐸') && excerpt.ends_with('🐸'));
-    }
-}
+#[path = "context_compaction/tests.rs"]
+pub(super) mod tests;

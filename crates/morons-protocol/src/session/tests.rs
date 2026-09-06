@@ -17,6 +17,25 @@ use crate::{
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
 
 #[test]
+fn background_metadata_is_closed_bounded_and_never_accepts_summary_bodies() {
+    let valid = json!({"enabled":true,"latest":{"state":"ready","service":"zen","model_id":"muse-spark-1.2","source_entry_high_water":4,"usage":null}});
+    let status: crate::BackgroundCompactionStatus = serde_json::from_value(valid.clone()).unwrap();
+    assert_eq!(
+        status.latest.unwrap().state,
+        crate::BackgroundCompactionState::Ready
+    );
+    for (field, value) in [
+        ("state", json!("invented")),
+        ("model_id", json!("x".repeat(129))),
+        ("summary", json!("not metadata")),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["latest"][field] = value;
+        assert!(serde_json::from_value::<crate::BackgroundCompactionStatus>(invalid).is_err());
+    }
+}
+
+#[test]
 fn application_request_has_stable_json_shape() {
     let request = ApplicationRequest::CreateSession {
         mutation_request_id: MutationRequestId::from_bytes([0x11; 16]),
@@ -201,6 +220,10 @@ fn context_status_contract_has_stable_json_shapes() {
     );
     let response = ApplicationResponse::SessionContextFound {
         context: crate::SessionContextStatus {
+            background_compaction: crate::BackgroundCompactionStatus {
+                enabled: false,
+                latest: None,
+            },
             project_context: None,
             session_id,
             service: OpenCodeService::Zen,
@@ -230,6 +253,7 @@ fn context_status_contract_has_stable_json_shapes() {
         json!({
             "result": "session_context_found",
             "context": {
+                "background_compaction": {"enabled": false, "latest": null},
                 "session_id": "ses_19191919191919191919191919191919",
                 "service": "zen",
                 "model_id": "muse-spark-1.2",

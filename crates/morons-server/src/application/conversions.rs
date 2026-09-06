@@ -492,6 +492,40 @@ const fn protocol_tool_result_status(
     }
 }
 
+pub(super) fn to_background_status(
+    status: crate::persistence::maintenance::MaintenanceObservation,
+) -> morons_protocol::BackgroundCompactionStatus {
+    use crate::persistence::maintenance::MaintenanceState as Stored;
+    use morons_protocol::BackgroundCompactionState as Wire;
+    morons_protocol::BackgroundCompactionStatus {
+        enabled: status.enabled,
+        latest: status
+            .latest
+            .map(|job| morons_protocol::BackgroundCompactionJob {
+                state: match job.state {
+                    Stored::Prepared => Wire::Prepared,
+                    Stored::Dispatched => Wire::Dispatched,
+                    Stored::Ready => Wire::Ready,
+                    Stored::Failed => Wire::Failed,
+                    Stored::Cancelled => Wire::Cancelled,
+                    Stored::Uncertain => Wire::Uncertain,
+                    Stored::Discarded => Wire::Discarded,
+                    Stored::Installed => Wire::Installed,
+                },
+                service: to_protocol_service(job.service),
+                model_id: job.model_id,
+                source_entry_high_water: job.source_entry_high_water,
+                usage: job.usage.map(|usage| morons_protocol::RecentProviderUsage {
+                    input_tokens: usage.input_tokens,
+                    cached_input_tokens: usage.cached_input_tokens,
+                    cache_write_input_tokens: usage.cache_write_input_tokens,
+                    output_tokens: usage.output_tokens,
+                    elapsed_milliseconds: usage.elapsed_milliseconds,
+                }),
+            }),
+    }
+}
+
 pub(super) fn to_session_summary(session: Session) -> SessionSummary {
     SessionSummary {
         id: ProtocolSessionId::from_bytes(*session.id.as_bytes()),

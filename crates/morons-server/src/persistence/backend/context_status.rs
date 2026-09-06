@@ -89,6 +89,7 @@ impl Backend {
         let (completed_compactions, last_compaction_milliseconds) =
             self.compaction_metrics(session_id, checkpoint.as_ref())?;
         Ok(SessionContextStatus {
+            background_compaction: self.maintenance_observation(session_id)?,
             project_context: project.as_ref().map(|project| project.summary()),
             estimated_input_tokens: u32::try_from(budget.estimated_tokens(extra_bytes))
                 .unwrap_or(u32::MAX),

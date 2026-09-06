@@ -4,6 +4,7 @@ mod credentials;
 mod database;
 pub(crate) mod images;
 mod local_commands;
+pub(crate) mod maintenance;
 mod paths;
 mod run_types;
 mod runs;
@@ -64,6 +65,7 @@ pub(crate) use self::run_types::{
 const WORKER_QUEUE_CAPACITY: usize = 64;
 
 pub struct SessionStore {
+    maintenance_enabled: bool,
     application_root: PathBuf,
     sender: Option<mpsc::Sender<WorkerRequest>>,
     worker: Option<thread::JoinHandle<()>>,
@@ -101,7 +103,10 @@ impl fmt::Debug for OpenCodeCredentialLease<'_> {
 
 impl SessionStore {
     pub fn open(server: &ServerEndpoint) -> Result<Self, PersistenceError> {
-        Self::open_at(server.claim_persistence_root()?)
+        Self::open_configured(
+            server.claim_persistence_root()?,
+            std::env::var_os("MORONS_BACKGROUND_COMPACTION").is_some_and(|value| value == "1"),
+        )
     }
 
     #[cfg(test)]
@@ -109,8 +114,24 @@ impl SessionStore {
         Self::open_at(application_root)
     }
 
+    #[cfg(test)]
+    pub(crate) fn open_for_test_with_maintenance(
+        application_root: &Path,
+    ) -> Result<Self, PersistenceError> {
+        Self::open_configured(application_root, true)
+    }
+
+    #[cfg(test)]
     fn open_at(application_root: &Path) -> Result<Self, PersistenceError> {
-        let backend = Backend::open(application_root)?;
+        Self::open_configured(application_root, false)
+    }
+
+    fn open_configured(
+        application_root: &Path,
+        maintenance_enabled: bool,
+    ) -> Result<Self, PersistenceError> {
+        let mut backend = Backend::open(application_root)?;
+        backend.configure_maintenance(maintenance_enabled)?;
         let event_high_water = backend.delivery_event_high_water()?;
         let (event_notifications, _) = watch::channel(event_high_water);
         let notification_sender = event_notifications.clone();
@@ -119,6 +140,7 @@ impl SessionStore {
             .name("morons-persistence".to_owned())
             .spawn(move || run_worker(backend, receiver, notification_sender))?;
         Ok(Self {
+            maintenance_enabled,
             application_root: application_root.to_path_buf(),
             sender: Some(sender),
             worker: Some(worker),
@@ -648,6 +670,7 @@ impl Drop for SessionStore {
 }
 
 enum WorkerRequest {
+    Maintenance(maintenance::MaintenanceRequest),
     LocalCommand(local_commands::LocalCommandWorkerRequest),
     CreateSession {
         request_id: MutationRequestId,
@@ -760,6 +783,7 @@ fn run_worker(
     while let Some(request) = receiver.blocking_recv() {
         let mut force_event_notification = false;
         match request {
+            WorkerRequest::Maintenance(request) => request.execute(&mut backend),
             WorkerRequest::LocalCommand(request) => request.execute(&mut backend),
             WorkerRequest::CreateSession {
                 request_id,

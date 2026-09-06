@@ -781,6 +781,7 @@ pub(crate) struct RecentProviderUsage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SessionContextStatus {
+    pub background_compaction: super::maintenance::MaintenanceObservation,
     pub project_context: Option<crate::project_context::ProjectContextSummary>,
     pub estimated_input_tokens: u32,
     pub conservative_input_tokens: u32,
