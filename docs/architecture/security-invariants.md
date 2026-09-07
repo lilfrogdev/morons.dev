@@ -193,6 +193,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Untrusted output is never written through raw ANSI paths. Trusted terminal control is emitted only by the reviewed Ratatui backend.
 - Terminal mode and screen ownership are restored on ordinary exits and handled failures without printing credential, environment, prompt, attachment, or transcript buffers.
 - Clipboard and drag-and-drop events are bounded before decoding and cannot directly become terminal control output.
+- The bounded terminal event queue applies backpressure instead of silently discarding keys, paste or submission events. Shutdown closes the receiver before joining the reader so a full queue cannot deadlock teardown. Pending input discarded during shutdown is never executed or replayed later; see [ADR 0034](../adr/0034-lossless-terminal-input-delivery.md).
 - The Ratatui client presents command output but is not a PTY, terminal emulator, shell process host, or editor.
 
 ## Processor and platform portability

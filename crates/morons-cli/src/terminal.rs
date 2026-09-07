@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod queue_tests;
 mod safety;
 
 use std::{
@@ -200,6 +202,8 @@ impl TerminalEvents {
 impl Drop for TerminalEvents {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+        // Wake a reader blocked on the bounded queue before joining it.
+        self.receiver.close();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -217,42 +221,47 @@ fn read_terminal_events(sender: mpsc::Sender<io::Result<TerminalInput>>, stop: &
                     } else {
                         TerminalInput::Key(key)
                     };
-                    if sender.try_send(Ok(input)).is_err() && sender.is_closed() {
+                    if !enqueue_input(&sender, Ok(input)) {
                         return;
                     }
                 }
                 Ok(Event::Paste(paste)) => {
                     let paste = Zeroizing::new(bounded_utf8_prefix(paste, MAX_PASTE_BYTES));
-                    if sender.try_send(Ok(TerminalInput::Paste(paste))).is_err()
-                        && sender.is_closed()
-                    {
+                    if !enqueue_input(&sender, Ok(TerminalInput::Paste(paste))) {
                         return;
                     }
                 }
                 Ok(Event::Resize(_, _)) => {
-                    if sender.try_send(Ok(TerminalInput::Resize)).is_err() && sender.is_closed() {
+                    if !enqueue_input(&sender, Ok(TerminalInput::Resize)) {
                         return;
                     }
                 }
                 Ok(Event::Mouse(mouse)) => {
-                    if sender.try_send(Ok(TerminalInput::Mouse(mouse))).is_err()
-                        && sender.is_closed()
-                    {
+                    if !enqueue_input(&sender, Ok(TerminalInput::Mouse(mouse))) {
                         return;
                     }
                 }
                 Ok(Event::FocusGained | Event::FocusLost) => {}
                 Err(error) => {
-                    let _ = sender.try_send(Err(error));
+                    let _ = enqueue_input(&sender, Err(error));
                     return;
                 }
             },
             Err(error) => {
-                let _ = sender.try_send(Err(error));
+                let _ = enqueue_input(&sender, Err(error));
                 return;
             }
         }
     }
+}
+
+fn enqueue_input(
+    sender: &mpsc::Sender<io::Result<TerminalInput>>,
+    input: io::Result<TerminalInput>,
+) -> bool {
+    // Only the owned polling thread calls this. Backpressure preserves user input;
+    // receiver closure during shutdown interrupts the wait without replay.
+    sender.blocking_send(input).is_ok()
 }
 
 fn is_clipboard_paste_key(key: KeyEvent) -> bool {

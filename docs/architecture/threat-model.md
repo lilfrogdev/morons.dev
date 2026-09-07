@@ -178,7 +178,7 @@ ADR 0031 adds explicit desktop interaction for the authenticated navigation URL:
 ## Terminal threats
 
 - User, provider, skill, path, filename, error, web, command, or Python text injects escape sequences, hyperlinks, terminal-title changes, clipboard operations, device commands, or bidirectional layout controls.
-- Large paste, clipboard image, resize storms, or delta streams exhaust client memory or block input.
+- Large paste, clipboard image, resize storms, or delta streams exhaust client memory or block input. Silently dropping full-queue keystrokes can change user intent before a later Enter; bounded backpressure preserves delivery order, and receiver-close-before-join prevents a blocked reader from deadlocking shutdown (ADR0034).
 - Credential entry is echoed, copied, stored in input history, rendered after cancellation, or retained across connection loss.
 - Terminal restoration prints sensitive buffers or leaves the terminal in raw/alternate-screen mode.
 - Filename attachment markers become editable text and lose their structured payload association.

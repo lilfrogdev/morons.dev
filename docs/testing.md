@@ -24,6 +24,10 @@ Two test threads match CI and reduce SQLite-heavy fixture contention. Timing pro
 
 Ignored live provider tests intentionally require non-echoing credential input and billable inference; Python gates require an installed or downloaded Jupyter runtime. Never run every ignored test indiscriminately. Follow `docs/release-candidate-qa.md` and obtain authorization before billable requests or credential-state changes.
 
+## Terminal input delivery
+
+[ADR 0034](adr/0034-lossless-terminal-input-delivery.md) covers bounded backpressure without silent input loss. `cargo test -p morons-cli --lib --locked terminal::queue_tests` verifies burst key/paste/Enter order with a full queue, closed-receiver rejection and Drop waking a backpressured reader before joining it. These synthetic tests use no real terminal, clipboard or inference. A live draft-only check must compare the complete intended prompt before Enter; preserve any already submitted truncated input instead of rewriting or replaying it. Input delivery success does not qualify provider protocol compatibility.
+
 ## OpenAI OAuth core
 
 ```sh
