@@ -122,6 +122,9 @@ impl AppState {
     }
 
     pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) -> AppAction {
+        if self.auth_dialog.is_some() {
+            return self.handle_auth_mouse(mouse);
+        }
         if self.view != View::Session
             || self.information_dialog.is_some()
             || self.model_dialog.is_some()

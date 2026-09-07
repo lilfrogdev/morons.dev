@@ -64,8 +64,9 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     if let Some(input) = app.rename_dialog.as_ref() {
         render_rename_dialog(frame, area, input.as_str());
     }
+    app.auth_link_buttons = None;
     if let Some(dialog) = app.auth_dialog.as_ref() {
-        super::auth::render(frame, dialog, &mut app.auth_scroll);
+        app.auth_link_buttons = super::auth::render(frame, dialog, &mut app.auth_scroll);
     }
 }
 

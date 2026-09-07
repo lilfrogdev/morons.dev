@@ -169,6 +169,7 @@ pub(super) enum AppAction {
         expected_generation: u64,
     },
     OpenAiCancel,
+    OpenAiLink(crate::login_link::LinkAction),
     SetCredential {
         expected_generation: u64,
         api_key: OpenCodeApiKey,
@@ -286,6 +287,7 @@ impl fmt::Debug for AppAction {
             Self::OpenAiBegin { .. } => formatter.write_str("OpenAiBegin"),
             Self::OpenAiRemove { .. } => formatter.write_str("OpenAiRemove"),
             Self::OpenAiCancel => formatter.write_str("OpenAiCancel"),
+            Self::OpenAiLink(action) => formatter.debug_tuple("OpenAiLink").field(action).finish(),
             Self::SetCredential {
                 expected_generation,
                 ..
@@ -450,6 +452,7 @@ pub(super) struct AppState {
     pub(super) credential_dialog: Option<CredentialDialog>,
     auth_dialog: Option<auth::AuthDialog>,
     auth_scroll: u16,
+    auth_link_buttons: Option<auth::LinkButtons>,
     pub(super) information_dialog: Option<InformationDialog>,
     pub(super) information_scroll: u16,
     pub(super) rename_dialog: Option<PromptBuffer>,
@@ -484,6 +487,7 @@ impl AppState {
             credential_dialog: None,
             auth_dialog: None,
             auth_scroll: 0,
+            auth_link_buttons: None,
             information_dialog: initial_information_dialog(),
             information_scroll: 0,
             rename_dialog: None,

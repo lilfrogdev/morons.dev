@@ -1,4 +1,5 @@
 mod auth;
+mod login_link;
 mod requests;
 mod subscriptions;
 
@@ -125,6 +126,9 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
     enqueue_initial_queries(&request_commands)?;
 
     let result = loop {
+        runtime
+            .links
+            .reconcile(runtime.app.login_link().map(|link| &link.scope));
         terminal.draw(|frame| runtime.app.render(frame))?;
         tokio::select! {
             input = terminal_events.next() => {
@@ -185,7 +189,13 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
                 }
             }
             event = runtime.auth.events.recv() => {
-                if let Some(event)=event {runtime.app.handle_auth_event(event);}
+                if let Some(event) = event {
+                    let action = runtime.app.handle_auth_event(event);
+                    runtime.handle_action(action, &request_commands).await?;
+                }
+            }
+            event = runtime.links.events.recv() => {
+                if let Some(event) = event {runtime.app.handle_link_event(event);}
             }
             event = subscription_event_receiver.recv() => {
                 if let Some(event) = event {
@@ -200,6 +210,7 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
     };
 
     drop(request_commands);
+    runtime.links.shutdown().await;
     runtime.auth.shutdown().await;
     runtime.abort_background_tasks();
     drop(terminal_events);
@@ -210,6 +221,7 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
 struct RuntimeState {
     app: AppState,
     auth: auth::AuthRuntime,
+    links: login_link::LinkRuntime,
     pending_command: Option<RequestCommand>,
     pending_credential_mutation: Option<MutationRequestId>,
     credential_reconciliation_unknown: Option<bool>,
@@ -226,6 +238,7 @@ impl RuntimeState {
         Self {
             app: AppState::new(&server_version),
             auth: auth::AuthRuntime::default(),
+            links: login_link::LinkRuntime::default(),
             pending_command: None,
             pending_credential_mutation: None,
             credential_reconciliation_unknown: None,
@@ -440,7 +453,17 @@ impl RuntimeState {
                 self.start_mutation(command, PendingOperation::CancelLocalCommand, commands)?;
                 self.app.set_status("Requesting local command cancellation");
             }
-            AppAction::OpenAiCancel => self.auth.cancel(),
+            AppAction::OpenAiCancel => {
+                self.auth.cancel();
+                self.links.reconcile(None);
+            }
+            AppAction::OpenAiLink(action) => {
+                if let Some(link) = self.app.login_link() {
+                    self.links
+                        .start(action, std::sync::Arc::clone(&link.scope), link.url.clone())
+                        .await;
+                }
+            }
             action @ (AppAction::OpenAiStatus
             | AppAction::OpenAiBegin { .. }
             | AppAction::OpenAiRemove { .. }) => {

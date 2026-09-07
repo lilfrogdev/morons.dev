@@ -144,6 +144,8 @@ A public client ID is not a secret or proof of a Morons-specific provider agreem
 - Skill instructions, repository files, web pages, or images attempt prompt injection or impersonate developer instructions.
 - A skill-creator operation overwrites an existing skill or writes outside the user's selected skill root unexpectedly.
 
+ADR 0031 adds explicit desktop interaction for the authenticated navigation URL: a single automatic browser handoff and owner-triggered copy/open fallbacks. Ordinary text never authorizes those actions. Only the fixed authorization origin/path is admitted; no shell-source interpolation or BROWSER override is used. OS launcher argument inspection and clipboard history/sync are additional navigation-URL exposure surfaces. Clipboard code runs in a bounded owned helper so blocked platform calls cannot strand the TUI. Late outcomes are bound to private dialog registration. Closing login cannot recall a browser handoff, undo a clipboard write or prove a clipboard manager erased it.
+
 ## Image and clipboard threats
 
 - An image decoder receives malformed, adversarial, decompression-bomb, oversized-dimension, animated, or unsupported data.

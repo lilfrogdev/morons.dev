@@ -124,3 +124,122 @@ fn authentication_dialog_is_scrollable_and_control_k_offers_both_providers() {
     assert_eq!(app.auth_scroll, 0);
     let _ = render(&mut app, 1, 1);
 }
+
+#[test]
+fn login_link_auto_open_is_once_only_and_late_outcomes_cannot_rebind_the_dialog() {
+    use crate::login_link::{LinkAction, LinkEvent};
+    let mut app = AppState::new("test");
+    open(&mut app, false);
+    let notice = render(&mut app, 100, 24);
+    assert!(notice.contains("default browser"));
+    assert!(!notice.contains("not enabled yet"));
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.handle_auth_event(AuthEvent::Started(url())),
+        AppAction::OpenAiLink(LinkAction::Open)
+    );
+    let old_scope = std::sync::Arc::clone(&app.login_link().unwrap().scope);
+    assert_eq!(
+        app.handle_auth_event(AuthEvent::Started(url())),
+        AppAction::None
+    );
+    assert_eq!(
+        key(&mut app, KeyCode::Char('c')),
+        AppAction::OpenAiLink(LinkAction::Copy)
+    );
+    assert_eq!(
+        key(&mut app, KeyCode::Enter),
+        AppAction::OpenAiLink(LinkAction::Open)
+    );
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        AppAction::OpenAiCancel
+    );
+    assert!(app.login_link().is_none());
+    assert_eq!(
+        app.handle_auth_event(AuthEvent::Started(url())),
+        AppAction::None
+    );
+    app.handle_auth_event(AuthEvent::Finished(
+        OpenAiLoginResult::CancelledBeforeInstallation,
+    ));
+    open(&mut app, false);
+    key(&mut app, KeyCode::Enter);
+    app.handle_auth_event(AuthEvent::Started(url()));
+    app.handle_link_event(LinkEvent {
+        scope: old_scope,
+        message: "STALE-LINK-RESULT",
+    });
+    assert!(!render(&mut app, 100, 24).contains("STALE-LINK-RESULT"));
+    let scope = std::sync::Arc::clone(&app.login_link().unwrap().scope);
+    app.handle_link_event(LinkEvent {
+        scope,
+        message: "CURRENT-LINK-RESULT",
+    });
+    assert!(render(&mut app, 100, 24).contains("CURRENT-LINK-RESULT"));
+    app.handle_auth_event(AuthEvent::Finished(OpenAiLoginResult::Installed {
+        generation: 10,
+    }));
+    let complete = render(&mut app, 100, 24);
+    assert!(!complete.contains("not enabled yet"));
+    assert!(!complete.contains("synthetic-marker"));
+    assert!(app.default_model.is_none());
+    assert_eq!(key(&mut app, KeyCode::Char('c')), AppAction::None);
+}
+
+#[test]
+fn login_link_buttons_support_plain_and_control_click_and_narrow_layouts() {
+    use crate::login_link::LinkAction;
+    use ratatui_crossterm::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = AppState::new("test");
+    open(&mut app, false);
+    key(&mut app, KeyCode::Enter);
+    app.handle_auth_event(AuthEvent::Started(url()));
+    for (width, height, copy_x, copy_y) in [(100, 24, 19, 2), (30, 8, 1, 3)] {
+        for modifiers in [KeyModifiers::NONE, KeyModifiers::CONTROL] {
+            render(&mut app, width, height);
+            assert_eq!(
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 1,
+                    row: 2,
+                    modifiers
+                }),
+                AppAction::OpenAiLink(LinkAction::Open)
+            );
+            render(&mut app, width, height);
+            assert_eq!(
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: copy_x,
+                    row: copy_y,
+                    modifiers
+                }),
+                AppAction::OpenAiLink(LinkAction::Copy)
+            );
+        }
+    }
+    render(&mut app, 1, 1);
+    assert!(app.auth_link_buttons.is_none());
+    assert_eq!(
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 2,
+            modifiers: KeyModifiers::NONE
+        }),
+        AppAction::None
+    );
+    render(&mut app, 100, 24);
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 2,
+            modifiers: KeyModifiers::NONE
+        }),
+        AppAction::None
+    );
+    assert!(app.prompt.is_empty());
+}

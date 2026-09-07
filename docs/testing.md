@@ -36,6 +36,8 @@ Native provider binding uses IPC 42 and SQLite 30 (policy controls originated at
 
 Synthetic login-control tests additionally cover connection-scoped cancellation, disconnects, slow consumers, abandoned drains, shutdown during admission, committed installation/cancellation races, status and provider-local removal, closed/redacted framing diagnostics, client outcome scope/generation validation with no reconnect/replay, and terminal-safe scrollable URL dialogs that reject paste/image input and clear URLs on cancellation. The old OpenCode hidden-input/removal tests now choose OpenCode in the provider menu; their secrecy and generation assertions remain. No test opens a browser or the production callback port.
 
+[ADR 0031](adr/0031-login-browser-and-clipboard-interaction.md) adds synthetic coverage for automatic browser opening exactly once, explicit `o`/`c` and mouse fallback, narrow-layout button hitboxes, cancelled/foreign dialog outcomes, complete long-link copying and hostile helper input. Subprocess fixtures test no-queue admission, clipboard ownership, timeout/cancellation/drain and fixed launcher argument boundaries without opening a real browser or reading/writing the host clipboard. The CLI helper reuses pinned arboard 3.6.1 (Apache-2.0 OR MIT); reviewed `set_text` and macOS/Windows/Linux implementations retain their OS-owned/clipboard-owner semantics. No dependency version or unsafe code is added; Tokio's already-reviewed process feature is explicit for standalone CLI builds.
+
 ## Data-use policy admission
 
 ```sh
