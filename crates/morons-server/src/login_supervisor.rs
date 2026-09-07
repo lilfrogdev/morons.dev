@@ -31,7 +31,7 @@ pub(crate) struct LoginSupervisor {
     install_started: tokio::sync::Notify,
 }
 struct Active {
-    id: MutationRequestId,
+    registration: Arc<()>,
     cancel: ProviderCancellationHandle,
     task: JoinHandle<()>,
 }
@@ -39,6 +39,7 @@ pub(crate) struct LoginConnection {
     pub(crate) id: MutationRequestId,
     pub(crate) url: Option<OpenAiAuthorizationUrl>,
     supervisor: Arc<LoginSupervisor>,
+    registration: Arc<()>,
     cancel: ProviderCancellationHandle,
     outcome: watch::Receiver<Option<Outcome>>,
 }
@@ -61,7 +62,7 @@ impl LoginConnection {
                 break;
             }
         }
-        self.supervisor.join(Some(self.id)).await;
+        self.supervisor.join(Some(&self.registration)).await;
         self.outcome.borrow().unwrap_or(Outcome::Failed {
             failure: Failure::InstallationUncertain,
         })
@@ -185,8 +186,9 @@ impl LoginSupervisor {
             };
             outcomes.send_replace(Some(result));
         });
+        let registration = Arc::new(());
         *active = Some(Active {
-            id,
+            registration: registration.clone(),
             cancel: cancel.clone(),
             task,
         });
@@ -194,14 +196,17 @@ impl LoginSupervisor {
             id,
             url: Some(url),
             supervisor: self.clone(),
+            registration,
             cancel,
             outcome,
         })
     }
-    async fn join(&self, id: Option<MutationRequestId>) {
+    async fn join(&self, registration: Option<&Arc<()>>) {
         let mut active = self.active.lock().await;
-        if let Some(a) = active.as_mut().filter(|a| id.is_none_or(|id| a.id == id)) {
-            if id.is_none() {
+        if let Some(a) = active.as_mut().filter(|a| {
+            registration.is_none_or(|registration| Arc::ptr_eq(&a.registration, registration))
+        }) {
+            if registration.is_none() {
                 a.cancel.cancel();
             }
             if (&mut a.task).await.is_err() {

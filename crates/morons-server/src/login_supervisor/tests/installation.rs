@@ -1,4 +1,41 @@
 use super::*;
+
+#[tokio::test(flavor = "current_thread")]
+async fn repeated_client_identifier_cannot_join_a_different_connections_login() {
+    let (_root, _store, supervisor) = setup();
+    let provider = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut first = start(&supervisor, &provider, 0).await;
+    first.cancel(id()).unwrap();
+    time::timeout(Duration::from_secs(3), async {
+        loop {
+            if first.outcome.borrow().is_some()
+                && supervisor
+                    .active
+                    .lock()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .task
+                    .is_finished()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut second = start(&supervisor, &provider, 0).await;
+    assert_eq!(
+        time::timeout(Duration::from_millis(100), first.finish())
+            .await
+            .unwrap(),
+        Outcome::CancelledBeforeInstallation
+    );
+    assert!(second.outcome.borrow().is_none());
+    second.cancel(id()).unwrap();
+    assert_eq!(second.finish().await, Outcome::CancelledBeforeInstallation);
+}
 #[tokio::test(flavor = "current_thread")]
 async fn lost_installation_acknowledgement_is_uncertain_and_closes_future_admission() {
     let (_root, store, mut supervisor) = setup();
