@@ -3,15 +3,12 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
 use sha2::{Digest as _, Sha256};
 use tokio::{sync::Semaphore, task::JoinSet, time};
 
-use super::{NormalizedTurn, normalize_subagent_provider_turn, to_provider_service};
+use super::{NormalizedTurn, normalize_subagent_provider_turn};
 use crate::{
-    persistence::{
-        Run, RunFailureKind, SubagentModelSetting, ToolCallId, conservative_input_token_estimate,
-    },
+    persistence::{Run, RunFailureKind, ToolCallId, conservative_input_token_estimate},
     provider::{
-        OpenCodeProvider, OpenCodeResponseRequest, ProviderCancellation, ProviderError,
-        ProviderInputItem, ProviderMessagePhase, ProviderMessageRole, ProviderUsage,
-        find_open_code_model, provider_cancellation,
+        ProviderCancellation, ProviderError, ProviderInputItem, ProviderMessagePhase,
+        ProviderMessageRole, ProviderUsage, provider_cancellation,
     },
     tools::{
         BashToolExecutor, DirectToolExecutor, MAX_SUBAGENT_MUTATIONS, MAX_SUBAGENT_OUTPUT_BYTES,
@@ -21,6 +18,9 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+use crate::persistence::SubagentModelSetting;
+
 const MAX_CONCURRENT_SUBAGENTS: usize = 4;
 const MAX_SUBAGENT_DURATION: Duration = Duration::from_secs(10 * 60);
 const MAX_SUBAGENT_OUTPUT_TOKENS: u32 = 8_192;
@@ -29,7 +29,7 @@ const SUBAGENT_CONVERSATION_CONTEXT: &[u8] = b"morons.dev/subagent-conversation/
 #[derive(Clone)]
 pub(super) struct SubagentExecutor {
     sessions: Arc<crate::persistence::SessionStore>,
-    provider: Arc<OpenCodeProvider>,
+    provider: Arc<crate::provider::dispatch::ModelProviders>,
     web_search: Arc<WebSearchToolExecutor>,
     permits: Arc<Semaphore>,
 }
@@ -39,7 +39,7 @@ struct SubagentRunConfig {
     project_text: Option<Arc<str>>,
     session_id: [u8; 16],
     call_id: [u8; 16],
-    service: crate::persistence::RunOpenCodeService,
+    service: crate::persistence::RunService,
     model_id: String,
     credential_generation: u64,
     maximum_input_tokens: u32,
@@ -63,7 +63,7 @@ struct SubagentMetrics {
 impl SubagentExecutor {
     pub(super) fn new(
         sessions: Arc<crate::persistence::SessionStore>,
-        provider: Arc<OpenCodeProvider>,
+        provider: Arc<crate::provider::dispatch::ModelProviders>,
         web_search: Arc<WebSearchToolExecutor>,
     ) -> Self {
         Self {
@@ -80,13 +80,13 @@ impl SubagentExecutor {
         call_id: ToolCallId,
         working_directory: PathBuf,
         input: &ToolInput,
-        setting: SubagentModelSetting,
+        binding: crate::persistence::TaskModelBinding,
         cancellation: &ProviderCancellation,
     ) -> Result<ToolResult, crate::persistence::PersistenceError> {
         let ToolInput::Task { context, tasks } = input else {
             return Ok(ToolResult::error(ToolErrorKind::InvalidResponse));
         };
-        let Some(mut config) = subagent_run_config(&parent.run, call_id, setting) else {
+        let Some(mut config) = binding_config(&parent.run, call_id, binding) else {
             return Ok(ToolResult::error(ToolErrorKind::ModelUnavailable));
         };
         config.project_text = parent
@@ -222,6 +222,23 @@ impl SubagentExecutor {
         let mut tool_calls = 0_u16;
         let mut tool_mutations = 0_u16;
         let mut provider_call_ids = BTreeSet::new();
+        let mut turn = match self.provider.turn(
+            config.service.model_service(),
+            &config.model_id,
+            conversation_id,
+            conversation_id,
+            config.credential_generation,
+        ) {
+            Ok(turn) => turn,
+            Err(error) => {
+                return Ok(failed_provider_result(
+                    index,
+                    task.name,
+                    error,
+                    subagent_metrics(0, 0, 0, usage),
+                ));
+            }
+        };
 
         loop {
             if cancellation.is_cancelled() {
@@ -255,15 +272,14 @@ impl SubagentExecutor {
                 ));
             }
             let request = match subagent_provider_tools().and_then(|tools| {
-                OpenCodeResponseRequest::with_prepared_tools(
-                    conversation_id,
-                    to_provider_service(config.service),
-                    &config.model_id,
+                turn.request(crate::provider::dispatch::ModelInput {
                     estimated_input_tokens,
-                    MAX_SUBAGENT_OUTPUT_TOKENS.min(config.maximum_output_tokens),
-                    input.clone(),
+                    maximum_output_tokens: MAX_SUBAGENT_OUTPUT_TOKENS
+                        .min(config.maximum_output_tokens),
+                    input: input.clone(),
                     tools,
-                )
+                    core_first: true,
+                })
             }) {
                 Ok(request) => request,
                 Err(error) => {
@@ -275,12 +291,26 @@ impl SubagentExecutor {
                     ));
                 }
             };
+            let preparing_policy = self
+                .sessions
+                .data_use_policy()
+                .await
+                .map_err(ChildStop::Persistence)?
+                .restrictions;
             let dispatch = match self
                 .provider
-                .prepare_dispatch(config.credential_generation, &request)
+                .prepare_dispatch(&mut turn, &request, preparing_policy, &mut cancellation)
                 .await
             {
                 Ok(dispatch) => dispatch,
+                Err(ProviderError::Cancelled) => return Err(ChildStop::Cancelled),
+                Err(ProviderError::CredentialStoreUnavailable) => {
+                    return Err(ChildStop::Persistence(
+                        crate::persistence::PersistenceError::InvalidState {
+                            reason: "provider credential storage is unavailable",
+                        },
+                    ));
+                }
                 Err(error) => {
                     return Ok(failed_provider_result(
                         index,
@@ -290,12 +320,12 @@ impl SubagentExecutor {
                     ));
                 }
             };
-            match self
+            let policy = match self
                 .sessions
                 .admit_model_data_use(config.service, &config.model_id)
                 .await
             {
-                Ok(_) => {}
+                Ok(policy) => policy.restrictions,
                 Err(crate::persistence::PersistenceError::DataUseRestricted) => {
                     return Ok(failed_provider_result(
                         index,
@@ -305,9 +335,9 @@ impl SubagentExecutor {
                     ));
                 }
                 Err(error) => return Err(ChildStop::Persistence(error)),
-            }
+            };
             provider_turns = provider_turns.saturating_add(1);
-            let outcome = match dispatch.execute(&mut cancellation, |_| {}).await {
+            let outcome = match dispatch.execute(policy, &mut cancellation, |_| {}).await {
                 Ok(outcome) => outcome,
                 Err(ProviderError::Cancelled) => return Err(ChildStop::Cancelled),
                 Err(error) => {
@@ -594,6 +624,36 @@ fn add_usage(total: &mut SubagentUsage, usage: ProviderUsage) -> bool {
     true
 }
 
+fn binding_config(
+    run: &Run,
+    call_id: ToolCallId,
+    binding: crate::persistence::TaskModelBinding,
+) -> Option<SubagentRunConfig> {
+    if run.id != binding.run_id || call_id != binding.call_id {
+        return None;
+    }
+    let model =
+        crate::provider::find_model_profile(binding.service.model_service(), &binding.model_id)?;
+    if model.protocol_revision != binding.protocol_revision
+        || binding.maximum_input_tokens > model.maximum_input_tokens
+        || binding.maximum_output_tokens > model.maximum_output_tokens
+    {
+        return None;
+    }
+    Some(SubagentRunConfig {
+        project_text: None,
+        session_id: *run.session_id.as_bytes(),
+        call_id: *call_id.as_bytes(),
+        service: binding.service,
+        model_id: binding.model_id,
+        credential_generation: binding.credential_generation,
+        protocol_revision: binding.protocol_revision,
+        maximum_input_tokens: binding.maximum_input_tokens,
+        maximum_output_tokens: binding.maximum_output_tokens,
+    })
+}
+
+#[cfg(test)]
 fn subagent_run_config(
     run: &Run,
     call_id: ToolCallId,
@@ -608,8 +668,9 @@ fn subagent_run_config(
                 run.maximum_output_tokens,
                 run.protocol_revision,
             ),
-            SubagentModelSetting::OpenCode { service, model_id } => {
-                let model = find_open_code_model(to_provider_service(service), &model_id)?;
+            SubagentModelSetting::Explicit { service, model_id } => {
+                let model =
+                    crate::provider::find_model_profile(service.model_service(), &model_id)?;
                 if !model.capabilities.text_input
                     || !model.capabilities.text_output
                     || !model.capabilities.tool_calls
@@ -640,11 +701,7 @@ fn subagent_run_config(
 
 fn subagent_model_disclosure(config: &SubagentRunConfig) -> SubagentModelDisclosure {
     SubagentModelDisclosure {
-        service: match config.service {
-            crate::persistence::RunOpenCodeService::Zen => "OpenCode Zen",
-            crate::persistence::RunOpenCodeService::Go => "OpenCode Go",
-        }
-        .to_owned(),
+        service: config.service.model_service().label().to_owned(),
         model_id: config.model_id.clone(),
         protocol_revision: config.protocol_revision,
     }
@@ -708,6 +765,10 @@ const fn provider_failure_label(error: ProviderError) -> &'static str {
         ProviderError::DataUseRestricted => "subagent model does not satisfy data-use restrictions",
         ProviderError::CredentialGenerationChanged => "subagent credential generation changed",
         ProviderError::CredentialNotConfigured => "subagent provider credential is not configured",
+        ProviderError::CredentialReauthenticationRequired => {
+            "subagent provider requires a new login"
+        }
+        ProviderError::CredentialStoreUnavailable => "subagent credential storage is unavailable",
         ProviderError::AuthenticationOrEntitlement => {
             "subagent provider authentication or entitlement failed"
         }
@@ -761,7 +822,7 @@ mod tests {
             id: crate::persistence::RunId::from_bytes([0x10; 16]),
             session_id: crate::persistence::SessionId::from_bytes([0x11; 16]),
             user_message_id: crate::persistence::MessageId::from_bytes([0x12; 16]),
-            service: crate::persistence::RunOpenCodeService::Zen,
+            service: crate::persistence::RunService::Zen,
             model_id: "gpt-5.6-sol".to_owned(),
             protocol_revision: 1,
             credential_generation: 9,
@@ -786,13 +847,13 @@ mod tests {
         let config = subagent_run_config(
             &run,
             ToolCallId::from_bytes([0x13; 16]),
-            SubagentModelSetting::OpenCode {
-                service: crate::persistence::RunOpenCodeService::Go,
+            SubagentModelSetting::Explicit {
+                service: crate::persistence::RunService::Go,
                 model_id: "glm-5.3-flash".to_owned(),
             },
         )
         .expect("reviewed cross-protocol setting should resolve");
-        assert_eq!(config.service, crate::persistence::RunOpenCodeService::Go);
+        assert_eq!(config.service, crate::persistence::RunService::Go);
         assert_eq!(config.model_id, "glm-5.3-flash");
         assert_eq!(config.protocol_revision, 2);
         assert_eq!(config.credential_generation, 9);
@@ -802,8 +863,8 @@ mod tests {
             subagent_run_config(
                 &run,
                 ToolCallId::from_bytes([0x14; 16]),
-                SubagentModelSetting::OpenCode {
-                    service: crate::persistence::RunOpenCodeService::Go,
+                SubagentModelSetting::Explicit {
+                    service: crate::persistence::RunService::Go,
                     model_id: "not-reviewed".to_owned(),
                 },
             )

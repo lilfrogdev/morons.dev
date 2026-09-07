@@ -414,7 +414,7 @@ async fn foreground_cannot_repeat_maintenance_prefix_without_explicit_manual_inp
                 session,
                 text.to_owned(),
                 RunModelSelection {
-                    service: RunOpenCodeService::Zen,
+                    service: RunService::Zen,
                     model_id: "muse-spark-1.2".to_owned(),
                     protocol_revision: 1,
                     maximum_input_tokens: 96_000,
@@ -463,7 +463,7 @@ async fn data_use_policy_blocks_prepared_foreground_compaction_without_a_checkpo
             session,
             "/compact".into(),
             RunModelSelection {
-                service: RunOpenCodeService::Go,
+                service: RunService::Go,
                 model_id: "gpt-5.6-luna".into(),
                 protocol_revision: 1,
                 maximum_input_tokens: 96_000,
@@ -638,7 +638,7 @@ async fn schema_26_migrates_without_scheduling_historical_sessions() {
         .connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 29);
+    assert_eq!(version, 30);
     let jobs: i64 = backend
         .connection
         .query_row(

@@ -40,7 +40,7 @@ async fn changed_credential_generation_fails_before_network_dispatch() {
             session.id,
             "bind the original generation".to_owned(),
             RunModelSelection {
-                service: RunOpenCodeService::Zen,
+                service: RunService::Zen,
                 model_id: "muse-spark-1.2".to_owned(),
                 protocol_revision: 1,
                 maximum_input_tokens: 96_000,
@@ -169,7 +169,7 @@ async fn accepted_run_outlives_request_and_commits_complete_assistant() {
             MutationRequestId::from_bytes([0x03; 16]),
             protocol_session_id,
             "return a durable answer".to_owned(),
-            OpenCodeService::Zen,
+            ModelService::Zen,
             "muse-spark-1.2".to_owned(),
         )
         .await
@@ -325,7 +325,7 @@ async fn exact_cancellation_stops_the_supervised_provider_task() {
             session_id: SessionId::from_bytes(*session.id.as_bytes()),
             text: "cancel the network request".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -390,7 +390,7 @@ async fn graceful_shutdown_interrupts_run_without_owner_cancellation() {
             session_id: SessionId::from_bytes(*session.id.as_bytes()),
             text: "interrupt on shutdown".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -425,7 +425,7 @@ async fn graceful_shutdown_interrupts_run_without_owner_cancellation() {
             session_id: run.session_id,
             text: "must not start during shutdown".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await

@@ -3,8 +3,8 @@ use rusqlite::{Connection, OptionalExtension};
 use super::records::nonnegative_integer_from_row;
 use crate::{
     persistence::{
-        AcceptedRun, MessageId, PersistenceError, Run, RunFailureKind, RunId, RunOpenCodeService,
-        RunState, SessionId, ToolCallId, TranscriptEntry,
+        AcceptedRun, MessageId, PersistenceError, Run, RunFailureKind, RunId, RunService, RunState,
+        SessionId, ToolCallId, TranscriptEntry,
         run_types::{AssistantMessagePhase, ProviderOperationId, ToolOperationId},
         types::REQUEST_FINGERPRINT_BYTES,
     },
@@ -111,7 +111,7 @@ pub(super) fn accepted_run_from_request(
                     id: request.run_id,
                     session_id: SessionId::from_bytes(row.get(0)?),
                     user_message_id: MessageId::from_bytes(row.get(1)?),
-                    service: RunOpenCodeService::from_record(row.get(2)?)?,
+                    service: RunService::from_record(row.get(2)?)?,
                     model_id: row.get(3)?,
                     protocol_revision: positive_u16_from_row(row, 4)?,
                     credential_generation: nonnegative_integer_from_row(row, 5)?,
@@ -233,7 +233,7 @@ pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         id: RunId::from_bytes(row.get(0)?),
         session_id: SessionId::from_bytes(row.get(1)?),
         user_message_id: MessageId::from_bytes(row.get(2)?),
-        service: RunOpenCodeService::from_record(row.get(3)?)?,
+        service: RunService::from_record(row.get(3)?)?,
         model_id: row.get(4)?,
         protocol_revision,
         credential_generation: nonnegative_integer_from_row(row, 6)?,
@@ -266,7 +266,7 @@ pub(super) fn transcript_entry_from_row(
     let entry_kind = row.get::<_, i64>(3)?;
     let service = row
         .get::<_, Option<i64>>(4)?
-        .map(RunOpenCodeService::from_record)
+        .map(RunService::from_record)
         .transpose()?;
     let model_id = row.get::<_, Option<String>>(5)?;
     let text = row.get::<_, Option<String>>(6)?;

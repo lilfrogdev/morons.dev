@@ -37,7 +37,7 @@ The final category is user-owned authority that Morons deliberately grants to lo
 - Root, LocalSystem, administrators, and equivalent privileged identities are outside the local guarantee.
 - Malicious processes already running as the same operating-system user are outside the local IPC and credential-confidentiality guarantee.
 - The selected Bash installation, expert `MORONS_PYTHON` override, Git, credential helpers, agents, dependencies, and ordinary user environment are controlled by or accepted by the user. The default managed IPython runtime pins and verifies artifact identity, but Morons does not claim that upstream Python or package code is safe.
-- OpenCode and its upstream providers receive context deliberately selected for an authorized run. Their infrastructure, policy, catalogs, responses, and model output remain external and untrusted.
+- The selected OpenCode service/upstream or native ChatGPT provider receives context deliberately selected for an authorized run. Their infrastructure, policy, catalogs, responses, and model output remain external and untrusted.
 - Public certificate authorities and the operating system's TLS implementation correctly authenticate fixed provider HTTPS origins.
 - Users needing containment run the complete Morons application inside an external boundary that they configure and validate.
 

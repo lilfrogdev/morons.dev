@@ -17,7 +17,7 @@ impl Backend {
              FROM compaction_maintenance_jobs AS job JOIN run_accepted_facts AS run ON run.run_id = job.trigger_run_id
              LEFT JOIN compaction_maintenance_events AS ready ON ready.job_id = job.job_id AND ready.state = 3
              WHERE job.session_id = ?1 ORDER BY job.prepared_sequence DESC LIMIT 1", [&session.as_bytes()[..]],
-            |row| Ok((row.get::<_, i64>(0)?, RunOpenCodeService::from_record(row.get(1)?)?, row.get::<_, String>(2)?,
+            |row| Ok((row.get::<_, i64>(0)?, RunService::from_record(row.get(1)?)?, row.get::<_, String>(2)?,
                 nonnegative_integer_from_row(row, 3)?, row.get::<_, Option<i64>>(4)?, row.get::<_, Option<i64>>(5)?,
                 row.get::<_, Option<i64>>(6)?, row.get::<_, Option<i64>>(7)?, row.get::<_, Option<i64>>(8)?)),
         ).optional()?;

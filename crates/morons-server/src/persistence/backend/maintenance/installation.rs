@@ -32,7 +32,7 @@ impl Backend {
         self.validate_maintenance_binding(&job)?;
         validate_events(&self.connection, &job)?;
         let result = ready_result(&self.connection, &job)?;
-        let credential = self.open_code_credential_status()?;
+        let credential = self.model_credential_status(run.service)?;
         let through = self.connection.query_row(
             "SELECT entry_high_water FROM session_run_states WHERE session_id = ?1",
             [&run.session_id.as_bytes()[..]],

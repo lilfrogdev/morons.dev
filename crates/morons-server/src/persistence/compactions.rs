@@ -71,8 +71,9 @@ impl ContextSourceHasher {
                 digest.update(id.as_bytes());
                 digest.update(run_id.as_bytes());
                 digest.update([match service {
-                    super::RunOpenCodeService::Zen => 1,
-                    super::RunOpenCodeService::Go => 2,
+                    super::RunService::Zen => 1,
+                    super::RunService::Go => 2,
+                    super::RunService::OpenAiChatGpt => 3,
                 }]);
                 update_text(digest, model_id)?;
                 update_text(digest, text)?;

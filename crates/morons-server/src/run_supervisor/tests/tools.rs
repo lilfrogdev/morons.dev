@@ -36,7 +36,7 @@ async fn missing_write_parent_returns_known_feedback_without_replaying_a_mutatio
             session_id,
             text: "Try writing missing/file.txt once and report the result.".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -89,7 +89,7 @@ async fn direct_tool_loop_reads_edits_runs_bash_and_commits_durable_results() {
             session_id,
             text: "inspect and update note.txt".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -219,7 +219,7 @@ async fn read_image_tool_stores_bytes_outside_sqlite_and_returns_multimodal_cont
             session_id,
             text: "inspect picture.png".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "gpt-5.4".to_owned(),
         })
         .await
@@ -290,7 +290,7 @@ async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
             session_id,
             text: "find the current Rust site".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -403,7 +403,7 @@ async fn ipython_tool_reuses_one_session_kernel_and_commits_bounded_results() {
             session_id,
             text: "use persistent Python state".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await

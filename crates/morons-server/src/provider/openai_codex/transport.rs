@@ -105,7 +105,7 @@ impl OpenAiCodexProvider {
         self.total_timeout = total;
     }
     #[cfg(test)]
-    pub(super) fn for_test(credentials: Arc<OpenAiCredentialProvider>, endpoint: Uri) -> Self {
+    pub(crate) fn for_test(credentials: Arc<OpenAiCredentialProvider>, endpoint: Uri) -> Self {
         let mut provider = Self::new(credentials);
         provider.client = bounded_client(
             true,
@@ -259,8 +259,11 @@ fn credential_error(error: OpenAiCredentialError) -> ProviderError {
         }
         OpenAiCredentialError::Persistence(
             PersistenceError::CredentialNotConfigured
-            | PersistenceError::CredentialReauthenticationRequired,
+            | PersistenceError::OpenAiCredentialNotConfigured,
         ) => ProviderError::CredentialNotConfigured,
-        _ => ProviderError::Transport,
+        OpenAiCredentialError::Persistence(
+            PersistenceError::CredentialReauthenticationRequired,
+        ) => ProviderError::CredentialReauthenticationRequired,
+        OpenAiCredentialError::Persistence(_) => ProviderError::CredentialStoreUnavailable,
     }
 }

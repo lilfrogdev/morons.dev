@@ -1,4 +1,4 @@
-//! Reviewed native subscription adapter; application run/model admission is a separate gate.
+//! Reviewed native subscription transport; application/persistence own dispatch admission.
 mod request;
 #[cfg(test)]
 mod tests;

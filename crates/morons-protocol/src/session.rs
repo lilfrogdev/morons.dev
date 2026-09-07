@@ -276,13 +276,13 @@ pub enum ApplicationRequest {
     SubscribeSessionCatalog {
         cursor: SessionCatalogEventCursor,
     },
-    ListOpenCodeModels {
-        service: crate::OpenCodeService,
+    ListModels {
+        service: crate::ModelService,
     },
-    GetDefaultOpenCodeModel,
-    SetDefaultOpenCodeModel {
+    GetDefaultModel,
+    SetDefaultModel {
         mutation_request_id: MutationRequestId,
-        service: crate::OpenCodeService,
+        service: crate::ModelService,
         model_id: String,
     },
     GetApplicationSettings,
@@ -299,7 +299,7 @@ pub enum ApplicationRequest {
     },
     GetSessionContext {
         session_id: SessionId,
-        service: crate::OpenCodeService,
+        service: crate::ModelService,
         model_id: String,
     },
     GetOpenAiCredentialStatus,
@@ -329,7 +329,7 @@ pub enum ApplicationRequest {
         session_id: SessionId,
         text: String,
         attachments: Vec<crate::ImageUpload>,
-        service: crate::OpenCodeService,
+        service: crate::ModelService,
         model_id: String,
     },
     ExecuteLocalCommand {
@@ -421,17 +421,17 @@ impl fmt::Debug for ApplicationRequest {
                 .debug_struct("SubscribeSessionCatalog")
                 .field("cursor", cursor)
                 .finish(),
-            Self::ListOpenCodeModels { service } => formatter
-                .debug_struct("ListOpenCodeModels")
+            Self::ListModels { service } => formatter
+                .debug_struct("ListModels")
                 .field("service", service)
                 .finish(),
-            Self::GetDefaultOpenCodeModel => formatter.write_str("GetDefaultOpenCodeModel"),
-            Self::SetDefaultOpenCodeModel {
+            Self::GetDefaultModel => formatter.write_str("GetDefaultModel"),
+            Self::SetDefaultModel {
                 mutation_request_id,
                 service,
                 model_id,
             } => formatter
-                .debug_struct("SetDefaultOpenCodeModel")
+                .debug_struct("SetDefaultModel")
                 .field("mutation_request_id", mutation_request_id)
                 .field("service", service)
                 .field("model_id", model_id)
@@ -596,15 +596,15 @@ pub enum ApplicationResponse {
     SessionCatalogSubscriptionStarted {
         cursor: SessionCatalogEventCursor,
     },
-    OpenCodeModelsListed {
-        service: crate::OpenCodeService,
-        models: Vec<crate::OpenCodeModelSummary>,
+    ModelsListed {
+        service: crate::ModelService,
+        models: Vec<crate::ModelSummary>,
     },
-    DefaultOpenCodeModel {
-        selection: Option<crate::OpenCodeModelSelection>,
+    DefaultModel {
+        selection: Option<crate::ModelSelection>,
     },
-    DefaultOpenCodeModelUpdated {
-        selection: crate::OpenCodeModelSelection,
+    DefaultModelUpdated {
+        selection: crate::ModelSelection,
     },
     ApplicationSettings {
         settings: crate::ApplicationSettings,
@@ -819,7 +819,7 @@ pub struct SessionContextStatus {
     pub background_compaction: BackgroundCompactionStatus,
     pub project_context: Option<ProjectContextSummary>,
     pub session_id: SessionId,
-    pub service: crate::OpenCodeService,
+    pub service: crate::ModelService,
     pub model_id: String,
     pub context_policy_version: u16,
     pub estimated_input_tokens: u32,
@@ -846,7 +846,7 @@ pub struct BackgroundCompactionStatus {
 #[serde(deny_unknown_fields)]
 pub struct BackgroundCompactionJob {
     pub state: BackgroundCompactionState,
-    pub service: crate::OpenCodeService,
+    pub service: crate::ModelService,
     #[serde(deserialize_with = "background_model")]
     pub model_id: String,
     pub source_entry_high_water: u64,
@@ -947,6 +947,8 @@ pub enum ApplicationError {
         failure: crate::OpenAiLoginFailure,
     },
     OpenCodeCredentialNotConfigured,
+    OpenAiCredentialNotConfigured,
+    CredentialReauthenticationRequired,
     DataUseRestricted,
     DataUsePolicyChanged,
     CredentialGenerationConflict,

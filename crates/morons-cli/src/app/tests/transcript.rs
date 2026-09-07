@@ -18,7 +18,7 @@ fn transcript_auto_scroll_accounts_for_wrapped_lines() {
             TranscriptEntry::AssistantMessage {
                 id: MessageId::from_bytes([0x45; 16]),
                 run_id: run.id,
-                service: OpenCodeService::Zen,
+                service: ModelService::Zen,
                 model_id: "grok-4.6".to_owned(),
                 text: "LATEST-ASSISTANT-OUTPUT".to_owned(),
                 refusal: false,
@@ -61,7 +61,7 @@ fn transcript_history_scrolls_without_new_output_stealing_the_view() {
         .map(|index| TranscriptEntry::AssistantMessage {
             id: MessageId::from_bytes([index; 16]),
             run_id: run.id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "grok-4.6".to_owned(),
             text: format!("TRANSCRIPT-{index:02}"),
             refusal: false,
@@ -71,7 +71,7 @@ fn transcript_history_scrolls_without_new_output_stealing_the_view() {
     entries.push(TranscriptEntry::AssistantMessage {
         id: MessageId::from_bytes([0x40; 16]),
         run_id: run.id,
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "grok-4.6".to_owned(),
         text: "LATEST-BEFORE-SCROLL".to_owned(),
         refusal: false,
@@ -104,7 +104,7 @@ fn transcript_history_scrolls_without_new_output_stealing_the_view() {
         entry: TranscriptEntry::AssistantMessage {
             id: MessageId::from_bytes([0x50; 16]),
             run_id: run.id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "grok-4.6".to_owned(),
             text: "NEWEST-WHILE-READING".to_owned(),
             refusal: false,
@@ -142,7 +142,7 @@ fn transcript_windows_page_to_history_edges_and_defer_live_output() {
         entries: vec![TranscriptEntry::AssistantMessage {
             id: MessageId::from_bytes([0x81; 16]),
             run_id: run.id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "grok-4.6".to_owned(),
             text: "LATEST-WINDOW".to_owned(),
             refusal: false,
@@ -175,7 +175,7 @@ fn transcript_windows_page_to_history_edges_and_defer_live_output() {
             entries: vec![TranscriptEntry::AssistantMessage {
                 id: MessageId::from_bytes([0x82; 16]),
                 run_id: run.id,
-                service: OpenCodeService::Zen,
+                service: ModelService::Zen,
                 model_id: "grok-4.6".to_owned(),
                 text: "OLDEST-WINDOW".to_owned(),
                 refusal: false,
@@ -202,7 +202,7 @@ fn transcript_windows_page_to_history_edges_and_defer_live_output() {
         entry: TranscriptEntry::AssistantMessage {
             id: MessageId::from_bytes([0x83; 16]),
             run_id: run.id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "grok-4.6".to_owned(),
             text: "DEFERRED-LIVE-OUTPUT".to_owned(),
             refusal: false,
@@ -261,7 +261,7 @@ fn live_transcript_window_stays_bounded_and_requests_a_fresh_tail() {
         .map(|index| TranscriptEntry::AssistantMessage {
             id: MessageId::from_bytes([index; 16]),
             run_id: run.id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "grok-4.6".to_owned(),
             text: format!("ENTRY-{index}"),
             refusal: false,
@@ -284,7 +284,7 @@ fn live_transcript_window_stays_bounded_and_requests_a_fresh_tail() {
         entry: TranscriptEntry::AssistantMessage {
             id: MessageId::from_bytes([0x90; 16]),
             run_id: run.id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "grok-4.6".to_owned(),
             text: "AFTER-WINDOW-LIMIT".to_owned(),
             refusal: false,
@@ -564,7 +564,7 @@ fn durable_assistant_message_replaces_transient_output() {
         entry: TranscriptEntry::AssistantMessage {
             id: MessageId::from_bytes([0x44; 16]),
             run_id: run.id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "grok-4.6".to_owned(),
             text: "complete".to_owned(),
             refusal: false,

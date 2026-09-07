@@ -18,7 +18,7 @@ async fn policy_is_independent_idempotent_sequence_checked_and_durable() {
         DataUsePolicy::default()
     );
     let default = DefaultModelSelection {
-        service: RunOpenCodeService::Go,
+        service: RunService::Go,
         model_id: "gpt-5.6-luna".into(),
     };
     store
@@ -101,8 +101,8 @@ async fn current_policy_enforces_the_reviewed_matrix_for_selection_and_dispatch(
         previous = policy.sequence;
         for model in open_code_models() {
             let service = match model.service {
-                OpenCodeService::Zen => RunOpenCodeService::Zen,
-                OpenCodeService::Go => RunOpenCodeService::Go,
+                OpenCodeService::Zen => RunService::Zen,
+                OpenCodeService::Go => RunService::Go,
             };
             let admitted = store.admit_model_data_use(service, model.id).await;
             assert_eq!(
@@ -128,7 +128,7 @@ async fn current_policy_enforces_the_reviewed_matrix_for_selection_and_dispatch(
                     store
                         .set_subagent_model_setting(
                             id(99),
-                            crate::persistence::SubagentModelSetting::OpenCode {
+                            crate::persistence::SubagentModelSetting::Explicit {
                                 service,
                                 model_id: model.id.into()
                             }
@@ -156,7 +156,7 @@ async fn acceptance_and_prepared_dispatch_fail_known_without_changing_selected_m
         .unwrap();
     let model = find_open_code_model(OpenCodeService::Go, "gpt-5.6-luna").unwrap();
     let selection = RunModelSelection {
-        service: RunOpenCodeService::Go,
+        service: RunService::Go,
         model_id: model.id.into(),
         protocol_revision: model.protocol_revision,
         maximum_input_tokens: model.maximum_input_tokens,
@@ -214,7 +214,7 @@ async fn acceptance_and_prepared_dispatch_fail_known_without_changing_selected_m
         Err(PersistenceError::DataUseRestricted)
     ));
     let retry = store
-        .find_session_input_retry(id(3), session.id, "test", RunOpenCodeService::Go, model.id)
+        .find_session_input_retry(id(3), session.id, "test", RunService::Go, model.id)
         .await
         .unwrap()
         .unwrap();

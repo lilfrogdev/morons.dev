@@ -129,7 +129,7 @@ async fn run_input_is_atomic_idempotent_and_session_serialized() {
             request_id,
             session.id,
             "hello durable run",
-            RunOpenCodeService::Zen,
+            RunService::Zen,
             TEST_MODEL,
         )
         .await
@@ -144,7 +144,7 @@ async fn run_input_is_atomic_idempotent_and_session_serialized() {
             request_id,
             session.id,
             "different input",
-            RunOpenCodeService::Zen,
+            RunService::Zen,
             TEST_MODEL,
         )
         .await

@@ -10,6 +10,8 @@ pub(crate) mod maintenance;
 mod openai;
 mod paths;
 mod run_types;
+mod task_binding;
+pub(crate) use task_binding::TaskModelBinding;
 mod runs;
 mod types;
 mod workspace;
@@ -46,7 +48,7 @@ pub use self::{
         AcceptedLocalCommand, AcceptedRun, DefaultModelSelection, ImageAttachment,
         ImageAttachmentId, LocalCommandCancellationResult, LocalCommandId, LocalCommandStatus,
         MessageId, Run, RunCancellationResult, RunFailureKind, RunId, RunModelSelection,
-        RunOpenCodeService, RunState, SessionEvent, SessionEventCursor, SessionEventPage,
+        RunService, RunState, SessionEvent, SessionEventCursor, SessionEventPage,
         SessionEventPayload, SubagentModelSetting, ToolCallId, TranscriptCursor, TranscriptEntry,
         TranscriptPage, TranscriptPageDirection, TranscriptWindowPage,
     },
@@ -682,6 +684,11 @@ impl Drop for SessionStore {
 }
 
 enum WorkerRequest {
+    TaskModelBinding {
+        run_id: RunId,
+        call_id: ToolCallId,
+        response: oneshot::Sender<Result<TaskModelBinding, PersistenceError>>,
+    },
     DataUse(data_use::Request),
     OpenAi(openai::OpenAiWorkerRequest),
     Maintenance(maintenance::MaintenanceRequest),
@@ -797,6 +804,13 @@ fn run_worker(
     while let Some(request) = receiver.blocking_recv() {
         let mut force_event_notification = false;
         match request {
+            WorkerRequest::TaskModelBinding {
+                run_id,
+                call_id,
+                response,
+            } => {
+                let _ = response.send(backend.load_task_model_binding(run_id, call_id));
+            }
             WorkerRequest::DataUse(request) => request.execute(&mut backend),
             WorkerRequest::Maintenance(request) => request.execute(&mut backend),
             WorkerRequest::OpenAi(request) => request.execute(&mut backend),

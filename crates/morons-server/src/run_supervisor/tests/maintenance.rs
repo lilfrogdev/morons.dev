@@ -314,7 +314,7 @@ async fn supervised_request_is_single_tools_free_and_cancellable_without_blockin
     let (_root, selected, store, session, trigger) = eligible(true).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    let provider = Arc::new(OpenCodeProvider::for_test(Arc::clone(&store), &base));
+    let provider = crate::provider::dispatch::ModelProviders::for_test(Arc::clone(&store), &base);
     let shutdown = tokio::sync::watch::channel(false).0;
     let supervisor = MaintenanceSupervisor::new(Arc::clone(&store), provider, shutdown.clone());
     let (observed_tx, observed) = oneshot::channel();
@@ -421,7 +421,8 @@ async fn deadline_and_shutdown_close_blocked_requests_without_replay() {
         let (_root, _selected, store, session, trigger) = eligible(true).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let provider = Arc::new(OpenCodeProvider::for_test(Arc::clone(&store), &base));
+        let provider =
+            crate::provider::dispatch::ModelProviders::for_test(Arc::clone(&store), &base);
         let supervisor = MaintenanceSupervisor::with_deadline_for_test(
             Arc::clone(&store),
             provider,
@@ -526,7 +527,7 @@ async fn successful_root_triggers_distinct_maintenance_and_next_request_installs
             session_id,
             text: "Continue".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -549,7 +550,7 @@ async fn successful_root_triggers_distinct_maintenance_and_next_request_installs
             let state = application
                 .execute_for_local_owner(ApplicationRequest::GetSessionContext {
                     session_id,
-                    service: OpenCodeService::Zen,
+                    service: ModelService::Zen,
                     model_id: "muse-spark-1.2".to_owned(),
                 })
                 .await
@@ -574,7 +575,7 @@ async fn successful_root_triggers_distinct_maintenance_and_next_request_installs
             session_id,
             text: "NEXT_INPUT".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -593,7 +594,7 @@ async fn successful_root_triggers_distinct_maintenance_and_next_request_installs
         application
             .execute_for_local_owner(ApplicationRequest::GetSessionContext {
                 session_id,
-                service: OpenCodeService::Zen,
+                service: ModelService::Zen,
                 model_id: "muse-spark-1.2".to_owned(),
             })
             .await

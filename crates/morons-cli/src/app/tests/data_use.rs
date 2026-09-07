@@ -9,11 +9,11 @@ fn data_use_controls_are_independent_explicit_and_do_not_change_model_selection(
         data_use: Default::default(),
     });
     let mut model = fixture_model();
-    model.training_use = morons_protocol::OpenCodeModelTrainingUse::NotDocumented;
-    model.retention = morons_protocol::OpenCodeModelRetention::NotDocumented;
+    model.training_use = morons_protocol::ModelTrainingUse::NotDocumented;
+    model.retention = morons_protocol::ModelRetention::NotDocumented;
     app.replace_models(model.service, vec![model.clone()])
         .unwrap();
-    app.install_default_model(Some(OpenCodeModelSelection {
+    app.install_default_model(Some(ModelSelection {
         service: model.service,
         model_id: model.id.clone(),
     }));
@@ -75,7 +75,7 @@ fn blocked_policy_retains_prompt_and_does_not_block_local_command_mode() {
     let mut app = AppState::new("test-server");
     app.information_dialog = None;
     let mut model = fixture_model();
-    model.training_use = morons_protocol::OpenCodeModelTrainingUse::NotDocumented;
+    model.training_use = morons_protocol::ModelTrainingUse::NotDocumented;
     app.replace_models(model.service, vec![model]).unwrap();
     app.open_session(session, Vec::new(), vec![run], None, None)
         .unwrap();

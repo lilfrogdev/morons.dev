@@ -2,7 +2,7 @@ use tokio::sync::oneshot;
 
 use super::{
     AcceptedRun, CommittedToolTurn, CompletedToolTurn, MutationRequestId, PersistenceError, Run,
-    RunCancellationResult, RunFailureKind, RunId, RunModelSelection, RunOpenCodeService, SessionId,
+    RunCancellationResult, RunFailureKind, RunId, RunModelSelection, RunService, SessionId,
     SessionStore, ToolCallId, TranscriptCursor, TranscriptEntry, TranscriptPage,
     TranscriptPageDirection, TranscriptWindowPage, WorkerRequest,
     backend::Backend,
@@ -25,7 +25,7 @@ impl SessionStore {
         request_id: MutationRequestId,
         session_id: SessionId,
         text: &str,
-        service: RunOpenCodeService,
+        service: RunService,
         model_id: &str,
     ) -> Result<Option<AcceptedRun>, PersistenceError> {
         self.find_session_input_retry_with_images(
@@ -44,7 +44,7 @@ impl SessionStore {
         request_id: MutationRequestId,
         session_id: SessionId,
         text: &str,
-        service: RunOpenCodeService,
+        service: RunService,
         model_id: &str,
         attachments: &[crate::persistence::PreparedImageAttachment],
     ) -> Result<Option<AcceptedRun>, PersistenceError> {
@@ -174,7 +174,7 @@ impl SessionStore {
         &self,
         run_id: RunId,
         operation_id: crate::persistence::CompactionOperationId,
-        service: RunOpenCodeService,
+        service: RunService,
         model_id: String,
         summary: String,
     ) -> Result<crate::persistence::ContextCheckpoint, PersistenceError> {
@@ -461,7 +461,7 @@ impl SessionStore {
 fn input_fingerprint(
     session_id: SessionId,
     text: &str,
-    service: RunOpenCodeService,
+    service: RunService,
     model_id: &str,
     attachments: &[crate::persistence::PreparedImageAttachment],
 ) -> [u8; REQUEST_FINGERPRINT_BYTES] {
@@ -516,7 +516,7 @@ pub(super) enum RunWorkerRequest {
     CompleteCompaction {
         run_id: RunId,
         operation_id: crate::persistence::CompactionOperationId,
-        service: RunOpenCodeService,
+        service: RunService,
         model_id: String,
         summary: String,
         response: oneshot::Sender<Result<crate::persistence::ContextCheckpoint, PersistenceError>>,

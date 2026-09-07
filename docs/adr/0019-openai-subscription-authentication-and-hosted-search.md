@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for staged implementation, revised 2026-09-06. Supersedes this draft's search-only scope and dedicated-client-registration gate. Browser sign-in and credentialed inference remain unqualified until deliberate owner testing. The current increment connects the OAuth core and custody through supervised authenticated login controls and an ephemeral terminal dialog. Coding-model selection and inference remain separate, not yet enabled.
+Accepted for staged implementation, revised 2026-09-06. Supersedes this draft's search-only scope and dedicated-client-registration gate. Browser sign-in and credentialed inference remain unqualified until deliberate owner testing. The OAuth core, custody and supervised terminal login are integrated. [ADR 0030](0030-native-provider-and-task-bindings.md) now connects reviewed native model selection and inference through provider-local run/task/compaction bindings and current data-use policy. Owner browser/subscription qualification remains separate.
 
 ## Context and provenance
 
@@ -35,7 +35,7 @@ OAuth compatibility revision 1 fixes:
 
 The public client ID is not a secret or an imported credential. This deliberately follows the reviewed native-client compatibility flow without claiming a private Morons registration. If the provider rejects Morons' identity or requires registration, report the blocker; do not silently impersonate another originator, change client IDs, fall back to an API key or copy another application's login.
 
-[ADR 0028](0028-native-codex-responses-contract.md) records the staged full-Responses adapter review, including model retirement and local-only output limits. Application model admission remains gated. The coding adapter must separately review `https://chatgpt.com/backend-api/codex/responses`, `store: false`, account-scoped headers, exact supported models, tools/images, output limits, reasoning continuation and strict Responses decoding. The token endpoint cannot select or redirect to this or any other origin. No inference route or model is enabled by the OAuth-core increment.
+[ADR 0028](0028-native-codex-responses-contract.md) records the staged full-Responses adapter review, including model retirement and local-only output limits. Application admission follows the completed bindings in [ADR 0030](0030-native-provider-and-task-bindings.md). The coding adapter separately reviews `https://chatgpt.com/backend-api/codex/responses`, `store: false`, account-scoped headers, exact supported models, tools/images, output limits, reasoning continuation and strict Responses decoding. The token endpoint cannot select or redirect to this or any other origin. No inference route or model is enabled by the OAuth-core increment.
 
 ## OAuth core
 

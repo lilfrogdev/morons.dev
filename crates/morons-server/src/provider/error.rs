@@ -8,6 +8,8 @@ pub enum ProviderError {
     DataUseRestricted,
     CredentialGenerationChanged,
     CredentialNotConfigured,
+    CredentialReauthenticationRequired,
+    CredentialStoreUnavailable,
     Transport,
     ResponseHeaderTimeout,
     StreamInactivityTimeout,
@@ -36,6 +38,8 @@ impl fmt::Display for ProviderError {
             }
             Self::CredentialGenerationChanged => "the provider credential generation changed",
             Self::CredentialNotConfigured => "the provider credential is not configured",
+            Self::CredentialReauthenticationRequired => "the provider requires a new login",
+            Self::CredentialStoreUnavailable => "provider credential storage is unavailable",
             Self::Transport => "the provider transport failed",
             Self::ResponseHeaderTimeout => "the provider response headers timed out",
             Self::StreamInactivityTimeout => "the provider response stream became inactive",

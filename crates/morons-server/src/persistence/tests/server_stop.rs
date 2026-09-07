@@ -122,7 +122,7 @@ async fn accepted_server_stop_signals_once_and_rejects_new_run_input() {
             session_id: ProtocolSessionId::from_bytes(*session.id.as_bytes()),
             text: "must not start after shutdown acceptance".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await;

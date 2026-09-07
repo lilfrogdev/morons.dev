@@ -40,7 +40,7 @@ fn trusted_local_onboarding_and_help_are_explicit_and_modal() {
 fn rendering_strips_terminal_and_bidirectional_controls() {
     let (session, run) = fixture_session_and_run();
     let mut app = AppState::new("test-server");
-    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+    app.replace_models(ModelService::Zen, vec![fixture_model()])
         .expect("models should be valid");
     app.open_session(
         session,

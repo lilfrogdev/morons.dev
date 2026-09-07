@@ -4,7 +4,7 @@
 
 Accepted for staged implementation. Native model admission remains closed until the complete provider/credential binding and policy path is qualified. This decision does not authorize real authentication, requests, retained-state migration or merging the draft.
 
-The first implementation increment supplies durable policy controls and enforcement for all currently enabled OpenCode selection/dispatch surfaces (IPC 41, SQLite 29). Native provider/model/credential generalization and durable cross-provider task bindings are still required before enabling ChatGPT in the application.
+The first implementation increment supplies durable policy controls and enforcement for all currently enabled OpenCode selection/dispatch surfaces (IPC 41, SQLite 29). [ADR 0030](0030-native-provider-and-task-bindings.md) subsequently generalizes provider/model/credential identity and adds durable cross-provider task bindings before enabling ChatGPT in the application.
 
 ## Boundary, before implementation
 

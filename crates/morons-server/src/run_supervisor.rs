@@ -17,18 +17,21 @@ use tokio::{
 };
 
 use self::subagent::SubagentExecutor;
+#[cfg(test)]
+use crate::provider::OpenCodeResponseRequest;
+use crate::provider::dispatch::{ModelInput, ModelProviders};
 use crate::{
     application::events::{AssistantDelta, SessionEventHub},
     persistence::{
         CompletedAssistant, CompletedToolTurn, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
         PersistenceError, PrepareOperationOutcome, ProviderOperationFailureState, ProviderUsage,
-        RunFailureKind, RunId, RunOpenCodeService, SessionStore, ToolCallId, TranscriptEntry,
+        RunFailureKind, RunId, SessionStore, ToolCallId, TranscriptEntry,
     },
     provider::{
-        OpenCodeProvider, OpenCodeResponseRequest, OpenCodeService, ProviderCancellation,
-        ProviderCancellationHandle, ProviderContentPart, ProviderError, ProviderInputItem,
-        ProviderMessagePhase, ProviderMessageRole, ProviderOutcome, ProviderOutputItem,
-        ProviderStreamEvent, ProviderToolCall, find_open_code_model, provider_cancellation,
+        OpenCodeProvider, ProviderCancellation, ProviderCancellationHandle, ProviderContentPart,
+        ProviderError, ProviderInputItem, ProviderMessagePhase, ProviderMessageRole,
+        ProviderOutcome, ProviderOutputItem, ProviderStreamEvent, ProviderToolCall,
+        provider_cancellation,
     },
     tools::{
         BashToolExecutor, DirectToolExecutor, IpythonSupervisor, TOOL_CATALOG_VERSION,
@@ -49,7 +52,7 @@ struct ProviderTurnContinuation {
 
 pub(crate) struct RunSupervisor {
     sessions: Arc<SessionStore>,
-    provider: Arc<OpenCodeProvider>,
+    provider: Arc<ModelProviders>,
     maintenance: Arc<crate::maintenance_supervisor::MaintenanceSupervisor>,
     permits: Arc<Semaphore>,
     stopping: AtomicBool,
@@ -116,6 +119,26 @@ impl RunSupervisor {
     fn with_tools(
         sessions: Arc<SessionStore>,
         provider: Arc<OpenCodeProvider>,
+        session_events: Arc<SessionEventHub>,
+        web_search: WebSearchToolExecutor,
+        ipython: Arc<IpythonSupervisor>,
+    ) -> Arc<Self> {
+        Self::with_model_providers(
+            sessions.clone(),
+            ModelProviders::new(sessions, provider),
+            session_events,
+            web_search,
+            ipython,
+        )
+    }
+
+    pub(crate) fn providers(&self) -> Arc<ModelProviders> {
+        self.provider.clone()
+    }
+
+    pub(crate) fn with_model_providers(
+        sessions: Arc<SessionStore>,
+        provider: Arc<ModelProviders>,
         session_events: Arc<SessionEventHub>,
         web_search: WebSearchToolExecutor,
         ipython: Arc<IpythonSupervisor>,
@@ -265,6 +288,7 @@ impl RunSupervisor {
         }
         let mut delta_sequence = 0_u64;
         let mut provider_continuation = None;
+        let mut provider_turn = None;
         let run_deadline = time::Instant::now() + MAX_RUN_DURATION;
         loop {
             if time::Instant::now() >= run_deadline {
@@ -304,7 +328,7 @@ impl RunSupervisor {
                             .finish_run_failure(
                                 run_id,
                                 None,
-                                map_provider_failure(error),
+                                self.classify_provider_failure(error),
                                 if error == ProviderError::DataUseRestricted {
                                     ProviderOperationFailureState::Failed
                                 } else {
@@ -316,14 +340,31 @@ impl RunSupervisor {
                     }
                 }
             }
-            let request = match build_provider_request(&context, provider_continuation.as_ref()) {
+            let request = match (|| {
+                if provider_turn.is_none() {
+                    provider_turn = Some(self.provider.turn(
+                        context.run.service.model_service(),
+                        &context.run.model_id,
+                        *context.run.session_id.as_bytes(),
+                        *run_id.as_bytes(),
+                        context.run.credential_generation,
+                    )?);
+                }
+                provider_turn
+                    .as_ref()
+                    .ok_or(ProviderError::InvalidRequest)?
+                    .request(build_provider_input(
+                        &context,
+                        provider_continuation.as_ref(),
+                    )?)
+            })() {
                 Ok(request) => request,
                 Err(error) => {
                     self.sessions
                         .finish_run_failure(
                             run_id,
                             None,
-                            map_provider_failure(error),
+                            self.classify_provider_failure(error),
                             ProviderOperationFailureState::Failed,
                         )
                         .await?;
@@ -351,18 +392,32 @@ impl RunSupervisor {
                     .await?;
                 return Ok(());
             }
+            let policy = self.sessions.data_use_policy().await?.restrictions;
             let dispatch = match self
                 .provider
-                .prepare_dispatch(context.run.credential_generation, &request)
+                .prepare_dispatch(
+                    provider_turn
+                        .as_mut()
+                        .expect("a prepared request has a turn"),
+                    &request,
+                    policy,
+                    &mut cancellation,
+                )
                 .await
             {
                 Ok(dispatch) => dispatch,
+                Err(ProviderError::Cancelled) => {
+                    self.sessions
+                        .finish_run_stopped(run_id, Some(operation_id))
+                        .await?;
+                    return Ok(());
+                }
                 Err(error) => {
                     self.sessions
                         .finish_run_failure(
                             run_id,
                             Some(operation_id),
-                            map_provider_failure(error),
+                            self.classify_provider_failure(error),
                             ProviderOperationFailureState::Failed,
                         )
                         .await?;
@@ -393,7 +448,7 @@ impl RunSupervisor {
             let session_id = context.run.session_id;
             let outcome = time::timeout_at(
                 run_deadline,
-                dispatch.execute(&mut cancellation, |event| {
+                dispatch.execute(policy, &mut cancellation, |event| {
                     let ProviderStreamEvent::TextDelta { delta, refusal, .. } = event;
                     if delta.is_empty() {
                         return;
@@ -439,7 +494,7 @@ impl RunSupervisor {
                         .finish_run_failure(
                             run_id,
                             Some(operation_id),
-                            map_provider_failure(error),
+                            self.classify_provider_failure(error),
                             provider_failure_state(error),
                         )
                         .await?;
@@ -509,8 +564,8 @@ impl RunSupervisor {
                             &context,
                             PathBuf::from(working_directory),
                             committed.calls,
-                            find_open_code_model(
-                                to_provider_service(context.run.service),
+                            crate::provider::find_model_profile(
+                                context.run.service.model_service(),
                                 &context.run.model_id,
                             )
                             .is_some_and(|model| model.capabilities.image_input),
@@ -538,6 +593,13 @@ impl RunSupervisor {
                 }
             }
         }
+    }
+
+    fn classify_provider_failure(&self, error: ProviderError) -> RunFailureKind {
+        if error == ProviderError::CredentialStoreUnavailable {
+            self.shutdown_requests.send_replace(true);
+        }
+        map_provider_failure(error)
     }
 
     // Called only between completed tool/provider turns, with no effect in flight.
@@ -569,8 +631,25 @@ impl RunSupervisor {
             .cancel_session(context.run.session_id)
             .await?;
         let operation_id = self.sessions.prepare_auto_compaction(run_id, &plan).await?;
-        let request = match build_compaction_request(context, &plan) {
-            Ok(request) => request,
+        let built = (|| {
+            let conversation =
+                if context.run.service == crate::persistence::RunService::OpenAiChatGpt {
+                    *operation_id.as_bytes()
+                } else {
+                    *context.run.session_id.as_bytes()
+                };
+            let turn = self.provider.turn(
+                context.run.service.model_service(),
+                &context.run.model_id,
+                conversation,
+                *run_id.as_bytes(),
+                context.run.credential_generation,
+            )?;
+            let request = turn.request(build_compaction_input(&context.run, &plan)?)?;
+            Ok((turn, request))
+        })();
+        let (mut turn, request) = match built {
+            Ok(prepared) => prepared,
             Err(error) => {
                 self.sessions
                     .fail_compaction(run_id, operation_id, false)
@@ -578,9 +657,10 @@ impl RunSupervisor {
                 return Ok(Err(error));
             }
         };
+        let policy = self.sessions.data_use_policy().await?.restrictions;
         let dispatch = match self
             .provider
-            .prepare_dispatch(context.run.credential_generation, &request)
+            .prepare_dispatch(&mut turn, &request, policy, cancellation)
             .await
         {
             Ok(dispatch) => dispatch,
@@ -605,7 +685,7 @@ impl RunSupervisor {
             }
             Err(error) => return Err(error),
         }
-        let outcome = dispatch.execute(cancellation, |_| {}).await;
+        let outcome = dispatch.execute(policy, cancellation, |_| {}).await;
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -677,14 +757,39 @@ impl RunSupervisor {
                 return Ok(true);
             }
             let tool = call.input.kind();
-            let subagent_setting = if tool == ToolKind::Task {
-                Some(self.sessions.subagent_model_setting().await?)
+            match self
+                .sessions
+                .mark_tool_dispatched(run_id, call.call_id, call.operation_id)
+                .await
+            {
+                Ok(()) => {}
+                Err(
+                    PersistenceError::CredentialNotConfigured
+                    | PersistenceError::OpenAiCredentialNotConfigured
+                    | PersistenceError::CredentialReauthenticationRequired
+                    | PersistenceError::InvalidInput { .. },
+                ) if tool == ToolKind::Task => {
+                    self.sessions
+                        .complete_tool_result(
+                            run_id,
+                            call.call_id,
+                            call.operation_id,
+                            ToolResult::error(crate::tools::ToolErrorKind::ModelUnavailable),
+                        )
+                        .await?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }
+            let task_binding = if tool == ToolKind::Task {
+                Some(
+                    self.sessions
+                        .task_model_binding(run_id, call.call_id)
+                        .await?,
+                )
             } else {
                 None
             };
-            self.sessions
-                .mark_tool_dispatched(run_id, call.call_id, call.operation_id)
-                .await?;
             let execution_directory = working_directory.clone();
             let execution_input = call.input.clone();
             let execution_cancellation = cancellation.clone();
@@ -696,7 +801,7 @@ impl RunSupervisor {
                         call.call_id,
                         execution_directory,
                         &execution_input,
-                        subagent_setting.expect("task tools load one subagent model setting"),
+                        task_binding.expect("dispatched task tools have a durable model binding"),
                         &execution_cancellation,
                     )
                     .await?
@@ -759,18 +864,10 @@ impl RunSupervisor {
 
 use crate::prompts::{COMPACTION as COMPACTION_INSTRUCTION, COMPACTION_OUTPUT_TOKENS};
 
-fn build_compaction_request(
-    context: &crate::persistence::RunContext,
-    plan: &crate::persistence::CompactionPlan,
-) -> Result<OpenCodeResponseRequest, ProviderError> {
-    build_compaction_request_for_run(*context.run.session_id.as_bytes(), &context.run, plan)
-}
-
-pub(crate) fn build_compaction_request_for_run(
-    conversation: [u8; 16],
+pub(crate) fn build_compaction_input(
     run: &crate::persistence::Run,
     plan: &crate::persistence::CompactionPlan,
-) -> Result<OpenCodeResponseRequest, ProviderError> {
+) -> Result<ModelInput, ProviderError> {
     let mut source = String::new();
     if let Some(parent) = &plan.parent_summary {
         source.push_str("Prior lossy summary:\n");
@@ -788,15 +885,15 @@ pub(crate) fn build_compaction_request_for_run(
         crate::persistence::conservative_input_token_estimate(guidance.len() as u64, 1)
             .unwrap_or(u32::MAX)
     });
-    OpenCodeResponseRequest::new(
-        conversation,
-        to_provider_service(run.service),
-        &run.model_id,
-        plan.estimated_input_tokens
+    Ok(ModelInput {
+        estimated_input_tokens: plan
+            .estimated_input_tokens
             .saturating_add(guidance_tokens)
             .saturating_add(4_096),
-        COMPACTION_OUTPUT_TOKENS.min(run.maximum_output_tokens),
-        vec![
+        maximum_output_tokens: COMPACTION_OUTPUT_TOKENS.min(run.maximum_output_tokens),
+        core_first: true,
+        tools: crate::provider::PreparedProviderTools::empty(),
+        input: vec![
             ProviderInputItem::Message {
                 role: ProviderMessageRole::Developer,
                 text: COMPACTION_INSTRUCTION.to_owned(),
@@ -808,7 +905,45 @@ pub(crate) fn build_compaction_request_for_run(
                 phase: None,
             },
         ],
-        Vec::new(),
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn build_compaction_request_for_run(
+    conversation: [u8; 16],
+    run: &crate::persistence::Run,
+    plan: &crate::persistence::CompactionPlan,
+) -> Result<OpenCodeResponseRequest, ProviderError> {
+    opencode_test_request(conversation, run, build_compaction_input(run, plan)?)
+}
+#[cfg(test)]
+fn build_provider_request(
+    context: &crate::persistence::RunContext,
+    continuation: Option<&ProviderTurnContinuation>,
+) -> Result<OpenCodeResponseRequest, ProviderError> {
+    opencode_test_request(
+        *context.run.session_id.as_bytes(),
+        &context.run,
+        build_provider_input(context, continuation)?,
+    )
+}
+#[cfg(test)]
+fn opencode_test_request(
+    conversation: [u8; 16],
+    run: &crate::persistence::Run,
+    plan: ModelInput,
+) -> Result<OpenCodeResponseRequest, ProviderError> {
+    OpenCodeResponseRequest::with_prepared_tools(
+        conversation,
+        run.service
+            .model_service()
+            .open_code()
+            .ok_or(ProviderError::UnsupportedModel)?,
+        &run.model_id,
+        plan.estimated_input_tokens,
+        plan.maximum_output_tokens,
+        plan.input,
+        plan.tools,
     )
 }
 
@@ -820,10 +955,10 @@ fn enforce_image_capability(result: ToolResult, supports_image_input: bool) -> T
     }
 }
 
-fn build_provider_request(
+fn build_provider_input(
     context: &crate::persistence::RunContext,
     provider_continuation: Option<&ProviderTurnContinuation>,
-) -> Result<OpenCodeResponseRequest, ProviderError> {
+) -> Result<ModelInput, ProviderError> {
     let tools_enabled = (
         context.run.tool_catalog_version,
         context.run.tool_limits_version,
@@ -992,19 +1127,17 @@ fn build_provider_request(
     }) {
         return Err(ProviderError::InvalidRequest);
     }
-    OpenCodeResponseRequest::with_prepared_tools(
-        *context.run.session_id.as_bytes(),
-        to_provider_service(context.run.service),
-        &context.run.model_id,
-        context.estimated_input_tokens,
-        context.run.maximum_output_tokens,
+    Ok(ModelInput {
+        estimated_input_tokens: context.estimated_input_tokens,
+        maximum_output_tokens: context.run.maximum_output_tokens,
         input,
-        if tools_enabled {
+        core_first: tools_enabled,
+        tools: if tools_enabled {
             provider_tools()?
         } else {
             crate::provider::PreparedProviderTools::empty()
         },
-    )
+    })
 }
 
 fn multimodal_user_message(
@@ -1236,17 +1369,13 @@ pub(crate) fn completed_assistant(
     })
 }
 
-const fn to_provider_service(service: RunOpenCodeService) -> OpenCodeService {
-    match service {
-        RunOpenCodeService::Zen => OpenCodeService::Zen,
-        RunOpenCodeService::Go => OpenCodeService::Go,
-    }
-}
-
 const fn map_provider_failure(error: ProviderError) -> RunFailureKind {
     match error {
         ProviderError::CredentialGenerationChanged => RunFailureKind::CredentialChanged,
         ProviderError::CredentialNotConfigured => RunFailureKind::CredentialNotConfigured,
+        ProviderError::CredentialReauthenticationRequired => {
+            RunFailureKind::CredentialReauthenticationRequired
+        }
         ProviderError::AuthenticationOrEntitlement => RunFailureKind::AuthenticationOrEntitlement,
         ProviderError::RateLimited => RunFailureKind::RateLimited,
         ProviderError::Unavailable
@@ -1264,13 +1393,17 @@ const fn map_provider_failure(error: ProviderError) -> RunFailureKind {
         | ProviderError::ResponseLimitExceeded => RunFailureKind::ProviderProtocol,
         ProviderError::DataUseRestricted => RunFailureKind::DataUseRestricted,
         ProviderError::InvalidRequest | ProviderError::UnsupportedModel => RunFailureKind::Internal,
-        ProviderError::MalformedCatalog | ProviderError::Cancelled => RunFailureKind::Internal,
+        ProviderError::MalformedCatalog
+        | ProviderError::Cancelled
+        | ProviderError::CredentialStoreUnavailable => RunFailureKind::Internal,
     }
 }
 
 const fn provider_failure_state(error: ProviderError) -> ProviderOperationFailureState {
     match error {
         ProviderError::DataUseRestricted
+        | ProviderError::CredentialStoreUnavailable
+        | ProviderError::CredentialReauthenticationRequired
         | ProviderError::AuthenticationOrEntitlement
         | ProviderError::RateLimited
         | ProviderError::Unavailable

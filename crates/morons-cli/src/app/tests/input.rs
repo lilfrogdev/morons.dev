@@ -48,7 +48,7 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
     let (session, run) = fixture_session_and_run();
     let session_id = session.id;
     let mut app = AppState::new("test-server");
-    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+    app.replace_models(ModelService::Zen, vec![fixture_model()])
         .expect("models should be valid");
     app.open_session(session, Vec::new(), vec![run], None, None)
         .expect("session should open");
@@ -58,7 +58,7 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         AppAction::ShowContext {
             session_id: selected,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             ref model_id,
         } if selected == session_id && model_id == "grok-4.6"
     ));
@@ -75,7 +75,7 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
             warnings: vec!["FIXTURE_WARNING".to_owned()],
         }),
         session_id,
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "grok-4.6".to_owned(),
         context_policy_version: 4,
         estimated_input_tokens: 12_000,
@@ -159,7 +159,7 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         enabled: true,
         latest: Some(morons_protocol::BackgroundCompactionJob {
             state: morons_protocol::BackgroundCompactionState::Ready,
-            service: OpenCodeService::Go,
+            service: ModelService::Go,
             model_id: "\u{1b}]52;c;SECRET\u{7}safe-model\u{202e}".to_owned(),
             source_entry_high_water: 4,
             usage: None,
@@ -196,7 +196,7 @@ fn at_prefix_opens_bounded_skill_completion_and_tab_inserts_exact_name() {
     let (session, run) = fixture_session_and_run();
     let session_id = session.id;
     let mut app = AppState::new("test-server");
-    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+    app.replace_models(ModelService::Zen, vec![fixture_model()])
         .expect("models should be valid");
     app.open_session(session, Vec::new(), vec![run], None, None)
         .expect("session should open");
@@ -263,7 +263,7 @@ fn image_drafts_use_atomic_unique_markers_and_survive_unsupported_submission() {
     let (session, run) = fixture_session_and_run();
     let session_id = session.id;
     let mut app = AppState::new("test-server");
-    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+    app.replace_models(ModelService::Zen, vec![fixture_model()])
         .expect("models should be valid");
     app.open_session(session, Vec::new(), vec![run], None, None)
         .expect("session should open");
@@ -328,7 +328,7 @@ fn input_action_debug_omits_prompt_text() {
         session_id: SessionId::from_bytes([0x55; 16]),
         text: "sensitive prompt text".to_owned(),
         attachments: Vec::new(),
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "grok-4.6".to_owned(),
     };
     let debug = format!("{action:?}");

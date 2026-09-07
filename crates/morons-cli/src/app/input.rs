@@ -264,7 +264,7 @@ impl AppState {
                         }
                         Some(SubagentModelCandidate::Model(index)) => {
                             self.models.get(*index).map(|model| {
-                                morons_protocol::SubagentModelSetting::OpenCode {
+                                morons_protocol::SubagentModelSetting::Explicit {
                                     service: model.model.service,
                                     model_id: model.model.id.clone(),
                                 }

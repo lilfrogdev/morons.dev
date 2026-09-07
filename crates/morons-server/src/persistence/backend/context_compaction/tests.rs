@@ -1,7 +1,7 @@
 use super::*;
 use crate::persistence::{
-    ContextCheckpointId, MutationRequestId, RunId, RunModelSelection, RunOpenCodeService,
-    SessionStore, tests::TestRoot,
+    ContextCheckpointId, MutationRequestId, RunId, RunModelSelection, RunService, SessionStore,
+    tests::TestRoot,
 };
 
 pub(in crate::persistence::backend) async fn fixture(
@@ -41,7 +41,7 @@ pub(in crate::persistence::backend) async fn append_stopped(
             session_id,
             text,
             RunModelSelection {
-                service: RunOpenCodeService::Zen,
+                service: RunService::Zen,
                 model_id: "muse-spark-1.2".to_owned(),
                 protocol_revision: 1,
                 maximum_input_tokens: 96_000,

@@ -31,11 +31,12 @@ The application consists of a long-running local server and a separate terminal 
 - The shared coding core favors simple verified changes. Main-model planning and subagent implementation are prompt-led, user-overridable defaults, not enforced tool restrictions.
 - Images enter through clipboard paste, drag and drop, explicit paths, or `read`, appear as atomic filename markers, and persist as structured bounded session attachments.
 - OpenCode Zen and OpenCode Go use one concrete provider integration with reviewed Responses, Chat Completions, Anthropic Messages, and Gemini routes while remaining distinct service and billing identities.
+- Native ChatGPT uses a separate reviewed Codex Responses adapter and credential identity. Task batches durably bind their own selected model and credential generation before dispatch; no cross-provider credential or model fallback is allowed.
 - A reviewed built-in manifest, not remote catalog metadata, defines supported service, model, protocol, image, tool, limit, and data-use combinations.
 - Independent default-off training and zero-retention restrictions are enforced by server admission; unknown policy cannot satisfy a restriction, and changes cannot recall already admitted work.
 - Session identity and lifetime are independent of client connections and temporary runtimes.
 - Direct user input is durably attributed to `LocalOwner` and commits atomically with a new run identity.
-- Every run records an explicit OpenCode service and model, and each session permits one nonterminal top-level run without an input queue.
+- Every run records an explicit provider service, model and provider-local credential generation, and each session permits one nonterminal top-level run without an input queue.
 - Canonical transcripts contain complete attributed entries; assistant text deltas and Python kernel memory are ephemeral.
 - Context compaction preserves canonical history and stores only source-bound lossy checkpoints; no hidden memory crosses sessions.
 - Session snapshots and durable event subscriptions compose through one gap-free cursor boundary.

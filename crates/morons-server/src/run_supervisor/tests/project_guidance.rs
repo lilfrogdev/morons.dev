@@ -114,7 +114,7 @@ fn input(session_id: SessionId, request: u8) -> ApplicationRequest {
         session_id,
         text: "Explain this project.".to_owned(),
         attachments: Vec::new(),
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "muse-spark-1.2".to_owned(),
     }
 }
@@ -126,7 +126,7 @@ async fn context(
     let result = application
         .execute_for_local_owner(ApplicationRequest::GetSessionContext {
             session_id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await

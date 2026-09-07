@@ -4,7 +4,7 @@ mod subscriptions;
 
 use std::{error::Error, fmt, fs, io, path::PathBuf};
 
-use morons_protocol::{MutationRequestId, OpenCodeService, SessionId};
+use morons_protocol::{ModelService, MutationRequestId, SessionId};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use self::{
@@ -523,8 +523,8 @@ impl RuntimeState {
             RequestEvent::ConnectionRestored { server_version } => {
                 self.app.clear_credential_interaction();
                 self.app.server_version = SafeText::from_untrusted(&server_version);
-                self.app.replace_models(OpenCodeService::Zen, Vec::new())?;
-                self.app.replace_models(OpenCodeService::Go, Vec::new())?;
+                self.app.replace_models(ModelService::Zen, Vec::new())?;
+                self.app.replace_models(ModelService::Go, Vec::new())?;
                 self.app.set_status(
                     "Authenticated connection restored; refresh model availability with Ctrl+L",
                 );
@@ -1192,8 +1192,9 @@ fn enqueue_initial_queries(
         RequestCommand::LoadCredentialStatus,
         RequestCommand::LoadDefaultModel,
         RequestCommand::LoadSettings,
-        RequestCommand::LoadModels(OpenCodeService::Zen),
-        RequestCommand::LoadModels(OpenCodeService::Go),
+        RequestCommand::LoadModels(ModelService::Zen),
+        RequestCommand::LoadModels(ModelService::Go),
+        RequestCommand::LoadModels(ModelService::OpenAiChatGpt),
     ] {
         send_command(commands, command)?;
     }

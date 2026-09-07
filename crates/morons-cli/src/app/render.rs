@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use morons_protocol::{
-    OpenCodeModelRetention, OpenCodeModelTrainingUse, RunId, RunState, SubagentModelSetting,
-};
+use morons_protocol::{ModelRetention, ModelTrainingUse, RunId, RunState, SubagentModelSetting};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -195,7 +193,17 @@ fn render_session(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         u16::try_from(skills.len().min(5) + 2).unwrap_or(7)
     });
     let transcript_reserve = u16::from(area.height > 0);
-    let model_height = if area.height >= 7 { 3 } else { 0 };
+    let model_height = if area.height >= 9
+        && app
+            .selected_model()
+            .is_some_and(|model| model.model.output_limit_is_local)
+    {
+        5
+    } else if area.height >= 7 {
+        3
+    } else {
+        0
+    };
     let prompt_available = area
         .height
         .saturating_sub(transcript_reserve)
@@ -559,8 +567,17 @@ fn render_model_disclosure(
         }
         None => Line::from("No reviewed model is currently available"),
     };
+    let mut lines = vec![line];
+    if model.is_some_and(|model| model.model.output_limit_is_local) {
+        lines.push(Line::from(
+            "Local output limit only; remote generation/charges may exceed it.",
+        ));
+        lines.push(Line::from(
+            "Selectable metadata is not proof of subscription entitlement.",
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(line).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
         area,
     );
 }
@@ -602,7 +619,7 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 .map(|settings| &settings.subagent_model)
             {
                 Some(SubagentModelSetting::InheritParent {}) => "Inherit parent".to_owned(),
-                Some(SubagentModelSetting::OpenCode { service, model_id }) => {
+                Some(SubagentModelSetting::Explicit { service, model_id }) => {
                     let available = app.models.iter().any(|model| {
                         model.model.available
                             && model.model.capabilities.text_input
@@ -676,7 +693,7 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 .constraints([
                     Constraint::Length(3),
                     Constraint::Min(3),
-                    Constraint::Length(3),
+                    Constraint::Length(5),
                 ])
                 .split(popup);
             frame.render_widget(
@@ -777,7 +794,7 @@ fn render_model_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(3),
-            Constraint::Length(3),
+            Constraint::Length(5),
         ])
         .split(popup);
     frame.render_widget(
@@ -1060,19 +1077,19 @@ fn active_work_label(session: &SessionView) -> &'static str {
         })
 }
 
-const fn training_label(training: OpenCodeModelTrainingUse) -> &'static str {
+const fn training_label(training: ModelTrainingUse) -> &'static str {
     match training {
-        OpenCodeModelTrainingUse::NotUsed => "not used",
-        OpenCodeModelTrainingUse::MayUsePromptsAndCompletions => "may use prompts/completions",
-        OpenCodeModelTrainingUse::NotDocumented => "not documented",
+        ModelTrainingUse::NotUsed => "not used",
+        ModelTrainingUse::MayUsePromptsAndCompletions => "may use prompts/completions",
+        ModelTrainingUse::NotDocumented => "not documented",
     }
 }
 
-const fn retention_label(retention: OpenCodeModelRetention) -> &'static str {
+const fn retention_label(retention: ModelRetention) -> &'static str {
     match retention {
-        OpenCodeModelRetention::None => "none",
-        OpenCodeModelRetention::UpToThirtyDays => "up to 30 days",
-        OpenCodeModelRetention::NotZeroDataRetention => "not ZDR",
-        OpenCodeModelRetention::NotDocumented => "not documented",
+        ModelRetention::None => "none",
+        ModelRetention::UpToThirtyDays => "up to 30 days",
+        ModelRetention::NotZeroDataRetention => "not ZDR",
+        ModelRetention::NotDocumented => "not documented",
     }
 }

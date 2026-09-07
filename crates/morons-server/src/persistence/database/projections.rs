@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 
 use super::validate_integrity;
 use crate::persistence::{
-    PersistenceError, RunModelSelection, RunOpenCodeService, SessionId, SubagentModelSetting,
+    PersistenceError, RunModelSelection, RunService, SessionId, SubagentModelSetting,
     run_types::{
         CONTEXT_POLICY_VERSION, LEGACY_CONTEXT_POLICY_VERSION, LEGACY_IMAGE_CONTEXT_POLICY_VERSION,
         LEGACY_SKILL_CONTEXT_POLICY_VERSION, MAX_CONTEXT_ENTRIES,
@@ -306,7 +306,7 @@ fn validate_default_model_facts(connection: &Connection) -> Result<(), Persisten
         .query_map([], |row| {
             Ok((
                 row.get::<_, [u8; 32]>(0)?,
-                RunOpenCodeService::from_record(row.get(1)?)?,
+                RunService::from_record(row.get(1)?)?,
                 row.get::<_, String>(2)?,
             ))
         })?
@@ -342,8 +342,8 @@ fn validate_subagent_model_facts(connection: &Connection) -> Result<(), Persiste
             (1, None, None) => SubagentModelSetting::InheritParent {},
             (2, Some(service), Some(model_id)) => {
                 validate_model_identifier(&model_id)?;
-                SubagentModelSetting::OpenCode {
-                    service: RunOpenCodeService::from_record(service)?,
+                SubagentModelSetting::Explicit {
+                    service: RunService::from_record(service)?,
                     model_id,
                 }
             }
@@ -2365,14 +2365,10 @@ const fn invalid_repository_sequences() -> PersistenceError {
     }
 }
 
-fn run_service_from_record(value: i64) -> Result<RunOpenCodeService, PersistenceError> {
-    match value {
-        1 => Ok(RunOpenCodeService::Zen),
-        2 => Ok(RunOpenCodeService::Go),
-        _ => Err(PersistenceError::InvalidState {
-            reason: "a persisted run service is invalid",
-        }),
-    }
+fn run_service_from_record(value: i64) -> Result<RunService, PersistenceError> {
+    RunService::from_record(value).map_err(|_| PersistenceError::InvalidState {
+        reason: "a persisted run service is invalid",
+    })
 }
 
 fn positive_u16(value: i64) -> Result<u16, PersistenceError> {

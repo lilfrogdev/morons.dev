@@ -10,10 +10,9 @@ use super::{
 };
 use crate::{
     persistence::{
-        DataUsePolicy, MutationRequestId, PersistenceError, PersistenceResourceLimit,
-        RunOpenCodeService,
+        DataUsePolicy, MutationRequestId, PersistenceError, PersistenceResourceLimit, RunService,
     },
-    provider::{DataUseRestrictions, OpenCodeService, find_open_code_model},
+    provider::{DataUseRestrictions, find_model_profile},
 };
 
 const OPERATION: i64 = 17;
@@ -27,7 +26,7 @@ impl Backend {
 
     pub(crate) fn admit_model_data_use(
         &self,
-        service: RunOpenCodeService,
+        service: RunService,
         model: &str,
     ) -> Result<DataUsePolicy, PersistenceError> {
         self.ensure_context_integrity()?;
@@ -155,18 +154,14 @@ pub(super) fn current(connection: &Connection) -> Result<DataUsePolicy, Persiste
 
 pub(super) fn admit(
     connection: &Connection,
-    service: RunOpenCodeService,
+    service: RunService,
     model: &str,
 ) -> Result<DataUsePolicy, PersistenceError> {
     let policy = current(connection)?;
     if policy.restrictions == DataUseRestrictions::default() {
         return Ok(policy);
     }
-    let service = match service {
-        RunOpenCodeService::Zen => OpenCodeService::Zen,
-        RunOpenCodeService::Go => OpenCodeService::Go,
-    };
-    if !find_open_code_model(service, model)
+    if !find_model_profile(service.model_service(), model)
         .is_some_and(|model| policy.restrictions.permits(model.data_use))
     {
         return Err(PersistenceError::DataUseRestricted);

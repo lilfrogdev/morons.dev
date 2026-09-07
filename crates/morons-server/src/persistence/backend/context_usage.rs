@@ -3,14 +3,14 @@ use rusqlite::{OptionalExtension as _, params};
 use super::{Backend, records::sequence_to_sql, run_queries::load_run_skills};
 use crate::{
     persistence::{
-        ContextCheckpoint, PersistenceError, RunId, RunOpenCodeService, SessionId,
+        ContextCheckpoint, PersistenceError, RunId, RunService, SessionId,
         run_types::RecentProviderUsage,
     },
     skills::RunSkillContext,
 };
 
 pub(super) struct ContextModel<'a> {
-    pub service: RunOpenCodeService,
+    pub service: RunService,
     pub model_id: &'a str,
     pub protocol_revision: u16,
 }

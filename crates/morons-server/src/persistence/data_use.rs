@@ -4,8 +4,7 @@ pub(crate) mod tests;
 use tokio::sync::oneshot;
 
 use super::{
-    MutationRequestId, PersistenceError, RunOpenCodeService, SessionStore, WorkerRequest,
-    backend::Backend,
+    MutationRequestId, PersistenceError, RunService, SessionStore, WorkerRequest, backend::Backend,
 };
 use crate::provider::DataUseRestrictions;
 
@@ -24,7 +23,7 @@ pub(super) enum Request {
         response: oneshot::Sender<Result<DataUsePolicy, PersistenceError>>,
     },
     Admit {
-        service: RunOpenCodeService,
+        service: RunService,
         model: String,
         response: oneshot::Sender<Result<DataUsePolicy, PersistenceError>>,
     },
@@ -83,7 +82,7 @@ impl SessionStore {
 
     pub(crate) async fn admit_model_data_use(
         &self,
-        service: RunOpenCodeService,
+        service: RunService,
         model: &str,
     ) -> Result<DataUsePolicy, PersistenceError> {
         super::types::validate_model_identifier(model)?;

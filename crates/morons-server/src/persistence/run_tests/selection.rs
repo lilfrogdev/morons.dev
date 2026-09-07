@@ -14,7 +14,7 @@ async fn explicit_and_used_models_determine_the_durable_global_default() {
 
     let request_id = MutationRequestId::from_bytes([0x40; 16]);
     let explicit = DefaultModelSelection {
-        service: RunOpenCodeService::Go,
+        service: RunService::Go,
         model_id: "grok-4.6".to_owned(),
     };
     assert_eq!(
@@ -35,7 +35,7 @@ async fn explicit_and_used_models_determine_the_durable_global_default() {
         .set_default_model(
             request_id,
             DefaultModelSelection {
-                service: RunOpenCodeService::Zen,
+                service: RunService::Zen,
                 model_id: TEST_MODEL.to_owned(),
             },
         )
@@ -65,7 +65,7 @@ async fn explicit_and_used_models_determine_the_durable_global_default() {
         .await
         .expect("run should be accepted");
     let used = DefaultModelSelection {
-        service: RunOpenCodeService::Zen,
+        service: RunService::Zen,
         model_id: TEST_MODEL.to_owned(),
     };
     assert_eq!(
@@ -116,8 +116,8 @@ async fn subagent_model_setting_is_global_idempotent_and_durable() {
     );
 
     let request_id = MutationRequestId::from_bytes([0x43; 16]);
-    let selected = SubagentModelSetting::OpenCode {
-        service: RunOpenCodeService::Go,
+    let selected = SubagentModelSetting::Explicit {
+        service: RunService::Go,
         model_id: "glm-5.3-flash".to_owned(),
     };
     for _ in 0..2 {

@@ -30,7 +30,7 @@ async fn manual_compaction_runs_below_threshold_with_bounded_user_guidance() {
     let before = application
         .execute_for_local_owner(ApplicationRequest::GetSessionContext {
             session_id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -49,7 +49,7 @@ async fn manual_compaction_runs_below_threshold_with_bounded_user_guidance() {
             session_id,
             text: "/compact preserve the frog migration decision".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -74,7 +74,7 @@ async fn manual_compaction_runs_below_threshold_with_bounded_user_guidance() {
     let after = application
         .execute_for_local_owner(ApplicationRequest::GetSessionContext {
             session_id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -151,7 +151,7 @@ async fn proactive_compaction_commits_a_source_bound_summary_and_uses_recent_tai
             session_id,
             text: "CURRENT_RUN_FOUR".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await

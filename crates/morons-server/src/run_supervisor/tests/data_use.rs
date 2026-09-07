@@ -27,8 +27,8 @@ async fn exercise(child: bool) {
     store
         .set_subagent_model_setting(
             PersistenceMutationRequestId::from_bytes([0xd2; 16]),
-            crate::persistence::SubagentModelSetting::OpenCode {
-                service: RunOpenCodeService::Go,
+            crate::persistence::SubagentModelSetting::Explicit {
+                service: RunService::Go,
                 model_id: "gpt-5.6-luna".into(),
             },
         )
@@ -99,9 +99,9 @@ async fn exercise(child: bool) {
             text: "Perform a bounded check".into(),
             attachments: Vec::new(),
             service: if child {
-                OpenCodeService::Zen
+                ModelService::Zen
             } else {
-                OpenCodeService::Go
+                ModelService::Go
             },
             model_id: if child {
                 "muse-spark-1.2"

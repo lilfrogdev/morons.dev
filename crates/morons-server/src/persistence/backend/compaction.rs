@@ -9,7 +9,7 @@ use super::{
 };
 use crate::persistence::{
     CompactionOperationId, CompactionPlan, ContextCheckpoint, ContextCheckpointId,
-    PersistenceError, PersistenceResourceLimit, RunId, RunOpenCodeService, SessionId,
+    PersistenceError, PersistenceResourceLimit, RunId, RunService, SessionId,
 };
 
 const STATE_PREPARED: i64 = 1;
@@ -225,7 +225,7 @@ impl Backend {
         &mut self,
         run_id: RunId,
         operation_id: CompactionOperationId,
-        service: RunOpenCodeService,
+        service: RunService,
         model_id: &str,
         summary: String,
     ) -> Result<ContextCheckpoint, PersistenceError> {

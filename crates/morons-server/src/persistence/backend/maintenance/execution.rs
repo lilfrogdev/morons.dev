@@ -57,7 +57,7 @@ impl Backend {
             Err(PersistenceError::DataUseRestricted) => return Ok(None),
             Err(error) => return Err(error),
         };
-        let credential = self.open_code_credential_status()?;
+        let credential = self.model_credential_status(run.service)?;
         if !credential.configured || credential.generation != run.credential_generation {
             return Ok(None);
         }
@@ -189,7 +189,7 @@ impl Backend {
             return Ok(false);
         }
         self.validate_maintenance_binding(&job)?;
-        let credential = self.open_code_credential_status()?;
+        let credential = self.model_credential_status(job.run.service)?;
         let allowed = self.maintenance_enabled
             && self.data_use_policy()?.sequence == job.data_use_sequence
             && self.maintenance_idle(&job.run, Some(job.through))?

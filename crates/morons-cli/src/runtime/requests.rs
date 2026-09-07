@@ -2,11 +2,11 @@ use std::time::Duration;
 
 use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{
-    ApplicationError, ApplicationSettings, FrameError, LocalCommandId, MutationRequestId,
-    OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelSelection, OpenCodeModelSummary,
-    OpenCodeService, RunId, RunSummary, SessionCatalogEventCursor, SessionContextStatus,
-    SessionEventCursor, SessionId, SessionSummary, SkillSummary, SubagentModelSetting,
-    TranscriptCursor, TranscriptEntry, TranscriptPageDirection,
+    ApplicationError, ApplicationSettings, FrameError, LocalCommandId, ModelSelection,
+    ModelService, ModelSummary, MutationRequestId, OpenCodeApiKey, OpenCodeCredentialStatus, RunId,
+    RunSummary, SessionCatalogEventCursor, SessionContextStatus, SessionEventCursor, SessionId,
+    SessionSummary, SkillSummary, SubagentModelSetting, TranscriptCursor, TranscriptEntry,
+    TranscriptPageDirection,
 };
 use tokio::{sync::mpsc, time};
 
@@ -46,7 +46,7 @@ impl TranscriptWindowTarget {
 
 pub(super) enum RequestCommand {
     LoadSessions,
-    LoadModels(OpenCodeService),
+    LoadModels(ModelService),
     LoadDefaultModel,
     LoadSettings,
     SetDataUsePolicy {
@@ -61,12 +61,12 @@ pub(super) enum RequestCommand {
     },
     LoadContext {
         session_id: SessionId,
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
     },
     SetDefaultModel {
         mutation_request_id: MutationRequestId,
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
     },
     SetSubagentModel {
@@ -95,7 +95,7 @@ pub(super) enum RequestCommand {
         session_id: SessionId,
         text: String,
         attachments: Vec<morons_protocol::ImageUpload>,
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
     },
     ExecuteLocalCommand {
@@ -367,13 +367,13 @@ pub(super) enum RequestEvent {
         cursor: SessionCatalogEventCursor,
     },
     ModelsLoaded {
-        service: OpenCodeService,
-        models: Vec<OpenCodeModelSummary>,
+        service: ModelService,
+        models: Vec<ModelSummary>,
     },
-    DefaultModelLoaded(Option<OpenCodeModelSelection>),
+    DefaultModelLoaded(Option<ModelSelection>),
     DefaultModelUpdated {
         mutation_request_id: MutationRequestId,
-        selection: OpenCodeModelSelection,
+        selection: ModelSelection,
     },
     SettingsLoaded(ApplicationSettings),
     SettingsUpdated {
@@ -437,7 +437,7 @@ pub(super) enum RequestEvent {
     },
     QueryFailed {
         context: &'static str,
-        model_service: Option<OpenCodeService>,
+        model_service: Option<ModelService>,
         error: String,
     },
     MutationFailed {
@@ -650,7 +650,7 @@ async fn execute(
         RequestCommand::LoadSessions => load_sessions(client).await.map(RequestResult::Sessions),
         RequestCommand::LoadModels(service) => {
             client
-                .list_open_code_models(*service)
+                .list_models(*service)
                 .await
                 .map(|models| RequestResult::Models {
                     service: *service,
@@ -658,7 +658,7 @@ async fn execute(
                 })
         }
         RequestCommand::LoadDefaultModel => client
-            .default_open_code_model()
+            .default_model()
             .await
             .map(RequestResult::DefaultModel),
         RequestCommand::LoadSettings => client
@@ -693,7 +693,7 @@ async fn execute(
             service,
             model_id,
         } => client
-            .set_default_open_code_model(*mutation_request_id, *service, model_id.clone())
+            .set_default_model(*mutation_request_id, *service, model_id.clone())
             .await
             .map(|selection| RequestResult::DefaultModelUpdated {
                 mutation_request_id: *mutation_request_id,
@@ -961,13 +961,13 @@ async fn load_transcript_window(
 enum RequestResult {
     Sessions((Vec<SessionSummary>, SessionCatalogEventCursor)),
     Models {
-        service: OpenCodeService,
-        models: Vec<OpenCodeModelSummary>,
+        service: ModelService,
+        models: Vec<ModelSummary>,
     },
-    DefaultModel(Option<OpenCodeModelSelection>),
+    DefaultModel(Option<ModelSelection>),
     DefaultModelUpdated {
         mutation_request_id: MutationRequestId,
-        selection: OpenCodeModelSelection,
+        selection: ModelSelection,
     },
     Settings(ApplicationSettings),
     SettingsUpdated {
@@ -1197,7 +1197,7 @@ mod tests {
             session_id: SessionId::from_bytes([0x22; 16]),
             text: "sensitive prompt".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "grok-4.6".to_owned(),
         };
         assert_eq!(command.mutation_request_id(), Some(mutation_request_id));
@@ -1206,7 +1206,7 @@ mod tests {
 
         let model = RequestCommand::SetDefaultModel {
             mutation_request_id,
-            service: OpenCodeService::Go,
+            service: ModelService::Go,
             model_id: "grok-4.6".to_owned(),
         };
         assert_eq!(model.mutation_request_id(), Some(mutation_request_id));
@@ -1215,15 +1215,15 @@ mod tests {
             model.clone_for_retry(),
             Some(RequestCommand::SetDefaultModel {
                 mutation_request_id: retried,
-                service: OpenCodeService::Go,
+                service: ModelService::Go,
                 ref model_id,
             }) if retried == mutation_request_id && model_id == "grok-4.6"
         ));
 
         let setting = RequestCommand::SetSubagentModel {
             mutation_request_id,
-            setting: SubagentModelSetting::OpenCode {
-                service: OpenCodeService::Go,
+            setting: SubagentModelSetting::Explicit {
+                service: ModelService::Go,
                 model_id: "glm-5.3-flash".to_owned(),
             },
         };
@@ -1233,8 +1233,8 @@ mod tests {
             setting.clone_for_retry(),
             Some(RequestCommand::SetSubagentModel {
                 mutation_request_id: retried,
-                setting: SubagentModelSetting::OpenCode {
-                    service: OpenCodeService::Go,
+                setting: SubagentModelSetting::Explicit {
+                    service: ModelService::Go,
                     ref model_id,
                 },
             }) if retried == mutation_request_id && model_id == "glm-5.3-flash"

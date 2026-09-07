@@ -94,11 +94,7 @@ impl Backend {
             return Err(PersistenceError::ImageInputUnsupported);
         }
 
-        self.credentials.ensure_consistent()?;
-        let credential = self.credentials.status();
-        if !credential.configured {
-            return Err(PersistenceError::CredentialNotConfigured);
-        }
+        let credential_generation = self.require_model_credential(selection.service)?;
 
         let run_id = RunId::from_bytes(random_identifier()?);
         let user_message_id = MessageId::from_bytes(random_identifier()?);
@@ -286,7 +282,7 @@ impl Backend {
                 selection.service.to_record(),
                 &selection.model_id,
                 i64::from(selection.protocol_revision),
-                sequence_to_sql(credential.generation)?,
+                sequence_to_sql(credential_generation)?,
                 i64::from(CONTEXT_POLICY_VERSION),
                 sequence_to_sql(source_entry_high_water)?,
                 i64::from(estimated_input_tokens),
@@ -385,7 +381,7 @@ impl Backend {
                 selection.service.to_record(),
                 &selection.model_id,
                 i64::from(selection.protocol_revision),
-                sequence_to_sql(credential.generation)?,
+                sequence_to_sql(credential_generation)?,
                 i64::from(CONTEXT_POLICY_VERSION),
                 i64::from(tool_catalog_version),
                 i64::from(tool_limits_version),

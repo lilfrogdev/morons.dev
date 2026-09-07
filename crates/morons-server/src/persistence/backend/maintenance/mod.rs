@@ -12,7 +12,7 @@ use super::{
         time_to_sql,
     },
 };
-use crate::persistence::{PersistenceError, Run, RunOpenCodeService, SessionId};
+use crate::persistence::{PersistenceError, Run, RunService, SessionId};
 use records::{Job, MAX_JOBS, State, hash_parts, latest_parent, result_digest, validate_result};
 
 impl Backend {
@@ -116,13 +116,8 @@ impl Backend {
         &self,
         run: &Run,
     ) -> Result<Option<[u8; 32]>, PersistenceError> {
-        let service = match run.service {
-            RunOpenCodeService::Zen => crate::provider::OpenCodeService::Zen,
-            RunOpenCodeService::Go => crate::provider::OpenCodeService::Go,
-        };
-        let Some(model) = crate::provider::open_code_models()
-            .iter()
-            .find(|model| model.service == service && model.id == run.model_id)
+        let Some(model) =
+            crate::provider::find_model_profile(run.service.model_service(), &run.model_id)
         else {
             return Ok(None);
         };
@@ -176,7 +171,7 @@ impl Backend {
                             [&job.session.as_bytes()[..]],
                             |row| row.get(0),
                         )?;
-                        let credential = self.credentials.status();
+                        let credential = self.model_credential_status(job.run.service)?;
                         (archived
                             || self.data_use_policy()?.sequence != job.data_use_sequence
                             || !credential.configured

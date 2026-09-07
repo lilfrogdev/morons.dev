@@ -1108,8 +1108,10 @@ fn validate_subagent_results(results: &[SubagentResult]) -> bool {
             result.index == u16::try_from(index + 1).unwrap_or(u16::MAX)
                 && result.name.as_deref().is_none_or(valid_subagent_name)
                 && result.model.as_ref().is_none_or(|model| {
-                    matches!(model.service.as_str(), "OpenCode Zen" | "OpenCode Go")
-                        && !model.model_id.is_empty()
+                    matches!(
+                        model.service.as_str(),
+                        "OpenCode Zen" | "OpenCode Go" | "OpenAI ChatGPT"
+                    ) && !model.model_id.is_empty()
                         && model.model_id.len() <= 128
                         && model.model_id.bytes().all(|byte| {
                             byte.is_ascii_lowercase()

@@ -1,9 +1,9 @@
 use morons_protocol::{
-    ApplicationEvent, ApplicationSettings, MessageId, OpenCodeApiKey, OpenCodeCredentialStatus,
-    OpenCodeModelCapabilities, OpenCodeModelRetention, OpenCodeModelSummary,
-    OpenCodeModelTrainingUse, OpenCodeService, ProviderProtocol, RunFailureKind, RunId, RunState,
-    RunSummary, SessionContextStatus, SessionEventCursor, SessionId, SessionSummary, SkillSource,
-    SkillSummary, SubagentModelSetting, TranscriptEntry,
+    ApplicationEvent, ApplicationSettings, MessageId, ModelCapabilities, ModelRetention,
+    ModelService, ModelSummary, ModelTrainingUse, OpenCodeApiKey, OpenCodeCredentialStatus,
+    ProviderProtocol, RunFailureKind, RunId, RunState, RunSummary, SessionContextStatus,
+    SessionEventCursor, SessionId, SessionSummary, SkillSource, SkillSummary, SubagentModelSetting,
+    TranscriptEntry,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{
@@ -20,7 +20,7 @@ fn fixture_session_and_run() -> (SessionSummary, RunSummary) {
         id: RunId::from_bytes([0x33; 16]),
         session_id,
         user_message_id,
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "grok-4.6".to_owned(),
         protocol_revision: 1,
         credential_generation: 1,
@@ -45,15 +45,15 @@ fn fixture_session_and_run() -> (SessionSummary, RunSummary) {
     )
 }
 
-fn fixture_model() -> OpenCodeModelSummary {
-    OpenCodeModelSummary {
-        service: OpenCodeService::Zen,
+fn fixture_model() -> ModelSummary {
+    ModelSummary {
+        service: ModelService::Zen,
         id: "grok-4.6".to_owned(),
         display_name: "Grok 4.6".to_owned(),
         available: true,
         protocol: morons_protocol::ProviderProtocol::Responses,
         protocol_revision: 1,
-        capabilities: OpenCodeModelCapabilities {
+        capabilities: ModelCapabilities {
             text_input: true,
             image_input: false,
             text_output: true,
@@ -63,8 +63,9 @@ fn fixture_model() -> OpenCodeModelSummary {
         },
         maximum_input_tokens: 96_000,
         maximum_output_tokens: 32_000,
-        training_use: OpenCodeModelTrainingUse::NotUsed,
-        retention: OpenCodeModelRetention::None,
+        training_use: ModelTrainingUse::NotUsed,
+        retention: ModelRetention::None,
+        output_limit_is_local: false,
     }
 }
 
@@ -121,6 +122,7 @@ fn session_cursor(session_id: SessionId, sequence: u64) -> SessionEventCursor {
 mod credentials;
 mod data_use;
 mod input;
+mod native_models;
 mod openai_auth;
 mod presentation;
 mod selection;

@@ -7,9 +7,8 @@ use super::{
     run_records::{positive_u16_from_row, positive_u32_from_row, transcript_entry_from_row},
 };
 use crate::persistence::{
-    MessageId, PersistenceError, Run, RunFailureKind, RunId, RunOpenCodeService, RunState,
-    SessionEvent, SessionEventCursor, SessionEventPage, SessionEventPayload, SessionId,
-    TranscriptEntry,
+    MessageId, PersistenceError, Run, RunFailureKind, RunId, RunService, RunState, SessionEvent,
+    SessionEventCursor, SessionEventPage, SessionEventPayload, SessionId, TranscriptEntry,
 };
 
 const EVENT_USER_MESSAGE: i64 = 2;
@@ -238,7 +237,7 @@ pub(super) fn load_run_at_sequence(
                     id: run_id,
                     session_id: SessionId::from_bytes(row.get(0)?),
                     user_message_id: MessageId::from_bytes(row.get(1)?),
-                    service: RunOpenCodeService::from_record(row.get(2)?)?,
+                    service: RunService::from_record(row.get(2)?)?,
                     model_id: row.get(3)?,
                     protocol_revision: positive_u16_from_row(row, 4)?,
                     credential_generation: nonnegative_integer_from_row(row, 5)?,

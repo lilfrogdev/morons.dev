@@ -7,10 +7,10 @@ mod viewport;
 use std::{error::Error, fmt};
 
 use morons_protocol::{
-    ApplicationEvent, ApplicationSettings, LocalCommandId, MessageId, OpenCodeApiKey,
-    OpenCodeCredentialStatus, OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService,
-    RunFailureKind, RunId, RunState, RunSummary, SessionContextStatus, SessionId, SessionSummary,
-    SkillSummary, SubagentModelSetting, TranscriptCursor, TranscriptEntry,
+    ApplicationEvent, ApplicationSettings, LocalCommandId, MessageId, ModelSelection, ModelService,
+    ModelSummary, OpenCodeApiKey, OpenCodeCredentialStatus, RunFailureKind, RunId, RunState,
+    RunSummary, SessionContextStatus, SessionId, SessionSummary, SkillSummary,
+    SubagentModelSetting, TranscriptCursor, TranscriptEntry,
 };
 use ratatui::Frame;
 
@@ -127,7 +127,7 @@ pub(super) enum AppAction {
     },
     ShowContext {
         session_id: SessionId,
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
     },
     LoadSettings,
@@ -135,7 +135,7 @@ pub(super) enum AppAction {
         policy: morons_protocol::DataUsePolicy,
     },
     SetDefaultModel {
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
     },
     SetSubagentModel {
@@ -145,7 +145,7 @@ pub(super) enum AppAction {
         session_id: SessionId,
         text: String,
         attachments: Vec<morons_protocol::ImageUpload>,
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
     },
     ExecuteLocalCommand {
@@ -357,6 +357,9 @@ pub(super) const fn terminal_run_presentation(run: &RunSummary) -> Option<Termin
                 Some(RunFailureKind::ResourceLimit) => "Run exceeded a resource limit",
                 Some(RunFailureKind::Internal) => "Morons encountered an internal failure",
                 Some(RunFailureKind::DataUseRestricted) => "Model blocked by data-use policy",
+                Some(RunFailureKind::CredentialReauthenticationRequired) => {
+                    "Provider requires a new login"
+                }
                 None => "Failure reason is unavailable",
             },
         ),
@@ -371,17 +374,19 @@ pub(super) const fn terminal_run_presentation(run: &RunSummary) -> Option<Termin
     Some(TerminalRunPresentation { heading, detail })
 }
 
-pub(super) const fn service_label(service: OpenCodeService) -> &'static str {
+pub(super) const fn service_label(service: ModelService) -> &'static str {
     match service {
-        OpenCodeService::Zen => "Zen",
-        OpenCodeService::Go => "Go",
+        ModelService::Zen => "Zen",
+        ModelService::Go => "Go",
+        ModelService::OpenAiChatGpt => "ChatGPT",
     }
 }
 
-const fn model_catalog_index(service: OpenCodeService) -> usize {
+const fn model_catalog_index(service: ModelService) -> usize {
     match service {
-        OpenCodeService::Zen => 0,
-        OpenCodeService::Go => 1,
+        ModelService::Zen => 0,
+        ModelService::Go => 1,
+        ModelService::OpenAiChatGpt => 2,
     }
 }
 
@@ -436,8 +441,8 @@ pub(super) struct AppState {
     pub(super) selected_session: usize,
     pub(super) models: Vec<PresentedModel>,
     pub(super) selected_model: Option<usize>,
-    pub(super) default_model: Option<OpenCodeModelSelection>,
-    pub(super) loaded_model_catalogs: [bool; 2],
+    pub(super) default_model: Option<ModelSelection>,
+    pub(super) loaded_model_catalogs: [bool; 3],
     pub(super) model_dialog: Option<ModelDialog>,
     pub(super) settings: Option<ApplicationSettings>,
     pub(super) settings_dialog: Option<SettingsDialog>,
@@ -471,7 +476,7 @@ impl AppState {
             models: Vec::new(),
             selected_model: None,
             default_model: None,
-            loaded_model_catalogs: [false; 2],
+            loaded_model_catalogs: [false; 3],
             model_dialog: None,
             settings: None,
             settings_dialog: None,
@@ -844,13 +849,13 @@ impl AppState {
 
     pub(super) fn replace_models(
         &mut self,
-        service: OpenCodeService,
-        models: Vec<OpenCodeModelSummary>,
+        service: ModelService,
+        models: Vec<ModelSummary>,
     ) -> Result<(), UiStateError> {
         if models.iter().any(|model| model.service != service) {
             return Err(UiStateError::ResourceScopeMismatch);
         }
-        let selected = self.selected_model().map(|model| OpenCodeModelSelection {
+        let selected = self.selected_model().map(|model| ModelSelection {
             service: model.model.service,
             model_id: model.model.id.clone(),
         });
@@ -867,7 +872,11 @@ impl AppState {
                     .as_ref()
                     .and_then(|selection| self.available_model_index(selection))
             })
-            .or_else(|| self.models.iter().position(|model| model.model.available));
+            .or_else(|| {
+                self.models.iter().position(|model| {
+                    model.model.available && model.model.service != ModelService::OpenAiChatGpt
+                })
+            });
         let dialog_matches = self.model_dialog_matches().len();
         if let Some(dialog) = self.model_dialog.as_mut() {
             dialog.selected = dialog.selected.min(dialog_matches.saturating_sub(1));
@@ -875,7 +884,7 @@ impl AppState {
         Ok(())
     }
 
-    pub(super) fn install_default_model(&mut self, selection: Option<OpenCodeModelSelection>) {
+    pub(super) fn install_default_model(&mut self, selection: Option<ModelSelection>) {
         self.default_model = selection;
         if let Some(index) = self
             .default_model
@@ -887,7 +896,9 @@ impl AppState {
             .selected_model()
             .is_none_or(|model| !model.model.available)
         {
-            self.selected_model = self.models.iter().position(|model| model.model.available);
+            self.selected_model = self.models.iter().position(|model| {
+                model.model.available && model.model.service != ModelService::OpenAiChatGpt
+            });
         }
     }
 
@@ -909,12 +920,12 @@ impl AppState {
         self.settings = Some(settings);
     }
 
-    pub(super) fn model_policy_blocked(&self, model: &OpenCodeModelSummary) -> bool {
+    pub(super) fn model_policy_blocked(&self, model: &ModelSummary) -> bool {
         self.settings.as_ref().is_some_and(|settings| {
             (settings.data_use.block_training_use
-                && model.training_use != morons_protocol::OpenCodeModelTrainingUse::NotUsed)
+                && model.training_use != morons_protocol::ModelTrainingUse::NotUsed)
                 || (settings.data_use.require_zero_retention
-                    && model.retention != morons_protocol::OpenCodeModelRetention::None)
+                    && model.retention != morons_protocol::ModelRetention::None)
         })
     }
 
@@ -942,7 +953,7 @@ impl AppState {
                 ) => true,
                 (
                     SubagentModelCandidate::Model(index),
-                    Some(SubagentModelSetting::OpenCode { service, model_id }),
+                    Some(SubagentModelSetting::Explicit { service, model_id }),
                 ) => self.models.get(*index).is_some_and(|model| {
                     model.model.service == *service && model.model.id == *model_id
                 }),
@@ -1046,7 +1057,7 @@ impl AppState {
         matches.into_iter().map(|(_, index)| index).collect()
     }
 
-    fn available_model_index(&self, selection: &OpenCodeModelSelection) -> Option<usize> {
+    fn available_model_index(&self, selection: &ModelSelection) -> Option<usize> {
         self.models.iter().position(|model| {
             model.model.available
                 && model.model.service == selection.service
@@ -1323,7 +1334,7 @@ impl AppState {
     }
 
     pub(super) fn session_input_accepted(&mut self, run: RunSummary) -> Result<(), UiStateError> {
-        self.install_default_model(Some(OpenCodeModelSelection {
+        self.install_default_model(Some(ModelSelection {
             service: run.service,
             model_id: run.model_id.clone(),
         }));
@@ -1481,11 +1492,11 @@ impl PresentedSession {
 pub(super) struct PresentedModel {
     pub(super) id: SafeText,
     pub(super) display_name: SafeText,
-    pub(super) model: OpenCodeModelSummary,
+    pub(super) model: ModelSummary,
 }
 
 impl PresentedModel {
-    fn new(model: OpenCodeModelSummary) -> Self {
+    fn new(model: ModelSummary) -> Self {
         Self {
             id: SafeText::from_untrusted(&model.id),
             display_name: SafeText::from_untrusted(&model.display_name),
