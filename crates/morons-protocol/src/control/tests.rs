@@ -144,6 +144,46 @@ async fn unpublished_key_write_is_starting_but_published_or_abandoned_corruption
     std::fs::remove_dir_all(paths.root_directory).unwrap();
 }
 
+#[test]
+fn newly_created_host_lock_during_discovery_is_not_missing_state_corruption() {
+    let paths = temporary_control_paths("concurrent-lock-publication");
+    ensure_private_directory(&paths.root_directory).unwrap();
+    ensure_private_directory(&paths.control_directory).unwrap();
+    let mut owner = None;
+    let result = ClientEndpoint::discover_observing(paths.clone(), |step, paths| {
+        if matches!(step, super::DiscoveryObservation::MissingHostLock) {
+            owner = Some(super::acquire_host_lock(paths, false).unwrap());
+        }
+    });
+    assert!(matches!(result.unwrap(), ClientEndpointDiscovery::Starting));
+    drop(owner);
+    std::fs::remove_dir_all(paths.root_directory).unwrap();
+}
+
+#[test]
+fn initializer_starting_after_the_lock_probe_does_not_expose_partial_key_data() {
+    let paths = temporary_control_paths("concurrent-key-publication");
+    ensure_private_directory(&paths.root_directory).unwrap();
+    ensure_private_directory(&paths.control_directory).unwrap();
+    drop(super::acquire_host_lock(&paths, false).unwrap());
+    let mut owner = None;
+    let result = ClientEndpoint::discover_observing(paths.clone(), |step, paths| {
+        if matches!(step, super::DiscoveryObservation::HostLockObserved) {
+            owner = Some(super::acquire_host_lock(paths, true).unwrap());
+            let _key = super::create_authentication_key(&paths.authentication_key_path()).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(paths.authentication_key_path())
+                .unwrap();
+        }
+    });
+    assert!(matches!(result.unwrap(), ClientEndpointDiscovery::Starting));
+    drop(owner);
+    assert!(ClientEndpoint::discover_with_paths(paths.clone()).is_err());
+    std::fs::remove_dir_all(paths.root_directory).unwrap();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn duplicate_server_is_rejected_by_lifetime_lock() {
     let paths = temporary_control_paths("duplicate-lock");

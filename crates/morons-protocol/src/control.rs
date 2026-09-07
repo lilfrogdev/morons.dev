@@ -146,6 +146,11 @@ pub enum ClientEndpointDiscovery {
     Registered(ClientEndpoint),
 }
 
+enum DiscoveryObservation {
+    MissingHostLock,
+    HostLockObserved,
+}
+
 pub struct ClientEndpoint {
     authentication_key: AuthenticationKey,
     host_epoch: HostEpoch,
@@ -192,6 +197,13 @@ impl ClientEndpoint {
     }
 
     fn discover_with_paths(paths: ControlPaths) -> Result<ClientEndpointDiscovery, ControlError> {
+        Self::discover_observing(paths, |_, _| {})
+    }
+
+    fn discover_observing(
+        paths: ControlPaths,
+        mut observed: impl FnMut(DiscoveryObservation, &ControlPaths),
+    ) -> Result<ClientEndpointDiscovery, ControlError> {
         if !paths.root_directory.try_exists()? {
             return Ok(ClientEndpointDiscovery::Absent);
         }
@@ -203,18 +215,22 @@ impl ClientEndpoint {
 
         let host_lock_path = paths.host_lock_path();
         if !host_lock_path.try_exists()? {
+            observed(DiscoveryObservation::MissingHostLock, &paths);
             if !paths.authentication_key_path().try_exists()?
                 && !paths.registration_path().try_exists()?
                 && fs::read_dir(&paths.control_directory)?.next().is_none()
             {
                 return Ok(ClientEndpointDiscovery::Incomplete);
             }
-            return Err(ControlError::InvalidState {
-                reason: "an existing control root is missing its stable host lock",
-            });
+            if !host_lock_path.try_exists()? {
+                return Err(ControlError::InvalidState {
+                    reason: "an existing control root is missing its stable host lock",
+                });
+            }
         }
         validate_private_file(&host_lock_path, None)?;
-        let host_lock_is_held = host_lock_is_held(&host_lock_path)?;
+        let host_lock_is_held = probe_host_lock(&host_lock_path)?;
+        observed(DiscoveryObservation::HostLockObserved, &paths);
         // An initializer may still be writing its first key. Without a published
         // endpoint this grants no authority; wait instead of reading partial data.
         if host_lock_is_held && !paths.registration_path().try_exists()? {
@@ -233,7 +249,16 @@ impl ClientEndpoint {
                 })
             };
         }
-        let authentication_key = load_authentication_key(&paths.authentication_key_path())?;
+        let authentication_key = match load_authentication_key(&paths.authentication_key_path()) {
+            Ok(key) => key,
+            Err(_)
+                if !paths.registration_path().try_exists()?
+                    && probe_host_lock(&host_lock_path)? =>
+            {
+                return Ok(ClientEndpointDiscovery::Starting);
+            }
+            Err(error) => return Err(error),
+        };
         if !paths.registration_path().try_exists()? {
             return Ok(if host_lock_is_held {
                 ClientEndpointDiscovery::Starting
@@ -455,7 +480,7 @@ impl EndpointRegistration {
     }
 }
 
-fn host_lock_is_held(path: &Path) -> Result<bool, ControlError> {
+fn probe_host_lock(path: &Path) -> Result<bool, ControlError> {
     let lock = OpenOptions::new().read(true).write(true).open(path)?;
     match lock.try_lock() {
         Ok(()) => {
