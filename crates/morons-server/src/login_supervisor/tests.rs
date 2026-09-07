@@ -1,5 +1,6 @@
 use super::*;
 mod installation;
+mod token_validation;
 use crate::{
     persistence::{SessionStore, credential_tests::TestRoot},
     provider::openai_auth::{
@@ -81,7 +82,8 @@ async fn exchange(provider: &TcpListener) {
     let tokens = tokens();
     let (access, refresh, _, _) = tokens.stored_parts();
     let body = serde_json::to_vec(
-        &serde_json::json!({"access_token":access,"refresh_token":refresh,"expires_in":3600}),
+        &serde_json::json!({"access_token":access,"refresh_token":refresh,"expires_in":3600,
+            "token_type":"bearer","example_parameter":"discard-me"}),
     )
     .unwrap();
     stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).as_bytes()).await.unwrap();

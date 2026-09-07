@@ -1,6 +1,7 @@
 //! Server-side OAuth primitives; not an IPC surface or a credential-store replacement.
 mod callback;
 mod credentials;
+mod failure;
 mod token;
 mod transport;
 
@@ -21,6 +22,7 @@ use zeroize::Zeroizing;
 use super::ProviderCancellation;
 use callback::Callback;
 pub use credentials::{OpenAiCredentialError, OpenAiCredentialLease, OpenAiCredentialProvider};
+pub use failure::TokenResponseFailure;
 pub use token::OAuthTokens;
 pub(crate) use token::{OAuthRefreshGrant, OpenAiAuthorization};
 use transport::TokenClient;
@@ -46,7 +48,7 @@ pub enum OAuthError {
     Deadline,
     TokenRejected,
     ExchangeUncertain,
-    InvalidTokenResponse,
+    InvalidTokenResponse(TokenResponseFailure),
 }
 
 impl fmt::Display for OAuthError {
@@ -61,7 +63,12 @@ impl fmt::Display for OAuthError {
             Self::Deadline => "OpenAI login expired",
             Self::TokenRejected => "OpenAI rejected the token exchange; start a new login",
             Self::ExchangeUncertain => "the OpenAI token exchange is uncertain; do not retry it",
-            Self::InvalidTokenResponse => "the OpenAI token response is invalid; start a new login",
+            Self::InvalidTokenResponse(reason) => {
+                return write!(
+                    f,
+                    "the OpenAI token response was rejected ({reason}); nothing was retried"
+                );
+            }
         })
     }
 }
@@ -256,7 +263,7 @@ fn now_seconds() -> Result<u64, OAuthError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_secs())
-        .map_err(|_| OAuthError::InvalidTokenResponse)
+        .map_err(|_| OAuthError::InvalidTokenResponse(TokenResponseFailure::Clock))
 }
 
 #[cfg(test)]

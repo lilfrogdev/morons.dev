@@ -13,7 +13,7 @@ use tokio::{
 async fn reply(stream: &mut tokio::net::TcpStream, account: &str) {
     let tokens = OAuthTokens::fixture(account, "rotated-refresh", now() + 3600);
     let (access, refresh, _, _) = tokens.stored_parts();
-    let body=serde_json::to_vec(&serde_json::json!({"access_token":access,"refresh_token":refresh,"expires_in":3600,"token_type":"Bearer"})).unwrap();
+    let body=serde_json::to_vec(&serde_json::json!({"access_token":access,"refresh_token":refresh,"expires_in":3600,"token_type":"bearer","example_parameter":{"discard":"PRIVATE-metadata"}})).unwrap();
     stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).as_bytes()).await.unwrap();
     stream.write_all(&body).await.unwrap();
 }

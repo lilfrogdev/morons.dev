@@ -1,4 +1,7 @@
+mod validation;
+
 use super::*;
+use crate::provider::openai_auth::{MAX_TOKEN_LIFETIME_SECONDS, SCOPE};
 use serde_json::json;
 
 pub(in crate::provider::openai_auth) fn response(now: u64) -> Vec<u8> {
@@ -15,7 +18,7 @@ fn with_claims(claims: &str) -> Vec<u8> {
 }
 
 #[test]
-fn token_envelope_is_bounded_closed_and_redacted() {
+fn token_envelope_required_fields_are_bounded_and_redacted() {
     let bytes = response(1000);
     let tokens = parse_tokens(&bytes, 1000).unwrap();
     assert_eq!(tokens.expires_at_seconds(), 4600);
@@ -30,28 +33,39 @@ fn token_envelope_is_bounded_closed_and_redacted() {
     ] {
         assert!(!debug.contains(value));
     }
-    for (field, value) in [
-        ("expires_in", json!(-1)),
-        ("expires_in", json!(1.5)),
-        ("expires_in", json!(300)),
-        ("expires_in", json!(MAX_TOKEN_LIFETIME_SECONDS + 1)),
-        ("expires_in", json!("3600")),
-        ("access_token", json!("")),
-        ("refresh_token", json!("bad\nvalue")),
-        ("refresh_token", json!("x".repeat(MAX_SECRET + 1))),
-        ("token_type", json!("Basic")),
-        ("token_type", Value::Null),
-        ("id_token", Value::Null),
-        ("scope", Value::Null),
-        ("scope", json!(format!("{SCOPE} api.connectors.invoke"))),
-        ("scope", json!("openid profile email email")),
-        ("unknown", json!("secret")),
+    for (field, value, reason) in [
+        ("expires_in", json!(-1), Reason::ResponseLifetime),
+        ("expires_in", json!(1.5), Reason::ResponseLifetime),
+        ("expires_in", json!(300), Reason::ResponseLifetime),
+        (
+            "expires_in",
+            json!(MAX_TOKEN_LIFETIME_SECONDS + 1),
+            Reason::ResponseLifetime,
+        ),
+        ("expires_in", json!("3600"), Reason::ResponseLifetime),
+        ("access_token", json!(""), Reason::TokenFields),
+        ("refresh_token", json!("bad\nvalue"), Reason::TokenFields),
+        (
+            "refresh_token",
+            json!("x".repeat(MAX_SECRET + 1)),
+            Reason::TokenFields,
+        ),
+        ("token_type", json!("Basic"), Reason::TokenType),
+        ("token_type", Value::Null, Reason::TokenType),
+        ("id_token", Value::Null, Reason::TokenFields),
+        ("scope", Value::Null, Reason::Scope),
+        (
+            "scope",
+            json!(format!("{SCOPE} api.connectors.invoke")),
+            Reason::Scope,
+        ),
+        ("scope", json!("openid profile email email"), Reason::Scope),
     ] {
         let mut envelope: Value = serde_json::from_slice(&bytes).unwrap();
         envelope[field] = value;
         assert_eq!(
             parse_tokens(&serde_json::to_vec(&envelope).unwrap(), 1000).unwrap_err(),
-            OAuthError::InvalidTokenResponse,
+            OAuthError::InvalidTokenResponse(reason),
             "{field}"
         );
     }
@@ -65,6 +79,33 @@ fn token_envelope_is_bounded_closed_and_redacted() {
     assert!(parse_tokens(duplicate.as_bytes(), 1000).is_err());
     assert!(parse_tokens(&vec![b' '; MAX_TOKEN_BODY + 1], 1000).is_err());
     assert!(parse_tokens(&bytes, u64::MAX).is_err());
+}
+
+#[test]
+fn token_response_extensions_do_not_select_routes_accounts_or_policy() {
+    let mut envelope: Value = serde_json::from_slice(&response(1000)).unwrap();
+    envelope["example_parameter"] = json!("example_value");
+    envelope["token_endpoint"] = json!("https://do-not-follow.invalid/token");
+    envelope["account"] = json!("do-not-route");
+    envelope["metadata"] =
+        json!({"model":"do-not-select", "training":"not_used", "retention":"none", "unicode":"λ"});
+    let tokens = parse_tokens(&serde_json::to_vec(&envelope).unwrap(), 1000).unwrap();
+    assert_eq!(tokens.account.0.as_str(), "account-fixture");
+    assert_eq!(tokens.expires_at_seconds(), 4600);
+    assert!(!format!("{tokens:?}").contains("do-not-"));
+}
+
+#[test]
+fn bearer_token_type_is_ascii_case_insensitive_not_a_different_scheme() {
+    let mut envelope: Value = serde_json::from_slice(&response(1000)).unwrap();
+    for token_type in ["Bearer", "bearer", "BEARER", "bEaReR"] {
+        envelope["token_type"] = json!(token_type);
+        assert!(parse_tokens(&serde_json::to_vec(&envelope).unwrap(), 1000).is_ok());
+    }
+    for token_type in ["Basic", " Bearer", "Bearer ", "Bearer\t", "Beаrer"] {
+        envelope["token_type"] = json!(token_type);
+        assert!(parse_tokens(&serde_json::to_vec(&envelope).unwrap(), 1000).is_err());
+    }
 }
 
 #[test]

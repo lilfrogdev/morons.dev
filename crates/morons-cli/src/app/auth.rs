@@ -29,14 +29,41 @@ pub(crate) fn failure_message(failure: morons_protocol::OpenAiLoginFailure) -> &
         F::ExchangeUncertain => {
             "Token exchange outcome is uncertain. It was not retried; existing credentials were not replaced."
         }
-        F::InvalidResponse => {
-            "OpenAI returned an invalid token response; existing credentials were not replaced."
-        }
+        F::InvalidResponse { reason } => token_response_message(reason),
         F::CredentialChanged => {
             "Credential changed before installation. Reopen /login to reload status."
         }
         F::InstallationUncertain => UNKNOWN,
         F::Unavailable => "ChatGPT login is unavailable; nothing was retried.",
+    }
+}
+fn token_response_message(reason: morons_protocol::OpenAiTokenResponseFailure) -> &'static str {
+    use morons_protocol::OpenAiTokenResponseFailure as R;
+    macro_rules! message {
+        ($reason:literal) => {
+            concat!(
+                "ChatGPT token response rejected (",
+                $reason,
+                "); existing credentials were not replaced. Nothing was retried."
+            )
+        };
+    }
+    match reason {
+        R::Headers => message!("headers"),
+        R::BodyBounds => message!("body-bounds"),
+        R::BodyFraming => message!("body-framing"),
+        R::Json => message!("json"),
+        R::TokenFields => message!("token-fields"),
+        R::TokenType => message!("token-type"),
+        R::Scope => message!("scope"),
+        R::ResponseLifetime => message!("response-lifetime"),
+        R::AccessTokenFormat => message!("access-token-format"),
+        R::ClaimsJson => message!("claims-json"),
+        R::ClaimExpiry => message!("claim-expiry"),
+        R::AccountClaim => message!("account-claim"),
+        R::EffectiveLifetime => message!("effective-lifetime"),
+        R::Clock => message!("clock"),
+        R::StoredCredential => message!("stored-credential"),
     }
 }
 pub(super) enum AuthDialog {

@@ -32,6 +32,51 @@ fn render(app: &mut AppState, width: u16, height: u16) -> String {
         .collect()
 }
 #[test]
+fn token_validation_failure_reasons_clear_links_without_retry_or_selection() {
+    use morons_protocol::{OpenAiLoginFailure as F, OpenAiTokenResponseFailure as R};
+    for (reason, label) in [
+        (R::Headers, "headers"),
+        (R::BodyBounds, "body-bounds"),
+        (R::BodyFraming, "body-framing"),
+        (R::Json, "json"),
+        (R::TokenFields, "token-fields"),
+        (R::TokenType, "token-type"),
+        (R::Scope, "scope"),
+        (R::ResponseLifetime, "response-lifetime"),
+        (R::AccessTokenFormat, "access-token-format"),
+        (R::ClaimsJson, "claims-json"),
+        (R::ClaimExpiry, "claim-expiry"),
+        (R::AccountClaim, "account-claim"),
+        (R::EffectiveLifetime, "effective-lifetime"),
+        (R::Clock, "clock"),
+        (R::StoredCredential, "stored-credential"),
+    ] {
+        let mut app = AppState::new("test");
+        open(&mut app, false);
+        key(&mut app, KeyCode::Enter);
+        app.handle_auth_event(AuthEvent::Started(url()));
+        assert!(app.login_link().is_some());
+        assert_eq!(
+            app.handle_auth_event(AuthEvent::Finished(OpenAiLoginResult::Failed {
+                failure: F::InvalidResponse { reason },
+            })),
+            AppAction::None
+        );
+        assert!(app.login_link().is_none());
+        let Some(AuthDialog::Complete(message)) = app.auth_dialog else {
+            panic!("expected failure dialog")
+        };
+        assert!(message.contains(&format!("({label})")));
+        assert!(message.contains("existing credentials were not replaced"));
+        assert!(message.contains("Nothing was retried"));
+        assert!(!render(&mut app, 120, 30).contains("synthetic-marker"));
+        assert_eq!(key(&mut app, KeyCode::Enter), AppAction::None);
+        assert!(app.prompt.is_empty());
+        assert!(app.default_model.is_none());
+    }
+}
+
+#[test]
 fn chatgpt_login_is_explicit_ephemeral_and_excluded_from_the_prompt() {
     let (session, run) = fixture_session_and_run();
     let mut app = AppState::new("test");

@@ -1,4 +1,7 @@
-use super::{OAuthError, OAuthTokens, TOKEN_URI, now_seconds, token::parse_tokens};
+use super::{
+    OAuthError, OAuthTokens, TOKEN_URI, TokenResponseFailure as Reason, now_seconds,
+    token::parse_tokens,
+};
 use crate::provider::http_client::{ProviderHttpClient, bounded_client};
 use bytes::Bytes;
 use http::{
@@ -67,7 +70,7 @@ impl TokenClient {
                 .sum::<usize>()
                 > MAX_HEADER_BYTES
         {
-            return Err(OAuthError::InvalidTokenResponse);
+            return Err(OAuthError::InvalidTokenResponse(Reason::Headers));
         }
         if response.status().as_u16() != 200 {
             return Err(match response.status().as_u16() {
@@ -83,7 +86,7 @@ impl TokenClient {
                 .is_none_or(|s| !s.trim().eq_ignore_ascii_case("application/json"))
             || headers.get_all(CONTENT_LENGTH).iter().count() > 1
         {
-            return Err(OAuthError::InvalidTokenResponse);
+            return Err(OAuthError::InvalidTokenResponse(Reason::Headers));
         }
         if let Some(length) = headers.get(CONTENT_LENGTH)
             && length
@@ -92,7 +95,7 @@ impl TokenClient {
                 .and_then(|s| s.parse::<u64>().ok())
                 .is_none_or(|n| n > MAX_BODY as u64)
         {
-            return Err(OAuthError::InvalidTokenResponse);
+            return Err(OAuthError::InvalidTokenResponse(Reason::BodyBounds));
         }
         let mut body = response.into_body();
         let mut bytes = Zeroizing::new(Vec::new());
@@ -103,9 +106,9 @@ impl TokenClient {
             let data = frame
                 .map_err(|_| OAuthError::ExchangeUncertain)?
                 .into_data()
-                .map_err(|_| OAuthError::InvalidTokenResponse)?;
+                .map_err(|_| OAuthError::InvalidTokenResponse(Reason::BodyFraming))?;
             if data.len() > MAX_BODY.saturating_sub(bytes.len()) {
-                return Err(OAuthError::InvalidTokenResponse);
+                return Err(OAuthError::InvalidTokenResponse(Reason::BodyBounds));
             }
             bytes.extend_from_slice(&data);
         }

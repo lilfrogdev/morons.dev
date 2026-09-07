@@ -1,4 +1,5 @@
 mod lifecycle;
+mod token_validation;
 
 use super::*;
 use crate::provider::provider_cancellation;
@@ -141,6 +142,8 @@ async fn complete_flow_is_one_exchange_fixed_fields_and_redacted() {
     let expected_verifier = login.verifier.to_string();
     let expected_redirect = login.redirect.clone();
     let (_, mut cancel) = provider_cancellation();
+    let unexpected = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ignored_endpoint = format!("http://{}/do-not-use", unexpected.local_addr().unwrap());
     let exchange = async {
         let (mut stream, _) = provider.accept().await.unwrap();
         let request = mock_request(&mut stream).await;
@@ -154,14 +157,17 @@ async fn complete_flow_is_one_exchange_fixed_fields_and_redacted() {
         assert_eq!(body["code"], "code+fixture");
         assert_eq!(body["code_verifier"], expected_verifier);
         assert_eq!(body["redirect_uri"], expected_redirect);
-        let bytes = token::tests::response(now_seconds().unwrap());
+        let mut envelope: serde_json::Value =
+            serde_json::from_slice(&token::tests::response(now_seconds().unwrap())).unwrap();
+        envelope["token_type"] = serde_json::json!("bearer");
+        envelope["token_endpoint"] = serde_json::json!(ignored_endpoint);
+        envelope["metadata"] = serde_json::json!({"model":"do-not-route","account":"not-used"});
+        let bytes = serde_json::to_vec(&envelope).unwrap();
         stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",bytes.len()).as_bytes()).await.unwrap();
         stream.write_all(&bytes).await.unwrap();
     };
     let address = login.callback.address();
     let state = login.state.to_string();
-    let unexpected = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let ignored_endpoint = format!("http://{}/do-not-use", unexpected.local_addr().unwrap());
     let callback_query = form(&[
         ("code", "code+fixture"),
         ("state", &state),

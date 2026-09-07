@@ -243,10 +243,35 @@ fn oauth_failure(error: OAuthError) -> Failure {
         OAuthError::Deadline => Failure::Expired,
         OAuthError::TokenRejected => Failure::ExchangeRejected,
         OAuthError::ExchangeUncertain => Failure::ExchangeUncertain,
-        OAuthError::InvalidTokenResponse => Failure::InvalidResponse,
+        OAuthError::InvalidTokenResponse(reason) => Failure::InvalidResponse {
+            reason: token_response_failure(reason),
+        },
         OAuthError::CallbackLimit | OAuthError::EntropyUnavailable | OAuthError::Cancelled => {
             Failure::Unavailable
         }
+    }
+}
+fn token_response_failure(
+    reason: crate::provider::openai_auth::TokenResponseFailure,
+) -> morons_protocol::OpenAiTokenResponseFailure {
+    use crate::provider::openai_auth::TokenResponseFailure as Source;
+    use morons_protocol::OpenAiTokenResponseFailure as Target;
+    match reason {
+        Source::Headers => Target::Headers,
+        Source::BodyBounds => Target::BodyBounds,
+        Source::BodyFraming => Target::BodyFraming,
+        Source::Json => Target::Json,
+        Source::TokenFields => Target::TokenFields,
+        Source::TokenType => Target::TokenType,
+        Source::Scope => Target::Scope,
+        Source::ResponseLifetime => Target::ResponseLifetime,
+        Source::AccessTokenFormat => Target::AccessTokenFormat,
+        Source::ClaimsJson => Target::ClaimsJson,
+        Source::ClaimExpiry => Target::ClaimExpiry,
+        Source::AccountClaim => Target::AccountClaim,
+        Source::EffectiveLifetime => Target::EffectiveLifetime,
+        Source::Clock => Target::Clock,
+        Source::StoredCredential => Target::StoredCredential,
     }
 }
 #[cfg(test)]

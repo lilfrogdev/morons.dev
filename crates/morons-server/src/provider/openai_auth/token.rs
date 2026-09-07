@@ -1,6 +1,8 @@
-use super::{MAX_TOKEN_LIFETIME_SECONDS, OAuthError, REFRESH_MARGIN_SECONDS, SCOPE};
+mod envelope;
+
+use super::{OAuthError, TokenResponseFailure as Reason};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::{Deserialize, Deserializer, de::Error as _};
+pub(super) use envelope::parse_tokens;
 use serde_json::Value;
 use std::fmt;
 use zeroize::{Zeroize as _, Zeroizing};
@@ -14,17 +16,8 @@ impl fmt::Debug for Secret {
         f.write_str("[REDACTED]")
     }
 }
-impl<'de> Deserialize<'de> for Secret {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let text = Zeroizing::new(String::deserialize(d)?);
-        if text.is_empty()
-            || text.len() > MAX_SECRET
-            || !text.bytes().all(|b| (0x21..=0x7e).contains(&b))
-        {
-            return Err(D::Error::custom("invalid OAuth secret"));
-        }
-        Ok(Self(text))
-    }
+fn valid_secret(text: &str) -> bool {
+    !text.is_empty() && text.len() <= MAX_SECRET && text.bytes().all(|b| (0x21..=0x7e).contains(&b))
 }
 
 /// Opaque server-owned material. Never serialize this as an application response.
@@ -55,17 +48,14 @@ impl OAuthTokens {
         expires: u64,
     ) -> Result<Self, OAuthError> {
         for value in [&access, &refresh] {
-            if value.is_empty()
-                || value.len() > MAX_SECRET
-                || !value.bytes().all(|b| (0x21..=0x7e).contains(&b))
-            {
-                return Err(OAuthError::InvalidTokenResponse);
+            if !valid_secret(value) {
+                return Err(OAuthError::InvalidTokenResponse(Reason::StoredCredential));
             }
         }
         let access = Secret(access);
         let (claimed, token_expiry) = account_claims(&access)?;
         if account.as_str() != claimed.0.as_str() || expires == 0 || expires > token_expiry {
-            return Err(OAuthError::InvalidTokenResponse);
+            return Err(OAuthError::InvalidTokenResponse(Reason::StoredCredential));
         }
         Ok(Self {
             access,
@@ -148,67 +138,8 @@ impl fmt::Debug for OAuthTokens {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TokenResponse {
-    access_token: Secret,
-    refresh_token: Secret,
-    expires_in: u64,
-    #[serde(default, deserialize_with = "present")]
-    token_type: Option<String>,
-    #[serde(default, deserialize_with = "present")]
-    scope: Option<String>,
-    #[serde(default, deserialize_with = "present")]
-    id_token: Option<Secret>,
-}
-fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
-    T::deserialize(d).map(Some)
-}
-
-pub(super) fn parse_tokens(body: &[u8], now: u64) -> Result<OAuthTokens, OAuthError> {
-    let invalid = OAuthError::InvalidTokenResponse;
-    if body.len() > MAX_TOKEN_BODY {
-        return Err(invalid);
-    }
-    let response: TokenResponse = serde_json::from_slice(body).map_err(|_| invalid)?;
-    if response.expires_in <= REFRESH_MARGIN_SECONDS
-        || response.expires_in > MAX_TOKEN_LIFETIME_SECONDS
-        || response.token_type.as_ref().is_some_and(|s| s != "Bearer")
-        || response.scope.as_ref().is_some_and(|s| !valid_scope(s))
-    {
-        return Err(invalid);
-    }
-    let expires = now.checked_add(response.expires_in).ok_or(invalid)?;
-    let (account, token_expiry) = account_claims(&response.access_token)?;
-    if token_expiry.saturating_sub(now) > MAX_TOKEN_LIFETIME_SECONDS {
-        return Err(invalid);
-    }
-    let expires_at_seconds = expires.min(token_expiry);
-    if expires_at_seconds.saturating_sub(now) <= REFRESH_MARGIN_SECONDS {
-        return Err(invalid);
-    }
-    drop(response.id_token);
-    Ok(OAuthTokens {
-        access: response.access_token,
-        refresh: response.refresh_token,
-        account,
-        expires_at_seconds,
-    })
-}
-
-fn valid_scope(scope: &str) -> bool {
-    if scope.len() > 128 {
-        return false;
-    }
-    let mut words: Vec<_> = scope.split(' ').collect();
-    words.sort_unstable();
-    let mut expected: Vec<_> = SCOPE.split(' ').collect();
-    expected.sort_unstable();
-    words == expected
-}
-
 fn account_claims(token: &Secret) -> Result<(Secret, u64), OAuthError> {
-    let invalid = OAuthError::InvalidTokenResponse;
+    let invalid = OAuthError::InvalidTokenResponse(Reason::AccessTokenFormat);
     let mut parts = token.0.split('.');
     let header = parts.next().ok_or(invalid)?;
     let payload = parts.next().ok_or(invalid)?;
@@ -228,14 +159,19 @@ fn account_claims(token: &Secret) -> Result<(Secret, u64), OAuthError> {
         .decode_slice(payload, &mut decoded)
         .map_err(|_| invalid)?;
     decoded.truncate(length);
-    let claims =
-        SecretJson(crate::provider::json::parse_strict_value(&decoded).map_err(|_| invalid)?);
-    let object = claims.0.as_object().ok_or(invalid)?;
+    let claims = SecretJson(
+        crate::provider::json::parse_strict_value(&decoded)
+            .map_err(|_| OAuthError::InvalidTokenResponse(Reason::ClaimsJson))?,
+    );
+    let object = claims
+        .0
+        .as_object()
+        .ok_or(OAuthError::InvalidTokenResponse(Reason::ClaimsJson))?;
     let expires = object
         .get("exp")
         .and_then(Value::as_u64)
         .filter(|n| *n > 0 && *n <= i64::MAX as u64)
-        .ok_or(invalid)?;
+        .ok_or(OAuthError::InvalidTokenResponse(Reason::ClaimExpiry))?;
     let account = object
         .get("https://api.openai.com/auth")
         .and_then(Value::as_object)
@@ -247,7 +183,7 @@ fn account_claims(token: &Secret) -> Result<(Secret, u64), OAuthError> {
                 && s.bytes()
                     .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
         })
-        .ok_or(invalid)?;
+        .ok_or(OAuthError::InvalidTokenResponse(Reason::AccountClaim))?;
     Ok((Secret(Zeroizing::new(account.to_owned())), expires))
 }
 

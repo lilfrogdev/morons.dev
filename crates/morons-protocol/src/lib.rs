@@ -4,7 +4,7 @@ mod credential;
 mod openai_auth;
 pub use openai_auth::{
     OpenAiAuthorizationUrl, OpenAiCredentialState, OpenAiCredentialStatus, OpenAiLoginFailure,
-    OpenAiLoginResult,
+    OpenAiLoginResult, OpenAiTokenResponseFailure,
 };
 mod endpoint;
 mod framing;
@@ -43,4 +43,4 @@ pub use session::{
     SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 42;
+pub const PROTOCOL_VERSION: u32 = 43;

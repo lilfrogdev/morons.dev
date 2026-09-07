@@ -57,6 +57,25 @@ pub struct OpenAiCredentialStatus {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum OpenAiTokenResponseFailure {
+    Headers,
+    BodyBounds,
+    BodyFraming,
+    Json,
+    TokenFields,
+    TokenType,
+    Scope,
+    ResponseLifetime,
+    AccessTokenFormat,
+    ClaimsJson,
+    ClaimExpiry,
+    AccountClaim,
+    EffectiveLifetime,
+    Clock,
+    StoredCredential,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum OpenAiLoginFailure {
     Busy,
     CallbackUnavailable,
@@ -64,7 +83,7 @@ pub enum OpenAiLoginFailure {
     Expired,
     ExchangeRejected,
     ExchangeUncertain,
-    InvalidResponse,
+    InvalidResponse { reason: OpenAiTokenResponseFailure },
     Unavailable,
     CredentialChanged,
     InstallationUncertain,
@@ -83,6 +102,51 @@ mod tests {
     use crate::{
         ApplicationRequest, ApplicationResponse, ClientMessage, MutationRequestId, ServerMessage,
     };
+    #[test]
+    fn token_failure_reasons_are_closed_and_have_no_remote_detail_channel() {
+        use OpenAiTokenResponseFailure as R;
+        for reason in [
+            R::Headers,
+            R::BodyBounds,
+            R::BodyFraming,
+            R::Json,
+            R::TokenFields,
+            R::TokenType,
+            R::Scope,
+            R::ResponseLifetime,
+            R::AccessTokenFormat,
+            R::ClaimsJson,
+            R::ClaimExpiry,
+            R::AccountClaim,
+            R::EffectiveLifetime,
+            R::Clock,
+            R::StoredCredential,
+        ] {
+            let message = ServerMessage::OpenAiLoginFinished {
+                attempt_id: MutationRequestId::from_bytes([2; 16]),
+                outcome: OpenAiLoginResult::Failed {
+                    failure: OpenAiLoginFailure::InvalidResponse { reason },
+                },
+            };
+            let bytes = message.encode_json().unwrap();
+            assert!(bytes.len() < 512);
+            assert_eq!(ServerMessage::decode_json(&bytes).unwrap(), message);
+        }
+        assert_eq!(
+            serde_json::to_string(&OpenAiLoginFailure::InvalidResponse { reason: R::Scope })
+                .unwrap(),
+            r#"{"invalid_response":{"reason":"scope"}}"#
+        );
+        for value in [
+            r#""invalid_response""#,
+            r#"{"invalid_response":{}}"#,
+            r#"{"invalid_response":{"reason":"PRIVATE-provider-value"}}"#,
+            r#"{"invalid_response":{"reason":"scope","detail":"PRIVATE"}}"#,
+            r#"{"invalid_response":{"reason":{"scope":"PRIVATE"}}}"#,
+        ] {
+            assert!(serde_json::from_str::<OpenAiLoginFailure>(value).is_err());
+        }
+    }
     #[test]
     fn authentication_wire_is_closed_bounded_and_redacted() {
         let url = OpenAiAuthorizationUrl::new(
