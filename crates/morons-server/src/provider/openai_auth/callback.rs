@@ -1,7 +1,9 @@
+mod query;
 use super::OAuthError;
-use hmac::{Hmac, KeyInit as _, Mac as _};
-use sha2::Sha256;
-use std::net::SocketAddr;
+#[cfg(test)]
+pub(super) use query::decode_component;
+use query::parse_query;
+use std::{borrow::Cow, net::SocketAddr};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::{TcpListener, TcpStream},
@@ -13,7 +15,8 @@ const MAX_REQUEST: usize = 8192;
 const MAX_CONNECTIONS: usize = 16;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const RECEIVED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\nAuthorization code received. Return to Morons; login is not complete until credentials are saved.\n";
-const REJECTED: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\nCallback rejected. Return to Morons.\n";
+const DENIED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\nAuthorization was denied. Return to Morons; no credential was installed by this callback.\n";
+const REJECTED_HEADERS: &str = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Security-Policy: default-src 'none'; frame-ancestors 'none'\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n";
 
 pub(super) struct Callback {
     listener: TcpListener,
@@ -25,6 +28,47 @@ enum Reply {
     Denied,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rejection {
+    RequestFormat,
+    RequestBounds,
+    RequestTimeout,
+    RequestIncomplete,
+    Headers,
+    Host,
+    Path,
+    QueryFormat,
+    DuplicateField,
+    State,
+    Issuer,
+    ResponseShape,
+}
+impl Rejection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::RequestFormat => "request-format",
+            Self::RequestBounds => "request-bounds",
+            Self::RequestTimeout => "request-timeout",
+            Self::RequestIncomplete => "request-incomplete",
+            Self::Headers => "headers",
+            Self::Host => "host",
+            Self::Path => "path",
+            Self::QueryFormat => "query-format",
+            Self::DuplicateField => "duplicate-field",
+            Self::State => "state",
+            Self::Issuer => "issuer",
+            Self::ResponseShape => "response-shape",
+        }
+    }
+}
+fn response(reply: &Result<Reply, Rejection>) -> Cow<'static, [u8]> {
+    match reply {
+        Ok(Reply::Code(_)) => Cow::Borrowed(RECEIVED),
+        Ok(Reply::Denied) => Cow::Borrowed(DENIED),
+        Err(reason) => Cow::Owned(format!("{REJECTED_HEADERS}Callback rejected ({}). Return to Morons. Share only this reason, never the callback URL or code.\n", reason.label()).into_bytes()),
+    }
+}
+
 impl Callback {
     pub(super) async fn bind(address: SocketAddr, host: String) -> Result<Self, OAuthError> {
         let listener = TcpListener::bind(address)
@@ -32,7 +76,6 @@ impl Callback {
             .map_err(|_| OAuthError::CallbackUnavailable)?;
         Ok(Self { listener, host })
     }
-
     pub(super) async fn receive(&self, state: &str) -> Result<Zeroizing<String>, OAuthError> {
         for _ in 0..MAX_CONNECTIONS {
             let (mut stream, peer) = self
@@ -52,26 +95,21 @@ impl Callback {
         }
         Err(OAuthError::CallbackLimit)
     }
-
     async fn connection(&self, stream: &mut TcpStream, state: &str) -> Option<Reply> {
         let deadline = time::Instant::now() + CONNECTION_TIMEOUT;
         let request = time::timeout_at(deadline, read_request(stream))
             .await
-            .ok()
-            .flatten();
+            .map_err(|_| Rejection::RequestTimeout)
+            .and_then(|result| result);
         let reply = request
             .as_deref()
+            .map_err(|reason| *reason)
             .and_then(|bytes| parse_request(bytes, &self.host, state));
-        let response = if matches!(reply, Some(Reply::Code(_))) {
-            RECEIVED
-        } else {
-            REJECTED
-        };
-        let _ = time::timeout_at(deadline, stream.write_all(response)).await;
+        let response = response(&reply);
+        let _ = time::timeout_at(deadline, stream.write_all(&response)).await;
         let _ = time::timeout_at(deadline, stream.shutdown()).await;
-        reply
+        reply.ok()
     }
-
     #[cfg(test)]
     pub(super) async fn for_test() -> Self {
         let mut callback = Self::bind("127.0.0.1:0".parse().unwrap(), String::new())
@@ -80,165 +118,98 @@ impl Callback {
         callback.host = format!("localhost:{}", callback.address().port());
         callback
     }
-
     #[cfg(test)]
     pub(super) fn address(&self) -> SocketAddr {
         self.listener.local_addr().unwrap()
     }
 }
 
-async fn read_request(stream: &mut TcpStream) -> Option<Zeroizing<Vec<u8>>> {
+async fn read_request(stream: &mut TcpStream) -> Result<Zeroizing<Vec<u8>>, Rejection> {
     let mut output = Zeroizing::new(Vec::new());
     let mut chunk = Zeroizing::new([0_u8; 1024]);
     while output.len() < MAX_REQUEST {
         let limit = chunk.len().min(MAX_REQUEST - output.len());
-        let count = stream.read(&mut chunk[..limit]).await.ok()?;
+        let count = stream
+            .read(&mut chunk[..limit])
+            .await
+            .map_err(|_| Rejection::RequestIncomplete)?;
         if count == 0 {
-            return None;
+            return Err(Rejection::RequestIncomplete);
         }
         output.extend_from_slice(&chunk[..count]);
         if let Some(end) = output.windows(4).position(|part| part == b"\r\n\r\n") {
-            return (end + 4 == output.len()).then_some(output);
+            return if end + 4 == output.len() {
+                Ok(output)
+            } else {
+                Err(Rejection::RequestFormat)
+            };
         }
     }
-    None
+    Err(Rejection::RequestBounds)
 }
 
-fn parse_request(bytes: &[u8], host: &str, state: &str) -> Option<Reply> {
+fn parse_request(bytes: &[u8], host: &str, state: &str) -> Result<Reply, Rejection> {
     if bytes.len() > MAX_REQUEST {
-        return None;
+        return Err(Rejection::RequestBounds);
     }
-    let text = std::str::from_utf8(bytes).ok()?.strip_suffix("\r\n\r\n")?;
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| Rejection::RequestFormat)?
+        .strip_suffix("\r\n\r\n")
+        .ok_or(Rejection::RequestFormat)?;
     let mut lines = text.split("\r\n");
-    let mut request = lines.next()?.split(' ');
-    if request.next()? != "GET" {
-        return None;
+    let mut request = lines.next().ok_or(Rejection::RequestFormat)?.split(' ');
+    if request.next() != Some("GET") {
+        return Err(Rejection::RequestFormat);
     }
-    let target = request.next()?;
-    if request.next()? != "HTTP/1.1" || request.next().is_some() {
-        return None;
+    let target = request.next().ok_or(Rejection::RequestFormat)?;
+    if request.next() != Some("HTTP/1.1") || request.next().is_some() {
+        return Err(Rejection::RequestFormat);
     }
-    let query = target.strip_prefix("/auth/callback?")?;
+    let query = target
+        .strip_prefix("/auth/callback?")
+        .ok_or(Rejection::Path)?;
     let mut names = Vec::new();
     let mut has_host = false;
     for line in lines {
-        let (name, value) = line.split_once(':')?;
+        let (name, value) = line.split_once(':').ok_or(Rejection::Headers)?;
         if name.is_empty()
             || !name
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&c))
             || names.len() >= 32
         {
-            return None;
+            return Err(Rejection::Headers);
         }
         if !value
             .bytes()
             .all(|c| c == b'\t' || (0x20..=0x7e).contains(&c))
         {
-            return None;
+            return Err(Rejection::Headers);
         }
         let name = name.to_ascii_lowercase();
         if names.contains(&name) {
-            return None;
+            return Err(Rejection::Headers);
         }
         let value = value.trim_matches([' ', '\t']);
         match name.as_str() {
             "host" => {
                 if value != host {
-                    return None;
+                    return Err(Rejection::Host);
                 }
                 has_host = true;
             }
             "content-length" if value == "0" => {}
-            "content-length" | "transfer-encoding" | "expect" | "origin" => return None,
+            "content-length" | "transfer-encoding" | "expect" | "origin" => {
+                return Err(Rejection::Headers);
+            }
             _ => {}
         }
         names.push(name);
     }
     if !has_host {
-        return None;
+        return Err(Rejection::Host);
     }
     parse_query(query, state)
-}
-
-fn parse_query(query: &str, expected_state: &str) -> Option<Reply> {
-    let mut code = None;
-    let mut state = None;
-    let mut error = None;
-    let mut description = None;
-    for (index, field) in query.split('&').enumerate() {
-        if index >= 4 {
-            return None;
-        }
-        let (key, value) = field.split_once('=')?;
-        let key = decode_component(key)?;
-        let value = decode_component(value)?;
-        let slot = match key.as_str() {
-            "code" => &mut code,
-            "state" => &mut state,
-            "error" => &mut error,
-            "error_description" => &mut description,
-            _ => return None,
-        };
-        if slot.replace(value).is_some() {
-            return None;
-        }
-    }
-    let state = state?;
-    if state.len() != expected_state.len() || !state_matches(&state, expected_state) {
-        return None;
-    }
-    match (code, error, description) {
-        (Some(code), None, None)
-            if !code.is_empty()
-                && code.len() <= 4096
-                && code.bytes().all(|c| (0x21..=0x7e).contains(&c)) =>
-        {
-            Some(Reply::Code(code))
-        }
-        (None, Some(error), description)
-            if !error.is_empty()
-                && error.len() <= 128
-                && description.as_ref().is_none_or(|s| s.len() <= 2048) =>
-        {
-            Some(Reply::Denied)
-        }
-        _ => None,
-    }
-}
-
-fn state_matches(actual: &str, expected: &str) -> bool {
-    let base = Hmac::<Sha256>::new_from_slice(b"morons.dev/oauth-state/v1")
-        .expect("HMAC accepts this key length");
-    let mut wanted = base.clone();
-    wanted.update(expected.as_bytes());
-    let mut supplied = base;
-    supplied.update(actual.as_bytes());
-    wanted
-        .verify_slice(&supplied.finalize().into_bytes())
-        .is_ok()
-}
-
-pub(super) fn decode_component(value: &str) -> Option<Zeroizing<String>> {
-    let mut bytes = Zeroizing::new(Vec::with_capacity(value.len()));
-    let mut input = value.bytes();
-    while let Some(byte) = input.next() {
-        let byte = match byte {
-            b'%' => {
-                let high = char::from(input.next()?).to_digit(16)?;
-                let low = char::from(input.next()?).to_digit(16)?;
-                u8::try_from(high * 16 + low).ok()?
-            }
-            b'+' => b' ',
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => byte,
-            _ => return None,
-        };
-        if !(0x20..=0x7e).contains(&byte) {
-            return None;
-        }
-        bytes.push(byte);
-    }
-    Some(Zeroizing::new(std::str::from_utf8(&bytes).ok()?.to_owned()))
 }
 
 #[cfg(test)]

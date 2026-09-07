@@ -28,7 +28,46 @@ async fn invalid_state_does_not_consume_the_callback_or_authorize_an_exchange() 
             .await
             .is_err()
     );
-    let good = submit(address, state, "code-fixture");
+    for (extra, value, reason) in [
+        ("iss", "https://evil.invalid", "issuer"),
+        ("access_token", "PRIVATE-TOKEN", "response-shape"),
+    ] {
+        let query = form(&[("code", "PRIVATE-CODE"), ("state", &state), (extra, value)]);
+        let reply = submit_query(address, &query).await;
+        let reply = std::str::from_utf8(&reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 400"));
+        assert!(reply.contains(reason));
+        assert!(!reply.contains("PRIVATE-"));
+        assert!(
+            time::timeout(Duration::from_millis(30), provider.accept())
+                .await
+                .is_err()
+        );
+    }
+    let duplicate = form(&[
+        ("code", "PRIVATE-CODE"),
+        ("state", &state),
+        ("scope", "a"),
+        ("scope", "b"),
+    ]);
+    let rejected = submit_query(address, &duplicate).await;
+    assert!(
+        std::str::from_utf8(&rejected)
+            .unwrap()
+            .contains("duplicate-field")
+    );
+    assert!(
+        time::timeout(Duration::from_millis(30), provider.accept())
+            .await
+            .is_err()
+    );
+    let good_query = form(&[
+        ("code", "code-fixture"),
+        ("state", &state),
+        ("scope", "openid profile email offline_access"),
+        ("iss", "https://auth.openai.com"),
+    ]);
+    let good = submit_query(address, &good_query);
     let exchange = async {
         let (mut stream, _) = provider.accept().await.unwrap();
         let _ = mock_request(&mut stream).await;

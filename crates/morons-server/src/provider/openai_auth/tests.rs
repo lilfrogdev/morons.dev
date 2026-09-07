@@ -41,13 +41,16 @@ pub(crate) fn fields(query: &str) -> BTreeMap<String, String> {
         .collect()
 }
 pub(crate) async fn submit(address: std::net::SocketAddr, state: String, code: &str) -> Vec<u8> {
-    let mut stream = TcpStream::connect(address).await.unwrap();
     let query = form(&[("code", code), ("state", &state)]);
+    submit_query(address, &query).await
+}
+pub(crate) async fn submit_query(address: std::net::SocketAddr, query: &str) -> Vec<u8> {
+    let mut stream = TcpStream::connect(address).await.unwrap();
     stream
         .write_all(
             format!(
                 "GET /auth/callback?{} HTTP/1.1\r\nHost: localhost:{}\r\n\r\n",
-                query.as_str(),
+                query,
                 address.port()
             )
             .as_bytes(),
@@ -157,7 +160,18 @@ async fn complete_flow_is_one_exchange_fixed_fields_and_redacted() {
     };
     let address = login.callback.address();
     let state = login.state.to_string();
-    let send = submit(address, state.clone(), "code+fixture");
+    let unexpected = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ignored_endpoint = format!("http://{}/do-not-use", unexpected.local_addr().unwrap());
+    let callback_query = form(&[
+        ("code", "code+fixture"),
+        ("state", &state),
+        ("scope", "untrusted-scope-metadata"),
+        ("session_state", "discard-me"),
+        ("iss", "https://auth.openai.com"),
+        ("token_endpoint", &ignored_endpoint),
+        ("model", "do-not-route"),
+    ]);
+    let send = submit_query(address, &callback_query);
     let (response, result, ()) = tokio::join!(send, login.complete(&mut cancel), exchange);
     let tokens = result.unwrap();
     assert!(tokens.expires_at_seconds() > now_seconds().unwrap() + 300);
@@ -165,6 +179,12 @@ async fn complete_flow_is_one_exchange_fixed_fields_and_redacted() {
     assert!(response.starts_with("HTTP/1.1 200"));
     assert!(!response.contains("code+fixture"));
     assert!(!response.contains(&state));
+    assert!(!response.contains("discard-me"));
+    assert!(
+        time::timeout(Duration::from_millis(30), unexpected.accept())
+            .await
+            .is_err()
+    );
     assert_eq!(slot.available_permits(), 1);
     assert!(TcpStream::connect(address).await.is_err());
     assert!(
