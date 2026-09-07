@@ -126,6 +126,8 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - A missing or rotating `x-opencode-session` value defeats OpenCode routing and prompt-cache affinity, while reusing one value across unrelated root or child conversations creates unintended correlation and traffic concentration.
 - Concurrent child inference multiplies provider usage, exceeds expected spend, or lets credential replacement race a later child turn.
 
+A native Codex adapter must not confuse API model availability with ChatGPT entitlement, send unsupported output-limit parameters, claim local acceptance limits bound remote generation/spend, replay a failed turn, or reuse account/turn-specific opaque routing state across runs. [ADR 0028](../adr/0028-native-codex-responses-contract.md) reviews the isolated full-Responses contract before application admission; Responses Lite and remote-memory features are not implicit extensions.
+
 ## OAuth callback and token threats
 
 ADR 0019's bounded native OAuth core introduces a narrow loopback boundary, not a second application transport. Port occupation, forged/duplicate callbacks, wrong state, request smuggling, slow connections, browser-origin probes and query reflection must not authorize login or exhaust unbounded resources. Bind only the fixed loopback socket, consume at most one matching code, cap connections/bytes/time, return static non-caching responses and never take over the port owner.
@@ -204,7 +206,7 @@ A public client ID is not a secret or proof of a Morons-specific provider agreem
 - Keep provider and web-search routes fixed in reviewed code, disable redirects, pin each model to one reviewed protocol revision, scope bearer, `x-api-key`, and `x-goog-api-key` headers to their exact routes, strictly decode bounded protocol-specific streams, and never retry dispatched inference or web search automatically.
 - Store global default-model changes as bounded idempotent facts, validate them against the reviewed manifest, use them only when the current sanitized catalog marks the pair available, and validate every run's explicit model independently.
 - Derive one opaque `x-opencode-session` value per Morons conversation: preserve a root value across its durable session, derive a distinct stable value for each canonical task child, rotate values across unrelated conversations, omit them from catalog requests, and never log or persist a derived header.
-- Store Morons-managed credentials outside SQLite and never intentionally include them in child environments, prompts, provider payload bodies, errors, logs, or audit facts.
+- Store Morons-managed credentials outside SQLite and never intentionally include them in child environments, prompts, model-inference payload bodies, errors, logs, or audit facts. Only the reviewed fixed OAuth token endpoint accepts its required authentication form material.
 - Use one bounded storage worker, transactional canonical-entry and projection commits, ordered migrations, online SQLite backup, quotas, and startup recovery that performs no external effect.
 - Scope subscriptions and cursors to sessions, compose snapshots and replay at one high water, and disconnect slow consumers.
 - Render all untrusted content through bounded terminal-safe Ratatui cells and restore terminal ownership on exit.

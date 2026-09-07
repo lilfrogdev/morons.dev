@@ -1230,14 +1230,17 @@ const fn map_provider_failure(error: ProviderError) -> RunFailureKind {
         | ProviderError::MalformedResponse
         | ProviderError::IncompleteResponse
         | ProviderError::ResponseLimitExceeded => RunFailureKind::ProviderProtocol,
-        ProviderError::InvalidRequest | ProviderError::UnsupportedModel => RunFailureKind::Internal,
+        ProviderError::InvalidRequest
+        | ProviderError::UnsupportedModel
+        | ProviderError::DataUseRestricted => RunFailureKind::Internal,
         ProviderError::MalformedCatalog | ProviderError::Cancelled => RunFailureKind::Internal,
     }
 }
 
 const fn provider_failure_state(error: ProviderError) -> ProviderOperationFailureState {
     match error {
-        ProviderError::AuthenticationOrEntitlement
+        ProviderError::DataUseRestricted
+        | ProviderError::AuthenticationOrEntitlement
         | ProviderError::RateLimited
         | ProviderError::Unavailable
         | ProviderError::RequestRejected

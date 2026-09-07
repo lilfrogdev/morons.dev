@@ -47,6 +47,7 @@ pub struct ServerApplication {
     open_code: Arc<OpenCodeProvider>,
     openai_credentials: Arc<crate::provider::openai_auth::OpenAiCredentialProvider>,
     login_supervisor: Arc<crate::login_supervisor::LoginSupervisor>,
+    openai_codex: crate::provider::openai_codex::OpenAiCodexProvider,
     run_supervisor: Arc<RunSupervisor>,
     command_supervisor: Arc<CommandSupervisor>,
     session_event_hub: Arc<SessionEventHub>,
@@ -117,6 +118,13 @@ impl ServerApplication {
         crate::provider::openai_auth::OpenAiCredentialError,
     > {
         self.openai_credentials.status().await
+    }
+
+    /// Reviewed metadata only; this does not admit a native model or dispatch inference.
+    pub fn reviewed_chatgpt_models(
+        &self,
+    ) -> &'static [crate::provider::openai_codex::OpenAiCodexModel] {
+        self.openai_codex.models()
     }
 
     pub fn subscribe_shutdown_requests(&self) -> watch::Receiver<bool> {
@@ -1146,6 +1154,8 @@ impl ServerApplication {
         let openai_credentials = Arc::new(
             crate::provider::openai_auth::OpenAiCredentialProvider::new(Arc::clone(&sessions)),
         );
+        let openai_codex =
+            crate::provider::openai_codex::OpenAiCodexProvider::new(openai_credentials.clone());
         let login_supervisor = crate::login_supervisor::LoginSupervisor::new(
             openai_credentials.clone(),
             shutdown_requests.clone(),
@@ -1154,6 +1164,7 @@ impl ServerApplication {
             sessions,
             openai_credentials,
             login_supervisor,
+            openai_codex,
             open_code,
             run_supervisor,
             command_supervisor,

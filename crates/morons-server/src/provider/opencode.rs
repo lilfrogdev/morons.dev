@@ -1,12 +1,13 @@
 use std::{sync::Arc, time::Duration};
 
+use super::response_http::*;
 use bytes::{Bytes, BytesMut};
 use http::{
-    HeaderMap, HeaderValue, Method, Request, Response, StatusCode, Uri,
-    header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT},
+    HeaderValue, Method, Request, Response, Uri,
+    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT},
 };
 use http_body_util::{BodyExt as _, Full};
-use hyper::body::{Frame, Incoming};
+use hyper::body::Incoming;
 use tokio::time::{self, Instant};
 use zeroize::Zeroizing;
 
@@ -36,13 +37,7 @@ const GO_CATALOG_URI: &str = "https://opencode.ai/zen/go/v1/models";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const USER_AGENT_VALUE: &str = concat!("morons-server/", env!("CARGO_PKG_VERSION"));
 const OPENCODE_SESSION_HEADER: &str = "x-opencode-session";
-const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
-const STREAM_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(30);
-const PROVIDER_TOTAL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CATALOG_TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_RESPONSE_HEADERS: usize = 64;
-const MAX_RESPONSE_HEADER_BYTES: usize = 16 * 1024;
-const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 struct EndpointSet {
@@ -583,58 +578,6 @@ fn sensitive_header(value: &[u8]) -> Result<HeaderValue, ProviderError> {
     Ok(header)
 }
 
-fn validate_response_headers(headers: &HeaderMap) -> Result<(), ProviderError> {
-    if headers.len() > MAX_RESPONSE_HEADERS {
-        return Err(ProviderError::ResponseLimitExceeded);
-    }
-    let mut total = 0_usize;
-    for (name, value) in headers {
-        total = total
-            .checked_add(name.as_str().len())
-            .and_then(|bytes| bytes.checked_add(value.as_bytes().len()))
-            .filter(|bytes| *bytes <= MAX_RESPONSE_HEADER_BYTES)
-            .ok_or(ProviderError::ResponseLimitExceeded)?;
-    }
-    Ok(())
-}
-
-fn validate_content_length(headers: &HeaderMap, maximum: usize) -> Result<(), ProviderError> {
-    let Some(value) = headers.get(CONTENT_LENGTH) else {
-        return Ok(());
-    };
-    let length = value
-        .to_str()
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .ok_or(ProviderError::MalformedResponse)?;
-    if length > maximum as u64 {
-        return Err(ProviderError::ResponseLimitExceeded);
-    }
-    Ok(())
-}
-
-fn require_content_type(headers: &HeaderMap, expected: &str) -> Result<(), ProviderError> {
-    let content_type = headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(';').next())
-        .map(str::trim)
-        .filter(|value| value.eq_ignore_ascii_case(expected))
-        .ok_or(ProviderError::UnexpectedContentType)?;
-    let _ = content_type;
-    Ok(())
-}
-
-fn classify_status(status: StatusCode) -> ProviderError {
-    match status.as_u16() {
-        300..=399 => ProviderError::RedirectDenied,
-        401 | 403 => ProviderError::AuthenticationOrEntitlement,
-        408 | 500..=599 => ProviderError::Unavailable,
-        429 => ProviderError::RateLimited,
-        _ => ProviderError::RequestRejected,
-    }
-}
-
 async fn read_body_limited(
     body: Incoming,
     maximum_bytes: usize,
@@ -660,53 +603,6 @@ async fn read_body_limited(
         output.extend_from_slice(&data);
     }
     Ok(output.to_vec())
-}
-
-async fn read_response_body_with_cancellation(
-    mut body: Incoming,
-    maximum_bytes: usize,
-    deadline: Instant,
-    cancellation: &mut ProviderCancellation,
-) -> Result<(), ProviderError> {
-    let mut bytes = 0_usize;
-    while let Some(frame) = next_frame(&mut body, deadline, cancellation).await? {
-        let data = frame
-            .into_data()
-            .map_err(|_| ProviderError::MalformedResponse)?;
-        bytes = bytes
-            .checked_add(data.len())
-            .filter(|bytes| *bytes <= maximum_bytes)
-            .ok_or(ProviderError::ResponseLimitExceeded)?;
-    }
-    Ok(())
-}
-
-async fn next_frame(
-    body: &mut Incoming,
-    total_deadline: Instant,
-    cancellation: &mut ProviderCancellation,
-) -> Result<Option<Frame<Bytes>>, ProviderError> {
-    if cancellation.is_cancelled() {
-        return Err(ProviderError::Cancelled);
-    }
-    let now = Instant::now();
-    if now >= total_deadline {
-        return Err(ProviderError::TotalTimeout);
-    }
-    let inactivity_deadline = now + STREAM_INACTIVITY_TIMEOUT;
-    let frame_deadline = inactivity_deadline.min(total_deadline);
-    let result = tokio::select! {
-        biased;
-        () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
-        result = time::timeout_at(frame_deadline, body.frame()) => result,
-    };
-    match result {
-        Ok(Some(Ok(frame))) => Ok(Some(frame)),
-        Ok(Some(Err(_))) => Err(ProviderError::Transport),
-        Ok(None) => Ok(None),
-        Err(_) if frame_deadline == total_deadline => Err(ProviderError::TotalTimeout),
-        Err(_) => Err(ProviderError::StreamInactivityTimeout),
-    }
 }
 
 #[cfg(test)]

@@ -36,6 +36,14 @@ Login controls use IPC 40 and SQLite 28. Do not launch its binaries against reta
 
 Synthetic login-control tests additionally cover connection-scoped cancellation, disconnects, slow consumers, abandoned drains, shutdown during admission, committed installation/cancellation races, status and provider-local removal, closed/redacted framing diagnostics, client outcome scope/generation validation with no reconnect/replay, and terminal-safe scrollable URL dialogs that reject paste/image input and clear URLs on cancellation. The old OpenCode hidden-input/removal tests now choose OpenCode in the provider menu; their secrecy and generation assertions remain. No test opens a browser or the production callback port.
 
+## Native Codex adapter
+
+```sh
+cargo test -p morons-server --lib --locked openai_codex -- --test-threads 2
+```
+
+[ADR 0028](adr/0028-native-codex-responses-contract.md) pins the full-Responses GPT-5.5 contract. Tests use only synthetic credentials and loopback HTTP: fixed body/headers, strict tools and normalized images, local-only output limits, policy checks, provider-instance/turn/generation/request-sequence binding, receipt-bound reasoning and sticky-header isolation, lease release after headers, cancellation/drop/deadlines, contradictory/oversized metadata and no retry/fallback. The adapter is not yet reachable by application inference. These checks do not qualify subscription entitlement, current account policy, remote generation/spend limits or live interoperability. Global durable settings and root/child/maintenance binding remain admission gates; no retained QA upgrade or real browser/provider call is implied.
+
 ## Local performance probes
 
 Run only these explicitly named, non-network probes (not the billable ignored tests):

@@ -676,6 +676,7 @@ const fn subagent_metrics(
 
 const fn provider_failure_label(error: ProviderError) -> &'static str {
     match error {
+        ProviderError::DataUseRestricted => "subagent model does not satisfy data-use restrictions",
         ProviderError::CredentialGenerationChanged => "subagent credential generation changed",
         ProviderError::CredentialNotConfigured => "subagent provider credential is not configured",
         ProviderError::AuthenticationOrEntitlement => {

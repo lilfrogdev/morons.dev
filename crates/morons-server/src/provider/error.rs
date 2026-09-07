@@ -5,6 +5,7 @@ use std::{error::Error, fmt};
 pub enum ProviderError {
     InvalidRequest,
     UnsupportedModel,
+    DataUseRestricted,
     CredentialGenerationChanged,
     CredentialNotConfigured,
     Transport,
@@ -30,6 +31,9 @@ impl fmt::Display for ProviderError {
         formatter.write_str(match self {
             Self::InvalidRequest => "the provider request is invalid",
             Self::UnsupportedModel => "the selected provider model is unsupported",
+            Self::DataUseRestricted => {
+                "the selected provider model does not satisfy data-use restrictions"
+            }
             Self::CredentialGenerationChanged => "the provider credential generation changed",
             Self::CredentialNotConfigured => "the provider credential is not configured",
             Self::Transport => "the provider transport failed",
