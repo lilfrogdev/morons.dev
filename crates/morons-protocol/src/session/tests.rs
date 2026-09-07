@@ -664,13 +664,14 @@ fn application_settings_contract_has_stable_json_shapes() {
     assert_eq!(
         serde_json::to_value(ApplicationResponse::ApplicationSettings {
             settings: ApplicationSettings {
+                data_use: Default::default(),
                 subagent_model: SubagentModelSetting::InheritParent {},
             },
         })
         .expect("settings response should encode"),
         json!({
             "result": "application_settings",
-            "settings": { "subagent_model": { "mode": "inherit_parent" } },
+            "settings": { "subagent_model": { "mode": "inherit_parent" }, "data_use": { "sequence": 0, "block_training_use": false, "require_zero_retention": false } },
         })
     );
     assert!(
@@ -687,6 +688,7 @@ fn application_settings_contract_has_stable_json_shapes() {
     assert_eq!(
         serde_json::to_value(ApplicationResponse::ApplicationSettingsUpdated {
             settings: ApplicationSettings {
+                data_use: Default::default(),
                 subagent_model: setting,
             },
         })
@@ -694,6 +696,7 @@ fn application_settings_contract_has_stable_json_shapes() {
         json!({
             "result": "application_settings_updated",
             "settings": {
+                "data_use": { "sequence": 0, "block_training_use": false, "require_zero_retention": false },
                 "subagent_model": {
                     "mode": "open_code",
                     "service": "go",
@@ -702,6 +705,27 @@ fn application_settings_contract_has_stable_json_shapes() {
             },
         })
     );
+}
+
+#[test]
+fn data_use_policy_wire_is_explicit_closed_and_typed() {
+    let value = json!({"operation":"set_data_use_policy","mutation_request_id":"mut_2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","policy":{"sequence":0,"block_training_use":true,"require_zero_retention":false}});
+    let request: ApplicationRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), value);
+    for field in ["block_training_use", "require_zero_retention"] {
+        let mut invalid = value.clone();
+        invalid["policy"][field] = json!("false");
+        assert!(serde_json::from_value::<ApplicationRequest>(invalid).is_err());
+    }
+    let mut unknown = value.clone();
+    unknown["policy"]["account_plan"] = json!("enterprise");
+    assert!(serde_json::from_value::<ApplicationRequest>(unknown).is_err());
+    let mut missing = value;
+    missing["policy"]
+        .as_object_mut()
+        .unwrap()
+        .remove("sequence");
+    assert!(serde_json::from_value::<ApplicationRequest>(missing).is_err());
 }
 
 #[test]

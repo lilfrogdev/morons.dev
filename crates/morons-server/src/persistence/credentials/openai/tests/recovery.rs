@@ -166,6 +166,7 @@ async fn schema_27_migration_preserves_opencode_bytes_and_does_not_invent_oauth_
     drop(store);
     let key = fs::read(root.path().join("credentials/opencode.state")).unwrap();
     let db = Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    crate::persistence::data_use::tests::restore_schema_28(&db);
     db.pragma_update(None, "foreign_keys", false).unwrap();
     db.execute_batch("BEGIN IMMEDIATE; PRAGMA defer_foreign_keys=ON;
         CREATE TABLE credential_mutation_requests_v27 (

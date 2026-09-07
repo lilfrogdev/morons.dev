@@ -131,6 +131,9 @@ pub(super) enum AppAction {
         model_id: String,
     },
     LoadSettings,
+    SetDataUsePolicy {
+        policy: morons_protocol::DataUsePolicy,
+    },
     SetDefaultModel {
         service: OpenCodeService,
         model_id: String,
@@ -229,6 +232,10 @@ impl fmt::Debug for AppAction {
                 .field("model_id", model_id)
                 .finish(),
             Self::LoadSettings => formatter.write_str("LoadSettings"),
+            Self::SetDataUsePolicy { policy } => formatter
+                .debug_struct("SetDataUsePolicy")
+                .field("policy", policy)
+                .finish(),
             Self::SetDefaultModel { service, model_id } => formatter
                 .debug_struct("SetDefaultModel")
                 .field("service", service)
@@ -349,6 +356,7 @@ pub(super) const fn terminal_run_presentation(run: &RunSummary) -> Option<Termin
                 Some(RunFailureKind::ToolExecution) => "Tool execution failed",
                 Some(RunFailureKind::ResourceLimit) => "Run exceeded a resource limit",
                 Some(RunFailureKind::Internal) => "Morons encountered an internal failure",
+                Some(RunFailureKind::DataUseRestricted) => "Model blocked by data-use policy",
                 None => "Failure reason is unavailable",
             },
         ),
@@ -891,7 +899,23 @@ impl AppState {
     }
 
     pub(super) fn install_settings(&mut self, settings: ApplicationSettings) {
+        if self
+            .settings
+            .as_ref()
+            .is_some_and(|current| current.data_use.sequence > settings.data_use.sequence)
+        {
+            return;
+        }
         self.settings = Some(settings);
+    }
+
+    pub(super) fn model_policy_blocked(&self, model: &OpenCodeModelSummary) -> bool {
+        self.settings.as_ref().is_some_and(|settings| {
+            (settings.data_use.block_training_use
+                && model.training_use != morons_protocol::OpenCodeModelTrainingUse::NotUsed)
+                || (settings.data_use.require_zero_retention
+                    && model.retention != morons_protocol::OpenCodeModelRetention::None)
+        })
     }
 
     pub(super) fn open_settings_dialog(&mut self) {

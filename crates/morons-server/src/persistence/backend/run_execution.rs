@@ -93,6 +93,7 @@ impl Backend {
         source_entry_high_water: u64,
         estimated_input_tokens: u32,
     ) -> Result<PrepareOperationOutcome, PersistenceError> {
+        self.ensure_context_integrity()?;
         let operation_id = ProviderOperationId::from_bytes(random_identifier()?);
         let operation_fact_id = random_identifier()?;
         let operation_audit_id = random_identifier()?;
@@ -123,6 +124,7 @@ impl Backend {
                 reason: "a provider operation requires an active run",
             });
         }
+        super::data_use::admit(&transaction, run.service, &run.model_id)?;
         let current_entry_high_water = load_entry_high_water(&transaction, run.session_id)?;
         if current_entry_high_water != source_entry_high_water
             || estimated_input_tokens == 0
@@ -194,6 +196,7 @@ impl Backend {
         run_id: RunId,
         operation_id: ProviderOperationId,
     ) -> Result<DispatchOutcome, PersistenceError> {
+        self.ensure_context_integrity()?;
         let operation_fact_id = random_identifier()?;
         let operation_audit_id = random_identifier()?;
         let transition = TransitionIdentifiers::generate()?;
@@ -248,6 +251,7 @@ impl Backend {
             });
         }
         ensure_provider_not_terminal(&transaction, operation_id)?;
+        super::data_use::admit(&transaction, run.service, &run.model_id)?;
         let fact_sequence = next_sequence(&transaction)?;
         let audit_sequence = next_sequence(&transaction)?;
         insert_provider_simple_fact(

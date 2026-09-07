@@ -28,6 +28,7 @@ const SUBAGENT_CONVERSATION_CONTEXT: &[u8] = b"morons.dev/subagent-conversation/
 
 #[derive(Clone)]
 pub(super) struct SubagentExecutor {
+    sessions: Arc<crate::persistence::SessionStore>,
     provider: Arc<OpenCodeProvider>,
     web_search: Arc<WebSearchToolExecutor>,
     permits: Arc<Semaphore>,
@@ -48,6 +49,7 @@ struct SubagentRunConfig {
 
 enum ChildStop {
     Cancelled,
+    Persistence(crate::persistence::PersistenceError),
 }
 
 #[derive(Clone, Copy)]
@@ -60,10 +62,12 @@ struct SubagentMetrics {
 
 impl SubagentExecutor {
     pub(super) fn new(
+        sessions: Arc<crate::persistence::SessionStore>,
         provider: Arc<OpenCodeProvider>,
         web_search: Arc<WebSearchToolExecutor>,
     ) -> Self {
         Self {
+            sessions,
             provider,
             web_search,
             permits: Arc::new(Semaphore::new(MAX_CONCURRENT_SUBAGENTS)),
@@ -78,12 +82,12 @@ impl SubagentExecutor {
         input: &ToolInput,
         setting: SubagentModelSetting,
         cancellation: &ProviderCancellation,
-    ) -> ToolResult {
+    ) -> Result<ToolResult, crate::persistence::PersistenceError> {
         let ToolInput::Task { context, tasks } = input else {
-            return ToolResult::error(ToolErrorKind::InvalidResponse);
+            return Ok(ToolResult::error(ToolErrorKind::InvalidResponse));
         };
         let Some(mut config) = subagent_run_config(&parent.run, call_id, setting) else {
-            return ToolResult::error(ToolErrorKind::ModelUnavailable);
+            return Ok(ToolResult::error(ToolErrorKind::ModelUnavailable));
         };
         config.project_text = parent
             .project
@@ -117,6 +121,7 @@ impl SubagentExecutor {
         tokio::pin!(deadline);
         let mut results = Vec::with_capacity(tasks.len());
         let mut stop_error = None;
+        let mut persistence_error = None;
         while !children.is_empty() {
             tokio::select! {
                 _ = parent_cancellation.cancelled(), if stop_error.is_none() => {
@@ -135,6 +140,11 @@ impl SubagentExecutor {
                             stop_error.get_or_insert(ToolErrorKind::Cancelled);
                             batch_handle.cancel();
                         }
+                        Some(Ok(Err(ChildStop::Persistence(error)))) => {
+                            persistence_error.get_or_insert(error);
+                            stop_error = Some(ToolErrorKind::Uncertain);
+                            batch_handle.cancel();
+                        }
                         Some(Err(_)) => {
                             stop_error = Some(ToolErrorKind::Uncertain);
                             batch_handle.cancel();
@@ -144,17 +154,20 @@ impl SubagentExecutor {
                 }
             }
         }
+        if let Some(error) = persistence_error {
+            return Err(error);
+        }
         if let Some(error) = stop_error {
-            return ToolResult::error(error);
+            return Ok(ToolResult::error(error));
         }
         results.sort_by_key(|result| result.index);
         let disclosure = subagent_model_disclosure(&config);
         for result in &mut results {
             result.model = Some(disclosure.clone());
         }
-        ToolResult::Ok {
+        Ok(ToolResult::Ok {
             output: ToolOutput::Task { results },
-        }
+        })
     }
 
     async fn execute_one(
@@ -277,6 +290,22 @@ impl SubagentExecutor {
                     ));
                 }
             };
+            match self
+                .sessions
+                .admit_model_data_use(config.service, &config.model_id)
+                .await
+            {
+                Ok(_) => {}
+                Err(crate::persistence::PersistenceError::DataUseRestricted) => {
+                    return Ok(failed_provider_result(
+                        index,
+                        task.name,
+                        ProviderError::DataUseRestricted,
+                        subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
+                    ));
+                }
+                Err(error) => return Err(ChildStop::Persistence(error)),
+            }
             provider_turns = provider_turns.saturating_add(1);
             let outcome = match dispatch.execute(&mut cancellation, |_| {}).await {
                 Ok(outcome) => outcome,

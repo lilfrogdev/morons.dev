@@ -121,7 +121,11 @@ impl RunSupervisor {
         ipython: Arc<IpythonSupervisor>,
     ) -> Arc<Self> {
         let web_search = Arc::new(web_search);
-        let subagents = SubagentExecutor::new(Arc::clone(&provider), Arc::clone(&web_search));
+        let subagents = SubagentExecutor::new(
+            Arc::clone(&sessions),
+            Arc::clone(&provider),
+            Arc::clone(&web_search),
+        );
         let shutdown_requests = watch::channel(false).0;
         let maintenance = crate::maintenance_supervisor::MaintenanceSupervisor::new(
             Arc::clone(&sessions),
@@ -301,7 +305,11 @@ impl RunSupervisor {
                                 run_id,
                                 None,
                                 map_provider_failure(error),
-                                ProviderOperationFailureState::Uncertain,
+                                if error == ProviderError::DataUseRestricted {
+                                    ProviderOperationFailureState::Failed
+                                } else {
+                                    ProviderOperationFailureState::Uncertain
+                                },
                             )
                             .await?;
                         return Ok(());
@@ -364,10 +372,22 @@ impl RunSupervisor {
             match self
                 .sessions
                 .mark_provider_dispatched(run_id, operation_id)
-                .await?
+                .await
             {
-                DispatchOutcome::Dispatched => {}
-                DispatchOutcome::Cancelled | DispatchOutcome::Terminal => return Ok(()),
+                Ok(DispatchOutcome::Dispatched) => {}
+                Ok(DispatchOutcome::Cancelled | DispatchOutcome::Terminal) => return Ok(()),
+                Err(PersistenceError::DataUseRestricted) => {
+                    self.sessions
+                        .finish_run_failure(
+                            run_id,
+                            Some(operation_id),
+                            RunFailureKind::DataUseRestricted,
+                            ProviderOperationFailureState::Failed,
+                        )
+                        .await?;
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
             }
 
             let session_id = context.run.session_id;
@@ -528,6 +548,7 @@ impl RunSupervisor {
     ) -> Result<(), PersistenceError> {
         let failure = match error {
             PersistenceError::ResourceLimit { .. } => RunFailureKind::ResourceLimit,
+            PersistenceError::DataUseRestricted => RunFailureKind::DataUseRestricted,
             PersistenceError::WorkingDirectoryUnavailable => RunFailureKind::ToolExecution,
             other => return Err(other),
         };
@@ -570,9 +591,20 @@ impl RunSupervisor {
                 return Ok(Err(error));
             }
         };
-        self.sessions
+        match self
+            .sessions
             .mark_compaction_dispatched(run_id, operation_id)
-            .await?;
+            .await
+        {
+            Ok(()) => {}
+            Err(PersistenceError::DataUseRestricted) => {
+                self.sessions
+                    .fail_compaction(run_id, operation_id, false)
+                    .await?;
+                return Ok(Err(ProviderError::DataUseRestricted));
+            }
+            Err(error) => return Err(error),
+        }
         let outcome = dispatch.execute(cancellation, |_| {}).await;
         let outcome = match outcome {
             Ok(outcome) => outcome,
@@ -667,7 +699,7 @@ impl RunSupervisor {
                         subagent_setting.expect("task tools load one subagent model setting"),
                         &execution_cancellation,
                     )
-                    .await
+                    .await?
             } else if tool == ToolKind::WebSearch {
                 self.web_search
                     .execute(&execution_input, &execution_cancellation)
@@ -1230,9 +1262,8 @@ const fn map_provider_failure(error: ProviderError) -> RunFailureKind {
         | ProviderError::MalformedResponse
         | ProviderError::IncompleteResponse
         | ProviderError::ResponseLimitExceeded => RunFailureKind::ProviderProtocol,
-        ProviderError::InvalidRequest
-        | ProviderError::UnsupportedModel
-        | ProviderError::DataUseRestricted => RunFailureKind::Internal,
+        ProviderError::DataUseRestricted => RunFailureKind::DataUseRestricted,
+        ProviderError::InvalidRequest | ProviderError::UnsupportedModel => RunFailureKind::Internal,
         ProviderError::MalformedCatalog | ProviderError::Cancelled => RunFailureKind::Internal,
     }
 }

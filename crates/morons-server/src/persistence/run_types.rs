@@ -296,6 +296,7 @@ pub enum RunFailureKind {
     CredentialChanged,
     CredentialNotConfigured,
     AuthenticationOrEntitlement,
+    DataUseRestricted,
     RateLimited,
     ProviderUnavailable,
     ProviderRejected,
@@ -320,6 +321,7 @@ impl RunFailureKind {
             Self::ResourceLimit => 9,
             Self::Internal => 10,
             Self::ToolExecution => 11,
+            Self::DataUseRestricted => 12,
         }
     }
 
@@ -336,6 +338,7 @@ impl RunFailureKind {
             9 => Ok(Self::ResourceLimit),
             10 => Ok(Self::Internal),
             11 => Ok(Self::ToolExecution),
+            12 => Ok(Self::DataUseRestricted),
             _ => Err(rusqlite::Error::InvalidColumnType(
                 0,
                 "run_failure_kind".to_owned(),

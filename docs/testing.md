@@ -32,9 +32,17 @@ cargo test -p morons-server --lib --locked openai_auth -- --test-threads 2
 
 These tests use ephemeral loopback ports, disposable storage and synthetic tokens. They do not bind the production callback port, contact OpenAI, read real credential files or migrate retained state. They cover fixed PKCE/form fields, hostile callbacks, cancellation/drop/deadlines, token envelopes/claims, redaction, bounded HTTP and no retry/redirect following. Custody tests cover provider-scoped identity/idempotency, private files/checksums, poisoning after failed writes, same-account single-flight refresh, cancellation/abandonment, restart without replay, secret exclusion from SQLite and schema-27 migration preserving OpenCode bytes. They do not establish JWT-signature verification, real token rotation, live login/inference or native-release qualification.
 
-Login controls use IPC 40 and SQLite 28. Do not launch its binaries against retained QA state without a separately approved migration plan; deterministic fixtures do not authorize changing existing diagnostics. [ADR 0019](adr/0019-openai-subscription-authentication-and-hosted-search.md) still requires the reviewed coding adapter and policy bindings before owner live testing.
+The policy integration uses IPC 41 and SQLite 29 (login controls originated at IPC 40/SQLite 28). Do not launch its binaries against retained QA state without a separately approved migration plan; deterministic fixtures do not authorize changing existing diagnostics. [ADR 0019](adr/0019-openai-subscription-authentication-and-hosted-search.md) still requires the reviewed coding adapter and policy bindings before owner live testing.
 
 Synthetic login-control tests additionally cover connection-scoped cancellation, disconnects, slow consumers, abandoned drains, shutdown during admission, committed installation/cancellation races, status and provider-local removal, closed/redacted framing diagnostics, client outcome scope/generation validation with no reconnect/replay, and terminal-safe scrollable URL dialogs that reject paste/image input and clear URLs on cancellation. The old OpenCode hidden-input/removal tests now choose OpenCode in the provider menu; their secrecy and generation assertions remain. No test opens a browser or the production callback port.
+
+## Data-use policy admission
+
+```sh
+cargo test --workspace --locked data_use -- --test-threads 2
+```
+
+[ADR 0029](adr/0029-provider-admission-and-data-use-policy.md) covers the independent four-way policy matrix, owner mutation idempotency/sequence conflicts/restart/quota/corruption, populated schema-28 preservation, known policy failures at prepared root/foreground dispatch, stale maintenance policy binding, actual loopback parent/child policy-change boundaries, typed post-authentication IPC and terminal controls/blocked-model/draft preservation. These are synthetic tests, not assertions about a provider's actual data practices or authorization to upgrade retained QA state.
 
 ## Native Codex adapter
 
@@ -42,7 +50,7 @@ Synthetic login-control tests additionally cover connection-scoped cancellation,
 cargo test -p morons-server --lib --locked openai_codex -- --test-threads 2
 ```
 
-[ADR 0028](adr/0028-native-codex-responses-contract.md) pins the full-Responses GPT-5.5 contract. Tests use only synthetic credentials and loopback HTTP: fixed body/headers, strict tools and normalized images, local-only output limits, policy checks, provider-instance/turn/generation/request-sequence binding, receipt-bound reasoning and sticky-header isolation, lease release after headers, cancellation/drop/deadlines, contradictory/oversized metadata and no retry/fallback. The adapter is not yet reachable by application inference. These checks do not qualify subscription entitlement, current account policy, remote generation/spend limits or live interoperability. Global durable settings and root/child/maintenance binding remain admission gates; no retained QA upgrade or real browser/provider call is implied.
+[ADR 0028](adr/0028-native-codex-responses-contract.md) pins the full-Responses GPT-5.5 contract. Tests use only synthetic credentials and loopback HTTP: fixed body/headers, strict tools and normalized images, local-only output limits, policy checks, provider-instance/turn/generation/request-sequence binding, receipt-bound reasoning and sticky-header isolation, lease release after headers, cancellation/drop/deadlines, contradictory/oversized metadata and no retry/fallback. The adapter is not yet reachable by application inference. These checks do not qualify subscription entitlement, current account policy, remote generation/spend limits or live interoperability. Durable policy settings now guard all enabled OpenCode admission paths; explicit native provider/credential and cross-provider task bindings remain admission gates; no retained QA upgrade or real browser/provider call is implied.
 
 ## Local performance probes
 

@@ -7,6 +7,7 @@ mod context_status;
 mod context_usage;
 mod creation;
 mod credential_mutation;
+mod data_use;
 mod default_model;
 pub(super) mod image_attachment;
 pub(super) mod local_command;

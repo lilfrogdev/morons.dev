@@ -189,6 +189,22 @@ impl AppState {
         }
         match self.settings_dialog.as_ref() {
             Some(SettingsDialog::Overview) => match code {
+                KeyCode::Char(key @ ('t' | 'r'))
+                    if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    let Some(settings) = &self.settings else {
+                        self.set_status("Wait for settings to load");
+                        return AppAction::None;
+                    };
+                    let mut policy = settings.data_use;
+                    if key == 't' {
+                        policy.block_training_use = !policy.block_training_use;
+                    } else {
+                        policy.require_zero_retention = !policy.require_zero_retention;
+                    }
+                    self.settings_dialog = None;
+                    AppAction::SetDataUsePolicy { policy }
+                }
                 KeyCode::Esc => {
                     self.settings_dialog = None;
                     self.set_status("Settings closed");
@@ -229,6 +245,19 @@ impl AppState {
                         Some(SettingsDialog::SubagentModel { selected, .. }) => *selected,
                         _ => 0,
                     };
+                    if matches
+                        .get(selected)
+                        .is_some_and(|candidate| match candidate {
+                            SubagentModelCandidate::Model(index) => self
+                                .models
+                                .get(*index)
+                                .is_some_and(|model| self.model_policy_blocked(&model.model)),
+                            SubagentModelCandidate::InheritParent => false,
+                        })
+                    {
+                        self.set_status("Model blocked by data-use policy; review /settings");
+                        return AppAction::None;
+                    }
                     let setting = match matches.get(selected) {
                         Some(SubagentModelCandidate::InheritParent) => {
                             Some(morons_protocol::SubagentModelSetting::InheritParent {})
@@ -326,6 +355,14 @@ impl AppState {
                     .as_ref()
                     .map(|dialog| dialog.selected)
                     .unwrap_or_default();
+                if matches
+                    .get(selected)
+                    .and_then(|index| self.models.get(*index))
+                    .is_some_and(|model| self.model_policy_blocked(&model.model))
+                {
+                    self.set_status("Model blocked by data-use policy; review /settings");
+                    return AppAction::None;
+                }
                 let selection = matches
                     .get(selected)
                     .and_then(|index| self.models.get(*index))
@@ -787,6 +824,10 @@ impl AppState {
             self.set_status("No reviewed model is currently available");
             return AppAction::None;
         };
+        if self.model_policy_blocked(&model.model) {
+            self.set_status("Model blocked by data-use policy; draft retained. Review /settings");
+            return AppAction::None;
+        }
         if !self.draft_images.is_empty() && !model.model.capabilities.image_input {
             self.set_status("The selected model does not support image input; draft retained");
             return AppAction::None;

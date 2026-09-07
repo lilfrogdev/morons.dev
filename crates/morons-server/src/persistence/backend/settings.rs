@@ -62,6 +62,9 @@ impl Backend {
             (None, None) => {}
         }
 
+        if let SubagentModelSetting::OpenCode { service, model_id } = &setting {
+            self.admit_model_data_use(*service, model_id)?;
+        }
         let selection_count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM subagent_model_selections",
             [],

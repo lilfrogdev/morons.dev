@@ -286,6 +286,10 @@ pub enum ApplicationRequest {
         model_id: String,
     },
     GetApplicationSettings,
+    SetDataUsePolicy {
+        mutation_request_id: MutationRequestId,
+        policy: crate::DataUsePolicy,
+    },
     SetSubagentModelSetting {
         mutation_request_id: MutationRequestId,
         setting: crate::SubagentModelSetting,
@@ -433,6 +437,14 @@ impl fmt::Debug for ApplicationRequest {
                 .field("model_id", model_id)
                 .finish(),
             Self::GetApplicationSettings => formatter.write_str("GetApplicationSettings"),
+            Self::SetDataUsePolicy {
+                mutation_request_id,
+                policy,
+            } => formatter
+                .debug_struct("SetDataUsePolicy")
+                .field("mutation_request_id", mutation_request_id)
+                .field("policy", policy)
+                .finish(),
             Self::SetSubagentModelSetting {
                 mutation_request_id,
                 setting,
@@ -935,6 +947,8 @@ pub enum ApplicationError {
         failure: crate::OpenAiLoginFailure,
     },
     OpenCodeCredentialNotConfigured,
+    DataUseRestricted,
+    DataUsePolicyChanged,
     CredentialGenerationConflict,
     CredentialMutationNotApplied,
     ResourceLimit {

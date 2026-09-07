@@ -189,10 +189,15 @@ impl Backend {
         expected: i64,
         target: i64,
     ) -> Result<(), PersistenceError> {
+        self.ensure_context_integrity()?;
         let now = current_time_milliseconds()?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if target == STATE_DISPATCHED {
+            let run = load_required_run(&transaction, run_id)?;
+            super::data_use::admit(&transaction, run.service, &run.model_id)?;
+        }
         let sequence = next_sequence(&transaction)?;
         let changed = transaction.execute(
             "UPDATE compaction_operations

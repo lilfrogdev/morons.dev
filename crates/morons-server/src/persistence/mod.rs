@@ -2,6 +2,7 @@ mod backend;
 mod compactions;
 mod credential_types;
 mod credentials;
+pub(crate) mod data_use;
 mod database;
 pub(crate) mod images;
 mod local_commands;
@@ -36,6 +37,7 @@ use self::{
     },
 };
 
+pub use self::data_use::DataUsePolicy;
 pub use self::{
     credential_types::{
         CredentialIdentityStatus, CredentialKind, OpenAiCredentialState, OpenAiCredentialStatus,
@@ -680,6 +682,7 @@ impl Drop for SessionStore {
 }
 
 enum WorkerRequest {
+    DataUse(data_use::Request),
     OpenAi(openai::OpenAiWorkerRequest),
     Maintenance(maintenance::MaintenanceRequest),
     LocalCommand(local_commands::LocalCommandWorkerRequest),
@@ -794,6 +797,7 @@ fn run_worker(
     while let Some(request) = receiver.blocking_recv() {
         let mut force_event_notification = false;
         match request {
+            WorkerRequest::DataUse(request) => request.execute(&mut backend),
             WorkerRequest::Maintenance(request) => request.execute(&mut backend),
             WorkerRequest::OpenAi(request) => request.execute(&mut backend),
             WorkerRequest::LocalCommand(request) => request.execute(&mut backend),

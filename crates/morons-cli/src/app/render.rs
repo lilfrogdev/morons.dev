@@ -157,7 +157,9 @@ fn render_models(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .iter()
         .map(|model| {
             let service = service_label(model.model.service);
-            let availability = if model.model.available {
+            let availability = if app.model_policy_blocked(&model.model) {
+                " data-use blocked"
+            } else if model.model.available {
                 ""
             } else {
                 " unavailable"
@@ -585,8 +587,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     match app.settings_dialog.as_ref() {
         Some(SettingsDialog::Overview) => {
-            let width = area.width.min(76);
-            let height = area.height.min(7);
+            let width = area.width.min(88);
+            let height = area.height.min(13);
             let popup = Rect {
                 x: area.x + area.width.saturating_sub(width) / 2,
                 y: area.y + area.height.saturating_sub(height) / 2,
@@ -625,19 +627,37 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 )),
                 Line::from(value),
             ]);
-            let list = List::new(vec![item])
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Settings · Enter change · Esc close "),
-                )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol("› ");
+            let flag = |value: Option<bool>| match value {
+                Some(true) => "ON",
+                Some(false) => "OFF",
+                None => "Loading",
+            };
+            let policy = app.settings.as_ref().map(|settings| settings.data_use);
+            let list = List::new(vec![
+                item,
+                ListItem::new(format!(
+                    "t · Block training use: {}",
+                    flag(policy.map(|p| p.block_training_use))
+                )),
+                ListItem::new(format!(
+                    "r · Require zero data retention: {}",
+                    flag(policy.map(|p| p.require_zero_retention))
+                )),
+                ListItem::new("Unknown/account-controlled policy cannot satisfy restrictions."),
+                ListItem::new("Changes do not recall already admitted requests or tool effects."),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Settings · Enter change · Esc close "),
+            )
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("› ");
             let mut state = ListState::default().with_selected(Some(0));
             frame.render_stateful_widget(list, popup, &mut state);
         }
@@ -686,6 +706,11 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                             Span::raw(model.id.first_line()),
                             Span::raw(" · "),
                             Span::raw(model.display_name.first_line()),
+                            Span::raw(if app.model_policy_blocked(&model.model) {
+                                " · data-use blocked"
+                            } else {
+                                ""
+                            }),
                             Span::styled(
                                 format!(" · protocol {}", model.model.protocol_revision),
                                 Style::default().fg(Color::DarkGray),
@@ -795,6 +820,11 @@ fn render_model_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 Span::raw(" · "),
                 Span::raw(model.display_name.first_line()),
                 Span::styled(current, Style::default().fg(Color::Green)),
+                Span::raw(if app.model_policy_blocked(&model.model) {
+                    " · data-use blocked"
+                } else {
+                    ""
+                }),
             ]))
         })
         .collect::<Vec<_>>();

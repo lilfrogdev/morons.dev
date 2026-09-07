@@ -59,6 +59,7 @@ impl Backend {
         {
             return Ok(existing);
         }
+        self.admit_model_data_use(selection.service, &selection.model_id)?;
         if !skills.is_valid()
             || !project.is_valid()
             || (!selection.supports_tool_calls && project != Default::default())

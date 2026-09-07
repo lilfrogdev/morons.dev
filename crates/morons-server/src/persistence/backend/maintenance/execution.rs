@@ -52,6 +52,11 @@ impl Backend {
         if run.state != RunState::Succeeded || !self.maintenance_idle(&run, None)? {
             return Ok(None);
         }
+        let data_use = match self.admit_model_data_use(run.service, &run.model_id) {
+            Ok(policy) => policy,
+            Err(PersistenceError::DataUseRestricted) => return Ok(None),
+            Err(error) => return Err(error),
+        };
         let credential = self.open_code_credential_status()?;
         if !credential.configured || credential.generation != run.credential_generation {
             return Ok(None);
@@ -147,6 +152,7 @@ impl Backend {
             instruction_digest: profile,
             binding_digest: [0; 32],
             policy: 1,
+            data_use_sequence: data_use.sequence,
             state: State::Prepared,
             sequence: next_sequence(&transaction)?,
             time: current_time_milliseconds()?,
@@ -154,10 +160,10 @@ impl Backend {
         job.binding_digest = job.digest();
         transaction.execute(
             "INSERT INTO compaction_maintenance_jobs (job_id, session_id, trigger_run_id, parent_checkpoint_id, source_entry_high_water,
-                prepared_entry_high_water, source_digest, instruction_digest, binding_digest, maintenance_policy_version, state, prepared_sequence, prepared_at_milliseconds)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1, ?10, ?11)",
+                prepared_entry_high_water, source_digest, instruction_digest, binding_digest, maintenance_policy_version, state, prepared_sequence, prepared_at_milliseconds, data_use_sequence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1, ?10, ?11, ?12)",
             params![&id[..], &run.session_id.as_bytes()[..], &run.id.as_bytes()[..], job.parent.as_ref().map(|parent| &parent.id.as_bytes()[..]),
-                sequence_to_sql(source)?, sequence_to_sql(through)?, &job.source_digest[..], &profile[..], &job.binding_digest[..], sequence_to_sql(job.sequence)?, time_to_sql(job.time)?],
+                sequence_to_sql(source)?, sequence_to_sql(through)?, &job.source_digest[..], &profile[..], &job.binding_digest[..], sequence_to_sql(job.sequence)?, time_to_sql(job.time)?, sequence_to_sql(job.data_use_sequence)?],
         )?;
         transaction.commit()?;
         Ok(Some(MaintenanceWork { id, run, plan }))
@@ -185,6 +191,7 @@ impl Backend {
         self.validate_maintenance_binding(&job)?;
         let credential = self.open_code_credential_status()?;
         let allowed = self.maintenance_enabled
+            && self.data_use_policy()?.sequence == job.data_use_sequence
             && self.maintenance_idle(&job.run, Some(job.through))?
             && credential.configured
             && credential.generation == job.run.credential_generation

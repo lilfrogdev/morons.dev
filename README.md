@@ -55,6 +55,10 @@ To update, stop the running companion with `Ctrl+S`, verify and extract the new 
 
 On every client launch, read and acknowledge the trusted-local authority notice. `/login` or `Ctrl+K` chooses OpenCode or ChatGPT. OpenCode API-key input remains non-echoing. The experimental ChatGPT flow shows a temporary browser URL after explicit confirmation; open it yourself and never paste callback codes or tokens. Esc requests cancellation, but a save already started may complete. **ChatGPT coding inference is not enabled yet, and browser interoperability is not live-qualified.** Login never changes the selected model. `/logout` chooses a provider for confirmed local removal; remote authorization and dispatched work may remain. Revoke access through the provider account when needed. Credentials live in dedicated owner-controlled state outside SQLite and are never intentionally exposed to tools or kernels. Maintainers follow [the release procedure](docs/releasing.md) and [release-candidate QA checklist](docs/release-candidate-qa.md).
 
+### Data-use restrictions
+
+Both `/settings` restrictions default **off** and are independent. They use reviewed manifest metadata, not account claims: unknown/account-controlled policy cannot satisfy a restriction. Blocked models remain visible and selected without fallback, but new selections, inputs and provider dispatches (including children and compaction) are checked by the server. Policy changes invalidate stale background summaries before dispatch/installation; they cannot recall already admitted requests, refund usage or undo tool effects. These restrictions govern Morons model-inference admission, not the network behavior of tools, local commands or web search. They are not a sandbox or a secrecy feature. See [ADR 0029](docs/adr/0029-provider-admission-and-data-use-policy.md).
+
 ### Managed IPython runtime
 
 Release archives include a checksummed `morons-uv` helper. On the first `ipython` call, the companion uses it to prepare Morons-owned Python 3.11.15 with hash-locked `jupyter_client` 8.6.3 and `ipykernel` 6.30.1. Initial setup requires internet access to the reviewed Python and PyPI sources. The versioned runtime and download cache live under `~/.morons/python` on macOS/Linux or `%LOCALAPPDATA%\\morons.dev\\python` on Windows; after setup succeeds, ordinary reuse of that validated runtime does not require network access. Interrupted, stale, or invalid staging state is rebuilt under a process lock and never becomes the active runtime.
@@ -73,7 +77,7 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `!command`: execute bounded noninteractive Bash and include its command/result in later model context
 - `!!command`: execute Bash but exclude its command/result from model context
 - `/model [search]`: search available reviewed models and save one global default for every session
-- `/settings`: inspect typed global settings and choose whether task subagents inherit the parent model or use one exact reviewed model
+- `/settings`: choose the subagent model; `t` toggles Block training use and `r` toggles Require zero data retention
 - `/login`: choose OpenCode hidden API-key input or experimental ChatGPT browser login (`Ctrl+K` shortcut)
 - `/logout`: choose a provider for explicit, confirmed local credential removal
 - `/context`: inspect context/cache/timing observations and the last accepted run's project-guidance paths and warnings; use arrows, PageUp/PageDown, Home/End to scroll

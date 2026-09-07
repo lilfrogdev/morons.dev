@@ -7,6 +7,8 @@ use morons_protocol::{
     read_client_message, write_server_message,
 };
 
+mod data_use;
+
 use super::{ApplicationClient, ApplicationClientError};
 
 fn fixture_working_directory() -> String {
@@ -270,6 +272,7 @@ async fn client_queries_and_updates_typed_application_settings() {
                 1,
                 ApplicationResponse::ApplicationSettings {
                     settings: ApplicationSettings {
+                        data_use: Default::default(),
                         subagent_model: SubagentModelSetting::InheritParent {},
                     },
                 },
@@ -291,6 +294,7 @@ async fn client_queries_and_updates_typed_application_settings() {
                 2,
                 ApplicationResponse::ApplicationSettingsUpdated {
                     settings: ApplicationSettings {
+                        data_use: Default::default(),
                         subagent_model: expected_server,
                     },
                 },

@@ -79,6 +79,10 @@ impl Backend {
         {
             return Err(invalid());
         }
+        let policy_sequence: u64 = self.connection.query_row("SELECT COALESCE(MAX(accepted_sequence), 0) FROM data_use_policies WHERE accepted_sequence < ?1", [sequence_to_sql(job.sequence)?], |row| nonnegative_integer_from_row(row, 0))?;
+        if policy_sequence != job.data_use_sequence {
+            return Err(invalid());
+        }
         let valid: bool = self.connection.query_row(
             "SELECT EXISTS (SELECT 1 FROM session_run_states WHERE session_id = ?1 AND entry_high_water >= ?2)
              AND EXISTS (SELECT 1 FROM session_entries WHERE session_id = ?1 AND entry_sequence = ?3 + 1 AND entry_kind = 1)
@@ -174,6 +178,7 @@ impl Backend {
                         )?;
                         let credential = self.credentials.status();
                         (archived
+                            || self.data_use_policy()?.sequence != job.data_use_sequence
                             || !credential.configured
                             || credential.generation != job.run.credential_generation
                             || latest_parent(&self.connection, job.session)?

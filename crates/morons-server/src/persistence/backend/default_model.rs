@@ -76,6 +76,7 @@ impl Backend {
             (None, None) => {}
         }
 
+        self.admit_model_data_use(selection.service, &selection.model_id)?;
         let selection_count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM default_model_selections",
             [],

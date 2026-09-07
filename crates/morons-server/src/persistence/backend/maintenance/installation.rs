@@ -61,6 +61,7 @@ impl Backend {
         )?;
         let after = self.context_budget(run.session_id, job.source, through)?;
         let compatible = credential.configured
+            && self.data_use_policy()?.sequence == job.data_use_sequence
             && credential.generation == run.credential_generation
             && run.credential_generation == job.run.credential_generation
             && run.service == job.run.service

@@ -150,6 +150,7 @@ fn slash_settings_selects_an_independent_reviewed_subagent_model_or_parent_inher
     let mut app = AppState::new("test-server");
     app.information_dialog = None;
     app.install_settings(ApplicationSettings {
+        data_use: Default::default(),
         subagent_model: SubagentModelSetting::InheritParent {},
     });
     app.replace_models(OpenCodeService::Go, vec![glm])
@@ -209,6 +210,7 @@ fn slash_settings_selects_an_independent_reviewed_subagent_model_or_parent_inher
         } if model_id == "glm-5.3-flash"
     ));
     app.install_settings(ApplicationSettings {
+        data_use: Default::default(),
         subagent_model: SubagentModelSetting::OpenCode {
             service: OpenCodeService::Go,
             model_id: "glm-5.3-flash".to_owned(),

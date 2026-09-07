@@ -355,6 +355,15 @@ impl RuntimeState {
                 self.app
                     .set_status("Refreshing global application settings");
             }
+            AppAction::SetDataUsePolicy { policy } => {
+                let command = RequestCommand::SetDataUsePolicy {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    policy,
+                };
+                self.start_mutation(command, PendingOperation::UpdateSettings, commands)?;
+                self.app
+                    .set_status("Saving data-use policy; already admitted work may continue");
+            }
             AppAction::SetSubagentModel { setting } => {
                 let command = RequestCommand::SetSubagentModel {
                     mutation_request_id: generate_mutation_request_id()?,
@@ -581,7 +590,7 @@ impl RuntimeState {
             } => {
                 self.finish_mutation(mutation_request_id)?;
                 self.app.install_settings(settings);
-                self.app.set_status("Global subagent model setting saved");
+                self.app.set_status("Global application settings saved");
             }
             RequestEvent::CredentialStatusLoaded(status) => {
                 self.complete_refresh_query();

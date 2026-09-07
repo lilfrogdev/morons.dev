@@ -35,6 +35,7 @@ use crate::{
     },
 };
 
+mod data_use;
 mod hardening;
 pub(crate) mod maintenance;
 mod observations;

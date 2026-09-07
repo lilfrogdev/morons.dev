@@ -49,6 +49,10 @@ pub(super) enum RequestCommand {
     LoadModels(OpenCodeService),
     LoadDefaultModel,
     LoadSettings,
+    SetDataUsePolicy {
+        mutation_request_id: MutationRequestId,
+        policy: morons_protocol::DataUsePolicy,
+    },
     LoadCredentialStatus,
     LoadSession(SessionId),
     LoadTranscriptWindow {
@@ -135,7 +139,11 @@ impl RequestCommand {
             | Self::LoadSession(_)
             | Self::LoadTranscriptWindow { .. }
             | Self::LoadContext { .. } => None,
-            Self::SetDefaultModel {
+            Self::SetDataUsePolicy {
+                mutation_request_id,
+                ..
+            }
+            | Self::SetDefaultModel {
                 mutation_request_id,
                 ..
             }
@@ -194,6 +202,7 @@ impl RequestCommand {
             Self::LoadModels(_) => "model list",
             Self::LoadDefaultModel => "default model",
             Self::LoadSettings => "application settings",
+            Self::SetDataUsePolicy { .. } => "data-use policy",
             Self::LoadCredentialStatus => "credential status",
             Self::LoadSession(_) => "session transcript and skills",
             Self::LoadTranscriptWindow { .. } => "transcript history page",
@@ -250,6 +259,13 @@ impl RequestCommand {
                 mutation_request_id: *mutation_request_id,
                 service: *service,
                 model_id: model_id.clone(),
+            }),
+            Self::SetDataUsePolicy {
+                mutation_request_id,
+                policy,
+            } => Some(Self::SetDataUsePolicy {
+                mutation_request_id: *mutation_request_id,
+                policy: *policy,
             }),
             Self::SetSubagentModel {
                 mutation_request_id,
@@ -611,6 +627,7 @@ async fn execute_credential(
         | RequestCommand::LoadContext { .. }
         | RequestCommand::SetDefaultModel { .. }
         | RequestCommand::SetSubagentModel { .. }
+        | RequestCommand::SetDataUsePolicy { .. }
         | RequestCommand::CreateSession { .. }
         | RequestCommand::RenameSession { .. }
         | RequestCommand::SetSessionArchived { .. }
@@ -681,6 +698,16 @@ async fn execute(
             .map(|selection| RequestResult::DefaultModelUpdated {
                 mutation_request_id: *mutation_request_id,
                 selection,
+            }),
+        RequestCommand::SetDataUsePolicy {
+            mutation_request_id,
+            policy,
+        } => client
+            .set_data_use_policy(*mutation_request_id, *policy)
+            .await
+            .map(|settings| RequestResult::SettingsUpdated {
+                mutation_request_id: *mutation_request_id,
+                settings,
             }),
         RequestCommand::SetSubagentModel {
             mutation_request_id,
@@ -1126,6 +1153,7 @@ fn failure_event(command: &RequestCommand, error: String, outcome_unknown: bool)
                 | RequestCommand::LoadContext { .. } => None,
                 RequestCommand::SetDefaultModel { .. }
                 | RequestCommand::SetSubagentModel { .. }
+                | RequestCommand::SetDataUsePolicy { .. }
                 | RequestCommand::CreateSession { .. }
                 | RequestCommand::RenameSession { .. }
                 | RequestCommand::SetSessionArchived { .. }

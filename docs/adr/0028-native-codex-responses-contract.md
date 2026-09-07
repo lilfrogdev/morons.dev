@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for staged implementation, 2026-09-06. The concrete adapter is implemented and tested before application admission. It does not enable an IPC model, create a run, or authorize live requests. Provider-specific run/child/maintenance bindings and durable data-use settings remain required by [ADR 0019](0019-openai-subscription-authentication-and-hosted-search.md).
+Accepted for staged implementation, 2026-09-06. The concrete adapter is implemented and tested before application admission. It does not enable an IPC model, create a run, or authorize live requests. Provider-specific run/child/maintenance bindings remain required by [ADR 0019](0019-openai-subscription-authentication-and-hosted-search.md). [ADR 0029](0029-provider-admission-and-data-use-policy.md) implements durable policy controls for currently enabled OpenCode admission; native application binding remains gated.
 
 ## Reviewed evidence
 

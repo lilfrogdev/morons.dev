@@ -34,7 +34,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     let connection =
         Connection::open(&database_path).expect("database should open for test change");
     connection
-        .execute_batch("PRAGMA user_version = 29;")
+        .execute_batch("PRAGMA user_version = 30;")
         .expect("test schema version should change");
     drop(connection);
 
@@ -42,7 +42,7 @@ fn newer_database_schema_fails_closed_without_downgrade() {
     assert!(matches!(error, PersistenceError::InvalidState { .. }));
 
     let connection = Connection::open(database_path).expect("database should remain readable");
-    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 29);
+    assert_eq!(pragma_integer(&connection, "PRAGMA user_version"), 30);
 }
 
 #[tokio::test(flavor = "current_thread")]

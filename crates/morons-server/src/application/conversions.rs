@@ -326,6 +326,7 @@ const fn to_protocol_run_failure(failure: RunFailureKind) -> ProtocolRunFailureK
             ProtocolRunFailureKind::AuthenticationOrEntitlement
         }
         RunFailureKind::RateLimited => ProtocolRunFailureKind::RateLimited,
+        RunFailureKind::DataUseRestricted => ProtocolRunFailureKind::DataUseRestricted,
         RunFailureKind::ProviderUnavailable => ProtocolRunFailureKind::ProviderUnavailable,
         RunFailureKind::ProviderRejected => ProtocolRunFailureKind::ProviderRejected,
         RunFailureKind::ProviderProtocol => ProtocolRunFailureKind::ProviderProtocol,
@@ -536,6 +537,16 @@ pub(super) fn to_session_summary(session: Session) -> SessionSummary {
     }
 }
 
+pub(crate) fn to_protocol_data_use(
+    policy: crate::persistence::DataUsePolicy,
+) -> morons_protocol::DataUsePolicy {
+    morons_protocol::DataUsePolicy {
+        sequence: policy.sequence,
+        block_training_use: policy.restrictions.block_training_use,
+        require_zero_retention: policy.restrictions.require_zero_retention,
+    }
+}
+
 pub(crate) fn to_application_error(error: PersistenceError) -> ApplicationError {
     if matches!(
         &error,
@@ -582,6 +593,8 @@ pub(crate) fn to_application_error(error: PersistenceError) -> ApplicationError 
             ApplicationError::CredentialMutationNotApplied
         }
         PersistenceError::ImageInputUnsupported => ApplicationError::UnsupportedModel,
+        PersistenceError::DataUseRestricted => ApplicationError::DataUseRestricted,
+        PersistenceError::DataUsePolicyChanged => ApplicationError::DataUsePolicyChanged,
         PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Sessions,
         } => ApplicationError::ResourceLimit {
@@ -603,7 +616,8 @@ pub(crate) fn to_application_error(error: PersistenceError) -> ApplicationError 
                 | PersistenceResourceLimit::LogicalSequence
                 | PersistenceResourceLimit::CredentialGeneration
                 | PersistenceResourceLimit::CredentialMutations
-                | PersistenceResourceLimit::ModelSelections,
+                | PersistenceResourceLimit::ModelSelections
+                | PersistenceResourceLimit::DataUsePolicies,
         } => ApplicationError::ResourceLimit {
             resource: ResourceLimit::Storage,
         },

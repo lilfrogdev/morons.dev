@@ -415,6 +415,36 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::SetDataUsePolicy {
+                mutation_request_id,
+                policy,
+            } => {
+                let policy = self
+                    .sessions
+                    .set_data_use_policy(
+                        to_persistence_mutation_id(mutation_request_id),
+                        policy.sequence,
+                        crate::provider::DataUseRestrictions {
+                            block_training_use: policy.block_training_use,
+                            require_zero_retention: policy.require_zero_retention,
+                        },
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                let subagent_model = self
+                    .sessions
+                    .subagent_model_setting()
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::ApplicationSettingsUpdated {
+                        settings: morons_protocol::ApplicationSettings {
+                            subagent_model: to_protocol_subagent_model_setting(subagent_model),
+                            data_use: to_protocol_data_use(policy),
+                        },
+                    },
+                ))
+            }
             ApplicationRequest::GetApplicationSettings => {
                 let subagent_model = self
                     .sessions
@@ -425,6 +455,12 @@ impl ServerApplication {
                     ApplicationResponse::ApplicationSettings {
                         settings: morons_protocol::ApplicationSettings {
                             subagent_model: to_protocol_subagent_model_setting(subagent_model),
+                            data_use: to_protocol_data_use(
+                                self.sessions
+                                    .data_use_policy()
+                                    .await
+                                    .map_err(to_application_error)?,
+                            ),
                         },
                     },
                 ))
@@ -461,6 +497,12 @@ impl ServerApplication {
                     ApplicationResponse::ApplicationSettingsUpdated {
                         settings: morons_protocol::ApplicationSettings {
                             subagent_model: to_protocol_subagent_model_setting(setting),
+                            data_use: to_protocol_data_use(
+                                self.sessions
+                                    .data_use_policy()
+                                    .await
+                                    .map_err(to_application_error)?,
+                            ),
                         },
                     },
                 ))

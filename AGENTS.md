@@ -32,6 +32,7 @@ The application consists of a long-running local server and a separate terminal 
 - Images enter through clipboard paste, drag and drop, explicit paths, or `read`, appear as atomic filename markers, and persist as structured bounded session attachments.
 - OpenCode Zen and OpenCode Go use one concrete provider integration with reviewed Responses, Chat Completions, Anthropic Messages, and Gemini routes while remaining distinct service and billing identities.
 - A reviewed built-in manifest, not remote catalog metadata, defines supported service, model, protocol, image, tool, limit, and data-use combinations.
+- Independent default-off training and zero-retention restrictions are enforced by server admission; unknown policy cannot satisfy a restriction, and changes cannot recall already admitted work.
 - Session identity and lifetime are independent of client connections and temporary runtimes.
 - Direct user input is durably attributed to `LocalOwner` and commits atomically with a new run identity.
 - Every run records an explicit OpenCode service and model, and each session permits one nonterminal top-level run without an input queue.

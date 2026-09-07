@@ -266,6 +266,7 @@ pub enum PersistenceResourceLimit {
     CredentialGeneration,
     CredentialMutations,
     ModelSelections,
+    DataUsePolicies,
 }
 
 #[derive(Debug)]
@@ -298,6 +299,8 @@ pub enum PersistenceError {
     CredentialNotConfigured,
     CredentialReauthenticationRequired,
     CredentialMutationNotApplied,
+    DataUseRestricted,
+    DataUsePolicyChanged,
     ImageInputUnsupported,
     WorkspaceBlocked,
     ResourceLimit {
@@ -352,6 +355,12 @@ impl fmt::Display for PersistenceError {
             Self::CredentialMutationNotApplied => {
                 formatter.write_str("the credential mutation was not applied")
             }
+            Self::DataUseRestricted => {
+                formatter.write_str("the model is blocked by the data-use policy")
+            }
+            Self::DataUsePolicyChanged => {
+                formatter.write_str("the data-use policy changed; reload settings")
+            }
             Self::ImageInputUnsupported => {
                 formatter.write_str("the selected model does not support image context")
             }
@@ -377,6 +386,9 @@ impl fmt::Display for PersistenceError {
                 }
                 PersistenceResourceLimit::CredentialMutations => {
                     formatter.write_str("the credential mutation limit was reached")
+                }
+                PersistenceResourceLimit::DataUsePolicies => {
+                    formatter.write_str("the data-use policy change limit was reached")
                 }
                 PersistenceResourceLimit::ModelSelections => {
                     formatter.write_str("the default model selection limit was reached")
@@ -410,6 +422,8 @@ impl Error for PersistenceError {
             | Self::CredentialReauthenticationRequired
             | Self::CredentialMutationNotApplied
             | Self::ImageInputUnsupported
+            | Self::DataUseRestricted
+            | Self::DataUsePolicyChanged
             | Self::WorkspaceBlocked
             | Self::ResourceLimit { .. }
             | Self::WorkerStopped => None,

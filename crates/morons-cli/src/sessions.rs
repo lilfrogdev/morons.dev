@@ -220,6 +220,8 @@ fn write_application_error(
         ApplicationError::ServiceUnavailable => {
             formatter.write_str("application service is unavailable")
         }
+        ApplicationError::DataUseRestricted => formatter.write_str("model blocked by data-use policy; choose a compliant model or deliberately change /settings"),
+        ApplicationError::DataUsePolicyChanged => formatter.write_str("data-use policy changed; reload /settings"),
         ApplicationError::Internal => formatter.write_str("application request failed internally"),
     }
 }
@@ -329,6 +331,11 @@ fn valid_model_identifier(model_id: &str) -> bool {
         && model_id.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
         })
+}
+
+fn valid_data_use_policy(policy: morons_protocol::DataUsePolicy) -> bool {
+    policy.sequence <= i64::MAX as u64
+        && (policy.sequence != 0 || (!policy.block_training_use && !policy.require_zero_retention))
 }
 
 fn valid_subagent_model_setting(setting: &SubagentModelSetting) -> bool {
@@ -851,7 +858,35 @@ where
         let ApplicationResponse::ApplicationSettings { settings } = response else {
             return Err(self.unexpected_application_response());
         };
-        if !valid_subagent_model_setting(&settings.subagent_model) {
+        if !valid_data_use_policy(settings.data_use)
+            || !valid_subagent_model_setting(&settings.subagent_model)
+        {
+            self.usable = false;
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        Ok(settings)
+    }
+
+    pub async fn set_data_use_policy(
+        &mut self,
+        mutation_request_id: MutationRequestId,
+        policy: morons_protocol::DataUsePolicy,
+    ) -> Result<ApplicationSettings, ApplicationClientError> {
+        let response = self
+            .request(ApplicationRequest::SetDataUsePolicy {
+                mutation_request_id,
+                policy,
+            })
+            .await?;
+        let ApplicationResponse::ApplicationSettingsUpdated { settings } = response else {
+            return Err(self.unexpected_application_response());
+        };
+        if settings.data_use.sequence <= policy.sequence
+            || settings.data_use.sequence > i64::MAX as u64
+            || settings.data_use.block_training_use != policy.block_training_use
+            || settings.data_use.require_zero_retention != policy.require_zero_retention
+            || !valid_subagent_model_setting(&settings.subagent_model)
+        {
             self.usable = false;
             return Err(ApplicationClientError::EventScopeMismatch);
         }
@@ -872,7 +907,8 @@ where
         let ApplicationResponse::ApplicationSettingsUpdated { settings } = response else {
             return Err(self.unexpected_application_response());
         };
-        if settings.subagent_model != setting
+        if !valid_data_use_policy(settings.data_use)
+            || settings.subagent_model != setting
             || !valid_subagent_model_setting(&settings.subagent_model)
         {
             self.usable = false;

@@ -336,6 +336,15 @@ pub enum SubagentModelSetting {
 #[serde(deny_unknown_fields)]
 pub struct ApplicationSettings {
     pub subagent_model: SubagentModelSetting,
+    pub data_use: DataUsePolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataUsePolicy {
+    pub sequence: u64,
+    pub block_training_use: bool,
+    pub require_zero_retention: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +391,7 @@ pub enum RunFailureKind {
     CredentialChanged,
     CredentialNotConfigured,
     AuthenticationOrEntitlement,
+    DataUseRestricted,
     RateLimited,
     ProviderUnavailable,
     ProviderRejected,
