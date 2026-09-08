@@ -325,6 +325,11 @@ impl Backend {
             now,
         )?;
 
+        // A committed complete response counts even if cancellation discards its text.
+        transaction.execute(
+            "UPDATE runs SET provider_turns = provider_turns + 1 WHERE run_id = ?1",
+            [&run.id.as_bytes()[..]],
+        )?;
         if run.cancellation_requested {
             append_run_transition(
                 &transaction,
@@ -403,10 +408,6 @@ impl Backend {
             run.session_id,
             EVENT_ASSISTANT_MESSAGE,
             now,
-        )?;
-        transaction.execute(
-            "UPDATE runs SET provider_turns = provider_turns + 1 WHERE run_id = ?1",
-            [&run.id.as_bytes()[..]],
         )?;
         transaction.execute(
             "UPDATE session_run_states SET entry_high_water = ?1 WHERE session_id = ?2",
