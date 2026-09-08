@@ -45,7 +45,7 @@ impl AppState {
                 (InformationDialog::TrustNotice, KeyCode::Enter) => {
                     self.information_dialog = None;
                     self.set_status(
-                        "Trusted-local mode acknowledged · press ? for safety and usage help",
+                        "Trusted-local mode acknowledged · use /help in a session or ? in the session browser",
                     );
                     AppAction::None
                 }
@@ -67,10 +67,6 @@ impl AppState {
         }
         if self.settings_dialog.is_some() {
             return self.handle_settings_key(key.code, key.modifiers);
-        }
-        if key.code == KeyCode::Char('?') {
-            self.information_dialog = Some(InformationDialog::Help);
-            return AppAction::None;
         }
         if self.rename_dialog.is_some() {
             return self.handle_rename_key(key.code, key.modifiers);
@@ -114,6 +110,10 @@ impl AppState {
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.handle_control_key(key.code);
+        }
+        if self.view == View::Sessions && key.code == KeyCode::Char('?') {
+            self.information_dialog = Some(InformationDialog::Help);
+            return AppAction::None;
         }
         match self.view {
             View::Sessions => self.handle_sessions_key(key.code),

@@ -89,7 +89,7 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `Ctrl+V` (`Alt+V` on Windows): paste an image when available
 - `Ctrl+X`: cancel the selected session's active run or command
 - `Esc`: return to the session browser without cancelling server-owned work
-- `?` or `/help`: show usage and the security disclosure
+- `?` in the session browser or `/help` in the composer: show usage and the security disclosure; question marks in text input remain literal
 - `Ctrl+S`: stop the companion server and interrupt active work
 
 Commands are noninteractive: standard input is closed, no PTY is provided, and output and runtime are bounded. `bash` and `ipython` still have your ordinary filesystem, environment, network, Git, credential-helper, and agent access.
