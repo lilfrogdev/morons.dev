@@ -1,4 +1,5 @@
 mod images;
+mod models;
 mod transport;
 use super::*;
 use crate::provider::{
@@ -145,7 +146,7 @@ fn policy_turn_identity_and_manifest_are_checked_before_dispatch() {
     for model in [
         "gpt-5.4",
         "gpt-5.4-mini",
-        "gpt-5.6-luna",
+        "gpt-7",
         "gpt-5.5-pro",
         "https://evil.invalid/",
     ] {

@@ -1,5 +1,6 @@
 use super::*;
 mod boundaries;
+mod models;
 use crate::{
     persistence::{MutationRequestId, SessionStore, credential_tests::TestRoot},
     provider::{

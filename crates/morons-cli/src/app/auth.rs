@@ -259,7 +259,7 @@ impl AppState {
             AuthEvent::Finished(outcome) => {
                 self.auth_dialog = Some(AuthDialog::Complete(match outcome {
                     OpenAiLoginResult::Installed { .. } => {
-                        "ChatGPT credential installed. No model was selected. Choose GPT-5.5 (ChatGPT) deliberately when ready."
+                        "ChatGPT credential installed. No model was selected. Choose a ChatGPT model deliberately when ready."
                     }
                     OpenAiLoginResult::CancelledBeforeInstallation => {
                         "Login cancelled before installation; existing credentials were not changed."

@@ -1,10 +1,10 @@
 use super::*;
 use crate::persistence::maintenance::MaintenanceState;
 
-fn selection() -> RunModelSelection {
+fn selection(model: &str) -> RunModelSelection {
     RunModelSelection {
         service: RunService::OpenAiChatGpt,
-        model_id: "gpt-5.5".into(),
+        model_id: model.into(),
         protocol_revision: 5,
         maximum_input_tokens: 96_000,
         maximum_output_tokens: 32_000,
@@ -14,6 +14,7 @@ fn selection() -> RunModelSelection {
 }
 async fn fixture(
     background: bool,
+    model: &str,
 ) -> (
     TestRoot,
     TestRoot,
@@ -56,7 +57,7 @@ async fn fixture(
                 index,
                 &format!("NATIVE_SOURCE_{index}"),
                 if background { 11_000 } else { 100 },
-                selection(),
+                selection(model),
             )
             .await,
         );
@@ -69,7 +70,13 @@ fn output(text: &str) -> String {
 
 #[tokio::test(flavor = "current_thread")]
 async fn native_foreground_compaction_uses_an_independent_tools_free_turn() {
-    let (root, _selected, store, session, _) = fixture(false).await;
+    for model in ["gpt-5.5", "gpt-6-astra"] {
+        foreground_compaction(model).await;
+    }
+}
+
+async fn foreground_compaction(model: &'static str) {
+    let (root, _selected, store, session, _) = fixture(false, model).await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -96,7 +103,8 @@ async fn native_foreground_compaction_uses_an_independent_tools_free_turn() {
                         .contains("NATIVE_COMPACTION_SUMMARY")
                 );
             }
-            write_native(
+            assert_eq!(body["model"], model);
+            write_native_model(
                 &mut stream,
                 &format!("resp_compact_{step}"),
                 &output(if step == 0 {
@@ -104,6 +112,7 @@ async fn native_foreground_compaction_uses_an_independent_tools_free_turn() {
                 } else {
                     "Compacted."
                 }),
+                model,
             )
             .await;
         }
@@ -117,7 +126,7 @@ async fn native_foreground_compaction_uses_an_independent_tools_free_turn() {
             text: "/compact preserve the decision".into(),
             attachments: Vec::new(),
             service: ModelService::OpenAiChatGpt,
-            model_id: "gpt-5.5".into(),
+            model_id: model.into(),
         })
         .await
         .unwrap();
@@ -150,7 +159,13 @@ async fn native_foreground_compaction_uses_an_independent_tools_free_turn() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn native_background_compaction_pins_its_provider_and_ignores_unrelated_credential_changes() {
-    let (root, _selected, store, session, trigger) = fixture(true).await;
+    for model in ["gpt-5.5", "gpt-5.6-sol"] {
+        background_compaction(model).await;
+    }
+}
+
+async fn background_compaction(model: &'static str) {
+    let (root, _selected, store, session, trigger) = fixture(true, model).await;
     let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
     db.execute("UPDATE provider_operation_facts SET input_tokens=60000,total_tokens=60010 WHERE fact_kind=3",[]).unwrap();
     drop(db);
@@ -172,10 +187,12 @@ async fn native_background_compaction_pins_its_provider_and_ignores_unrelated_cr
         let body: serde_json::Value =
             serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
         assert_eq!(body["tools"], serde_json::json!([]));
-        write_native(
+        assert_eq!(body["model"], model);
+        write_native_model(
             &mut stream,
             "resp_background",
             &output("NATIVE_BACKGROUND_SUMMARY"),
+            model,
         )
         .await;
     });
@@ -183,7 +200,7 @@ async fn native_background_compaction_pins_its_provider_and_ignores_unrelated_cr
     time::timeout(TERMINAL_RUN_TEST_TIMEOUT, async {
         loop {
             let status = store
-                .session_context_status(session, selection())
+                .session_context_status(session, selection(model))
                 .await
                 .unwrap();
             if status
@@ -212,7 +229,7 @@ async fn native_background_compaction_pins_its_provider_and_ignores_unrelated_cr
             PersistenceMutationRequestId::from_bytes([0xa4; 16]),
             session,
             "continue".into(),
-            selection(),
+            selection(model),
         )
         .await
         .unwrap()

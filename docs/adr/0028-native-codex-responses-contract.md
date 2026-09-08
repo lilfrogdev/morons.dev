@@ -4,6 +4,8 @@
 
 Accepted for staged implementation, 2026-09-06. The concrete adapter was implemented and tested before application admission. [ADR 0030](0030-native-provider-and-task-bindings.md) now supplies the explicit native run/child/maintenance integration required by [ADR 0019](0019-openai-subscription-authentication-and-hosted-search.md), using the durable policy controls in [ADR 0029](0029-provider-admission-and-data-use-policy.md). This does not authorize live requests or establish subscription interoperability.
 
+[ADR 0035](0035-reviewed-native-model-expansion.md) subsequently extends the exact full-Responses manifest to Astra, Sol, Luna, Terra and Daybreak Blue after additional Pi adapter review. The official Codex client's Lite preference below is not evidence that the backend requires Lite exclusively. No Lite dialect, automatic model admission or historical request-byte change is introduced.
+
 ## Reviewed evidence
 
 - OpenAI [Codex models](https://developers.openai.com/codex/models), fetched 2026-09-06, states that ChatGPT-authenticated GPT-5.4 and GPT-5.4 Mini retire August 31, 2026. API availability is not subscription availability. GPT-5.5 remains listed as a previous-generation option.

@@ -4,6 +4,15 @@ mod compaction;
 mod lifecycle;
 mod mixed;
 
+const NATIVE_MODELS: [&str; 6] = [
+    "gpt-5.5",
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-luna",
+    "gpt-5.6-terra",
+    "gpt-daybreak-blue-latest",
+];
+
 fn synthetic_tokens() -> crate::provider::openai_auth::OAuthTokens {
     let expires = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -16,8 +25,13 @@ fn synthetic_tokens() -> crate::provider::openai_auth::OAuthTokens {
         expires,
     )
 }
-async fn write_native(stream: &mut tokio::net::TcpStream, id: &str, output: &str) {
-    let body = provider_output_body(id, output).replace("muse-spark-1.2", "gpt-5.5");
+async fn write_native_model(
+    stream: &mut tokio::net::TcpStream,
+    id: &str,
+    output: &str,
+    model: &str,
+) {
+    let body = provider_output_body(id, output).replace("muse-spark-1.2", model);
     write_provider_headers(stream, body.len()).await;
     stream.write_all(body.as_bytes()).await.unwrap();
     stream.shutdown().await.unwrap();
@@ -26,6 +40,12 @@ async fn write_native(stream: &mut tokio::net::TcpStream, id: &str, output: &str
 #[tokio::test(flavor = "current_thread")]
 async fn native_root_executes_image_tools_and_receipt_bound_reasoning_without_opencode_credentials()
 {
+    for model in NATIVE_MODELS {
+        root_image_tool_flow(model).await;
+    }
+}
+
+async fn root_image_tool_flow(model: &'static str) {
     let root = TestRoot::new("native-root");
     let selected = TestRoot::new("native-selected");
     fs::write(selected.path().join("AGENTS.md"), "NATIVE_PROJECT_GUIDANCE").unwrap();
@@ -76,7 +96,7 @@ async fn native_root_executes_image_tools_and_receipt_bound_reasoning_without_op
                 session_header = Some(current);
             }
             let body: serde_json::Value = serde_json::from_str(body).unwrap();
-            assert_eq!(body["model"], "gpt-5.5");
+            assert_eq!(body["model"], model);
             assert_eq!(body["store"], false);
             assert!(body.get("max_output_tokens").is_none());
             assert!(
@@ -103,7 +123,7 @@ async fn native_root_executes_image_tools_and_receipt_bound_reasoning_without_op
                     serde_json::json!({"id":"rs_native","type":"reasoning","summary":[{"type":"summary_text","text":"bounded summary"}],"encrypted_content":"synthetic-native-continuation"}),
                     serde_json::json!({"id":"fc_native","type":"function_call","status":"completed","call_id":"native_read","name":"read","arguments":arguments})
                 );
-                write_native(&mut stream, "resp_native_read", &output).await;
+                write_native_model(&mut stream, "resp_native_read", &output, model).await;
             } else {
                 assert!(body["input"].to_string().contains("data:image/png;base64,"));
                 assert!(
@@ -111,7 +131,7 @@ async fn native_root_executes_image_tools_and_receipt_bound_reasoning_without_op
                         .to_string()
                         .contains("synthetic-native-continuation")
                 );
-                write_native(&mut stream,"resp_native_final",r#"{"id":"msg_native","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Image inspected.","annotations":[]}]}"#).await;
+                write_native_model(&mut stream,"resp_native_final",r#"{"id":"msg_native","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Image inspected.","annotations":[]}]}"#, model).await;
             }
         }
     });
@@ -124,7 +144,7 @@ async fn native_root_executes_image_tools_and_receipt_bound_reasoning_without_op
             text: "Inspect picture.png".into(),
             attachments: Vec::new(),
             service: ModelService::OpenAiChatGpt,
-            model_id: "gpt-5.5".into(),
+            model_id: model.into(),
         })
         .await
         .unwrap();
@@ -134,6 +154,7 @@ async fn native_root_executes_image_tools_and_receipt_bound_reasoning_without_op
         panic!("expected run")
     };
     assert_eq!(run.service, ModelService::OpenAiChatGpt);
+    assert_eq!(run.model_id, model);
     assert_eq!(run.protocol_revision, 5);
     assert_eq!(run.credential_generation, 1);
     assert_eq!(
@@ -152,6 +173,14 @@ async fn native_root_executes_image_tools_and_receipt_bound_reasoning_without_op
         )
         .unwrap(),
         3
+    );
+    assert_eq!(
+        db.query_row("SELECT model_id FROM run_accepted_facts", [], |row| row
+            .get::<_, String>(
+            0
+        ))
+        .unwrap(),
+        model
     );
     assert_eq!(db.query_row("SELECT COUNT(*) FROM session_entries WHERE text LIKE '%synthetic-native-continuation%'",[],|row|row.get::<_,i64>(0)).unwrap(),0);
     drop(db);

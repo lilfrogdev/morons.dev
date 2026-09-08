@@ -23,22 +23,37 @@ pub struct OpenAiCodexModel {
     /// Unverifiable account/workspace policy is deliberately not favorable metadata.
     pub data_use: ModelDataUse,
 }
-pub const MODELS: &[OpenAiCodexModel] = &[OpenAiCodexModel {
-    id: "gpt-5.5",
-    display_name: "GPT-5.5 (ChatGPT)",
-    protocol_revision: CODEX_RESPONSES_PROTOCOL_REVISION,
-    maximum_input_tokens: super::MAXIMUM_INPUT_TOKENS,
-    maximum_output_tokens: super::MAXIMUM_OUTPUT_TOKENS,
-    capabilities: ModelCapabilities {
-        text_input: true,
-        image_input: true,
-        text_output: true,
-        reasoning: true,
-        reasoning_continuation: true,
-        tool_calls: true,
-    },
-    data_use: ModelDataUse {
-        training: ModelTrainingUse::NotDocumented,
-        retention: ModelRetention::NotDocumented,
-    },
-}];
+/// Reviewed full-Responses entries, not a remote catalog or entitlement claim.
+pub const MODELS: &[OpenAiCodexModel] = &[
+    model("gpt-5.5", "GPT-5.5 (ChatGPT)"),
+    model("gpt-6-astra", "GPT-6 Astra (ChatGPT)"),
+    model("gpt-5.6-sol", "GPT-5.6 Sol (ChatGPT)"),
+    model("gpt-5.6-luna", "GPT-5.6 Luna (ChatGPT)"),
+    model("gpt-5.6-terra", "GPT-5.6 Terra (ChatGPT)"),
+    model(
+        "gpt-daybreak-blue-latest",
+        "Daybreak Blue (ChatGPT; approval required)",
+    ),
+];
+
+const fn model(id: &'static str, display_name: &'static str) -> OpenAiCodexModel {
+    OpenAiCodexModel {
+        id,
+        display_name,
+        protocol_revision: CODEX_RESPONSES_PROTOCOL_REVISION,
+        maximum_input_tokens: super::MAXIMUM_INPUT_TOKENS,
+        maximum_output_tokens: super::MAXIMUM_OUTPUT_TOKENS,
+        capabilities: ModelCapabilities {
+            text_input: true,
+            image_input: true,
+            text_output: true,
+            reasoning: true,
+            reasoning_continuation: true,
+            tool_calls: true,
+        },
+        data_use: ModelDataUse {
+            training: ModelTrainingUse::NotDocumented,
+            retention: ModelRetention::NotDocumented,
+        },
+    }
+}
