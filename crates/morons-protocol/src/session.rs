@@ -701,6 +701,11 @@ pub enum ApplicationEvent {
         command_id: crate::LocalCommandId,
         active: bool,
     },
+    SessionNativeResponseDiagnostic {
+        session_id: SessionId,
+        run_id: crate::RunId,
+        reason: crate::NativeResponseFailure,
+    },
     SessionAssistantDelta {
         session_id: SessionId,
         run_id: crate::RunId,
@@ -720,7 +725,8 @@ impl ApplicationEvent {
             Self::SessionTranscriptEntryCommitted { .. }
             | Self::SessionRunChanged { .. }
             | Self::SessionLocalCommandChanged { .. }
-            | Self::SessionAssistantDelta { .. } => None,
+            | Self::SessionAssistantDelta { .. }
+            | Self::SessionNativeResponseDiagnostic { .. } => None,
         }
     }
 
@@ -733,7 +739,8 @@ impl ApplicationEvent {
             Self::SessionCreated { .. }
             | Self::SessionChanged { .. }
             | Self::SessionRemoved { .. }
-            | Self::SessionAssistantDelta { .. } => None,
+            | Self::SessionAssistantDelta { .. }
+            | Self::SessionNativeResponseDiagnostic { .. } => None,
         }
     }
 }
@@ -782,6 +789,16 @@ impl fmt::Debug for ApplicationEvent {
                 .field("session_id", session_id)
                 .field("command_id", command_id)
                 .field("active", active)
+                .finish(),
+            Self::SessionNativeResponseDiagnostic {
+                session_id,
+                run_id,
+                reason,
+            } => formatter
+                .debug_struct("SessionNativeResponseDiagnostic")
+                .field("session_id", session_id)
+                .field("run_id", run_id)
+                .field("reason", reason)
                 .finish(),
             Self::SessionAssistantDelta {
                 session_id,

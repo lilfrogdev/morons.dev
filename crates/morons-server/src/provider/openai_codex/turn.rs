@@ -1,5 +1,5 @@
 use super::{MODELS, OpenAiCodexModel};
-use crate::provider::ProviderError;
+use crate::provider::{ProviderError, response_diagnostic::ResponseStage};
 use http::HeaderValue;
 use sha2::{Digest as _, Sha256};
 use std::{collections::BTreeSet, fmt, sync::Arc};
@@ -17,6 +17,7 @@ pub struct CodexTurn {
     pub(super) usable: bool,
     pub(super) routing: Option<HeaderValue>,
     pub(super) reasoning: BTreeSet<[u8; 32]>,
+    pub(super) failure: Option<ResponseStage>,
 }
 impl fmt::Debug for CodexTurn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -60,7 +61,28 @@ impl CodexTurn {
             usable: true,
             routing: None,
             reasoning: BTreeSet::new(),
+            failure: None,
         })
+    }
+    pub(crate) fn response_failure(&self) -> Option<ResponseStage> {
+        self.failure
+    }
+    pub(super) fn record_failure(
+        &mut self,
+        error: ProviderError,
+        stage: ResponseStage,
+    ) -> ProviderError {
+        if matches!(
+            error,
+            ProviderError::MalformedResponse
+                | ProviderError::ResponseLimitExceeded
+                | ProviderError::IncompleteResponse
+                | ProviderError::UnexpectedContentType
+                | ProviderError::RedirectDenied
+        ) {
+            self.failure = Some(stage);
+        }
+        error
     }
     pub fn model(&self) -> &'static OpenAiCodexModel {
         self.identity.model

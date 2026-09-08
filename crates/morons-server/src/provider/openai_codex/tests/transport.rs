@@ -1,5 +1,6 @@
 use super::*;
 mod boundaries;
+mod diagnostics;
 mod models;
 use crate::{
     persistence::{MutationRequestId, SessionStore, credential_tests::TestRoot},
@@ -255,6 +256,9 @@ async fn failed_cancelled_and_dropped_dispatches_poison_the_turn_without_retry()
         }
         drop(execute);
         assert!(!turn.usable);
+        if matches!(failure, "cancel" | "drop" | "entitlement") {
+            assert_eq!(turn.response_failure(), None);
+        }
         assert!(
             provider
                 .prepare_dispatch(

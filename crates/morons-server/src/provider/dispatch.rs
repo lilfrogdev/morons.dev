@@ -155,6 +155,11 @@ impl ModelProviders {
 }
 
 impl ModelTurn {
+    pub(crate) fn native_response_failure(
+        &self,
+    ) -> Option<super::response_diagnostic::ResponseStage> {
+        self.native.as_ref().and_then(CodexTurn::response_failure)
+    }
     pub(crate) fn request(&self, mut plan: ModelInput) -> Result<ModelRequest, ProviderError> {
         if let Some(native) = &self.native {
             let instructions = if plan.core_first {

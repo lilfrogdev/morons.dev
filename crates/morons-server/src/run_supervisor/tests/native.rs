@@ -1,6 +1,7 @@
 use super::*;
 mod admission;
 mod compaction;
+mod diagnostics;
 mod lifecycle;
 mod mixed;
 

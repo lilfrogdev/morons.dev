@@ -1,7 +1,9 @@
 mod authentication;
 mod control;
 mod credential;
+mod native_diagnostic;
 mod openai_auth;
+pub use native_diagnostic::NativeResponseFailure;
 pub use openai_auth::{
     OpenAiAuthorizationUrl, OpenAiCredentialState, OpenAiCredentialStatus, OpenAiLoginFailure,
     OpenAiLoginResult, OpenAiTokenResponseFailure,
@@ -43,4 +45,4 @@ pub use session::{
     SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 43;
+pub const PROTOCOL_VERSION: u32 = 44;

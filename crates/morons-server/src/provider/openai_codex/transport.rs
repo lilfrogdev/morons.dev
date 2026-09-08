@@ -6,6 +6,7 @@ use crate::{
         ProviderStreamEvent,
         http_client::{ProviderHttpClient, bounded_client},
         openai_auth::{OpenAiCredentialError, OpenAiCredentialLease, OpenAiCredentialProvider},
+        response_diagnostic::ResponseStage,
         response_http::*,
         responses::ResponsesDecoder,
         sse::MAX_PROVIDER_STREAM_BYTES,
@@ -137,6 +138,7 @@ impl PreparedCodexDispatch<'_> {
             .checked_add(1)
             .ok_or(ProviderError::InvalidRequest)?;
         self.turn.usable = false;
+        self.turn.failure = None;
         let mut request = Request::builder()
             .method("POST")
             .uri(self.provider.endpoint.clone())
@@ -169,7 +171,8 @@ impl PreparedCodexDispatch<'_> {
             result=time::timeout_at(header_deadline,self.provider.client.request(request))=>result.map_err(|_|if header_deadline==deadline {ProviderError::TotalTimeout}else{ProviderError::ResponseHeaderTimeout})?.map_err(|_|ProviderError::Transport)?,
         };
         drop(self.credential);
-        validate_response_headers(response.headers())?;
+        validate_response_headers(response.headers())
+            .map_err(|e| self.turn.record_failure(e, ResponseStage::Headers))?;
         if response.status() != http::StatusCode::OK {
             let status = response.status();
             read_response_body_with_cancellation(
@@ -178,27 +181,40 @@ impl PreparedCodexDispatch<'_> {
                 deadline,
                 cancellation,
             )
-            .await?;
-            return Err(classify_status(status));
+            .await
+            .map_err(|e| self.turn.record_failure(e, ResponseStage::BodyBounds))?;
+            let error = classify_status(status);
+            return Err(self.turn.record_failure(error, ResponseStage::Redirect));
         }
         for name in [http::header::CONTENT_TYPE, http::header::CONTENT_LENGTH] {
             if response.headers().get_all(name).iter().nth(1).is_some() {
-                return Err(ProviderError::MalformedResponse);
+                return Err(self.turn.record_failure(
+                    ProviderError::MalformedResponse,
+                    ResponseStage::HeaderFraming,
+                ));
             }
         }
-        require_content_type(response.headers(), "text/event-stream")?;
-        validate_content_length(response.headers(), MAX_PROVIDER_STREAM_BYTES)?;
+        require_content_type(response.headers(), "text/event-stream")
+            .map_err(|e| self.turn.record_failure(e, ResponseStage::ContentType))?;
+        validate_content_length(response.headers(), MAX_PROVIDER_STREAM_BYTES)
+            .map_err(|e| self.turn.record_failure(e, ResponseStage::BodyBounds))?;
         let mut values = response.headers().get_all(ROUTING_HEADER).iter();
         let routing = values.next().cloned();
         if values.next().is_some() {
-            return Err(ProviderError::MalformedResponse);
+            return Err(self.turn.record_failure(
+                ProviderError::MalformedResponse,
+                ResponseStage::RoutingState,
+            ));
         }
         if let Some(mut routing) = routing {
             if routing.is_empty()
                 || routing.as_bytes().len() > MAX_ROUTING_BYTES
                 || !routing.as_bytes().iter().all(|b| matches!(b, 0x21..=0x7e))
             {
-                return Err(ProviderError::MalformedResponse);
+                return Err(self.turn.record_failure(
+                    ProviderError::MalformedResponse,
+                    ResponseStage::RoutingState,
+                ));
             }
             routing.set_sensitive(true);
             if self
@@ -207,7 +223,10 @@ impl PreparedCodexDispatch<'_> {
                 .as_ref()
                 .is_some_and(|previous| previous != routing)
             {
-                return Err(ProviderError::MalformedResponse);
+                return Err(self.turn.record_failure(
+                    ProviderError::MalformedResponse,
+                    ResponseStage::RoutingState,
+                ));
             }
             self.turn.routing = Some(routing);
         }
@@ -218,14 +237,20 @@ impl PreparedCodexDispatch<'_> {
         );
         let mut body = response.into_body();
         while let Some(frame) = next_frame(&mut body, deadline, cancellation).await? {
-            let data = frame
-                .into_data()
-                .map_err(|_| ProviderError::MalformedResponse)?;
-            for event in decoder.push(&data)? {
+            let data = frame.into_data().map_err(|_| {
+                self.turn
+                    .record_failure(ProviderError::MalformedResponse, ResponseStage::BodyFraming)
+            })?;
+            let events = decoder
+                .push(&data)
+                .map_err(|e| self.turn.record_failure(e, decoder.failure_stage()))?;
+            for event in events {
                 on_event(event);
             }
         }
-        let outcome = decoder.finish()?;
+        let outcome = decoder
+            .finish()
+            .map_err(|e| self.turn.record_failure(e, ResponseStage::Termination))?;
         if cancellation.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
@@ -246,6 +271,7 @@ impl PreparedCodexDispatch<'_> {
                 _ => None,
             })
             .collect();
+        self.turn.failure = None;
         self.turn.usable = true;
         Ok(outcome)
     }

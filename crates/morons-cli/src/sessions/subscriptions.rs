@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod native_diagnostic_tests;
 use morons_protocol::{
     ApplicationEvent, RunId, ServerMessage, SessionCatalogEventCursor, SessionEventCursor,
     SessionId, TranscriptEntry, read_server_message,
@@ -84,6 +86,7 @@ pub struct SessionSubscription<S> {
     pub(super) cursor: SessionEventCursor,
     pub(super) active_delta_run: Option<RunId>,
     pub(super) terminal_delta_run: Option<RunId>,
+    pub(super) native_failure_run: Option<RunId>,
     pub(super) delta_sequence: u64,
     pub(super) usable: bool,
 }
@@ -169,8 +172,17 @@ where
                         self.active_delta_run = None;
                         self.delta_sequence = 0;
                     }
+                    if self.terminal_delta_run != Some(run.id) {
+                        self.native_failure_run = (run.service
+                            == morons_protocol::ModelService::OpenAiChatGpt
+                            && run.state == morons_protocol::RunState::Failed
+                            && run.failure
+                                == Some(morons_protocol::RunFailureKind::ProviderProtocol))
+                        .then_some(run.id);
+                    }
                     self.terminal_delta_run = Some(run.id);
                 } else {
+                    self.native_failure_run = None;
                     if self.terminal_delta_run == Some(run.id) {
                         return Err(self.event_scope_mismatch());
                     }
@@ -192,6 +204,19 @@ where
                     return Err(self.event_scope_mismatch());
                 }
                 self.advance_cursor(*cursor)
+            }
+            ApplicationEvent::SessionNativeResponseDiagnostic {
+                session_id, run_id, ..
+            } => {
+                if *session_id != self.session_id
+                    || self.native_failure_run != Some(*run_id)
+                    || self.terminal_delta_run != Some(*run_id)
+                    || self.active_delta_run.is_some()
+                {
+                    return Err(self.event_scope_mismatch());
+                }
+                self.native_failure_run = None;
+                Ok(())
             }
             ApplicationEvent::SessionAssistantDelta {
                 session_id,

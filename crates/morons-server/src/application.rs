@@ -914,6 +914,7 @@ impl ServerApplication {
                 let cursor = to_persistence_session_event_cursor(cursor);
                 let notifications = self.sessions.subscribe_event_notifications();
                 let assistant_deltas = self.session_event_hub.subscribe_assistant_deltas();
+                let native_diagnostics = self.session_event_hub.subscribe_native_diagnostics();
                 self.sessions
                     .read_session_events(session_id, cursor, 1)
                     .await
@@ -924,6 +925,8 @@ impl ServerApplication {
                         cursor,
                         notifications,
                         assistant_deltas,
+                        native_diagnostics,
+                        native_protocol_failure: false,
                         active_run: None,
                         terminal_run: None,
                     },

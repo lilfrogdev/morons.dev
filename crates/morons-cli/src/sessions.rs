@@ -1165,6 +1165,7 @@ where
             cursor,
             active_delta_run: None,
             terminal_delta_run: None,
+            native_failure_run: None,
             delta_sequence: 0,
             usable: self.usable,
         })

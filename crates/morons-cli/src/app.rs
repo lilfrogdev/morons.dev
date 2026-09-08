@@ -1,6 +1,7 @@
 pub(crate) mod auth;
 mod context;
 mod input;
+mod native_diagnostic;
 mod render;
 mod viewport;
 
@@ -1299,6 +1300,32 @@ impl AppState {
             } => {
                 let session = self.session_mut(session_id)?;
                 session.active_command_id = active.then_some(command_id);
+                Ok(())
+            }
+            ApplicationEvent::SessionNativeResponseDiagnostic {
+                session_id,
+                run_id,
+                reason,
+            } => {
+                let session = self.session_mut(session_id)?;
+                if session.is_historical_window()
+                    || session.active_run_id.is_some()
+                    || session.active_command_id.is_some()
+                {
+                    return Ok(());
+                }
+                if !session.runs.iter().any(|run| {
+                    run.id == run_id
+                        && run.service == ModelService::OpenAiChatGpt
+                        && run.state == RunState::Failed
+                        && run.failure == Some(morons_protocol::RunFailureKind::ProviderProtocol)
+                }) {
+                    return Err(UiStateError::ResourceScopeMismatch);
+                }
+                self.set_status(format!(
+                    "{} Run: {run_id:?}",
+                    native_diagnostic::native_response_message(reason)
+                ));
                 Ok(())
             }
             ApplicationEvent::SessionAssistantDelta {

@@ -21,7 +21,7 @@ use self::subagent::SubagentExecutor;
 use crate::provider::OpenCodeResponseRequest;
 use crate::provider::dispatch::{ModelInput, ModelProviders};
 use crate::{
-    application::events::{AssistantDelta, SessionEventHub},
+    application::events::{AssistantDelta, NativeResponseDiagnostic, SessionEventHub},
     persistence::{
         CompletedAssistant, CompletedToolTurn, DispatchOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
         PersistenceError, PrepareOperationOutcome, ProviderOperationFailureState, ProviderUsage,
@@ -498,6 +498,18 @@ impl RunSupervisor {
                             provider_failure_state(error),
                         )
                         .await?;
+                    // Only after the durable failure commit, never as assistant output.
+                    if let Some(reason) = provider_turn
+                        .as_ref()
+                        .and_then(|turn| turn.native_response_failure())
+                    {
+                        self.session_events
+                            .publish_native_diagnostic(NativeResponseDiagnostic {
+                                session_id,
+                                run_id,
+                                reason,
+                            });
+                    }
                     return Ok(());
                 }
             };
