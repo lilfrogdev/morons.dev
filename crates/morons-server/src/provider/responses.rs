@@ -64,6 +64,7 @@ pub(super) struct ResponsesDecoder {
     text_deltas: BTreeMap<(u32, u32), DeltaAccumulator>,
     argument_deltas: BTreeMap<u32, DeltaAccumulator>,
     terminal: Option<Result<ProviderOutcome, ProviderError>>,
+    native_items: Option<native::NativeCompletedItems>,
     stage: Cell<ResponseStage>,
     #[cfg(test)]
     diagnostic_event_type: Option<String>,
@@ -90,6 +91,7 @@ impl ResponsesDecoder {
             text_deltas: BTreeMap::new(),
             argument_deltas: BTreeMap::new(),
             terminal: None,
+            native_items: None,
             stage: Cell::new(ResponseStage::SseFraming),
             #[cfg(test)]
             diagnostic_event_type: None,
@@ -98,6 +100,16 @@ impl ResponsesDecoder {
             #[cfg(test)]
             diagnostic_stage: "awaiting the first SSE record",
         }
+    }
+
+    pub(super) fn new_native(
+        expected_model: &'static str,
+        maximum_input_tokens: u32,
+        maximum_output_tokens: u32,
+    ) -> Self {
+        let mut decoder = Self::new(expected_model, maximum_input_tokens, maximum_output_tokens);
+        decoder.native_items = Some(native::NativeCompletedItems::default());
+        decoder
     }
 
     pub(super) fn failure_stage(&self) -> ResponseStage {
@@ -352,6 +364,15 @@ impl ResponsesDecoder {
                 self.state = StreamState::Terminal;
                 Ok(None)
             }
+            "response.output_item.done" if self.native_items.is_some() => {
+                self.require_active()?;
+                self.stage.set(ResponseStage::OutputConsistency);
+                self.native_items
+                    .as_mut()
+                    .expect("native mode checked")
+                    .push(value, record.data.len(), event_nodes)?;
+                Ok(None)
+            }
             "response.output_item.added"
             | "response.output_item.done"
             | "response.content_part.added"
@@ -433,6 +454,7 @@ impl ResponsesDecoder {
         {
             return Err(ProviderError::ResponseLimitExceeded);
         }
+        self.require_open_item(output_index)?;
         let accumulator = self
             .text_deltas
             .entry((output_index, content_index))
@@ -468,6 +490,7 @@ impl ResponsesDecoder {
         if delta.len() > MAX_DELTA_BYTES || output_index as usize >= MAX_OUTPUT_ITEMS {
             return Err(ProviderError::ResponseLimitExceeded);
         }
+        self.require_open_item(output_index)?;
         let accumulator =
             self.argument_deltas
                 .entry(output_index)
@@ -484,6 +507,17 @@ impl ResponsesDecoder {
             &delta,
             MAX_TOOL_ARGUMENT_BYTES,
         )?;
+        Ok(())
+    }
+
+    fn require_open_item(&self, index: u32) -> Result<(), ProviderError> {
+        if self
+            .native_items
+            .as_ref()
+            .is_some_and(|items| items.contains(index))
+        {
+            return Err(ProviderError::MalformedResponse);
+        }
         Ok(())
     }
 
@@ -505,7 +539,11 @@ impl ResponsesDecoder {
         if self.response_id.as_deref() != Some(response.id.as_str())
             || response.object != "response"
             || response.status != "completed"
-            || response.output.is_empty()
+            || (response.output.is_empty()
+                && self
+                    .native_items
+                    .as_ref()
+                    .is_none_or(|items| items.is_empty()))
             || response.output.len() > MAX_OUTPUT_ITEMS
         {
             return Err(ProviderError::MalformedResponse);
@@ -521,11 +559,42 @@ impl ResponsesDecoder {
             self.maximum_input_tokens,
             self.maximum_output_tokens,
         )?;
-        let mut output = Vec::with_capacity(response.output.len());
+        self.stage.set(ResponseStage::OutputConsistency);
+        let items = self
+            .native_items
+            .take()
+            .map(native::NativeCompletedItems::finish)
+            .transpose()?
+            .flatten();
+        let output = if let Some(items) = items {
+            let output = self.parse_output(items)?;
+            if !response.output.is_empty() {
+                let terminal = self.parse_output(response.output)?;
+                self.stage.set(ResponseStage::OutputConsistency);
+                if terminal != output {
+                    return Err(ProviderError::MalformedResponse);
+                }
+            }
+            output
+        } else {
+            self.parse_output(response.output)?
+        };
+        Ok(ProviderOutcome {
+            provider_response_id: response.id,
+            output,
+            usage,
+        })
+    }
+
+    fn parse_output(
+        &mut self,
+        items: Vec<Value>,
+    ) -> Result<Vec<ProviderOutputItem>, ProviderError> {
+        let mut output = Vec::with_capacity(items.len());
         let mut item_ids = BTreeSet::new();
         let mut call_ids = BTreeSet::new();
         let mut total_text_bytes = 0_usize;
-        for (output_index, item) in response.output.into_iter().enumerate() {
+        for (output_index, item) in items.into_iter().enumerate() {
             self.stage.set(ResponseStage::OutputConsistency);
             let item_type = item
                 .get("type")
@@ -673,11 +742,7 @@ impl ResponsesDecoder {
         if !self.text_deltas.is_empty() || !self.argument_deltas.is_empty() {
             return Err(ProviderError::MalformedResponse);
         }
-        Ok(ProviderOutcome {
-            provider_response_id: response.id,
-            output,
-            usage,
-        })
+        Ok(output)
     }
 
     fn validate_terminal_text(
@@ -741,6 +806,9 @@ fn validate_ping_record(data: &[u8]) -> Result<(), ProviderError> {
 
 #[cfg(test)]
 mod diagnostic_tests;
+mod native;
+#[cfg(test)]
+pub(super) mod native_tests;
 #[cfg(test)]
 mod tests;
 mod validation;

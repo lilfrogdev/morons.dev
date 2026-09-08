@@ -62,6 +62,10 @@ fn sse(output_tokens: u32) -> Vec<u8> {
     let completed = json!({"type":"response.completed","sequence_number":1,"response":{"id":"resp_fixture","object":"response","status":"completed","model":"gpt-5.5","output":[{"id":"msg_fixture","type":"message","role":"assistant","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"fixture answer","annotations":[]}]},{"id":"rs_fixture","type":"reasoning","summary":[],"encrypted_content":"opaque-response-fixture"},{"id":"fc_fixture","type":"function_call","status":"completed","call_id":"call_fixture","name":"read","arguments":"{}"}],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens":output_tokens,"output_tokens_details":{"reasoning_tokens":1},"total_tokens":10+output_tokens}}});
     format!("data: {created}\n\ndata: {completed}\n\ndata: [DONE]\n\n").into_bytes()
 }
+fn sse_with_item_events(output_tokens: u32) -> Vec<u8> {
+    crate::provider::completed_item_stream_fixture(&String::from_utf8(sse(output_tokens)).unwrap())
+        .into_bytes()
+}
 async fn respond(socket: &mut TcpStream, status: &str, headers: &str, body: &[u8]) {
     socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",body.len()).as_bytes()).await.unwrap();
     socket.write_all(body).await.unwrap();
@@ -108,7 +112,11 @@ async fn native_dispatch_uses_scoped_headers_and_never_replays_prepared_bytes() 
                 &mut socket,
                 "200 OK",
                 "x-codex-turn-state: sticky-fixture\r\n",
-                &sse(5),
+                &if pass == 0 {
+                    sse_with_item_events(5)
+                } else {
+                    sse(5)
+                },
             )
             .await;
         }

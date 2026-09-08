@@ -215,10 +215,27 @@ async fn native_untyped_body_cancellation_and_deadline_poison_without_replay() {
         let peer = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let _ = mock_request(&mut socket).await;
+            // Cache complete items but withhold terminal identity/usage. No
+            // outcome or tool call can escape on cancellation/timeout.
+            let complete = String::from_utf8(sse_with_item_events(5)).unwrap();
+            let partial = complete
+                .trim_end()
+                .rsplit_once("\n\n")
+                .unwrap()
+                .0
+                .to_owned()
+                + "\n\n";
             socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n")
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        partial.len() + 100
+                    )
+                    .as_bytes(),
+                )
                 .await
                 .unwrap();
+            socket.write_all(partial.as_bytes()).await.unwrap();
             sent.send(()).unwrap();
             let mut byte = [0];
             assert_eq!(

@@ -70,6 +70,8 @@ cargo test -p morons-server --lib --locked openai_codex -- --test-threads 2
 
 [ADR0037](adr/0037-native-stream-media-type-compatibility.md) adds a failing-before real HTTP regression for native SSE without Content-Type, retaining exact completed output/tool/reasoning/usage and prepared-byte no-replay rules. Three tests exercise absent and valid types; explicit empty/conflicting/duplicated types; untyped HTML/JSON/empty/partial/wrong-model/invalid-usage bodies; oversized declarations; and untyped-body cancellation/deadlines. Shared OpenCode/OAuth media-type checks remain strict. The six-model native root image/tool/receipt flow now uses an untyped first response and a typed continuation. These are synthetic compatibility checks, not proof of the live header's value or a successful native inference sample.
 
+[ADR0038](adr/0038-native-completed-output-items.md) adds a failing-before native empty-terminal-array regression backed by complete item events. Four unit tests cover equality with old normalized outputs, full/empty dual-source reconciliation, reordered complete indices, refusal/text/reasoning/functions, ignored extensions, conflicting identity/usage/output, duplicates/gaps/partial sources, late or mismatched deltas, response isolation and aggregate source bounds. Native HTTP tests exercise complete item events plus empty terminal output, gap/partial/usage rejection, cancellation after cached items and no replay. All six root image/tool/receipt flows use an untyped item-event first response and full-output continuation. No result is manufactured from deltas alone; OpenCode remains on the old constructor. The live completed-identity classification still does not identify its exact predicate.
+
 ## Native application binding
 
 ```sh

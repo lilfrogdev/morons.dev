@@ -38,6 +38,12 @@ async fn write_native_model(
     stream.shutdown().await.unwrap();
 }
 
+fn native_item_output_body(id: &str, output: &str, model: &str) -> String {
+    crate::provider::completed_item_stream_fixture(
+        &provider_output_body(id, output).replace("muse-spark-1.2", model),
+    )
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn native_root_executes_image_tools_and_receipt_bound_reasoning_without_opencode_credentials()
 {
@@ -126,8 +132,7 @@ async fn root_image_tool_flow(model: &'static str) {
                 );
                 // Native may omit the media type; receipt-bound continuation
                 // must still complete through the same strict decoder (ADR0037).
-                let response = provider_output_body("resp_native_read", &output)
-                    .replace("muse-spark-1.2", model);
+                let response = native_item_output_body("resp_native_read", &output, model);
                 stream
                     .write_all(
                         format!(

@@ -235,7 +235,7 @@ impl PreparedCodexDispatch<'_> {
             }
             self.turn.routing = Some(routing);
         }
-        let mut decoder = ResponsesDecoder::new(
+        let mut decoder = ResponsesDecoder::new_native(
             self.request.identity.model.id,
             self.request.identity.model.maximum_input_tokens,
             self.request.limits.maximum_output_tokens,

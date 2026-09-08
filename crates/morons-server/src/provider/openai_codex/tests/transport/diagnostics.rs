@@ -15,6 +15,21 @@ async fn native_diagnostic_captures_only_a_stage_and_keeps_error_and_no_replay_s
             ProviderError::UnexpectedContentType,
         ),
         (
+            "item-gap",
+            ResponseStage::OutputConsistency,
+            ProviderError::MalformedResponse,
+        ),
+        (
+            "item-partial",
+            ResponseStage::Termination,
+            ProviderError::IncompleteResponse,
+        ),
+        (
+            "item-usage",
+            ResponseStage::Usage,
+            ProviderError::MalformedResponse,
+        ),
+        (
             "routing",
             ResponseStage::RoutingState,
             ProviderError::MalformedResponse,
@@ -53,6 +68,20 @@ async fn native_diagnostic_captures_only_a_stage_and_keeps_error_and_no_replay_s
                 .unwrap();
             let _ = mock_request(&mut socket).await;
             let mut body = String::from_utf8(sse(if case == "usage" { 33 } else { 5 })).unwrap();
+            if case.starts_with("item-") {
+                body = String::from_utf8(sse_with_item_events(if case == "item-usage" {
+                    33
+                } else {
+                    5
+                }))
+                .unwrap();
+                if case == "item-gap" {
+                    body = body.replace("\"output_index\":1", "\"output_index\":7");
+                }
+                if case == "item-partial" {
+                    body = body.trim_end().rsplit_once("\n\n").unwrap().0.to_owned() + "\n\n";
+                }
+            }
             match case {
                 "sequence" => body = body.replace("\"sequence_number\":0", "\"sequence_number\":9"),
                 "model" => body = body.replace("gpt-5.5", "PRIVATE-model"),

@@ -20,6 +20,8 @@ mod opencode;
 mod outcome;
 mod request;
 mod responses;
+#[cfg(test)]
+pub(crate) use responses::native_tests::completed_item_stream_fixture;
 mod sse;
 
 pub(crate) use crate::persistence::OpenCodeCredentialLease;
