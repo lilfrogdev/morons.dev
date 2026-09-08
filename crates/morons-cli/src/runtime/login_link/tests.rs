@@ -1,4 +1,6 @@
 use super::*;
+mod fixture;
+use fixture::Helper;
 
 fn url() -> OpenAiAuthorizationUrl {
     OpenAiAuthorizationUrl::new(
@@ -6,42 +8,9 @@ fn url() -> OpenAiAuthorizationUrl {
     )
     .unwrap()
 }
-fn fixture(kind: &str) -> Command {
-    #[cfg(unix)]
-    {
-        let script = match kind {
-            "ok" => "exit 0",
-            "reject" => "exit 1",
-            "hold" => "exec sleep 30",
-            "copy" => "printf '\\001'; cat >/dev/null",
-            "bad_ack" => "printf x; cat >/dev/null",
-            _ => panic!("unknown fixture"),
-        };
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", script]);
-        command
-    }
-    #[cfg(windows)]
-    {
-        let script = match kind {
-            "ok" => "exit 0",
-            "reject" => "exit 1",
-            "hold" => "Start-Sleep -Seconds 30",
-            "copy" => {
-                "[Console]::OpenStandardOutput().WriteByte(1); [Console]::OpenStandardOutput().Flush(); [Console]::OpenStandardInput().CopyTo([System.IO.Stream]::Null)"
-            }
-            "bad_ack" => {
-                "[Console]::Out.Write('x'); [Console]::Out.Flush(); [Console]::OpenStandardInput().CopyTo([System.IO.Stream]::Null)"
-            }
-            _ => panic!("unknown fixture"),
-        };
-        let mut command = Command::new("powershell.exe");
-        command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
-        command
-    }
-}
 #[tokio::test(flavor = "current_thread")]
 async fn browser_launch_is_nonqueued_scoped_and_cancellable_without_retry() {
+    let fixture = Helper::new().await;
     let mut runtime = LinkRuntime::default();
     let scope = Arc::new(());
     runtime
@@ -49,7 +18,7 @@ async fn browser_launch_is_nonqueued_scoped_and_cancellable_without_retry() {
             LinkAction::Open,
             Arc::clone(&scope),
             url(),
-            Ok(fixture("hold")),
+            Ok(fixture.command("hold")),
         )
         .await;
     runtime
@@ -66,7 +35,7 @@ async fn browser_launch_is_nonqueued_scoped_and_cancellable_without_retry() {
             LinkAction::Open,
             Arc::clone(&other),
             url(),
-            Ok(fixture("ok")),
+            Ok(fixture.command("ok")),
         )
         .await;
     let event = time::timeout(Duration::from_secs(10), runtime.events.recv())
@@ -80,6 +49,7 @@ async fn browser_launch_is_nonqueued_scoped_and_cancellable_without_retry() {
 }
 #[tokio::test(flavor = "current_thread")]
 async fn clipboard_ownership_is_held_until_scope_cancellation_then_drained() {
+    let fixture = Helper::new().await;
     let mut runtime = LinkRuntime::default();
     let scope = Arc::new(());
     runtime
@@ -87,7 +57,7 @@ async fn clipboard_ownership_is_held_until_scope_cancellation_then_drained() {
             LinkAction::Copy,
             Arc::clone(&scope),
             url(),
-            Ok(fixture("copy")),
+            Ok(fixture.command("copy")),
         )
         .await;
     let event = time::timeout(Duration::from_secs(10), runtime.events.recv())
@@ -103,7 +73,7 @@ async fn clipboard_ownership_is_held_until_scope_cancellation_then_drained() {
             LinkAction::Copy,
             Arc::clone(&scope),
             url(),
-            Ok(fixture("copy")),
+            Ok(fixture.command("copy")),
         )
         .await;
     assert_eq!(
@@ -121,6 +91,7 @@ async fn clipboard_ownership_is_held_until_scope_cancellation_then_drained() {
 }
 #[tokio::test(flavor = "current_thread")]
 async fn launcher_failures_timeouts_and_malformed_copy_acknowledgements_are_bounded() {
+    let fixture = Helper::new().await;
     for (action, kind) in [
         (LinkAction::Open, "reject"),
         (LinkAction::Open, "hold"),
@@ -128,7 +99,7 @@ async fn launcher_failures_timeouts_and_malformed_copy_acknowledgements_are_boun
     ] {
         let mut runtime = LinkRuntime::default();
         runtime
-            .start_with(action, Arc::new(()), url(), Ok(fixture(kind)))
+            .start_with(action, Arc::new(()), url(), Ok(fixture.command(kind)))
             .await;
         let event = time::timeout(Duration::from_secs(12), runtime.events.recv())
             .await
@@ -142,7 +113,7 @@ async fn launcher_failures_timeouts_and_malformed_copy_acknowledgements_are_boun
     let (_cancel, cancellation) = watch::channel(true);
     assert!(
         run(
-            fixture("ok"),
+            fixture.command("ok"),
             LinkAction::Open,
             &url(),
             cancellation,

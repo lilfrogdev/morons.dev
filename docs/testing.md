@@ -2,6 +2,8 @@
 
 [ADR 0039](adr/0039-help-shortcuts-and-text-input.md) covers question-mark key routing: character-by-character prompts, both command modes, rename and synthetic hidden credential input retain the complete text; browser Help and explicit composer `/help` preserve modal and submission boundaries.
 
+Windows login-link lifecycle fixtures compile a tiny native, synthetic-only helper with the existing stable toolchain during bounded fixture setup. They do not depend on PowerShell startup completing inside the production five-second readiness deadline. The real launcher/copy deadlines and assertions remain unchanged; no browser or clipboard is accessed by the fixture.
+
 Use Rust unit tests beside the module they verify. Larger suites use a module-local `tests/` directory, grouped by behavior, with shared fixtures in the parent test module or a small helper module. This preserves private-module access without exporting implementation details only for tests.
 
 - Provider adapters: request/stream contracts and malformed-input tests beside each adapter.
