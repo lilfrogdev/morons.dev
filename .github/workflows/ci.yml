@@ -46,7 +46,7 @@ jobs:
             runner_arch: X64
             target: x86_64-pc-windows-msvc
             cross_target: ""
-            timeout_minutes: 30
+            timeout_minutes: 40
           - os: windows-11-arm
             platform: Windows aarch64
             runner_arch: ARM64
