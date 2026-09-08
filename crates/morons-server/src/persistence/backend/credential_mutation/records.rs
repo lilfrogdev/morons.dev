@@ -2,7 +2,8 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use super::super::records::{sequence_to_sql, time_to_sql};
 use crate::persistence::{
-    MutationRequestId, OpenCodeCredentialStatus, PersistenceError, PersistenceResourceLimit,
+    CredentialIdentityStatus, CredentialKind, MutationRequestId, PersistenceError,
+    PersistenceResourceLimit,
 };
 
 pub(super) const CREDENTIAL_REQUEST_PREPARED: i64 = 0;
@@ -22,12 +23,13 @@ pub(super) const CREDENTIAL_AUDIT_NOT_APPLIED: i64 = 4;
 #[derive(Debug)]
 pub(super) struct CredentialMutationRequest {
     pub(super) request_id: MutationRequestId,
+    pub(super) kind: CredentialKind,
     pub(super) operation_kind: i64,
     pub(super) expected_generation: u64,
     pub(super) accepted_sequence: u64,
     pub(super) accepted_at_milliseconds: u64,
     pub(super) state: i64,
-    pub(super) result: Option<OpenCodeCredentialStatus>,
+    pub(super) result: Option<CredentialIdentityStatus>,
 }
 
 fn load_credential_request(
@@ -44,7 +46,8 @@ fn load_credential_request(
                 accepted_at_milliseconds,
                 state,
                 result_generation,
-                result_configured
+                result_configured,
+                credential_kind
              FROM credential_mutation_requests
              WHERE request_id = ?1",
             [&request_id.as_bytes()[..]],
@@ -75,7 +78,8 @@ pub(super) fn load_incomplete_credential_requests(
             accepted_at_milliseconds,
             state,
             result_generation,
-            result_configured
+            result_configured,
+            credential_kind
          FROM credential_mutation_requests
          WHERE state IN (?1, ?2)
          ORDER BY accepted_sequence",
@@ -106,7 +110,7 @@ fn credential_request_from_row(
         .transpose()?;
     let result_configured = row.get::<_, Option<i64>>(7)?;
     let result = match (result_generation, result_configured) {
-        (Some(generation), Some(configured)) => Some(OpenCodeCredentialStatus {
+        (Some(generation), Some(configured)) => Some(CredentialIdentityStatus {
             configured: configured != 0,
             generation,
         }),
@@ -121,6 +125,11 @@ fn credential_request_from_row(
     };
     Ok(CredentialMutationRequest {
         request_id: MutationRequestId::from_bytes(row.get(0)?),
+        kind: match row.get::<_, i64>(8)? {
+            1 => CredentialKind::OpenCode,
+            2 => CredentialKind::OpenAiChatGpt,
+            _ => return Err(rusqlite::Error::InvalidQuery),
+        },
         operation_kind: row.get(1)?,
         expected_generation: nonnegative_integer_from_row(row, 2)?,
         accepted_sequence: nonnegative_integer_from_row(row, 3)?,
@@ -132,10 +141,12 @@ fn credential_request_from_row(
 
 pub(super) fn validate_request_identity(
     request: &CredentialMutationRequest,
+    kind: CredentialKind,
     operation_kind: i64,
     expected_generation: u64,
 ) -> Result<(), PersistenceError> {
-    if request.operation_kind != operation_kind
+    if request.kind != kind
+        || request.operation_kind != operation_kind
         || request.expected_generation != expected_generation
     {
         return Err(PersistenceError::RequestConflict);
@@ -145,7 +156,7 @@ pub(super) fn validate_request_identity(
 
 pub(super) fn completed_request_result(
     request: &CredentialMutationRequest,
-) -> Result<OpenCodeCredentialStatus, PersistenceError> {
+) -> Result<CredentialIdentityStatus, PersistenceError> {
     match (request.state, request.result) {
         (CREDENTIAL_REQUEST_COMPLETED, Some(result)) => Ok(result),
         (CREDENTIAL_REQUEST_NOT_APPLIED, None) => {
@@ -167,7 +178,8 @@ pub(super) fn validate_current_request(
             reason: "a credential mutation disappeared during execution",
         },
     )?;
-    if current.operation_kind != expected.operation_kind
+    if current.kind != expected.kind
+        || current.operation_kind != expected.operation_kind
         || current.expected_generation != expected.expected_generation
         || current.accepted_sequence != expected.accepted_sequence
         || current.accepted_at_milliseconds != expected.accepted_at_milliseconds
@@ -243,7 +255,7 @@ pub(super) fn update_credential_request_outcome(
     request_id: MutationRequestId,
     expected_state: i64,
     next_state: i64,
-    result: Option<OpenCodeCredentialStatus>,
+    result: Option<CredentialIdentityStatus>,
 ) -> Result<(), PersistenceError> {
     let changed = transaction.execute(
         "UPDATE credential_mutation_requests
@@ -272,6 +284,22 @@ pub(super) fn update_credential_request_outcome(
 pub(super) fn validate_credential_request_records(
     connection: &rusqlite::Connection,
 ) -> Result<(), PersistenceError> {
+    let chain_invalid: bool = connection.query_row(
+        "WITH chain AS (SELECT expected_generation,
+            COALESCE(SUM(CASE WHEN state = 2 THEN 1 ELSE 0 END) OVER (
+              PARTITION BY credential_kind ORDER BY accepted_sequence
+              ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS prior
+            FROM credential_mutation_requests)
+         SELECT (SELECT COUNT(*) FROM credential_mutation_requests) > 10000
+             OR EXISTS (SELECT 1 FROM chain WHERE expected_generation != prior)",
+        [],
+        |row| row.get(0),
+    )?;
+    if chain_invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "credential identity generations are not source-bound",
+        });
+    }
     let invalid: bool = connection.query_row(
         "SELECT EXISTS (
             SELECT 1

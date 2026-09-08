@@ -1,11 +1,13 @@
 use morons_protocol::{
     ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse,
-    ApplicationSettings, ClientMessage, MessageId, MutationRequestId, OpenCodeModelCapabilities,
-    OpenCodeModelRetention, OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse,
-    OpenCodeService, RunId, RunState, RunSummary, ServerMessage, SessionCatalogEventCursor,
-    SessionEventCursor, SessionId, SessionSummary, SkillSource, SkillSummary, SubagentModelSetting,
-    read_client_message, write_server_message,
+    ApplicationSettings, ClientMessage, MessageId, ModelCapabilities, ModelRetention,
+    ModelSelection, ModelService, ModelSummary, ModelTrainingUse, MutationRequestId, RunId,
+    RunState, RunSummary, ServerMessage, SessionCatalogEventCursor, SessionEventCursor, SessionId,
+    SessionSummary, SkillSource, SkillSummary, SubagentModelSetting, read_client_message,
+    write_server_message,
 };
+
+mod data_use;
 
 use super::{ApplicationClient, ApplicationClientError};
 
@@ -125,13 +127,13 @@ async fn session_client_correlates_create_get_and_list_requests() {
 async fn client_lists_models_with_exact_service_scope() {
     let (client_connection, mut server) = tokio::io::duplex(4096);
     let mut client = ApplicationClient::from_negotiated_connection(client_connection);
-    let model = fixture_model_summary(OpenCodeService::Go);
+    let model = fixture_model_summary(ModelService::Go);
 
     let expected_model = model.clone();
     let client_exchange = async {
         assert_eq!(
             client
-                .list_open_code_models(OpenCodeService::Go)
+                .list_models(ModelService::Go)
                 .await
                 .expect("model query should succeed"),
             vec![expected_model]
@@ -140,16 +142,16 @@ async fn client_lists_models_with_exact_service_scope() {
     let server_exchange = async {
         assert_eq!(
             read_request(&mut server, 1).await,
-            ApplicationRequest::ListOpenCodeModels {
-                service: OpenCodeService::Go,
+            ApplicationRequest::ListModels {
+                service: ModelService::Go,
             }
         );
         write_server_message(
             &mut server,
             &ServerMessage::response(
                 1,
-                ApplicationResponse::OpenCodeModelsListed {
-                    service: OpenCodeService::Go,
+                ApplicationResponse::ModelsListed {
+                    service: ModelService::Go,
                     models: vec![model],
                 },
             ),
@@ -166,8 +168,8 @@ async fn client_queries_and_updates_the_exact_default_model() {
     let (client_connection, mut server) = tokio::io::duplex(4096);
     let mut client = ApplicationClient::from_negotiated_connection(client_connection);
     let mutation_request_id = MutationRequestId::from_bytes([0x26; 16]);
-    let selection = OpenCodeModelSelection {
-        service: OpenCodeService::Go,
+    let selection = ModelSelection {
+        service: ModelService::Go,
         model_id: "grok-4.6".to_owned(),
     };
 
@@ -175,18 +177,14 @@ async fn client_queries_and_updates_the_exact_default_model() {
     let client_exchange = async {
         assert_eq!(
             client
-                .default_open_code_model()
+                .default_model()
                 .await
                 .expect("default query should succeed"),
             None
         );
         assert_eq!(
             client
-                .set_default_open_code_model(
-                    mutation_request_id,
-                    OpenCodeService::Go,
-                    "grok-4.6".to_owned(),
-                )
+                .set_default_model(mutation_request_id, ModelService::Go, "grok-4.6".to_owned(),)
                 .await
                 .expect("default mutation should succeed"),
             expected
@@ -195,32 +193,26 @@ async fn client_queries_and_updates_the_exact_default_model() {
     let server_exchange = async {
         assert_eq!(
             read_request(&mut server, 1).await,
-            ApplicationRequest::GetDefaultOpenCodeModel
+            ApplicationRequest::GetDefaultModel
         );
         write_server_message(
             &mut server,
-            &ServerMessage::response(
-                1,
-                ApplicationResponse::DefaultOpenCodeModel { selection: None },
-            ),
+            &ServerMessage::response(1, ApplicationResponse::DefaultModel { selection: None }),
         )
         .await
         .expect("default query response should be written");
 
         assert_eq!(
             read_request(&mut server, 2).await,
-            ApplicationRequest::SetDefaultOpenCodeModel {
+            ApplicationRequest::SetDefaultModel {
                 mutation_request_id,
-                service: OpenCodeService::Go,
+                service: ModelService::Go,
                 model_id: "grok-4.6".to_owned(),
             }
         );
         write_server_message(
             &mut server,
-            &ServerMessage::response(
-                2,
-                ApplicationResponse::DefaultOpenCodeModelUpdated { selection },
-            ),
+            &ServerMessage::response(2, ApplicationResponse::DefaultModelUpdated { selection }),
         )
         .await
         .expect("default mutation response should be written");
@@ -234,8 +226,8 @@ async fn client_queries_and_updates_typed_application_settings() {
     let (client_connection, mut server) = tokio::io::duplex(4096);
     let mut client = ApplicationClient::from_negotiated_connection(client_connection);
     let mutation_request_id = MutationRequestId::from_bytes([0x27; 16]);
-    let selected = SubagentModelSetting::OpenCode {
-        service: OpenCodeService::Go,
+    let selected = SubagentModelSetting::Explicit {
+        service: ModelService::Go,
         model_id: "glm-5.3-flash".to_owned(),
     };
     let expected = selected.clone();
@@ -270,6 +262,7 @@ async fn client_queries_and_updates_typed_application_settings() {
                 1,
                 ApplicationResponse::ApplicationSettings {
                     settings: ApplicationSettings {
+                        data_use: Default::default(),
                         subagent_model: SubagentModelSetting::InheritParent {},
                     },
                 },
@@ -291,6 +284,7 @@ async fn client_queries_and_updates_typed_application_settings() {
                 2,
                 ApplicationResponse::ApplicationSettingsUpdated {
                     settings: ApplicationSettings {
+                        data_use: Default::default(),
                         subagent_model: expected_server,
                     },
                 },
@@ -350,12 +344,12 @@ async fn client_lists_bounded_session_scoped_skills() {
 async fn client_rejects_cross_service_model_metadata() {
     let (client_connection, mut server) = tokio::io::duplex(4096);
     let mut client = ApplicationClient::from_negotiated_connection(client_connection);
-    let mut model = fixture_model_summary(OpenCodeService::Go);
-    model.service = OpenCodeService::Zen;
+    let mut model = fixture_model_summary(ModelService::Go);
+    model.service = ModelService::Zen;
 
     let client_exchange = async {
         assert!(matches!(
-            client.list_open_code_models(OpenCodeService::Go).await,
+            client.list_models(ModelService::Go).await,
             Err(ApplicationClientError::EventScopeMismatch)
         ));
         assert!(matches!(
@@ -369,8 +363,8 @@ async fn client_rejects_cross_service_model_metadata() {
             &mut server,
             &ServerMessage::response(
                 1,
-                ApplicationResponse::OpenCodeModelsListed {
-                    service: OpenCodeService::Go,
+                ApplicationResponse::ModelsListed {
+                    service: ModelService::Go,
                     models: vec![model],
                 },
             ),
@@ -395,7 +389,7 @@ async fn client_submits_inspects_and_cancels_exact_run() {
         id: run_id,
         session_id,
         user_message_id,
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "muse-spark-1.2".to_owned(),
         protocol_revision: 1,
         credential_generation: 2,
@@ -415,7 +409,7 @@ async fn client_submits_inspects_and_cancels_exact_run() {
                 mutation_request_id,
                 session_id,
                 "hello".to_owned(),
-                OpenCodeService::Zen,
+                ModelService::Zen,
                 "muse-spark-1.2".to_owned(),
             )
             .await
@@ -445,7 +439,7 @@ async fn client_submits_inspects_and_cancels_exact_run() {
                 session_id,
                 text: "hello".to_owned(),
                 attachments: Vec::new(),
-                service: OpenCodeService::Zen,
+                service: ModelService::Zen,
                 model_id: "muse-spark-1.2".to_owned(),
             }
         );
@@ -631,7 +625,7 @@ async fn session_subscription_tracks_durable_and_ephemeral_run_events() {
         id: run_id,
         session_id,
         user_message_id: MessageId::from_bytes([0x43; 16]),
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "muse-spark-1.2".to_owned(),
         protocol_revision: 1,
         credential_generation: 2,
@@ -842,15 +836,15 @@ async fn mismatched_response_identifier_is_rejected() {
     tokio::join!(client_exchange, server_exchange);
 }
 
-fn fixture_model_summary(service: OpenCodeService) -> OpenCodeModelSummary {
-    OpenCodeModelSummary {
+fn fixture_model_summary(service: ModelService) -> ModelSummary {
+    ModelSummary {
         service,
         id: "grok-4.6".to_owned(),
         display_name: "Grok 4.6".to_owned(),
         available: true,
         protocol: morons_protocol::ProviderProtocol::Responses,
         protocol_revision: 1,
-        capabilities: OpenCodeModelCapabilities {
+        capabilities: ModelCapabilities {
             text_input: true,
             image_input: false,
             text_output: true,
@@ -860,8 +854,9 @@ fn fixture_model_summary(service: OpenCodeService) -> OpenCodeModelSummary {
         },
         maximum_input_tokens: 96_000,
         maximum_output_tokens: 32_000,
-        training_use: OpenCodeModelTrainingUse::NotUsed,
-        retention: OpenCodeModelRetention::UpToThirtyDays,
+        training_use: ModelTrainingUse::NotUsed,
+        retention: ModelRetention::UpToThirtyDays,
+        output_limit_is_local: false,
     }
 }
 

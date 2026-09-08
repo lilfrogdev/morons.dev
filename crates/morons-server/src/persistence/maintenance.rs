@@ -30,7 +30,7 @@ pub(crate) struct MaintenanceObservation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MaintenanceJobObservation {
     pub state: MaintenanceState,
-    pub service: super::RunOpenCodeService,
+    pub service: super::RunService,
     pub model_id: String,
     pub source_entry_high_water: u64,
     pub usage: Option<super::run_types::RecentProviderUsage>,

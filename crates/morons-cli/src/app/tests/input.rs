@@ -1,6 +1,110 @@
 use super::*;
 
 #[test]
+fn question_marks_are_text_in_prompts_and_both_command_modes() {
+    for text in ["What? No tools.", "!printf '?done'", "!!printf '?done'"] {
+        let (session, run) = fixture_session_and_run();
+        let mut app = AppState::new("test-server");
+        app.replace_models(ModelService::Zen, vec![fixture_model()])
+            .unwrap();
+        app.open_session(session, Vec::new(), vec![run], None, None)
+            .unwrap();
+        for character in text.chars() {
+            assert_eq!(
+                app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+                AppAction::None
+            );
+        }
+        assert!(app.information_dialog.is_none());
+        assert_eq!(app.prompt.as_str(), text);
+        let action = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match (text.starts_with('!'), action) {
+            (
+                false,
+                AppAction::SubmitInput {
+                    text: submitted, ..
+                },
+            ) => assert_eq!(submitted, text),
+            (
+                true,
+                AppAction::ExecuteLocalCommand {
+                    command,
+                    context_visible,
+                    ..
+                },
+            ) => {
+                assert_eq!(command, "printf '?done'");
+                assert_eq!(context_visible, !text.starts_with("!!"));
+            }
+            _ => panic!("expected complete attributed input or command"),
+        }
+    }
+}
+
+#[test]
+fn question_marks_do_not_interrupt_rename_or_hidden_credential_input() {
+    let mut app = AppState::new("test-server");
+    app.rename_dialog = Some(Default::default());
+    for character in "name?tail".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    assert!(app.information_dialog.is_none());
+    assert_eq!(app.rename_dialog.as_ref().unwrap().as_str(), "name?tail");
+    app.rename_dialog = None;
+    app.credential_dialog = Some(CredentialDialog::Enter {
+        replacing: false,
+        input: CredentialBuffer::default(),
+    });
+    for character in "SYNTHETIC?VALUE".chars() {
+        app.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+    }
+    assert!(app.information_dialog.is_none());
+    let Some(CredentialDialog::Enter { input, .. }) = app.credential_dialog.as_ref() else {
+        panic!("credential input should remain active");
+    };
+    assert_eq!(input.len_bytes(), "SYNTHETIC?VALUE".len());
+    assert!(!format!("{input:?}").contains("SYNTHETIC"));
+}
+
+#[test]
+fn browser_help_and_explicit_composer_help_do_not_submit_on_dismissal() {
+    let mut app = AppState::new("test-server");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(app.information_dialog, Some(InformationDialog::Help));
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert!(app.information_dialog.is_none());
+    let (session, run) = fixture_session_and_run();
+    app.open_session(session, Vec::new(), vec![run], None, None)
+        .unwrap();
+    app.handle_paste("/help");
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(app.information_dialog, Some(InformationDialog::Help));
+    assert!(app.prompt.is_empty());
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert!(app.information_dialog.is_none());
+    app.mark_pending(PendingOperation::CreateSession);
+    app.mark_pending_unknown();
+    app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+    assert!(app.information_dialog.is_none());
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        AppAction::AbandonPending
+    );
+}
+
+#[test]
 fn prompt_paste_and_rendering_remain_bounded() {
     let (session, run) = fixture_session_and_run();
     let mut app = AppState::new("test-server");
@@ -48,7 +152,7 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
     let (session, run) = fixture_session_and_run();
     let session_id = session.id;
     let mut app = AppState::new("test-server");
-    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+    app.replace_models(ModelService::Zen, vec![fixture_model()])
         .expect("models should be valid");
     app.open_session(session, Vec::new(), vec![run], None, None)
         .expect("session should open");
@@ -58,7 +162,7 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         AppAction::ShowContext {
             session_id: selected,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             ref model_id,
         } if selected == session_id && model_id == "grok-4.6"
     ));
@@ -75,7 +179,7 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
             warnings: vec!["FIXTURE_WARNING".to_owned()],
         }),
         session_id,
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "grok-4.6".to_owned(),
         context_policy_version: 4,
         estimated_input_tokens: 12_000,
@@ -159,7 +263,7 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         enabled: true,
         latest: Some(morons_protocol::BackgroundCompactionJob {
             state: morons_protocol::BackgroundCompactionState::Ready,
-            service: OpenCodeService::Go,
+            service: ModelService::Go,
             model_id: "\u{1b}]52;c;SECRET\u{7}safe-model\u{202e}".to_owned(),
             source_entry_high_water: 4,
             usage: None,
@@ -196,7 +300,7 @@ fn at_prefix_opens_bounded_skill_completion_and_tab_inserts_exact_name() {
     let (session, run) = fixture_session_and_run();
     let session_id = session.id;
     let mut app = AppState::new("test-server");
-    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+    app.replace_models(ModelService::Zen, vec![fixture_model()])
         .expect("models should be valid");
     app.open_session(session, Vec::new(), vec![run], None, None)
         .expect("session should open");
@@ -263,7 +367,7 @@ fn image_drafts_use_atomic_unique_markers_and_survive_unsupported_submission() {
     let (session, run) = fixture_session_and_run();
     let session_id = session.id;
     let mut app = AppState::new("test-server");
-    app.replace_models(OpenCodeService::Zen, vec![fixture_model()])
+    app.replace_models(ModelService::Zen, vec![fixture_model()])
         .expect("models should be valid");
     app.open_session(session, Vec::new(), vec![run], None, None)
         .expect("session should open");
@@ -328,7 +432,7 @@ fn input_action_debug_omits_prompt_text() {
         session_id: SessionId::from_bytes([0x55; 16]),
         text: "sensitive prompt text".to_owned(),
         attachments: Vec::new(),
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "grok-4.6".to_owned(),
     };
     let debug = format!("{action:?}");

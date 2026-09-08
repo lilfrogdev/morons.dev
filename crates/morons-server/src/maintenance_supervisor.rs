@@ -3,7 +3,8 @@ use crate::{
         PersistenceError, RunId, SessionId, SessionStore, maintenance::MaintenanceResult,
     },
     provider::{
-        OpenCodeProvider, ProviderCancellation, ProviderCancellationHandle, provider_cancellation,
+        ProviderCancellation, ProviderCancellationHandle, dispatch::ModelProviders,
+        provider_cancellation,
     },
 };
 use std::{
@@ -21,7 +22,7 @@ use tokio::{
 
 pub(crate) struct MaintenanceSupervisor {
     sessions: Arc<SessionStore>,
-    provider: Arc<OpenCodeProvider>,
+    provider: Arc<ModelProviders>,
     slot: Arc<Semaphore>,
     task: Mutex<Option<Active>>,
     stopping: AtomicBool,
@@ -40,7 +41,7 @@ struct Active {
 impl MaintenanceSupervisor {
     pub(crate) fn new(
         sessions: Arc<SessionStore>,
-        provider: Arc<OpenCodeProvider>,
+        provider: Arc<ModelProviders>,
         shutdown: watch::Sender<bool>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -57,7 +58,7 @@ impl MaintenanceSupervisor {
     #[cfg(test)]
     pub(crate) fn with_deadline_for_test(
         sessions: Arc<SessionStore>,
-        provider: Arc<OpenCodeProvider>,
+        provider: Arc<ModelProviders>,
         shutdown: watch::Sender<bool>,
         deadline: Duration,
     ) -> Arc<Self> {
@@ -131,24 +132,42 @@ impl MaintenanceSupervisor {
                 reason: "maintenance supervisor scope does not match the triggering run",
             });
         }
-        let request = match crate::run_supervisor::build_compaction_request_for_run(
-            work.id, &work.run, &work.plan,
-        ) {
-            Ok(request) => request,
+        let built = (|| {
+            let turn = self.provider.turn(
+                work.run.service.model_service(),
+                &work.run.model_id,
+                work.id,
+                *work.run.id.as_bytes(),
+                work.run.credential_generation,
+            )?;
+            let request = turn.request(crate::run_supervisor::build_compaction_input(
+                &work.run, &work.plan,
+            )?)?;
+            Ok::<_, crate::provider::ProviderError>((turn, request))
+        })();
+        let (mut turn, request) = match built {
+            Ok(prepared) => prepared,
             Err(_) => return self.sessions.finish_maintenance(session, true, false).await,
         };
+        let policy = self.sessions.data_use_policy().await?.restrictions;
         let dispatch = match self
             .provider
-            .prepare_dispatch(work.run.credential_generation, &request)
+            .prepare_dispatch(&mut turn, &request, policy, &mut cancellation)
             .await
         {
             Ok(dispatch) => dispatch,
+            Err(crate::provider::ProviderError::Cancelled) => return Ok(()),
+            Err(crate::provider::ProviderError::CredentialStoreUnavailable) => {
+                return Err(PersistenceError::InvalidState {
+                    reason: "provider credential storage is unavailable",
+                });
+            }
             Err(_) => return self.sessions.finish_maintenance(session, true, false).await,
         };
         if cancellation.is_cancelled() || !self.sessions.dispatch_maintenance(work.id).await? {
             return Ok(());
         }
-        let Ok(outcome) = dispatch.execute(&mut cancellation, |_| {}).await else {
+        let Ok(outcome) = dispatch.execute(policy, &mut cancellation, |_| {}).await else {
             return Ok(());
         };
         let usage = outcome.usage;

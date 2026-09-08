@@ -8,8 +8,8 @@ use std::{
 
 use morons_cli::{ApplicationClient, ApplicationClientError};
 use morons_protocol::{
-    ApplicationError, ApplicationEvent, ApplicationRequest,
-    MutationRequestId as ProtocolMutationRequestId, OpenCodeService,
+    ApplicationError, ApplicationEvent, ApplicationRequest, ModelService,
+    MutationRequestId as ProtocolMutationRequestId,
     SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
     SessionEventCursor as ProtocolSessionEventCursor, SessionId as ProtocolSessionId,
     SessionListCursor as ProtocolSessionListCursor,
@@ -23,9 +23,8 @@ use crate::{
 };
 
 use super::{
-    MutationRequestId, PersistenceError, RunModelSelection, RunOpenCodeService,
-    SessionCatalogEventCursor, SessionCatalogEventKind, SessionId, SessionListCursor, SessionStore,
-    database,
+    MutationRequestId, PersistenceError, RunModelSelection, RunService, SessionCatalogEventCursor,
+    SessionCatalogEventKind, SessionId, SessionListCursor, SessionStore, database,
     paths::{StoragePaths, encode_hex},
     types::create_session_fingerprint,
 };

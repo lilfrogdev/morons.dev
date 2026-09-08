@@ -46,6 +46,7 @@ async fn schema_25_history_migrates_without_retroactive_project_guidance() {
     append_completed_context_run(&store, session, 1, "LEGACY", 0).await;
     drop(store);
     let connection = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    crate::persistence::data_use::tests::restore_schema_28(&connection);
     connection.execute_batch("DROP TABLE compaction_maintenance_events;
         DROP TABLE compaction_maintenance_jobs;
         DROP INDEX compaction_operations_by_prefix;
@@ -113,7 +114,7 @@ fn input(session_id: SessionId, request: u8) -> ApplicationRequest {
         session_id,
         text: "Explain this project.".to_owned(),
         attachments: Vec::new(),
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "muse-spark-1.2".to_owned(),
     }
 }
@@ -125,7 +126,7 @@ async fn context(
     let result = application
         .execute_for_local_owner(ApplicationRequest::GetSessionContext {
             session_id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await

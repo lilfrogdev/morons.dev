@@ -1,9 +1,11 @@
+mod auth;
+mod login_link;
 mod requests;
 mod subscriptions;
 
 use std::{error::Error, fmt, fs, io, path::PathBuf};
 
-use morons_protocol::{MutationRequestId, OpenCodeService, SessionId};
+use morons_protocol::{ModelService, MutationRequestId, SessionId};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use self::{
@@ -124,6 +126,9 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
     enqueue_initial_queries(&request_commands)?;
 
     let result = loop {
+        runtime
+            .links
+            .reconcile(runtime.app.login_link().map(|link| &link.scope));
         terminal.draw(|frame| runtime.app.render(frame))?;
         tokio::select! {
             input = terminal_events.next() => {
@@ -183,6 +188,15 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
                     break Ok(());
                 }
             }
+            event = runtime.auth.events.recv() => {
+                if let Some(event) = event {
+                    let action = runtime.app.handle_auth_event(event);
+                    runtime.handle_action(action, &request_commands).await?;
+                }
+            }
+            event = runtime.links.events.recv() => {
+                if let Some(event) = event {runtime.app.handle_link_event(event);}
+            }
             event = subscription_event_receiver.recv() => {
                 if let Some(event) = event {
                     runtime.handle_subscription_event(
@@ -196,6 +210,8 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
     };
 
     drop(request_commands);
+    runtime.links.shutdown().await;
+    runtime.auth.shutdown().await;
     runtime.abort_background_tasks();
     drop(terminal_events);
     terminal.restore()?;
@@ -204,6 +220,8 @@ pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> 
 
 struct RuntimeState {
     app: AppState,
+    auth: auth::AuthRuntime,
+    links: login_link::LinkRuntime,
     pending_command: Option<RequestCommand>,
     pending_credential_mutation: Option<MutationRequestId>,
     credential_reconciliation_unknown: Option<bool>,
@@ -219,6 +237,8 @@ impl RuntimeState {
     fn new(server_version: String, request_worker: JoinHandle<()>) -> Self {
         Self {
             app: AppState::new(&server_version),
+            auth: auth::AuthRuntime::default(),
+            links: login_link::LinkRuntime::default(),
             pending_command: None,
             pending_credential_mutation: None,
             credential_reconciliation_unknown: None,
@@ -348,6 +368,15 @@ impl RuntimeState {
                 self.app
                     .set_status("Refreshing global application settings");
             }
+            AppAction::SetDataUsePolicy { policy } => {
+                let command = RequestCommand::SetDataUsePolicy {
+                    mutation_request_id: generate_mutation_request_id()?,
+                    policy,
+                };
+                self.start_mutation(command, PendingOperation::UpdateSettings, commands)?;
+                self.app
+                    .set_status("Saving data-use policy; already admitted work may continue");
+            }
             AppAction::SetSubagentModel { setting } => {
                 let command = RequestCommand::SetSubagentModel {
                     mutation_request_id: generate_mutation_request_id()?,
@@ -424,6 +453,34 @@ impl RuntimeState {
                 self.start_mutation(command, PendingOperation::CancelLocalCommand, commands)?;
                 self.app.set_status("Requesting local command cancellation");
             }
+            AppAction::OpenAiCancel => {
+                self.auth.cancel();
+                self.links.reconcile(None);
+            }
+            AppAction::OpenAiLink(action) => {
+                if let Some(link) = self.app.login_link() {
+                    self.links
+                        .start(action, std::sync::Arc::clone(&link.scope), link.url.clone())
+                        .await;
+                }
+            }
+            action @ (AppAction::OpenAiStatus
+            | AppAction::OpenAiBegin { .. }
+            | AppAction::OpenAiRemove { .. }) => {
+                let command = match action {
+                    AppAction::OpenAiStatus => auth::Command::Status,
+                    AppAction::OpenAiBegin {
+                        expected_generation,
+                    } => auth::Command::Begin(expected_generation),
+                    AppAction::OpenAiRemove {
+                        expected_generation,
+                    } => auth::Command::Remove(expected_generation),
+                    _ => unreachable!(),
+                };
+                if !self.auth.start(command).await {
+                    self.app.handle_auth_event(auth::AuthEvent::Failed("An authentication operation is still draining. Reopen /login to reload status."));
+                }
+            }
             AppAction::SetCredential {
                 expected_generation,
                 api_key,
@@ -489,8 +546,8 @@ impl RuntimeState {
             RequestEvent::ConnectionRestored { server_version } => {
                 self.app.clear_credential_interaction();
                 self.app.server_version = SafeText::from_untrusted(&server_version);
-                self.app.replace_models(OpenCodeService::Zen, Vec::new())?;
-                self.app.replace_models(OpenCodeService::Go, Vec::new())?;
+                self.app.replace_models(ModelService::Zen, Vec::new())?;
+                self.app.replace_models(ModelService::Go, Vec::new())?;
                 self.app.set_status(
                     "Authenticated connection restored; refresh model availability with Ctrl+L",
                 );
@@ -556,7 +613,7 @@ impl RuntimeState {
             } => {
                 self.finish_mutation(mutation_request_id)?;
                 self.app.install_settings(settings);
-                self.app.set_status("Global subagent model setting saved");
+                self.app.set_status("Global application settings saved");
             }
             RequestEvent::CredentialStatusLoaded(status) => {
                 self.complete_refresh_query();
@@ -1158,8 +1215,9 @@ fn enqueue_initial_queries(
         RequestCommand::LoadCredentialStatus,
         RequestCommand::LoadDefaultModel,
         RequestCommand::LoadSettings,
-        RequestCommand::LoadModels(OpenCodeService::Zen),
-        RequestCommand::LoadModels(OpenCodeService::Go),
+        RequestCommand::LoadModels(ModelService::Zen),
+        RequestCommand::LoadModels(ModelService::Go),
+        RequestCommand::LoadModels(ModelService::OpenAiChatGpt),
     ] {
         send_command(commands, command)?;
     }

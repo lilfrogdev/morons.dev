@@ -50,6 +50,7 @@ pub(super) struct Job {
     pub instruction_digest: [u8; 32],
     pub binding_digest: [u8; 32],
     pub policy: u16,
+    pub data_use_sequence: u64,
     pub state: State,
     pub sequence: u64,
     pub time: u64,
@@ -60,7 +61,7 @@ impl Job {
         let row = connection.query_row(
             "SELECT session_id, trigger_run_id, parent_checkpoint_id, source_entry_high_water,
                     prepared_entry_high_water, source_digest, instruction_digest, binding_digest,
-                    maintenance_policy_version, state, prepared_sequence, prepared_at_milliseconds
+                    maintenance_policy_version, state, prepared_sequence, prepared_at_milliseconds, data_use_sequence
              FROM compaction_maintenance_jobs WHERE job_id = ?1",
             [&id[..]],
             |row| {
@@ -77,6 +78,7 @@ impl Job {
                     row.get(9)?,
                     nonnegative_integer_from_row(row, 10)?,
                     nonnegative_integer_from_row(row, 11)?,
+                    nonnegative_integer_from_row(row, 12)?,
                 ))
             },
         )?;
@@ -104,11 +106,12 @@ impl Job {
             state: State::from_record(row.9)?,
             sequence: row.10,
             time: row.11,
+            data_use_sequence: row.12,
         })
     }
 
     pub(super) fn digest(&self) -> [u8; 32] {
-        let binding = serde_json::json!({
+        let mut binding = serde_json::json!({
             "job": self.id, "session": self.session.as_bytes(), "trigger": self.run.id.as_bytes(),
             "service": self.run.service.to_record(), "model": self.run.model_id,
             "protocol": self.run.protocol_revision, "credential_generation": self.run.credential_generation,
@@ -120,6 +123,9 @@ impl Job {
             "instruction_digest": self.instruction_digest, "policy": self.policy,
             "sequence": self.sequence, "time": self.time,
         });
+        if self.data_use_sequence != 0 {
+            binding["data_use_sequence"] = self.data_use_sequence.into();
+        }
         hash_parts(
             b"morons.dev/maintenance-binding/v1\0",
             &[binding.to_string().as_bytes()],

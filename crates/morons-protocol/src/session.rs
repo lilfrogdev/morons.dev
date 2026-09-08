@@ -276,16 +276,20 @@ pub enum ApplicationRequest {
     SubscribeSessionCatalog {
         cursor: SessionCatalogEventCursor,
     },
-    ListOpenCodeModels {
-        service: crate::OpenCodeService,
+    ListModels {
+        service: crate::ModelService,
     },
-    GetDefaultOpenCodeModel,
-    SetDefaultOpenCodeModel {
+    GetDefaultModel,
+    SetDefaultModel {
         mutation_request_id: MutationRequestId,
-        service: crate::OpenCodeService,
+        service: crate::ModelService,
         model_id: String,
     },
     GetApplicationSettings,
+    SetDataUsePolicy {
+        mutation_request_id: MutationRequestId,
+        policy: crate::DataUsePolicy,
+    },
     SetSubagentModelSetting {
         mutation_request_id: MutationRequestId,
         setting: crate::SubagentModelSetting,
@@ -295,8 +299,20 @@ pub enum ApplicationRequest {
     },
     GetSessionContext {
         session_id: SessionId,
-        service: crate::OpenCodeService,
+        service: crate::ModelService,
         model_id: String,
+    },
+    GetOpenAiCredentialStatus,
+    BeginOpenAiLogin {
+        mutation_request_id: MutationRequestId,
+        expected_generation: u64,
+    },
+    CancelOpenAiLogin {
+        attempt_id: MutationRequestId,
+    },
+    RemoveOpenAiCredential {
+        mutation_request_id: MutationRequestId,
+        expected_generation: u64,
     },
     GetOpenCodeCredentialStatus,
     SetOpenCodeCredential {
@@ -313,7 +329,7 @@ pub enum ApplicationRequest {
         session_id: SessionId,
         text: String,
         attachments: Vec<crate::ImageUpload>,
-        service: crate::OpenCodeService,
+        service: crate::ModelService,
         model_id: String,
     },
     ExecuteLocalCommand {
@@ -405,22 +421,30 @@ impl fmt::Debug for ApplicationRequest {
                 .debug_struct("SubscribeSessionCatalog")
                 .field("cursor", cursor)
                 .finish(),
-            Self::ListOpenCodeModels { service } => formatter
-                .debug_struct("ListOpenCodeModels")
+            Self::ListModels { service } => formatter
+                .debug_struct("ListModels")
                 .field("service", service)
                 .finish(),
-            Self::GetDefaultOpenCodeModel => formatter.write_str("GetDefaultOpenCodeModel"),
-            Self::SetDefaultOpenCodeModel {
+            Self::GetDefaultModel => formatter.write_str("GetDefaultModel"),
+            Self::SetDefaultModel {
                 mutation_request_id,
                 service,
                 model_id,
             } => formatter
-                .debug_struct("SetDefaultOpenCodeModel")
+                .debug_struct("SetDefaultModel")
                 .field("mutation_request_id", mutation_request_id)
                 .field("service", service)
                 .field("model_id", model_id)
                 .finish(),
             Self::GetApplicationSettings => formatter.write_str("GetApplicationSettings"),
+            Self::SetDataUsePolicy {
+                mutation_request_id,
+                policy,
+            } => formatter
+                .debug_struct("SetDataUsePolicy")
+                .field("mutation_request_id", mutation_request_id)
+                .field("policy", policy)
+                .finish(),
             Self::SetSubagentModelSetting {
                 mutation_request_id,
                 setting,
@@ -443,6 +467,10 @@ impl fmt::Debug for ApplicationRequest {
                 .field("service", service)
                 .field("model_id", model_id)
                 .finish(),
+            Self::GetOpenAiCredentialStatus => formatter.write_str("GetOpenAiCredentialStatus"),
+            Self::BeginOpenAiLogin { .. } => formatter.write_str("BeginOpenAiLogin"),
+            Self::CancelOpenAiLogin { .. } => formatter.write_str("CancelOpenAiLogin"),
+            Self::RemoveOpenAiCredential { .. } => formatter.write_str("RemoveOpenAiCredential"),
             Self::GetOpenCodeCredentialStatus => formatter.write_str("GetOpenCodeCredentialStatus"),
             Self::SetOpenCodeCredential {
                 mutation_request_id,
@@ -568,15 +596,15 @@ pub enum ApplicationResponse {
     SessionCatalogSubscriptionStarted {
         cursor: SessionCatalogEventCursor,
     },
-    OpenCodeModelsListed {
-        service: crate::OpenCodeService,
-        models: Vec<crate::OpenCodeModelSummary>,
+    ModelsListed {
+        service: crate::ModelService,
+        models: Vec<crate::ModelSummary>,
     },
-    DefaultOpenCodeModel {
-        selection: Option<crate::OpenCodeModelSelection>,
+    DefaultModel {
+        selection: Option<crate::ModelSelection>,
     },
-    DefaultOpenCodeModelUpdated {
-        selection: crate::OpenCodeModelSelection,
+    DefaultModelUpdated {
+        selection: crate::ModelSelection,
     },
     ApplicationSettings {
         settings: crate::ApplicationSettings,
@@ -591,6 +619,13 @@ pub enum ApplicationResponse {
     },
     SessionContextFound {
         context: SessionContextStatus,
+    },
+    OpenAiCredentialStatus {
+        credential: crate::OpenAiCredentialStatus,
+    },
+    OpenAiLoginStarted {
+        attempt_id: MutationRequestId,
+        url: crate::OpenAiAuthorizationUrl,
     },
     OpenCodeCredentialStatus {
         credential: crate::OpenCodeCredentialStatus,
@@ -666,6 +701,11 @@ pub enum ApplicationEvent {
         command_id: crate::LocalCommandId,
         active: bool,
     },
+    SessionNativeResponseDiagnostic {
+        session_id: SessionId,
+        run_id: crate::RunId,
+        reason: crate::NativeResponseFailure,
+    },
     SessionAssistantDelta {
         session_id: SessionId,
         run_id: crate::RunId,
@@ -685,7 +725,8 @@ impl ApplicationEvent {
             Self::SessionTranscriptEntryCommitted { .. }
             | Self::SessionRunChanged { .. }
             | Self::SessionLocalCommandChanged { .. }
-            | Self::SessionAssistantDelta { .. } => None,
+            | Self::SessionAssistantDelta { .. }
+            | Self::SessionNativeResponseDiagnostic { .. } => None,
         }
     }
 
@@ -698,7 +739,8 @@ impl ApplicationEvent {
             Self::SessionCreated { .. }
             | Self::SessionChanged { .. }
             | Self::SessionRemoved { .. }
-            | Self::SessionAssistantDelta { .. } => None,
+            | Self::SessionAssistantDelta { .. }
+            | Self::SessionNativeResponseDiagnostic { .. } => None,
         }
     }
 }
@@ -748,6 +790,16 @@ impl fmt::Debug for ApplicationEvent {
                 .field("command_id", command_id)
                 .field("active", active)
                 .finish(),
+            Self::SessionNativeResponseDiagnostic {
+                session_id,
+                run_id,
+                reason,
+            } => formatter
+                .debug_struct("SessionNativeResponseDiagnostic")
+                .field("session_id", session_id)
+                .field("run_id", run_id)
+                .field("reason", reason)
+                .finish(),
             Self::SessionAssistantDelta {
                 session_id,
                 run_id,
@@ -784,7 +836,7 @@ pub struct SessionContextStatus {
     pub background_compaction: BackgroundCompactionStatus,
     pub project_context: Option<ProjectContextSummary>,
     pub session_id: SessionId,
-    pub service: crate::OpenCodeService,
+    pub service: crate::ModelService,
     pub model_id: String,
     pub context_policy_version: u16,
     pub estimated_input_tokens: u32,
@@ -811,7 +863,7 @@ pub struct BackgroundCompactionStatus {
 #[serde(deny_unknown_fields)]
 pub struct BackgroundCompactionJob {
     pub state: BackgroundCompactionState,
-    pub service: crate::OpenCodeService,
+    pub service: crate::ModelService,
     #[serde(deserialize_with = "background_model")]
     pub model_id: String,
     pub source_entry_high_water: u64,
@@ -908,7 +960,14 @@ pub enum ApplicationError {
     },
     WorkingDirectoryUnavailable,
     UnsupportedModel,
+    OpenAiLoginFailed {
+        failure: crate::OpenAiLoginFailure,
+    },
     OpenCodeCredentialNotConfigured,
+    OpenAiCredentialNotConfigured,
+    CredentialReauthenticationRequired,
+    DataUseRestricted,
+    DataUsePolicyChanged,
     CredentialGenerationConflict,
     CredentialMutationNotApplied,
     ResourceLimit {

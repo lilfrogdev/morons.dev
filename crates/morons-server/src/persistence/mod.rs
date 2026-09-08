@@ -1,12 +1,17 @@
 mod backend;
 mod compactions;
+mod credential_types;
 mod credentials;
+pub(crate) mod data_use;
 mod database;
 pub(crate) mod images;
 mod local_commands;
 pub(crate) mod maintenance;
+mod openai;
 mod paths;
 mod run_types;
+mod task_binding;
+pub(crate) use task_binding::TaskModelBinding;
 mod runs;
 mod types;
 mod workspace;
@@ -34,12 +39,16 @@ use self::{
     },
 };
 
+pub use self::data_use::DataUsePolicy;
 pub use self::{
+    credential_types::{
+        CredentialIdentityStatus, CredentialKind, OpenAiCredentialState, OpenAiCredentialStatus,
+    },
     run_types::{
         AcceptedLocalCommand, AcceptedRun, DefaultModelSelection, ImageAttachment,
         ImageAttachmentId, LocalCommandCancellationResult, LocalCommandId, LocalCommandStatus,
         MessageId, Run, RunCancellationResult, RunFailureKind, RunId, RunModelSelection,
-        RunOpenCodeService, RunState, SessionEvent, SessionEventCursor, SessionEventPage,
+        RunService, RunState, SessionEvent, SessionEventCursor, SessionEventPage,
         SessionEventPayload, SubagentModelSetting, ToolCallId, TranscriptCursor, TranscriptEntry,
         TranscriptPage, TranscriptPageDirection, TranscriptWindowPage,
     },
@@ -51,6 +60,7 @@ pub use self::{
     },
 };
 
+pub(crate) use self::openai::PreparedOpenAiCredential;
 pub(crate) use self::types::{ExecutionTargetArch, ExecutionTargetOs};
 
 pub(crate) use self::run_types::{
@@ -70,6 +80,7 @@ pub struct SessionStore {
     sender: Option<mpsc::Sender<WorkerRequest>>,
     worker: Option<thread::JoinHandle<()>>,
     credential_dispatch_lock: Mutex<()>,
+    openai_dispatch_lock: Mutex<()>,
     event_notifications: watch::Sender<u64>,
 }
 
@@ -147,6 +158,7 @@ impl SessionStore {
             sender: Some(sender),
             worker: Some(worker),
             credential_dispatch_lock: Mutex::new(()),
+            openai_dispatch_lock: Mutex::new(()),
             event_notifications,
         })
     }
@@ -672,6 +684,13 @@ impl Drop for SessionStore {
 }
 
 enum WorkerRequest {
+    TaskModelBinding {
+        run_id: RunId,
+        call_id: ToolCallId,
+        response: oneshot::Sender<Result<TaskModelBinding, PersistenceError>>,
+    },
+    DataUse(data_use::Request),
+    OpenAi(openai::OpenAiWorkerRequest),
     Maintenance(maintenance::MaintenanceRequest),
     LocalCommand(local_commands::LocalCommandWorkerRequest),
     CreateSession {
@@ -785,7 +804,16 @@ fn run_worker(
     while let Some(request) = receiver.blocking_recv() {
         let mut force_event_notification = false;
         match request {
+            WorkerRequest::TaskModelBinding {
+                run_id,
+                call_id,
+                response,
+            } => {
+                let _ = response.send(backend.load_task_model_binding(run_id, call_id));
+            }
+            WorkerRequest::DataUse(request) => request.execute(&mut backend),
             WorkerRequest::Maintenance(request) => request.execute(&mut backend),
+            WorkerRequest::OpenAi(request) => request.execute(&mut backend),
             WorkerRequest::LocalCommand(request) => request.execute(&mut backend),
             WorkerRequest::CreateSession {
                 request_id,
@@ -983,7 +1011,7 @@ fn run_worker(
 }
 
 #[cfg(test)]
-mod credential_tests;
+pub(crate) mod credential_tests;
 #[cfg(test)]
 mod local_command_tests;
 #[cfg(test)]

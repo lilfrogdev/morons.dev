@@ -49,7 +49,7 @@ async fn archive_and_delete_drain_background_network_without_touching_selected_f
                     session_id,
                     text: "Continue".to_owned(),
                     attachments: Vec::new(),
-                    service: OpenCodeService::Zen,
+                    service: ModelService::Zen,
                     model_id: "muse-spark-1.2".to_owned(),
                 })
                 .await

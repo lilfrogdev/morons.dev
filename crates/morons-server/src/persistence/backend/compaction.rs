@@ -9,7 +9,7 @@ use super::{
 };
 use crate::persistence::{
     CompactionOperationId, CompactionPlan, ContextCheckpoint, ContextCheckpointId,
-    PersistenceError, PersistenceResourceLimit, RunId, RunOpenCodeService, SessionId,
+    PersistenceError, PersistenceResourceLimit, RunId, RunService, SessionId,
 };
 
 const STATE_PREPARED: i64 = 1;
@@ -189,10 +189,15 @@ impl Backend {
         expected: i64,
         target: i64,
     ) -> Result<(), PersistenceError> {
+        self.ensure_context_integrity()?;
         let now = current_time_milliseconds()?;
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if target == STATE_DISPATCHED {
+            let run = load_required_run(&transaction, run_id)?;
+            super::data_use::admit(&transaction, run.service, &run.model_id)?;
+        }
         let sequence = next_sequence(&transaction)?;
         let changed = transaction.execute(
             "UPDATE compaction_operations
@@ -220,7 +225,7 @@ impl Backend {
         &mut self,
         run_id: RunId,
         operation_id: CompactionOperationId,
-        service: RunOpenCodeService,
+        service: RunService,
         model_id: &str,
         summary: String,
     ) -> Result<ContextCheckpoint, PersistenceError> {

@@ -1,4 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
+use super::response_diagnostic::ResponseStage;
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use serde_json::Value;
 
@@ -60,6 +64,8 @@ pub(super) struct ResponsesDecoder {
     text_deltas: BTreeMap<(u32, u32), DeltaAccumulator>,
     argument_deltas: BTreeMap<u32, DeltaAccumulator>,
     terminal: Option<Result<ProviderOutcome, ProviderError>>,
+    native_items: Option<native::NativeCompletedItems>,
+    stage: Cell<ResponseStage>,
     #[cfg(test)]
     diagnostic_event_type: Option<String>,
     #[cfg(test)]
@@ -85,6 +91,8 @@ impl ResponsesDecoder {
             text_deltas: BTreeMap::new(),
             argument_deltas: BTreeMap::new(),
             terminal: None,
+            native_items: None,
+            stage: Cell::new(ResponseStage::SseFraming),
             #[cfg(test)]
             diagnostic_event_type: None,
             #[cfg(test)]
@@ -92,6 +100,20 @@ impl ResponsesDecoder {
             #[cfg(test)]
             diagnostic_stage: "awaiting the first SSE record",
         }
+    }
+
+    pub(super) fn new_native(
+        expected_model: &'static str,
+        maximum_input_tokens: u32,
+        maximum_output_tokens: u32,
+    ) -> Self {
+        let mut decoder = Self::new(expected_model, maximum_input_tokens, maximum_output_tokens);
+        decoder.native_items = Some(native::NativeCompletedItems::default());
+        decoder
+    }
+
+    pub(super) fn failure_stage(&self) -> ResponseStage {
+        self.stage.get()
     }
 
     #[cfg(test)]
@@ -104,6 +126,7 @@ impl ResponsesDecoder {
     }
 
     pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
+        self.stage.set(ResponseStage::SseFraming);
         let records = self.sse.push(chunk)?;
         let mut events = Vec::new();
         for record in records {
@@ -136,6 +159,7 @@ impl ResponsesDecoder {
         &mut self,
         record: SseRecord,
     ) -> Result<Option<ProviderStreamEvent>, ProviderError> {
+        self.stage.set(ResponseStage::SseFraming);
         if record.event.as_deref() == Some("ping") {
             #[cfg(test)]
             {
@@ -145,6 +169,7 @@ impl ResponsesDecoder {
             validate_ping_record(&record.data)?;
             return Ok(None);
         }
+        self.stage.set(ResponseStage::Lifecycle);
         if record.data == b"[DONE]" {
             #[cfg(test)]
             {
@@ -169,17 +194,32 @@ impl ResponsesDecoder {
         {
             self.diagnostic_stage = "decoding event JSON";
         }
+        self.stage.set(ResponseStage::Json);
         let value =
             parse_strict_value(&record.data).map_err(|_| ProviderError::MalformedResponse)?;
         #[cfg(test)]
         {
             self.diagnostic_stage = "validating event structure";
         }
+        self.stage.set(ResponseStage::EventBounds);
         let mut event_nodes = 0;
         validate_event_value(&value, 0, &mut event_nodes)?;
+        self.stage.set(
+            if value
+                .get("sequence_number")
+                .and_then(Value::as_u64)
+                .is_none()
+            {
+                ResponseStage::SequenceField
+            } else {
+                ResponseStage::EventEnvelope
+            },
+        );
         let envelope: EventEnvelope =
             serde_json::from_value(value.clone()).map_err(|_| ProviderError::MalformedResponse)?;
+        self.stage.set(ResponseStage::EventKind);
         validate_event_type(&envelope.event_type)?;
+        self.stage.set(ResponseStage::EventEnvelope);
         #[cfg(test)]
         {
             self.diagnostic_event_type = Some(envelope.event_type.clone());
@@ -193,6 +233,7 @@ impl ResponsesDecoder {
         {
             return Err(ProviderError::MalformedResponse);
         }
+        self.stage.set(ResponseStage::Sequence);
         if envelope.sequence_number != self.expected_sequence {
             return Err(ProviderError::MalformedResponse);
         }
@@ -201,6 +242,7 @@ impl ResponsesDecoder {
             .checked_add(1)
             .ok_or(ProviderError::ResponseLimitExceeded)?;
 
+        self.stage.set(ResponseStage::Lifecycle);
         match envelope.event_type.as_str() {
             "response.created" => {
                 if self.state != StreamState::AwaitingCreated {
@@ -233,6 +275,7 @@ impl ResponsesDecoder {
                 {
                     self.diagnostic_stage = "validating an output-text delta";
                 }
+                self.stage.set(ResponseStage::TextDelta);
                 let event: TextDeltaEvent =
                     serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
                 if !event.logprobs.is_empty() {
@@ -254,6 +297,7 @@ impl ResponsesDecoder {
                 {
                     self.diagnostic_stage = "validating a refusal delta";
                 }
+                self.stage.set(ResponseStage::RefusalDelta);
                 let event: RefusalDeltaEvent =
                     serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
                 self.record_text_delta(
@@ -272,6 +316,7 @@ impl ResponsesDecoder {
                 {
                     self.diagnostic_stage = "validating a function-arguments delta";
                 }
+                self.stage.set(ResponseStage::ArgumentDelta);
                 let event: FunctionArgumentsDeltaEvent =
                     serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
                 self.record_argument_delta(event.output_index, event.item_id, event.delta)?;
@@ -283,6 +328,7 @@ impl ResponsesDecoder {
                 {
                     self.diagnostic_stage = "decoding the completed response";
                 }
+                self.stage.set(ResponseStage::CompletedEnvelope);
                 let event: CompletedEvent =
                     serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
                 #[cfg(test)]
@@ -318,6 +364,15 @@ impl ResponsesDecoder {
                 self.state = StreamState::Terminal;
                 Ok(None)
             }
+            "response.output_item.done" if self.native_items.is_some() => {
+                self.require_active()?;
+                self.stage.set(ResponseStage::OutputConsistency);
+                self.native_items
+                    .as_mut()
+                    .expect("native mode checked")
+                    .push(value, record.data.len(), event_nodes)?;
+                Ok(None)
+            }
             "response.output_item.added"
             | "response.output_item.done"
             | "response.content_part.added"
@@ -334,7 +389,10 @@ impl ResponsesDecoder {
                 self.require_active()?;
                 Ok(None)
             }
-            _ => Err(ProviderError::MalformedResponse),
+            _ => {
+                self.stage.set(ResponseStage::EventKind);
+                Err(ProviderError::MalformedResponse)
+            }
         }
     }
 
@@ -351,13 +409,16 @@ impl ResponsesDecoder {
         response: &LifecycleResponse,
         allowed_statuses: &[&str],
     ) -> Result<(), ProviderError> {
+        self.stage.set(ResponseStage::ResponseIdentity);
         validate_response_identifier(&response.id, MAX_PROVIDER_IDENTIFIER_BYTES)?;
-        if response.object != "response"
-            || !allowed_statuses.contains(&response.status.as_str())
-            || response
-                .model
-                .as_deref()
-                .is_some_and(|model| model != self.expected_model)
+        if response.object != "response" || !allowed_statuses.contains(&response.status.as_str()) {
+            return Err(ProviderError::MalformedResponse);
+        }
+        self.stage.set(ResponseStage::ResponseModel);
+        if response
+            .model
+            .as_deref()
+            .is_some_and(|model| model != self.expected_model)
         {
             return Err(ProviderError::MalformedResponse);
         }
@@ -370,6 +431,7 @@ impl ResponsesDecoder {
         allowed_statuses: &[&str],
     ) -> Result<(), ProviderError> {
         self.validate_lifecycle_response(response, allowed_statuses)?;
+        self.stage.set(ResponseStage::ResponseIdentity);
         if self.response_id.as_deref() != Some(response.id.as_str()) {
             return Err(ProviderError::MalformedResponse);
         }
@@ -392,6 +454,7 @@ impl ResponsesDecoder {
         {
             return Err(ProviderError::ResponseLimitExceeded);
         }
+        self.require_open_item(output_index)?;
         let accumulator = self
             .text_deltas
             .entry((output_index, content_index))
@@ -427,6 +490,7 @@ impl ResponsesDecoder {
         if delta.len() > MAX_DELTA_BYTES || output_index as usize >= MAX_OUTPUT_ITEMS {
             return Err(ProviderError::ResponseLimitExceeded);
         }
+        self.require_open_item(output_index)?;
         let accumulator =
             self.argument_deltas
                 .entry(output_index)
@@ -446,6 +510,17 @@ impl ResponsesDecoder {
         Ok(())
     }
 
+    fn require_open_item(&self, index: u32) -> Result<(), ProviderError> {
+        if self
+            .native_items
+            .as_ref()
+            .is_some_and(|items| items.contains(index))
+        {
+            return Err(ProviderError::MalformedResponse);
+        }
+        Ok(())
+    }
+
     fn parse_completed(
         &mut self,
         response: CompletedResponse,
@@ -454,12 +529,21 @@ impl ResponsesDecoder {
         {
             self.diagnostic_stage = "validating completed-response identity";
         }
+        self.stage.set(ResponseStage::CompletedIdentity);
         validate_response_identifier(&response.id, MAX_PROVIDER_IDENTIFIER_BYTES)?;
+        self.stage.set(ResponseStage::ResponseModel);
+        if response.model != self.expected_model {
+            return Err(ProviderError::MalformedResponse);
+        }
+        self.stage.set(ResponseStage::CompletedIdentity);
         if self.response_id.as_deref() != Some(response.id.as_str())
             || response.object != "response"
-            || response.model != self.expected_model
             || response.status != "completed"
-            || response.output.is_empty()
+            || (response.output.is_empty()
+                && self
+                    .native_items
+                    .as_ref()
+                    .is_none_or(|items| items.is_empty()))
             || response.output.len() > MAX_OUTPUT_ITEMS
         {
             return Err(ProviderError::MalformedResponse);
@@ -468,16 +552,50 @@ impl ResponsesDecoder {
         {
             self.diagnostic_stage = "validating completed-response usage";
         }
+        self.stage.set(ResponseStage::Usage);
         let usage = validate_usage(
-            response.usage.ok_or(ProviderError::MalformedResponse)?,
+            serde_json::from_value(response.usage.ok_or(ProviderError::MalformedResponse)?)
+                .map_err(|_| ProviderError::MalformedResponse)?,
             self.maximum_input_tokens,
             self.maximum_output_tokens,
         )?;
-        let mut output = Vec::with_capacity(response.output.len());
+        self.stage.set(ResponseStage::OutputConsistency);
+        let items = self
+            .native_items
+            .take()
+            .map(native::NativeCompletedItems::finish)
+            .transpose()?
+            .flatten();
+        let output = if let Some(items) = items {
+            let output = self.parse_output(items)?;
+            if !response.output.is_empty() {
+                let terminal = self.parse_output(response.output)?;
+                self.stage.set(ResponseStage::OutputConsistency);
+                if terminal != output {
+                    return Err(ProviderError::MalformedResponse);
+                }
+            }
+            output
+        } else {
+            self.parse_output(response.output)?
+        };
+        Ok(ProviderOutcome {
+            provider_response_id: response.id,
+            output,
+            usage,
+        })
+    }
+
+    fn parse_output(
+        &mut self,
+        items: Vec<Value>,
+    ) -> Result<Vec<ProviderOutputItem>, ProviderError> {
+        let mut output = Vec::with_capacity(items.len());
         let mut item_ids = BTreeSet::new();
         let mut call_ids = BTreeSet::new();
         let mut total_text_bytes = 0_usize;
-        for (output_index, item) in response.output.into_iter().enumerate() {
+        for (output_index, item) in items.into_iter().enumerate() {
+            self.stage.set(ResponseStage::OutputConsistency);
             let item_type = item
                 .get("type")
                 .and_then(Value::as_str)
@@ -488,6 +606,7 @@ impl ResponsesDecoder {
                     {
                         self.diagnostic_stage = "validating a completed assistant message";
                     }
+                    self.stage.set(ResponseStage::AssistantMessage);
                     let message: WireOutputMessage = serde_json::from_value(item)
                         .map_err(|_| ProviderError::MalformedResponse)?;
                     validate_response_identifier(&message.id, MAX_PROVIDER_IDENTIFIER_BYTES)?;
@@ -534,6 +653,7 @@ impl ResponsesDecoder {
                     {
                         self.diagnostic_stage = "validating a completed reasoning item";
                     }
+                    self.stage.set(ResponseStage::Reasoning);
                     let reasoning: WireReasoning = serde_json::from_value(item)
                         .map_err(|_| ProviderError::MalformedResponse)?;
                     validate_response_identifier(&reasoning.id, MAX_PROVIDER_IDENTIFIER_BYTES)?;
@@ -574,6 +694,7 @@ impl ResponsesDecoder {
                     {
                         self.diagnostic_stage = "validating a completed function call";
                     }
+                    self.stage.set(ResponseStage::FunctionCall);
                     let tool_call: WireFunctionCall = serde_json::from_value(item)
                         .map_err(|_| ProviderError::MalformedResponse)?;
                     validate_response_identifier(&tool_call.call_id, MAX_PROVIDER_CALL_ID_BYTES)?;
@@ -617,14 +738,11 @@ impl ResponsesDecoder {
                 _ => return Err(ProviderError::MalformedResponse),
             }
         }
+        self.stage.set(ResponseStage::OutputConsistency);
         if !self.text_deltas.is_empty() || !self.argument_deltas.is_empty() {
             return Err(ProviderError::MalformedResponse);
         }
-        Ok(ProviderOutcome {
-            provider_response_id: response.id,
-            output,
-            usage,
-        })
+        Ok(output)
     }
 
     fn validate_terminal_text(
@@ -686,6 +804,11 @@ fn validate_ping_record(data: &[u8]) -> Result<(), ProviderError> {
     Ok(())
 }
 
+#[cfg(test)]
+mod diagnostic_tests;
+mod native;
+#[cfg(test)]
+pub(super) mod native_tests;
 #[cfg(test)]
 mod tests;
 mod validation;

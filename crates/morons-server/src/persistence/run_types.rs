@@ -200,31 +200,46 @@ impl fmt::Debug for ToolCallId {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunOpenCodeService {
+pub enum RunService {
     Zen,
     Go,
+    OpenAiChatGpt,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefaultModelSelection {
-    pub service: RunOpenCodeService,
+    pub service: RunService,
     pub model_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubagentModelSetting {
     InheritParent {},
-    OpenCode {
-        service: RunOpenCodeService,
+    Explicit {
+        service: RunService,
         model_id: String,
     },
 }
 
-impl RunOpenCodeService {
+impl RunService {
+    pub(crate) const fn model_service(self) -> crate::provider::ModelService {
+        match self {
+            Self::Zen => crate::provider::ModelService::Zen,
+            Self::Go => crate::provider::ModelService::Go,
+            Self::OpenAiChatGpt => crate::provider::ModelService::OpenAiChatGpt,
+        }
+    }
+    pub(crate) const fn credential_kind(self) -> super::CredentialKind {
+        match self {
+            Self::Zen | Self::Go => super::CredentialKind::OpenCode,
+            Self::OpenAiChatGpt => super::CredentialKind::OpenAiChatGpt,
+        }
+    }
     pub(super) const fn to_record(self) -> i64 {
         match self {
             Self::Zen => 1,
             Self::Go => 2,
+            Self::OpenAiChatGpt => 3,
         }
     }
 
@@ -232,6 +247,7 @@ impl RunOpenCodeService {
         match value {
             1 => Ok(Self::Zen),
             2 => Ok(Self::Go),
+            3 => Ok(Self::OpenAiChatGpt),
             _ => Err(rusqlite::Error::InvalidColumnType(
                 0,
                 "open_code_service".to_owned(),
@@ -295,7 +311,9 @@ impl RunState {
 pub enum RunFailureKind {
     CredentialChanged,
     CredentialNotConfigured,
+    CredentialReauthenticationRequired,
     AuthenticationOrEntitlement,
+    DataUseRestricted,
     RateLimited,
     ProviderUnavailable,
     ProviderRejected,
@@ -320,6 +338,8 @@ impl RunFailureKind {
             Self::ResourceLimit => 9,
             Self::Internal => 10,
             Self::ToolExecution => 11,
+            Self::DataUseRestricted => 12,
+            Self::CredentialReauthenticationRequired => 13,
         }
     }
 
@@ -336,6 +356,8 @@ impl RunFailureKind {
             9 => Ok(Self::ResourceLimit),
             10 => Ok(Self::Internal),
             11 => Ok(Self::ToolExecution),
+            12 => Ok(Self::DataUseRestricted),
+            13 => Ok(Self::CredentialReauthenticationRequired),
             _ => Err(rusqlite::Error::InvalidColumnType(
                 0,
                 "run_failure_kind".to_owned(),
@@ -350,7 +372,7 @@ pub struct Run {
     pub id: RunId,
     pub session_id: SessionId,
     pub user_message_id: MessageId,
-    pub service: RunOpenCodeService,
+    pub service: RunService,
     pub model_id: String,
     pub protocol_revision: u16,
     pub credential_generation: u64,
@@ -459,7 +481,7 @@ pub enum TranscriptEntry {
         entry_sequence: u64,
         id: MessageId,
         run_id: RunId,
-        service: RunOpenCodeService,
+        service: RunService,
         model_id: String,
         text: String,
         refusal: bool,
@@ -716,7 +738,7 @@ pub(crate) struct RunInputContext {
 
 #[derive(Clone, Debug)]
 pub struct RunModelSelection {
-    pub service: RunOpenCodeService,
+    pub service: RunService,
     pub model_id: String,
     pub protocol_revision: u16,
     pub maximum_input_tokens: u32,

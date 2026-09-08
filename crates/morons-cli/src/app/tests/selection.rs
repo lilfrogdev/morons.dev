@@ -17,18 +17,18 @@ fn model_search_ranks_direct_identifier_matches_before_loose_subsequences() {
 fn slash_model_search_selects_and_preserves_one_global_default() {
     let (session, run) = fixture_session_and_run();
     let mut luna = fixture_model();
-    luna.service = OpenCodeService::Go;
+    luna.service = ModelService::Go;
     luna.id = "gpt-5.6-luna".to_owned();
     luna.display_name = "GPT 5.6 Luna".to_owned();
     let mut grok = fixture_model();
-    grok.service = OpenCodeService::Go;
+    grok.service = ModelService::Go;
 
     let mut app = AppState::new("test-server");
-    app.install_default_model(Some(OpenCodeModelSelection {
-        service: OpenCodeService::Go,
+    app.install_default_model(Some(ModelSelection {
+        service: ModelService::Go,
         model_id: "grok-4.6".to_owned(),
     }));
-    app.replace_models(OpenCodeService::Go, vec![luna.clone(), grok])
+    app.replace_models(ModelService::Go, vec![luna.clone(), grok])
         .expect("Go models should apply");
     assert_eq!(
         app.selected_model().map(|model| model.model.id.as_str()),
@@ -120,12 +120,12 @@ fn slash_model_search_selects_and_preserves_one_global_default() {
     assert!(matches!(
         action,
         AppAction::SetDefaultModel {
-            service: OpenCodeService::Go,
+            service: ModelService::Go,
             ref model_id,
         } if model_id == "gpt-5.6-luna"
     ));
-    app.install_default_model(Some(OpenCodeModelSelection {
-        service: OpenCodeService::Go,
+    app.install_default_model(Some(ModelSelection {
+        service: ModelService::Go,
         model_id: luna.id,
     }));
     app.close_session();
@@ -141,7 +141,7 @@ fn slash_model_search_selects_and_preserves_one_global_default() {
 fn slash_settings_selects_an_independent_reviewed_subagent_model_or_parent_inheritance() {
     let (session, run) = fixture_session_and_run();
     let mut glm = fixture_model();
-    glm.service = OpenCodeService::Go;
+    glm.service = ModelService::Go;
     glm.id = "glm-5.3-flash".to_owned();
     glm.display_name = "GLM-5.3-Flash".to_owned();
     glm.protocol = ProviderProtocol::ChatCompletions;
@@ -150,9 +150,10 @@ fn slash_settings_selects_an_independent_reviewed_subagent_model_or_parent_inher
     let mut app = AppState::new("test-server");
     app.information_dialog = None;
     app.install_settings(ApplicationSettings {
+        data_use: Default::default(),
         subagent_model: SubagentModelSetting::InheritParent {},
     });
-    app.replace_models(OpenCodeService::Go, vec![glm])
+    app.replace_models(ModelService::Go, vec![glm])
         .expect("Go models should apply");
     app.open_session(session, Vec::new(), vec![run], None, None)
         .expect("session should open");
@@ -202,15 +203,16 @@ fn slash_settings_selects_an_independent_reviewed_subagent_model_or_parent_inher
     assert!(matches!(
         selected,
         AppAction::SetSubagentModel {
-            setting: SubagentModelSetting::OpenCode {
-                service: OpenCodeService::Go,
+            setting: SubagentModelSetting::Explicit {
+                service: ModelService::Go,
                 ref model_id,
             },
         } if model_id == "glm-5.3-flash"
     ));
     app.install_settings(ApplicationSettings {
-        subagent_model: SubagentModelSetting::OpenCode {
-            service: OpenCodeService::Go,
+        data_use: Default::default(),
+        subagent_model: SubagentModelSetting::Explicit {
+            service: ModelService::Go,
             model_id: "glm-5.3-flash".to_owned(),
         },
     });
@@ -235,15 +237,15 @@ fn slash_settings_selects_an_independent_reviewed_subagent_model_or_parent_inher
 #[test]
 fn unavailable_saved_default_falls_back_only_to_an_available_reviewed_model() {
     let mut available = fixture_model();
-    available.service = OpenCodeService::Go;
+    available.service = ModelService::Go;
     available.id = "gpt-5.6-luna".to_owned();
     available.display_name = "GPT 5.6 Luna".to_owned();
     let mut app = AppState::new("test-server");
-    app.install_default_model(Some(OpenCodeModelSelection {
-        service: OpenCodeService::Go,
+    app.install_default_model(Some(ModelSelection {
+        service: ModelService::Go,
         model_id: "grok-4.6".to_owned(),
     }));
-    app.replace_models(OpenCodeService::Go, vec![available.clone()])
+    app.replace_models(ModelService::Go, vec![available.clone()])
         .expect("Go models should apply");
     assert!(app.default_model_is_unavailable());
     assert_eq!(
@@ -256,25 +258,25 @@ fn unavailable_saved_default_falls_back_only_to_an_available_reviewed_model() {
 fn selected_model_is_always_an_available_reviewed_pair() {
     let mut unavailable = fixture_model();
     unavailable.available = false;
-    let available = OpenCodeModelSummary {
-        service: OpenCodeService::Go,
+    let available = ModelSummary {
+        service: ModelService::Go,
         id: "gpt-5.6-luna".to_owned(),
         display_name: "GPT 5.6 Luna".to_owned(),
         available: true,
         ..fixture_model()
     };
     let mut app = AppState::new("test-server");
-    app.replace_models(OpenCodeService::Zen, vec![unavailable])
+    app.replace_models(ModelService::Zen, vec![unavailable])
         .expect("Zen models should apply");
     assert!(app.selected_model().is_none());
-    app.replace_models(OpenCodeService::Go, vec![available.clone()])
+    app.replace_models(ModelService::Go, vec![available.clone()])
         .expect("Go models should apply");
     let selected = app
         .selected_model()
         .expect("available model should be selected");
-    assert_eq!(selected.model.service, OpenCodeService::Go);
+    assert_eq!(selected.model.service, ModelService::Go);
     assert_eq!(selected.model.id, available.id);
-    app.replace_models(OpenCodeService::Go, Vec::new())
+    app.replace_models(ModelService::Go, Vec::new())
         .expect("a failed catalog can remove stale availability");
     assert!(app.selected_model().is_none());
 }

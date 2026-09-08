@@ -278,7 +278,7 @@ async fn slow_session_event_subscriber_is_disconnected() {
             session.id,
             "x".repeat(64 * 1024),
             RunModelSelection {
-                service: RunOpenCodeService::Zen,
+                service: RunService::Zen,
                 model_id: "muse-spark-1.2".to_owned(),
                 protocol_revision: 1,
                 maximum_input_tokens: 96_000,

@@ -28,6 +28,7 @@ fn seed(backend: &mut Backend, run: RunId, source: u64) -> Result<[u8; 16], Pers
         [&run.session_id.as_bytes()[..]],
         |row| nonnegative_integer_from_row(row, 0),
     )?;
+    let data_use_sequence = backend.data_use_policy()?.sequence;
     let transaction = backend
         .connection
         .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -42,6 +43,7 @@ fn seed(backend: &mut Backend, run: RunId, source: u64) -> Result<[u8; 16], Pers
         instruction_digest,
         binding_digest: [0; 32],
         policy: 1,
+        data_use_sequence,
         state: State::Prepared,
         sequence: next_sequence(&transaction)?,
         time: current_time_milliseconds()?,
@@ -50,10 +52,10 @@ fn seed(backend: &mut Backend, run: RunId, source: u64) -> Result<[u8; 16], Pers
     transaction.execute(
         "INSERT INTO compaction_maintenance_jobs (job_id, session_id, trigger_run_id, parent_checkpoint_id,
             source_entry_high_water, prepared_entry_high_water, source_digest, instruction_digest, binding_digest,
-            maintenance_policy_version, state, prepared_sequence, prepared_at_milliseconds)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, 1, 1, ?9, ?10)",
+            maintenance_policy_version, state, prepared_sequence, prepared_at_milliseconds, data_use_sequence)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, 1, 1, ?9, ?10, ?11)",
         params![&id[..], &job.session.as_bytes()[..], &job.run.id.as_bytes()[..], sequence_to_sql(source)?, sequence_to_sql(through)?,
-            &source_digest[..], &instruction_digest[..], &job.binding_digest[..], sequence_to_sql(job.sequence)?, time_to_sql(job.time)?],
+            &source_digest[..], &instruction_digest[..], &job.binding_digest[..], sequence_to_sql(job.sequence)?, time_to_sql(job.time)?, sequence_to_sql(data_use_sequence)?],
     )?;
     transaction.commit()?;
     backend.validate_maintenance_records()?;
@@ -113,6 +115,73 @@ async fn restart_cancels_preparation_marks_dispatch_uncertain_and_preserves_comm
             assert_eq!(effects, 0);
         }
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn data_use_changes_block_stale_maintenance_without_fabricating_stopped_execution() {
+    for state in [State::Prepared, State::Dispatched, State::Ready] {
+        let (_root, _selected, mut backend, _session, run) = populated().await;
+        backend.configure_maintenance(true).unwrap();
+        let id = seed(&mut backend, run, 3).unwrap();
+        if state != State::Prepared {
+            advance(&mut backend, id, State::Dispatched).unwrap();
+        }
+        if state == State::Ready {
+            advance(&mut backend, id, State::Ready).unwrap();
+        }
+        backend
+            .set_data_use_policy(
+                MutationRequestId::from_bytes([0xe7; 16]),
+                0,
+                Default::default(),
+            )
+            .unwrap();
+        assert_eq!(Job::load(&backend.connection, id).unwrap().state, state);
+        if state == State::Prepared {
+            assert!(!backend.dispatch_maintenance(id).unwrap());
+            assert_eq!(
+                Job::load(&backend.connection, id).unwrap().state,
+                State::Cancelled
+            );
+        } else {
+            if state == State::Dispatched {
+                advance(&mut backend, id, State::Ready).unwrap();
+            }
+            backend.recover_maintenance_jobs().unwrap();
+            assert_eq!(
+                Job::load(&backend.connection, id).unwrap().state,
+                State::Discarded
+            );
+        }
+        backend.validate_maintenance_records().unwrap();
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn maintenance_data_use_binding_rejects_a_different_policy_sequence() {
+    let (_root, _selected, mut backend, _session, run) = populated().await;
+    let policy = backend
+        .set_data_use_policy(
+            MutationRequestId::from_bytes([0xe7; 16]),
+            0,
+            Default::default(),
+        )
+        .unwrap();
+    let id = seed(&mut backend, run, 3).unwrap();
+    assert_eq!(
+        Job::load(&backend.connection, id)
+            .unwrap()
+            .data_use_sequence,
+        policy.sequence
+    );
+    backend
+        .connection
+        .execute(
+            "UPDATE compaction_maintenance_jobs SET data_use_sequence = 0 WHERE job_id = ?1",
+            [&id[..]],
+        )
+        .unwrap();
+    assert!(backend.validate_maintenance_records().is_err());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -345,7 +414,7 @@ async fn foreground_cannot_repeat_maintenance_prefix_without_explicit_manual_inp
                 session,
                 text.to_owned(),
                 RunModelSelection {
-                    service: RunOpenCodeService::Zen,
+                    service: RunService::Zen,
                     model_id: "muse-spark-1.2".to_owned(),
                     protocol_revision: 1,
                     maximum_input_tokens: 96_000,
@@ -381,6 +450,85 @@ async fn foreground_cannot_repeat_maintenance_prefix_without_explicit_manual_inp
     );
     assert!(backend.compaction_prefix_was_attempted(session, 2).unwrap());
     assert!(!backend.compaction_prefix_was_attempted(session, 3).unwrap());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn data_use_policy_blocks_prepared_foreground_compaction_without_a_checkpoint() {
+    let (root, _selected, backend, session, _run) = populated().await;
+    drop(backend);
+    let store = SessionStore::open_for_test(root.path()).unwrap();
+    let accepted = store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0xe4; 16]),
+            session,
+            "/compact".into(),
+            RunModelSelection {
+                service: RunService::Go,
+                model_id: "gpt-5.6-luna".into(),
+                protocol_revision: 1,
+                maximum_input_tokens: 96_000,
+                maximum_output_tokens: 32_000,
+                supports_tool_calls: true,
+                supports_image_input: true,
+            },
+        )
+        .await
+        .unwrap();
+    store.activate_run(accepted.run.id).await.unwrap();
+    let context = store.load_run_context(accepted.run.id).await.unwrap();
+    let plan = context.compaction_plan.unwrap();
+    let operation = store
+        .prepare_auto_compaction(accepted.run.id, &plan)
+        .await
+        .unwrap();
+    store
+        .set_data_use_policy(
+            MutationRequestId::from_bytes([0xe5; 16]),
+            0,
+            crate::provider::DataUseRestrictions {
+                block_training_use: false,
+                require_zero_retention: true,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .mark_compaction_dispatched(accepted.run.id, operation)
+            .await,
+        Err(PersistenceError::DataUseRestricted)
+    ));
+    store
+        .fail_compaction(accepted.run.id, operation, false)
+        .await
+        .unwrap();
+    store
+        .finish_run_failure(
+            accepted.run.id,
+            None,
+            crate::persistence::RunFailureKind::DataUseRestricted,
+            crate::persistence::ProviderOperationFailureState::Failed,
+        )
+        .await
+        .unwrap();
+    drop(store);
+    let backend = Backend::open(root.path()).unwrap();
+    assert_eq!(
+        backend
+            .connection
+            .query_row("SELECT state FROM compaction_operations", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        4
+    );
+    assert_eq!(
+        backend
+            .connection
+            .query_row("SELECT COUNT(*) FROM context_checkpoints", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -476,6 +624,7 @@ async fn maintenance_sequences_cannot_reuse_unrelated_session_mutation_facts() {
 #[tokio::test(flavor = "current_thread")]
 async fn schema_26_migrates_without_scheduling_historical_sessions() {
     let (root, _selected, backend, session, _run) = populated().await;
+    crate::persistence::data_use::tests::restore_schema_28(&backend.connection);
     backend
         .connection
         .execute_batch(
@@ -489,7 +638,7 @@ async fn schema_26_migrates_without_scheduling_historical_sessions() {
         .connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 27);
+    assert_eq!(version, 30);
     let jobs: i64 = backend
         .connection
         .query_row(

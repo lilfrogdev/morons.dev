@@ -344,6 +344,7 @@ impl Backend {
         call_id: ToolCallId,
         operation_id: ToolOperationId,
     ) -> Result<(), PersistenceError> {
+        let binding = self.task_binding_candidate(run_id, call_id, operation_id)?;
         let fact_id = random_identifier()?;
         let audit_id = random_identifier()?;
         let now = current_time_milliseconds()?;
@@ -355,6 +356,9 @@ impl Backend {
         require_tool_fact(&transaction, call_id, TOOL_FACT_PREPARED)?;
         ensure_tool_not_terminal(&transaction, call_id)?;
         let sequence = next_sequence(&transaction)?;
+        if let Some(binding) = binding {
+            super::task_binding::insert(&transaction, binding, sequence)?;
+        }
         let audit_sequence = next_sequence(&transaction)?;
         transaction.execute(
             "INSERT INTO tool_operation_facts (

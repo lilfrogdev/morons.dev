@@ -282,14 +282,15 @@ pub enum ProviderProtocol {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OpenCodeService {
+pub enum ModelService {
     Zen,
     Go,
+    OpenAiChatGpt,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OpenCodeModelTrainingUse {
+pub enum ModelTrainingUse {
     NotUsed,
     MayUsePromptsAndCompletions,
     NotDocumented,
@@ -297,7 +298,7 @@ pub enum OpenCodeModelTrainingUse {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OpenCodeModelRetention {
+pub enum ModelRetention {
     None,
     UpToThirtyDays,
     NotZeroDataRetention,
@@ -306,7 +307,7 @@ pub enum OpenCodeModelRetention {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct OpenCodeModelCapabilities {
+pub struct ModelCapabilities {
     pub text_input: bool,
     pub image_input: bool,
     pub text_output: bool,
@@ -317,8 +318,8 @@ pub struct OpenCodeModelCapabilities {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct OpenCodeModelSelection {
-    pub service: OpenCodeService,
+pub struct ModelSelection {
+    pub service: ModelService,
     pub model_id: String,
 }
 
@@ -326,8 +327,8 @@ pub struct OpenCodeModelSelection {
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SubagentModelSetting {
     InheritParent {},
-    OpenCode {
-        service: OpenCodeService,
+    Explicit {
+        service: ModelService,
         model_id: String,
     },
 }
@@ -336,22 +337,32 @@ pub enum SubagentModelSetting {
 #[serde(deny_unknown_fields)]
 pub struct ApplicationSettings {
     pub subagent_model: SubagentModelSetting,
+    pub data_use: DataUsePolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataUsePolicy {
+    pub sequence: u64,
+    pub block_training_use: bool,
+    pub require_zero_retention: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct OpenCodeModelSummary {
-    pub service: OpenCodeService,
+pub struct ModelSummary {
+    pub service: ModelService,
     pub id: String,
     pub display_name: String,
     pub available: bool,
     pub protocol: ProviderProtocol,
     pub protocol_revision: u16,
-    pub capabilities: OpenCodeModelCapabilities,
+    pub capabilities: ModelCapabilities,
     pub maximum_input_tokens: u32,
     pub maximum_output_tokens: u32,
-    pub training_use: OpenCodeModelTrainingUse,
-    pub retention: OpenCodeModelRetention,
+    pub training_use: ModelTrainingUse,
+    pub retention: ModelRetention,
+    pub output_limit_is_local: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -381,7 +392,9 @@ impl RunState {
 pub enum RunFailureKind {
     CredentialChanged,
     CredentialNotConfigured,
+    CredentialReauthenticationRequired,
     AuthenticationOrEntitlement,
+    DataUseRestricted,
     RateLimited,
     ProviderUnavailable,
     ProviderRejected,
@@ -398,7 +411,7 @@ pub struct RunSummary {
     pub id: RunId,
     pub session_id: SessionId,
     pub user_message_id: MessageId,
-    pub service: OpenCodeService,
+    pub service: ModelService,
     pub model_id: String,
     pub protocol_revision: u16,
     pub credential_generation: u64,
@@ -494,7 +507,7 @@ pub enum TranscriptEntry {
     AssistantMessage {
         id: MessageId,
         run_id: RunId,
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
         text: String,
         refusal: bool,

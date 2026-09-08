@@ -1,5 +1,6 @@
-mod conversions;
+pub(crate) mod conversions;
 pub(crate) mod events;
+mod login;
 
 use std::{
     error::Error,
@@ -32,7 +33,7 @@ use crate::{
     },
     provider::{
         OpenCodeModelAvailability, OpenCodeProvider, OpenCodeService, ProviderError,
-        find_open_code_model,
+        find_model_profile,
     },
     run_supervisor::RunSupervisor,
     skills::SkillDiscovery,
@@ -44,6 +45,9 @@ const SESSION_REPLAY_PAGE_SIZE: u16 = 8;
 pub struct ServerApplication {
     sessions: Arc<SessionStore>,
     open_code: Arc<OpenCodeProvider>,
+    openai_credentials: Arc<crate::provider::openai_auth::OpenAiCredentialProvider>,
+    login_supervisor: Arc<crate::login_supervisor::LoginSupervisor>,
+    openai_codex: Arc<crate::provider::openai_codex::OpenAiCodexProvider>,
     run_supervisor: Arc<RunSupervisor>,
     command_supervisor: Arc<CommandSupervisor>,
     session_event_hub: Arc<SessionEventHub>,
@@ -78,6 +82,7 @@ pub(crate) enum ApplicationOutcome {
     Response(ApplicationResponse),
     SessionCatalogSubscription(SessionCatalogSubscription),
     SessionSubscription(SessionSubscription),
+    OpenAiLogin(crate::login_supervisor::LoginConnection),
     StopServerAccepted { current_server_stopping: bool },
 }
 
@@ -106,12 +111,29 @@ impl ServerApplication {
         self.open_code.fetch_catalog(service).await
     }
 
+    pub async fn openai_credential_status(
+        &self,
+    ) -> Result<
+        crate::persistence::OpenAiCredentialStatus,
+        crate::provider::openai_auth::OpenAiCredentialError,
+    > {
+        self.openai_credentials.status().await
+    }
+
+    /// Reviewed metadata only; this does not admit a native model or dispatch inference.
+    pub fn reviewed_chatgpt_models(
+        &self,
+    ) -> &'static [crate::provider::openai_codex::OpenAiCodexModel] {
+        self.openai_codex.models()
+    }
+
     pub fn subscribe_shutdown_requests(&self) -> watch::Receiver<bool> {
         self.shutdown_requests.subscribe()
     }
 
     pub async fn shutdown(&self) {
         self.stopping.store(true, Ordering::Release);
+        self.login_supervisor.shutdown().await;
         self.run_supervisor.shutdown().await;
         self.command_supervisor.shutdown().await;
     }
@@ -121,6 +143,12 @@ impl ServerApplication {
         request: ApplicationRequest,
     ) -> Result<ApplicationOutcome, ApplicationError> {
         match request {
+            request @ (ApplicationRequest::GetOpenAiCredentialStatus
+            | ApplicationRequest::BeginOpenAiLogin { .. }
+            | ApplicationRequest::CancelOpenAiLogin { .. }
+            | ApplicationRequest::RemoveOpenAiCredential { .. }) => {
+                self.execute_openai_auth(request).await
+            }
             ApplicationRequest::CreateSession {
                 mutation_request_id,
                 display_name,
@@ -335,24 +363,35 @@ impl ServerApplication {
                     },
                 ))
             }
-            ApplicationRequest::ListOpenCodeModels { service } => {
-                let availability = self
-                    .open_code_model_availability(to_provider_service(service))
-                    .await
-                    .map_err(|error| {
-                        eprintln!("OpenCode model catalog query failed: {error}");
-                        ApplicationError::ServiceUnavailable
-                    })?;
-                let models = availability
-                    .into_iter()
-                    .map(to_protocol_model_summary)
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or(ApplicationError::Internal)?;
+            ApplicationRequest::ListModels { service } => {
+                let selected = to_provider_service(service);
+                let models = if let Some(service) = selected.open_code() {
+                    self.open_code_model_availability(service)
+                        .await
+                        .map_err(|error| {
+                            eprintln!("OpenCode model catalog query failed: {error}");
+                            ApplicationError::ServiceUnavailable
+                        })?
+                        .into_iter()
+                        .map(|availability| {
+                            to_protocol_model_summary(
+                                (*availability.model).into(),
+                                availability.available,
+                            )
+                        })
+                        .collect()
+                } else {
+                    self.reviewed_chatgpt_models()
+                        .iter()
+                        .filter_map(|model| find_model_profile(selected, model.id))
+                        .map(|model| to_protocol_model_summary(model, true))
+                        .collect()
+                };
                 Ok(ApplicationOutcome::Response(
-                    ApplicationResponse::OpenCodeModelsListed { service, models },
+                    ApplicationResponse::ModelsListed { service, models },
                 ))
             }
-            ApplicationRequest::GetDefaultOpenCodeModel => {
+            ApplicationRequest::GetDefaultModel => {
                 let selection = self
                     .sessions
                     .default_model()
@@ -360,15 +399,15 @@ impl ServerApplication {
                     .map_err(to_application_error)?
                     .map(to_protocol_model_selection);
                 Ok(ApplicationOutcome::Response(
-                    ApplicationResponse::DefaultOpenCodeModel { selection },
+                    ApplicationResponse::DefaultModel { selection },
                 ))
             }
-            ApplicationRequest::SetDefaultOpenCodeModel {
+            ApplicationRequest::SetDefaultModel {
                 mutation_request_id,
                 service,
                 model_id,
             } => {
-                find_open_code_model(to_provider_service(service), &model_id)
+                find_model_profile(to_provider_service(service), &model_id)
                     .ok_or(ApplicationError::UnsupportedModel)?;
                 let selection = self
                     .sessions
@@ -382,8 +421,38 @@ impl ServerApplication {
                     .await
                     .map_err(to_application_error)?;
                 Ok(ApplicationOutcome::Response(
-                    ApplicationResponse::DefaultOpenCodeModelUpdated {
+                    ApplicationResponse::DefaultModelUpdated {
                         selection: to_protocol_model_selection(selection),
+                    },
+                ))
+            }
+            ApplicationRequest::SetDataUsePolicy {
+                mutation_request_id,
+                policy,
+            } => {
+                let policy = self
+                    .sessions
+                    .set_data_use_policy(
+                        to_persistence_mutation_id(mutation_request_id),
+                        policy.sequence,
+                        crate::provider::DataUseRestrictions {
+                            block_training_use: policy.block_training_use,
+                            require_zero_retention: policy.require_zero_retention,
+                        },
+                    )
+                    .await
+                    .map_err(to_application_error)?;
+                let subagent_model = self
+                    .sessions
+                    .subagent_model_setting()
+                    .await
+                    .map_err(to_application_error)?;
+                Ok(ApplicationOutcome::Response(
+                    ApplicationResponse::ApplicationSettingsUpdated {
+                        settings: morons_protocol::ApplicationSettings {
+                            subagent_model: to_protocol_subagent_model_setting(subagent_model),
+                            data_use: to_protocol_data_use(policy),
+                        },
                     },
                 ))
             }
@@ -397,6 +466,12 @@ impl ServerApplication {
                     ApplicationResponse::ApplicationSettings {
                         settings: morons_protocol::ApplicationSettings {
                             subagent_model: to_protocol_subagent_model_setting(subagent_model),
+                            data_use: to_protocol_data_use(
+                                self.sessions
+                                    .data_use_policy()
+                                    .await
+                                    .map_err(to_application_error)?,
+                            ),
                         },
                     },
                 ))
@@ -406,10 +481,10 @@ impl ServerApplication {
                 setting,
             } => {
                 let setting = to_persistence_subagent_model_setting(setting);
-                if let crate::persistence::SubagentModelSetting::OpenCode { service, model_id } =
+                if let crate::persistence::SubagentModelSetting::Explicit { service, model_id } =
                     &setting
                 {
-                    let model = find_open_code_model(
+                    let model = find_model_profile(
                         to_provider_service(to_protocol_service(*service)),
                         model_id,
                     )
@@ -433,6 +508,12 @@ impl ServerApplication {
                     ApplicationResponse::ApplicationSettingsUpdated {
                         settings: morons_protocol::ApplicationSettings {
                             subagent_model: to_protocol_subagent_model_setting(setting),
+                            data_use: to_protocol_data_use(
+                                self.sessions
+                                    .data_use_policy()
+                                    .await
+                                    .map_err(to_application_error)?,
+                            ),
                         },
                     },
                 ))
@@ -470,13 +551,13 @@ impl ServerApplication {
                 service,
                 model_id,
             } => {
-                let model = find_open_code_model(to_provider_service(service), &model_id)
+                let model = find_model_profile(to_provider_service(service), &model_id)
                     .ok_or(ApplicationError::UnsupportedModel)?;
                 let status = self
                     .sessions
                     .session_context_status(
                         to_persistence_session_id(session_id),
-                        to_run_model_selection(model),
+                        to_run_model_selection(&model),
                     )
                     .await
                     .map_err(to_application_error)?;
@@ -601,7 +682,7 @@ impl ServerApplication {
                 }
 
                 let provider_service = to_provider_service(service);
-                let model = find_open_code_model(provider_service, &model_id)
+                let model = find_model_profile(provider_service, &model_id)
                     .ok_or(ApplicationError::UnsupportedModel)?;
                 if !prepared_attachments.is_empty() && !model.capabilities.image_input {
                     return Err(ApplicationError::UnsupportedModel);
@@ -647,7 +728,7 @@ impl ServerApplication {
                         mutation_request_id,
                         session_id,
                         text,
-                        to_run_model_selection(model),
+                        to_run_model_selection(&model),
                         crate::persistence::RunInputContext {
                             skills: skill_context,
                             project,
@@ -833,6 +914,7 @@ impl ServerApplication {
                 let cursor = to_persistence_session_event_cursor(cursor);
                 let notifications = self.sessions.subscribe_event_notifications();
                 let assistant_deltas = self.session_event_hub.subscribe_assistant_deltas();
+                let native_diagnostics = self.session_event_hub.subscribe_native_diagnostics();
                 self.sessions
                     .read_session_events(session_id, cursor, 1)
                     .await
@@ -843,6 +925,8 @@ impl ServerApplication {
                         cursor,
                         notifications,
                         assistant_deltas,
+                        native_diagnostics,
+                        native_protocol_failure: false,
                         active_run: None,
                         terminal_run: None,
                     },
@@ -1094,6 +1178,31 @@ impl ServerApplication {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn from_native_store_for_test(sessions: SessionStore, base: &str) -> Self {
+        Self::from_native_shared_for_test(Arc::new(sessions), base)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_native_shared_for_test(sessions: Arc<SessionStore>, base: &str) -> Self {
+        let providers = crate::provider::dispatch::ModelProviders::for_test(sessions.clone(), base);
+        let events = SessionEventHub::new();
+        let supervisor = RunSupervisor::with_model_providers(
+            sessions.clone(),
+            providers.clone(),
+            events.clone(),
+            crate::tools::WebSearchToolExecutor::for_test("http://127.0.0.1:9/search".into()),
+            crate::tools::IpythonSupervisor::for_test(),
+        );
+        Self::from_supervised_parts(
+            sessions,
+            providers.open_code.clone(),
+            supervisor,
+            events,
+            [0x7f; 16],
+        )
+    }
+
     fn from_shared_parts(
         sessions: Arc<SessionStore>,
         open_code: Arc<OpenCodeProvider>,
@@ -1123,8 +1232,18 @@ impl ServerApplication {
     ) -> Self {
         let command_supervisor = CommandSupervisor::new(Arc::clone(&sessions));
         let shutdown_requests = run_supervisor.shutdown_requests();
+        let providers = run_supervisor.providers();
+        let openai_credentials = providers.credentials.clone();
+        let openai_codex = providers.chatgpt.clone();
+        let login_supervisor = crate::login_supervisor::LoginSupervisor::new(
+            openai_credentials.clone(),
+            shutdown_requests.clone(),
+        );
         Self {
             sessions,
+            openai_credentials,
+            login_supervisor,
+            openai_codex,
             open_code,
             run_supervisor,
             command_supervisor,

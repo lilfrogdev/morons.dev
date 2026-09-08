@@ -38,7 +38,7 @@ async fn image_submission_requires_vision_and_maps_durable_bytes_to_multimodal_c
             session_id,
             text: "see [puppies.png]".to_owned(),
             attachments: vec![upload.clone()],
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "gpt-5.3-codex-spark".to_owned(),
         })
         .await;
@@ -59,7 +59,7 @@ async fn image_submission_requires_vision_and_maps_durable_bytes_to_multimodal_c
             session_id,
             text: "see [puppies.png]".to_owned(),
             attachments: vec![upload],
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "gpt-5.4".to_owned(),
         })
         .await
@@ -178,7 +178,7 @@ async fn exact_skill_invocation_binds_full_instructions_while_catalog_stays_prog
             session_id: protocol_session_id,
             text: "@release-helper prepare a release".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await

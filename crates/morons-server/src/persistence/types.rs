@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use super::{
     paths::PathError,
     run_types::{
-        MAX_MODEL_ID_BYTES, MAX_USER_MESSAGE_BYTES, RunId, RunModelSelection, RunOpenCodeService,
+        MAX_MODEL_ID_BYTES, MAX_USER_MESSAGE_BYTES, RunId, RunModelSelection, RunService,
         SubagentModelSetting,
     },
 };
@@ -266,6 +266,7 @@ pub enum PersistenceResourceLimit {
     CredentialGeneration,
     CredentialMutations,
     ModelSelections,
+    DataUsePolicies,
 }
 
 #[derive(Debug)]
@@ -296,7 +297,11 @@ pub enum PersistenceError {
     WorkingDirectoryUnavailable,
     CredentialGenerationConflict,
     CredentialNotConfigured,
+    OpenAiCredentialNotConfigured,
+    CredentialReauthenticationRequired,
     CredentialMutationNotApplied,
+    DataUseRestricted,
+    DataUsePolicyChanged,
     ImageInputUnsupported,
     WorkspaceBlocked,
     ResourceLimit {
@@ -343,10 +348,22 @@ impl fmt::Display for PersistenceError {
                 formatter.write_str("the credential generation changed")
             }
             Self::CredentialNotConfigured => {
-                formatter.write_str("the OpenCode credential is not configured")
+                formatter.write_str("the provider credential is not configured")
+            }
+            Self::OpenAiCredentialNotConfigured => {
+                formatter.write_str("ChatGPT login is not configured")
+            }
+            Self::CredentialReauthenticationRequired => {
+                formatter.write_str("the provider credential requires a new login")
             }
             Self::CredentialMutationNotApplied => {
                 formatter.write_str("the credential mutation was not applied")
+            }
+            Self::DataUseRestricted => {
+                formatter.write_str("the model is blocked by the data-use policy")
+            }
+            Self::DataUsePolicyChanged => {
+                formatter.write_str("the data-use policy changed; reload settings")
             }
             Self::ImageInputUnsupported => {
                 formatter.write_str("the selected model does not support image context")
@@ -373,6 +390,9 @@ impl fmt::Display for PersistenceError {
                 }
                 PersistenceResourceLimit::CredentialMutations => {
                     formatter.write_str("the credential mutation limit was reached")
+                }
+                PersistenceResourceLimit::DataUsePolicies => {
+                    formatter.write_str("the data-use policy change limit was reached")
                 }
                 PersistenceResourceLimit::ModelSelections => {
                     formatter.write_str("the default model selection limit was reached")
@@ -403,8 +423,12 @@ impl Error for PersistenceError {
             | Self::WorkingDirectoryUnavailable
             | Self::CredentialGenerationConflict
             | Self::CredentialNotConfigured
+            | Self::OpenAiCredentialNotConfigured
+            | Self::CredentialReauthenticationRequired
             | Self::CredentialMutationNotApplied
             | Self::ImageInputUnsupported
+            | Self::DataUseRestricted
+            | Self::DataUsePolicyChanged
             | Self::WorkspaceBlocked
             | Self::ResourceLimit { .. }
             | Self::WorkerStopped => None,
@@ -510,7 +534,7 @@ pub(super) fn validate_model_identifier(model_id: &str) -> Result<(), Persistenc
 pub(super) fn validate_subagent_model_setting(
     setting: &SubagentModelSetting,
 ) -> Result<(), PersistenceError> {
-    if let SubagentModelSetting::OpenCode { model_id, .. } = setting {
+    if let SubagentModelSetting::Explicit { model_id, .. } = setting {
         validate_model_identifier(model_id)?;
     }
     Ok(())
@@ -532,14 +556,15 @@ pub(super) fn validate_model_selection(
 }
 
 pub(super) fn default_model_fingerprint(
-    service: RunOpenCodeService,
+    service: RunService,
     model_id: &str,
 ) -> [u8; REQUEST_FINGERPRINT_BYTES] {
     let mut digest = Sha256::new();
     digest.update(DEFAULT_MODEL_FINGERPRINT_CONTEXT);
     digest.update([match service {
-        RunOpenCodeService::Zen => 1,
-        RunOpenCodeService::Go => 2,
+        RunService::Zen => 1,
+        RunService::Go => 2,
+        RunService::OpenAiChatGpt => 3,
     }]);
     digest.update((model_id.len() as u16).to_be_bytes());
     digest.update(model_id.as_bytes());
@@ -553,11 +578,12 @@ pub(super) fn subagent_model_fingerprint(
     digest.update(SUBAGENT_MODEL_FINGERPRINT_CONTEXT);
     match setting {
         SubagentModelSetting::InheritParent {} => digest.update([0]),
-        SubagentModelSetting::OpenCode { service, model_id } => {
+        SubagentModelSetting::Explicit { service, model_id } => {
             digest.update([1]);
             digest.update([match service {
-                RunOpenCodeService::Zen => 1,
-                RunOpenCodeService::Go => 2,
+                RunService::Zen => 1,
+                RunService::Go => 2,
+                RunService::OpenAiChatGpt => 3,
             }]);
             digest.update((model_id.len() as u16).to_be_bytes());
             digest.update(model_id.as_bytes());
@@ -569,7 +595,7 @@ pub(super) fn subagent_model_fingerprint(
 pub(super) fn submit_session_input_fingerprint(
     session_id: SessionId,
     text: &str,
-    service: RunOpenCodeService,
+    service: RunService,
     model_id: &str,
 ) -> [u8; REQUEST_FINGERPRINT_BYTES] {
     let mut digest = Sha256::new();
@@ -578,8 +604,9 @@ pub(super) fn submit_session_input_fingerprint(
     digest.update((text.len() as u32).to_be_bytes());
     digest.update(text.as_bytes());
     digest.update([match service {
-        RunOpenCodeService::Zen => 1,
-        RunOpenCodeService::Go => 2,
+        RunService::Zen => 1,
+        RunService::Go => 2,
+        RunService::OpenAiChatGpt => 3,
     }]);
     digest.update((model_id.len() as u16).to_be_bytes());
     digest.update(model_id.as_bytes());
@@ -589,7 +616,7 @@ pub(super) fn submit_session_input_fingerprint(
 pub(super) fn submit_session_input_with_images_fingerprint(
     session_id: SessionId,
     text: &str,
-    service: RunOpenCodeService,
+    service: RunService,
     model_id: &str,
     attachment_digest: &[u8; 32],
 ) -> [u8; REQUEST_FINGERPRINT_BYTES] {

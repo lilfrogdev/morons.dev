@@ -1,0 +1,23 @@
+# ADR 0037: Native streaming responses with an omitted media type
+
+## Status and evidence
+
+Accepted before implementation, 2026-09-08. The owner authorized a fresh short GPT-5.5 diagnostic prompt after ADR0036. Its complete draft, native model and empty selected directory were verified before submission. It failed at the fixed `content-type` guard: HTTP200 passed the header count/framing checks but did not supply an accepted event-stream media type. No header value, body, credential or hidden reasoning was collected. That classification does **not** distinguish omission from a present incompatible type and does not establish the cause of the older unclassified failure. Neither request is retried.
+
+Public source supplies an independently reviewable compatibility gap:
+- Official Codex `459a79eb85400af759e9220c7bafb4429ae07516`, `codex-rs/codex-api/src/endpoint/responses.rs::stream_encoded`, explicitly requests SSE and passes the successful byte stream to `spawn_response_stream`; `sse/responses.rs::spawn_response_stream` processes it as SSE without requiring a response Content-Type. `endpoint/session.rs::stream_encoded_json_with` delegates to `http-client/src/transport.rs::ReqwestTransport::stream`, which checks success status and passes headers/bytes without a media-type requirement. Morons does not adopt its retries, telemetry, remote model metadata or other response tolerance.
+- [QuantumNous/new-api issue6075](https://github.com/QuantumNous/new-api/issues/6075), opened2026-07-10 and still open when reviewed, independently reports HTTP200 SSE from the native Codex Responses route without Content-Type. This is an external reporter's interoperability observation, not an OpenAI guarantee or proof of the Morons sample's exact header. No credential or raw trace from the report is imported.
+
+## Decision and boundary
+
+Only the fixed native Codex Responses adapter may accept **absence** of Content-Type on HTTP200 for its already explicit `stream:true`/SSE request. It immediately feeds that same response into the existing bounded strict SSE/Responses decoder. This is one selected parser, not content sniffing, a fallback, alternate wire dialect or a second request. A missing header neither fabricates a completed result nor grants model, route, credential, policy or tool authority.
+
+A present Content-Type still must pass the existing case-insensitive `text/event-stream` check (with the existing parameter handling). Empty, incompatible, invalid or duplicated values are not equivalent to absence. JSON/HTML bodies are never parsed as an alternative result or exposed as an error page; an untyped non-SSE, partial or empty body fails the unchanged decoder. Exact sequence/lifecycle/model/identity, complete output, usage arithmetic, receipt scope, UTF-8, body/record limits and cancellation/deadlines remain required. HTTP status handling, duplicate-header rejection and turn poisoning are unchanged. Errors remain bounded code-owned classifications, not raw values. Native `content-type` failures after this change specifically imply a **present** rejected value; old diagnostics must not be retroactively reinterpreted that way.
+
+The shared HTTP helper, OpenCode adapters and OAuth media-type requirements remain unchanged. Native full Responses revision5, IPC44, SQLite30, credential formats, prepared request/digest bytes and reviewed six-model manifest are unchanged. No HTTP2 experiment, proxy/originator substitution, route/alias fallback, access assertion, automatic retry, limit enlargement or model expansion is included.
+
+## Qualification and limitations
+
+Add a failing-before real synthetic HTTP regression for a complete native SSE response without Content-Type, plus standard/mixed-case media-type compatibility. Reject explicit empty/JSON/HTML/unknown types even over valid SSE, duplicates, untyped JSON/HTML/empty/partial/invalid-model/usage streams and oversized declarations. Exercise untyped-body cancellation/deadlines/no replay; retain the existing attributed image/tool/receipt/continuation tests and OpenCode/OAuth rejection tests. Run all locked local/platform/security gates with signed exact-head publication.
+
+This repairs an independently reproducible missing-header incompatibility. It does not claim that omission caused either live failure or that native inference is qualified. A fresh owner-authorized post-repair sample is required; a further failure must guide review of its actual fixed guard, not speculative relaxation. Preserve both failed runs, the sole original truncated input and the new complete input. Request budgets, existing credentials, retained QA migration, merge and release remain separate authorities.

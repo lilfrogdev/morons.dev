@@ -1,5 +1,16 @@
 use super::*;
 
+fn choose_opencode(app: &mut AppState) {
+    assert!(matches!(
+        app.auth_dialog,
+        Some(super::super::auth::AuthDialog::Choose { .. })
+    ));
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)),
+        AppAction::None
+    );
+}
+
 #[test]
 fn login_command_hides_credential_entry_and_emits_generation_bound_actions() {
     let (session, run) = fixture_session_and_run();
@@ -16,6 +27,7 @@ fn login_command_hides_credential_entry_and_emits_generation_bound_actions() {
         AppAction::None
     );
     assert!(app.prompt.is_empty());
+    choose_opencode(&mut app);
     app.handle_paste("not-a-real-key");
 
     let backend = TestBackend::new(100, 24);
@@ -69,6 +81,7 @@ fn logout_requires_confirmation_and_uses_the_observed_credential_generation() {
         AppAction::None
     );
     assert!(app.prompt.is_empty());
+    choose_opencode(&mut app);
     assert!(matches!(
         app.credential_dialog,
         Some(CredentialDialog::ConfirmRemove)
@@ -99,6 +112,7 @@ fn logout_requires_confirmation_and_uses_the_observed_credential_generation() {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         AppAction::None
     );
+    choose_opencode(&mut app);
     assert_eq!(
         app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
         AppAction::RemoveCredential {
@@ -116,6 +130,7 @@ fn logout_requires_confirmation_and_uses_the_observed_credential_generation() {
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         AppAction::None
     );
+    choose_opencode(&mut app);
     assert!(app.credential_dialog.is_none());
     assert_eq!(
         app.status.first_line(),
@@ -133,6 +148,7 @@ fn credential_replacement_and_removal_use_observed_generation() {
     let control_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL);
 
     assert_eq!(app.handle_key(control_k), AppAction::None);
+    choose_opencode(&mut app);
     assert_eq!(
         app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE)),
         AppAction::None
@@ -147,6 +163,7 @@ fn credential_replacement_and_removal_use_observed_generation() {
     ));
 
     assert_eq!(app.handle_key(control_k), AppAction::None);
+    choose_opencode(&mut app);
     assert_eq!(
         app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
         AppAction::None

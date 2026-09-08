@@ -17,6 +17,9 @@ impl AppState {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return AppAction::None;
         }
+        if self.auth_dialog.is_some() {
+            return self.handle_auth_key(key.code, key.modifiers);
+        }
         if let Some(dialog) = self.information_dialog {
             return match (dialog, key.code) {
                 (InformationDialog::Context, KeyCode::Down | KeyCode::PageDown) => {
@@ -42,7 +45,7 @@ impl AppState {
                 (InformationDialog::TrustNotice, KeyCode::Enter) => {
                     self.information_dialog = None;
                     self.set_status(
-                        "Trusted-local mode acknowledged · press ? for safety and usage help",
+                        "Trusted-local mode acknowledged · use /help in a session or ? in the session browser",
                     );
                     AppAction::None
                 }
@@ -64,10 +67,6 @@ impl AppState {
         }
         if self.settings_dialog.is_some() {
             return self.handle_settings_key(key.code, key.modifiers);
-        }
-        if key.code == KeyCode::Char('?') {
-            self.information_dialog = Some(InformationDialog::Help);
-            return AppAction::None;
         }
         if self.rename_dialog.is_some() {
             return self.handle_rename_key(key.code, key.modifiers);
@@ -112,6 +111,10 @@ impl AppState {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.handle_control_key(key.code);
         }
+        if self.view == View::Sessions && key.code == KeyCode::Char('?') {
+            self.information_dialog = Some(InformationDialog::Help);
+            return AppAction::None;
+        }
         match self.view {
             View::Sessions => self.handle_sessions_key(key.code),
             View::Session => self.handle_session_key(key.code, key.modifiers),
@@ -119,11 +122,15 @@ impl AppState {
     }
 
     pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) -> AppAction {
+        if self.auth_dialog.is_some() {
+            return self.handle_auth_mouse(mouse);
+        }
         if self.view != View::Session
             || self.information_dialog.is_some()
             || self.model_dialog.is_some()
             || self.settings_dialog.is_some()
             || self.credential_dialog.is_some()
+            || self.auth_dialog.is_some()
             || self.rename_dialog.is_some()
             || self.confirm_stop
             || self.confirm_delete.is_some()
@@ -138,6 +145,9 @@ impl AppState {
     }
 
     pub(crate) fn handle_paste(&mut self, paste: &str) {
+        if self.auth_dialog.is_some() {
+            return;
+        }
         if self.model_dialog.is_some() {
             self.append_model_search(paste);
             return;
@@ -182,6 +192,22 @@ impl AppState {
         }
         match self.settings_dialog.as_ref() {
             Some(SettingsDialog::Overview) => match code {
+                KeyCode::Char(key @ ('t' | 'r'))
+                    if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    let Some(settings) = &self.settings else {
+                        self.set_status("Wait for settings to load");
+                        return AppAction::None;
+                    };
+                    let mut policy = settings.data_use;
+                    if key == 't' {
+                        policy.block_training_use = !policy.block_training_use;
+                    } else {
+                        policy.require_zero_retention = !policy.require_zero_retention;
+                    }
+                    self.settings_dialog = None;
+                    AppAction::SetDataUsePolicy { policy }
+                }
                 KeyCode::Esc => {
                     self.settings_dialog = None;
                     self.set_status("Settings closed");
@@ -222,13 +248,26 @@ impl AppState {
                         Some(SettingsDialog::SubagentModel { selected, .. }) => *selected,
                         _ => 0,
                     };
+                    if matches
+                        .get(selected)
+                        .is_some_and(|candidate| match candidate {
+                            SubagentModelCandidate::Model(index) => self
+                                .models
+                                .get(*index)
+                                .is_some_and(|model| self.model_policy_blocked(&model.model)),
+                            SubagentModelCandidate::InheritParent => false,
+                        })
+                    {
+                        self.set_status("Model blocked by data-use policy; review /settings");
+                        return AppAction::None;
+                    }
                     let setting = match matches.get(selected) {
                         Some(SubagentModelCandidate::InheritParent) => {
                             Some(morons_protocol::SubagentModelSetting::InheritParent {})
                         }
                         Some(SubagentModelCandidate::Model(index)) => {
                             self.models.get(*index).map(|model| {
-                                morons_protocol::SubagentModelSetting::OpenCode {
+                                morons_protocol::SubagentModelSetting::Explicit {
                                     service: model.model.service,
                                     model_id: model.model.id.clone(),
                                 }
@@ -319,6 +358,14 @@ impl AppState {
                     .as_ref()
                     .map(|dialog| dialog.selected)
                     .unwrap_or_default();
+                if matches
+                    .get(selected)
+                    .and_then(|index| self.models.get(*index))
+                    .is_some_and(|model| self.model_policy_blocked(&model.model))
+                {
+                    self.set_status("Model blocked by data-use policy; review /settings");
+                    return AppAction::None;
+                }
                 let selection = matches
                     .get(selected)
                     .and_then(|index| self.models.get(*index))
@@ -374,7 +421,8 @@ impl AppState {
     fn handle_control_key(&mut self, code: KeyCode) -> AppAction {
         match code {
             KeyCode::Char('k') if self.pending.is_none() => {
-                self.open_credential_dialog();
+                self.auth_scroll = 0;
+                self.auth_dialog = Some(super::auth::AuthDialog::Choose { logout: false });
                 AppAction::None
             }
             KeyCode::Char('l') => AppAction::Refresh,
@@ -454,7 +502,7 @@ impl AppState {
         }
     }
 
-    fn open_credential_dialog(&mut self) {
+    pub(super) fn open_credential_dialog(&mut self) {
         match self.credential {
             Some(status) if status.configured => {
                 self.credential_dialog = Some(CredentialDialog::ChooseAction);
@@ -471,7 +519,7 @@ impl AppState {
         }
     }
 
-    fn open_logout_dialog(&mut self) {
+    pub(super) fn open_logout_dialog(&mut self) {
         match self.credential {
             Some(status) if status.configured => {
                 self.credential_dialog = Some(CredentialDialog::ConfirmRemove);
@@ -694,12 +742,14 @@ impl AppState {
         }
         if prompt == "/login" {
             self.prompt.clear();
-            self.open_credential_dialog();
+            self.auth_scroll = 0;
+            self.auth_dialog = Some(super::auth::AuthDialog::Choose { logout: false });
             return AppAction::None;
         }
         if prompt == "/logout" {
             self.prompt.clear();
-            self.open_logout_dialog();
+            self.auth_scroll = 0;
+            self.auth_dialog = Some(super::auth::AuthDialog::Choose { logout: true });
             return AppAction::None;
         }
         if prompt == "/settings" {
@@ -777,6 +827,10 @@ impl AppState {
             self.set_status("No reviewed model is currently available");
             return AppAction::None;
         };
+        if self.model_policy_blocked(&model.model) {
+            self.set_status("Model blocked by data-use policy; draft retained. Review /settings");
+            return AppAction::None;
+        }
         if !self.draft_images.is_empty() && !model.model.capabilities.image_input {
             self.set_status("The selected model does not support image input; draft retained");
             return AppAction::None;

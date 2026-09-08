@@ -4,7 +4,7 @@ ADR 0012 changes Morons from a sandboxed repository-copy system into a trusted-l
 
 ## Protected assets
 
-- Morons-managed OpenCode credentials and billable provider usage
+- Morons-managed OpenCode and ChatGPT credentials and billable provider usage
 - Local IPC authentication key, host lock, and endpoint registration
 - Durable session transcripts, selected-directory metadata, attachments, context checkpoints, and run state
 - Authoritative SQLite data, migration backups, and durable event history
@@ -28,6 +28,7 @@ The final category is user-owned authority that Morons deliberately grants to lo
 - Packaged uv binaries, managed Python downloads, PyPI metadata, hash-locked wheels, runtime caches, staging directories, and bootstrap manifests
 - Terminal key, paste, resize, mouse, and rendering input
 - Provider model catalogs, HTTP headers, error bodies, SSE records, usage, identifiers, and content
+- ADR 0019 OAuth callback connections, targets, hosts, query fields, state/code/error values, token envelopes and JWT routing claims; only authenticated owner initiation is admitted through application IPC
 
 ## Trust assumptions
 
@@ -36,7 +37,7 @@ The final category is user-owned authority that Morons deliberately grants to lo
 - Root, LocalSystem, administrators, and equivalent privileged identities are outside the local guarantee.
 - Malicious processes already running as the same operating-system user are outside the local IPC and credential-confidentiality guarantee.
 - The selected Bash installation, expert `MORONS_PYTHON` override, Git, credential helpers, agents, dependencies, and ordinary user environment are controlled by or accepted by the user. The default managed IPython runtime pins and verifies artifact identity, but Morons does not claim that upstream Python or package code is safe.
-- OpenCode and its upstream providers receive context deliberately selected for an authorized run. Their infrastructure, policy, catalogs, responses, and model output remain external and untrusted.
+- The selected OpenCode service/upstream or native ChatGPT provider receives context deliberately selected for an authorized run. Their infrastructure, policy, catalogs, responses, and model output remain external and untrusted.
 - Public certificate authorities and the operating system's TLS implementation correctly authenticate fixed provider HTTPS origins.
 - Users needing containment run the complete Morons application inside an external boundary that they configure and validate.
 
@@ -125,6 +126,14 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - A missing or rotating `x-opencode-session` value defeats OpenCode routing and prompt-cache affinity, while reusing one value across unrelated root or child conversations creates unintended correlation and traffic concentration.
 - Concurrent child inference multiplies provider usage, exceeds expected spend, or lets credential replacement race a later child turn.
 
+A native Codex adapter must not confuse API model availability with ChatGPT entitlement, send unsupported output-limit parameters, claim local acceptance limits bound remote generation/spend, replay a failed turn, or reuse account/turn-specific opaque routing state across runs. [ADR 0028](../adr/0028-native-codex-responses-contract.md) reviews the isolated full-Responses contract before application admission; Responses Lite and remote-memory features are not implicit extensions. ADR0037 permits an omitted media type only at the fixed native streaming route, using the unchanged strict SSE decoder. A missing header cannot turn an HTML challenge, JSON error or partial stream into a successful model outcome; explicit conflicting types remain errors, with no alternative parsing, originator spoofing or retry. A coarse historical content-type diagnostic cannot prove the header was absent. ADR0038 separately collects bounded completed native output items when terminal output is empty; treating deltas, partial calls, cross-response cached items or conflicting terminal data as a success would fabricate authority. Exact terminal identity/usage, contiguous complete items and existing output validation remain required before any tool dispatch or canonical commit; caches cannot cross requests.
+
+## OAuth callback and token threats
+
+ADR 0019's bounded native OAuth core introduces a narrow loopback boundary, not a second application transport. Port occupation, forged/duplicate callbacks, wrong state, request smuggling, slow connections, browser-origin probes and query reflection must not authorize login or exhaust unbounded resources. Bind only the fixed loopback socket, consume at most one matching code, cap connections/bytes/time, return fixed non-caching responses and never take over the port owner. ADR0032 corrects the original over-closed callback query grammar: bounded unknown response extensions are discarded, not treated as authority; duplicate decoded names, bad state/host, issuer mismatch and token-bearing hybrids reject. Fixed browser-local reasons distinguish rejection from provider denial without exposing any query data. A generic historical rejection does not prove which validation branch failed.
+
+A public client ID is not a secret or proof of a Morons-specific provider agreement. Use the reviewed compatibility identity with Morons attribution; provider rejection is a blocker, not permission to spoof another originator. Fixed TLS token exchange, PKCE and state establish the response provenance; bounded JWT account claims are routing metadata, not local authorization, policy or cryptographic identity proof. Do not import callback URLs/tokens, invoke another agent, follow redirects or retry exchanges. Dedicated custody and durable no-replay refresh/mutation recovery precede application admission. A connection-owned login task must survive abandoned cleanup callers, cancel on disconnect, and drain before slot reuse/shutdown. Only its initiating connection receives the ephemeral URL; another client cannot cancel or inspect it by identifier. Client/server parser diagnostics must discard untrusted field names and values. ADR0033's closed token-rejection reasons reveal only the local validation guard to the initiating authenticated connection, not token/claim/scope/expiry contents or a raw parser source. Bounded token extensions are discarded rather than promoted into authority; duplicates, error/success hybrids and bad required fields still reject. Case-insensitive Bearer handling does not admit another credential scheme, broader scopes or longer lifetimes. A cancelled installation may still commit; an uncertain storage acknowledgement must never be reported as rollback or automatically replayed. Same-user processes, browser history, screenshots and transport copies remain residual confidentiality risks.
+
 ## Skills and prompt threats
 
 - A discovered skill shadows another skill nondeterministically or uses invalid metadata to enter the prompt.
@@ -134,6 +143,8 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Recursive skill discovery, references, or assets consume unbounded time, memory, or context.
 - Skill instructions, repository files, web pages, or images attempt prompt injection or impersonate developer instructions.
 - A skill-creator operation overwrites an existing skill or writes outside the user's selected skill root unexpectedly.
+
+ADR 0031 adds explicit desktop interaction for the authenticated navigation URL: a single automatic browser handoff and owner-triggered copy/open fallbacks. Ordinary text never authorizes those actions. Only the fixed authorization origin/path is admitted; no shell-source interpolation or BROWSER override is used. OS launcher argument inspection and clipboard history/sync are additional navigation-URL exposure surfaces. Clipboard code runs in a bounded owned helper so blocked platform calls cannot strand the TUI. Late outcomes are bound to private dialog registration. Closing login cannot recall a browser handoff, undo a clipboard write or prove a clipboard manager erased it.
 
 ## Image and clipboard threats
 
@@ -167,7 +178,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 ## Terminal threats
 
 - User, provider, skill, path, filename, error, web, command, or Python text injects escape sequences, hyperlinks, terminal-title changes, clipboard operations, device commands, or bidirectional layout controls.
-- Large paste, clipboard image, resize storms, or delta streams exhaust client memory or block input.
+- Large paste, clipboard image, resize storms, or delta streams exhaust client memory or block input. Silently dropping full-queue keystrokes can change user intent before a later Enter; bounded backpressure preserves delivery order, and receiver-close-before-join prevents a blocked reader from deadlocking shutdown (ADR0034).
 - Credential entry is echoed, copied, stored in input history, rendered after cancellation, or retained across connection loss.
 - Terminal restoration prints sensitive buffers or leaves the terminal in raw/alternate-screen mode.
 - Filename attachment markers become editable text and lose their structured payload association.
@@ -197,7 +208,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Keep provider and web-search routes fixed in reviewed code, disable redirects, pin each model to one reviewed protocol revision, scope bearer, `x-api-key`, and `x-goog-api-key` headers to their exact routes, strictly decode bounded protocol-specific streams, and never retry dispatched inference or web search automatically.
 - Store global default-model changes as bounded idempotent facts, validate them against the reviewed manifest, use them only when the current sanitized catalog marks the pair available, and validate every run's explicit model independently.
 - Derive one opaque `x-opencode-session` value per Morons conversation: preserve a root value across its durable session, derive a distinct stable value for each canonical task child, rotate values across unrelated conversations, omit them from catalog requests, and never log or persist a derived header.
-- Store Morons-managed credentials outside SQLite and never intentionally include them in child environments, prompts, provider payload bodies, errors, logs, or audit facts.
+- Store Morons-managed credentials outside SQLite and never intentionally include them in child environments, prompts, model-inference payload bodies, errors, logs, or audit facts. Only the reviewed fixed OAuth token endpoint accepts its required authentication form material.
 - Use one bounded storage worker, transactional canonical-entry and projection commits, ordered migrations, online SQLite backup, quotas, and startup recovery that performs no external effect.
 - Scope subscriptions and cursors to sessions, compose snapshots and replay at one high water, and disconnect slow consumers.
 - Render all untrusted content through bounded terminal-safe Ratatui cells and restore terminal ownership on exit.

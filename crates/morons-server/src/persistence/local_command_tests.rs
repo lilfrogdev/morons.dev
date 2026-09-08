@@ -11,7 +11,7 @@ use morons_protocol::{
 use tokio::time::{self, Duration};
 
 use super::{
-    LocalCommandStatus, MutationRequestId, RunModelSelection, RunOpenCodeService, SessionStore,
+    LocalCommandStatus, MutationRequestId, RunModelSelection, RunService, SessionStore,
     TranscriptEntry,
 };
 use crate::application::{ApplicationOutcome, ServerApplication};
@@ -103,7 +103,7 @@ async fn local_commands_are_idempotent_durable_and_context_visibility_is_explici
             session.id,
             "what happened?".to_owned(),
             RunModelSelection {
-                service: RunOpenCodeService::Zen,
+                service: RunService::Zen,
                 model_id: "muse-spark-1.2".to_owned(),
                 protocol_revision: 1,
                 maximum_input_tokens: 96_000,

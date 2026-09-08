@@ -32,7 +32,7 @@ impl Backend {
         self.validate_maintenance_binding(&job)?;
         validate_events(&self.connection, &job)?;
         let result = ready_result(&self.connection, &job)?;
-        let credential = self.open_code_credential_status()?;
+        let credential = self.model_credential_status(run.service)?;
         let through = self.connection.query_row(
             "SELECT entry_high_water FROM session_run_states WHERE session_id = ?1",
             [&run.session_id.as_bytes()[..]],
@@ -61,6 +61,7 @@ impl Backend {
         )?;
         let after = self.context_budget(run.session_id, job.source, through)?;
         let compatible = credential.configured
+            && self.data_use_policy()?.sequence == job.data_use_sequence
             && credential.generation == run.credential_generation
             && run.credential_generation == job.run.credential_generation
             && run.service == job.run.service

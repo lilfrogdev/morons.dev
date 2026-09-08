@@ -79,7 +79,7 @@ pub(super) struct CompletedResponse {
     pub(super) model: String,
     pub(super) status: String,
     pub(super) output: Vec<Value>,
-    pub(super) usage: Option<WireUsage>,
+    pub(super) usage: Option<Value>,
 }
 
 #[derive(Deserialize)]

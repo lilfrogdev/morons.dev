@@ -1,6 +1,13 @@
 mod authentication;
 mod control;
 mod credential;
+mod native_diagnostic;
+mod openai_auth;
+pub use native_diagnostic::NativeResponseFailure;
+pub use openai_auth::{
+    OpenAiAuthorizationUrl, OpenAiCredentialState, OpenAiCredentialStatus, OpenAiLoginFailure,
+    OpenAiLoginResult, OpenAiTokenResponseFailure,
+};
 mod endpoint;
 mod framing;
 mod messages;
@@ -23,12 +30,11 @@ pub use framing::{
 };
 pub use messages::{ClientMessage, ServerMessage};
 pub use run::{
-    ApplicationSettings, ImageAttachmentId, ImageAttachmentSummary, ImageUpload, LocalCommandId,
-    LocalCommandStatus, MessageId, OpenCodeModelCapabilities, OpenCodeModelRetention,
-    OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
-    ProviderProtocol, RunFailureKind, RunId, RunState, RunSummary, SubagentModelSetting,
-    ToolCallId, ToolKind, ToolResultStatus, TranscriptCursor, TranscriptEntry,
-    TranscriptPageDirection,
+    ApplicationSettings, DataUsePolicy, ImageAttachmentId, ImageAttachmentSummary, ImageUpload,
+    LocalCommandId, LocalCommandStatus, MessageId, ModelCapabilities, ModelRetention,
+    ModelSelection, ModelService, ModelSummary, ModelTrainingUse, ProviderProtocol, RunFailureKind,
+    RunId, RunState, RunSummary, SubagentModelSetting, ToolCallId, ToolKind, ToolResultStatus,
+    TranscriptCursor, TranscriptEntry, TranscriptPageDirection,
 };
 pub use session::{
     APPLICATION_IDENTIFIER_BYTES, ApplicationError, ApplicationEvent, ApplicationRequest,
@@ -39,4 +45,4 @@ pub use session::{
     SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 39;
+pub const PROTOCOL_VERSION: u32 = 44;

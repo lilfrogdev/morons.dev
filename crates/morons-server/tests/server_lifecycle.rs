@@ -170,7 +170,15 @@ async fn concurrent_connect_helper() {
     }
     let connected = connect_or_start()
         .await
-        .expect("concurrent client should authenticate one server");
+        .unwrap_or_else(|error| match error {
+            ConnectOrStartError::Control(ControlError::InvalidState { reason }) => {
+                panic!("concurrent startup rejected control state: {reason}")
+            }
+            ConnectOrStartError::Control(ControlError::Io(error)) => {
+                panic!("concurrent startup control I/O failed: {:?}", error.kind())
+            }
+            _ => panic!("concurrent client should authenticate one server: {error:?}"),
+        });
     tokio::time::sleep(Duration::from_millis(200)).await;
     drop(connected);
 }

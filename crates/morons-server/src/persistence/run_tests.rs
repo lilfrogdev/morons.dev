@@ -11,7 +11,7 @@ use crate::tools::{ToolOutput, ToolResult};
 use super::{
     ActivationOutcome, CompletedAssistant, CompletedToolTurn, DefaultModelSelection,
     DispatchOutcome, MutationRequestId, OpenCodeCredentialStatus, PersistenceError,
-    PrepareOperationOutcome, ProviderUsage, RunModelSelection, RunOpenCodeService, RunState,
+    PrepareOperationOutcome, ProviderUsage, RunModelSelection, RunService, RunState,
     SessionEventCursor, SessionEventPayload, SessionStore, SubagentModelSetting, TranscriptCursor,
     TranscriptEntry, TranscriptPageDirection,
 };
@@ -30,7 +30,7 @@ async fn configure_credential(store: &SessionStore) -> OpenCodeCredentialStatus 
 
 fn model_selection() -> RunModelSelection {
     RunModelSelection {
-        service: RunOpenCodeService::Zen,
+        service: RunService::Zen,
         model_id: TEST_MODEL.to_owned(),
         protocol_revision: 1,
         maximum_input_tokens: 96_000,

@@ -11,10 +11,7 @@ async fn overlapping_cancellation_waits_for_owned_execution_to_drain() {
         let (_root, _selected, store, session, trigger) = eligible(true).await;
         let work = store.prepare_maintenance(trigger).await.unwrap().unwrap();
         assert!(store.dispatch_maintenance(work.id).await.unwrap());
-        let provider = Arc::new(OpenCodeProvider::for_test(
-            Arc::clone(&store),
-            "http://127.0.0.1:1",
-        ));
+        let provider = ModelProviders::for_test(Arc::clone(&store), "http://127.0.0.1:1");
         let shutdown = watch::channel(false).0;
         let supervisor = MaintenanceSupervisor::new(Arc::clone(&store), provider, shutdown.clone());
         let permit = Arc::clone(&supervisor.slot).try_acquire_owned().unwrap();
@@ -76,10 +73,7 @@ async fn overlapping_cancellation_waits_for_owned_execution_to_drain() {
 #[tokio::test(flavor = "current_thread")]
 async fn maintenance_admission_skips_lifecycle_cleanup_without_queueing() {
     let (_root, _selected, store, session, trigger) = eligible(true).await;
-    let provider = Arc::new(OpenCodeProvider::for_test(
-        Arc::clone(&store),
-        "http://127.0.0.1:1",
-    ));
+    let provider = ModelProviders::for_test(Arc::clone(&store), "http://127.0.0.1:1");
     let supervisor =
         MaintenanceSupervisor::new(Arc::clone(&store), provider, watch::channel(false).0);
     let guard = supervisor.task.lock().await;

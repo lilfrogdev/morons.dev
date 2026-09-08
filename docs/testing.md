@@ -1,5 +1,9 @@
 # Testing Morons
 
+[ADR 0039](adr/0039-help-shortcuts-and-text-input.md) covers question-mark key routing: character-by-character prompts, both command modes, rename and synthetic hidden credential input retain the complete text; browser Help and explicit composer `/help` preserve modal and submission boundaries.
+
+Windows login-link lifecycle fixtures compile a tiny native, synthetic-only helper with the existing stable toolchain during bounded fixture setup. They do not depend on PowerShell startup completing inside the production five-second readiness deadline. The real launcher/copy deadlines and assertions remain unchanged; no browser or clipboard is accessed by the fixture.
+
 Use Rust unit tests beside the module they verify. Larger suites use a module-local `tests/` directory, grouped by behavior, with shared fixtures in the parent test module or a small helper module. This preserves private-module access without exporting implementation details only for tests.
 
 - Provider adapters: request/stream contracts and malformed-input tests beside each adapter.
@@ -23,6 +27,63 @@ cargo test --workspace --locked -- --test-threads 2
 Two test threads match CI and reduce SQLite-heavy fixture contention. Timing probes must not impose wall-clock assertions on CI. Native-platform qualification is separate from cross-compilation.
 
 Ignored live provider tests intentionally require non-echoing credential input and billable inference; Python gates require an installed or downloaded Jupyter runtime. Never run every ignored test indiscriminately. Follow `docs/release-candidate-qa.md` and obtain authorization before billable requests or credential-state changes.
+
+## Terminal input delivery
+
+[ADR 0034](adr/0034-lossless-terminal-input-delivery.md) covers bounded backpressure without silent input loss. `cargo test -p morons-cli --lib --locked terminal::queue_tests` verifies burst key/paste/Enter order with a full queue, closed-receiver rejection and Drop waking a backpressured reader before joining it. These synthetic tests use no real terminal, clipboard or inference. A live draft-only check must compare the complete intended prompt before Enter; preserve any already submitted truncated input instead of rewriting or replaying it. Input delivery success does not qualify provider protocol compatibility.
+
+## OpenAI OAuth core
+
+```sh
+cargo test -p morons-server --lib --locked openai_auth -- --test-threads 2
+```
+
+These tests use ephemeral loopback ports, disposable storage and synthetic tokens. They do not bind the production callback port, contact OpenAI, read real credential files or migrate retained state. They cover fixed PKCE/form fields, hostile callbacks, cancellation/drop/deadlines, token envelopes/claims, redaction, bounded HTTP and no retry/redirect following. Custody tests cover provider-scoped identity/idempotency, private files/checksums, poisoning after failed writes, same-account single-flight refresh, cancellation/abandonment, restart without replay, secret exclusion from SQLite and schema-27 migration preserving OpenCode bytes. They do not establish JWT-signature verification, real token rotation, live login/inference or native-release qualification.
+
+Current native protocol diagnostics use IPC 44 with unchanged SQLite 30 (token-failure diagnostics originated at IPC 43) (native provider binding originated at IPC 42/SQLite 30; policy controls at IPC 41/SQLite 29; login at IPC 40/SQLite 28). Stop the old server with its matching client before upgrading; a protocol mismatch cannot silently fall back. Do not launch its binaries against retained QA state without a separately approved migration plan; deterministic fixtures do not authorize changing existing diagnostics. [ADR 0030](adr/0030-native-provider-and-task-bindings.md) supplies the reviewed coding/provider/policy binding; owner browser sign-in and a separately approved request budget remain necessary for live qualification.
+
+Synthetic login-control tests additionally cover connection-scoped cancellation, disconnects, slow consumers, abandoned drains, shutdown during admission, committed installation/cancellation races, status and provider-local removal, closed/redacted framing diagnostics, client outcome scope/generation validation with no reconnect/replay, and terminal-safe scrollable URL dialogs that reject paste/image input and clear URLs on cancellation. The old OpenCode hidden-input/removal tests now choose OpenCode in the provider menu; their secrecy and generation assertions remain. No test opens a browser or the production callback port.
+
+[ADR 0032](adr/0032-oauth-callback-extensions-and-diagnostics.md) has a failing-before regression for bounded browser callbacks with extensions and legal query literals. Additional tests retain host/state/duplicate/body limits, bound names/values/field count at the unchanged8KiB request ceiling, reject issuer mismatch and token-bearing hybrids, and verify only fixed rejection reasons/provider-denial text. Actual loopback tests reject callbacks without contacting the token endpoint, then accept a later matching callback and send exactly one unchanged five-field code exchange. An ignored endpoint/model/scope extension cannot select a route or change granted credential data. The owner's earlier generic callback rejection remains causally unclassified; tests establish the independent compatibility defect, not a reconstructed secret-bearing live request.
+
+[ADR 0033](adr/0033-token-response-extensions-and-diagnostics.md) adds failing-before token-response extension/case regressions, nested and escaped duplicates, envelope field/name/body/depth bounds, unchanged scope/lifetime/account checks, fixed-reason transport/claim/terminal tests and closed IPC43 round trips. Actual supervised login failure preserves synthetic credential bytes, exposes only the reason to its connection and makes no second exchange. Successful code exchange/installation/refresh fixtures exercise ignored metadata and case-insensitive Bearer; failed refresh still requires reauthentication without replay. No token-response body from owner testing is used. The generic live invalid-token failure's exact guard remains unknown until a separate owner-performed sample reports a fixed classification.
+
+[ADR 0031](adr/0031-login-browser-and-clipboard-interaction.md) adds synthetic coverage for automatic browser opening exactly once, explicit `o`/`c` and mouse fallback, narrow-layout button hitboxes, cancelled/foreign dialog outcomes, complete long-link copying and hostile helper input. Subprocess fixtures test no-queue admission, clipboard ownership, timeout/cancellation/drain and fixed launcher argument boundaries without opening a real browser or reading/writing the host clipboard. The CLI helper reuses pinned arboard 3.6.1 (Apache-2.0 OR MIT); reviewed `set_text` and macOS/Windows/Linux implementations retain their OS-owned/clipboard-owner semantics. No dependency version or unsafe code is added; Tokio's already-reviewed process feature is explicit for standalone CLI builds.
+
+## Data-use policy admission
+
+```sh
+cargo test --workspace --locked data_use -- --test-threads 2
+```
+
+[ADR 0029](adr/0029-provider-admission-and-data-use-policy.md) covers the independent four-way policy matrix, owner mutation idempotency/sequence conflicts/restart/quota/corruption, populated schema-28 preservation, known policy failures at prepared root/foreground dispatch, stale maintenance policy binding, actual loopback parent/child policy-change boundaries, typed post-authentication IPC and terminal controls/blocked-model/draft preservation. These are synthetic tests, not assertions about a provider's actual data practices or authorization to upgrade retained QA state.
+
+## Native Codex adapter
+
+```sh
+cargo test -p morons-server --lib --locked openai_codex -- --test-threads 2
+```
+
+[ADR 0028](adr/0028-native-codex-responses-contract.md) pins the full-Responses GPT-5.5 contract. Tests use only synthetic credentials and loopback HTTP: fixed body/headers, strict tools and normalized images, local-only output limits, policy checks, provider-instance/turn/generation/request-sequence binding, receipt-bound reasoning and sticky-header isolation, lease release after headers, cancellation/drop/deadlines, contradictory/oversized metadata and no retry/fallback. The adapter now has synthetic application-level root, mixed-provider task and compaction coverage. These checks do not qualify subscription entitlement, current account policy, remote generation/spend limits or live interoperability. Durable policy settings guard both provider identities, with exact native provider/credential and cross-provider task bindings; no retained QA upgrade or real browser/provider call is implied.
+
+[ADR 0035](adr/0035-reviewed-native-model-expansion.md) extends the exact native full-Responses matrix to Astra, Sol, Luna, Terra and Daybreak Blue. Tests assert unchanged bodies except the selected ID, local limits/unknown policy, unsupported IDs, provider denial and Blue→Sol response mismatch without fallback/replay. Root image/tool/receipt flows and policy/missing-login/default admission run for all six models. Mixed-provider children include Luna and Blue in both directions, plus Astra→Terra within native credentials; compaction adds Astra foreground and Sol background alongside GPT-5.5. Histories reopen with exact model bindings. CLI checks deliberate selection and Blue's approval disclosure. These fixtures do not establish access or repair the earlier unclassified live protocol failure. No Pi credential or configuration is imported at runtime.
+
+## Native protocol diagnostics
+
+[ADR 0036](adr/0036-native-protocol-failure-diagnostics.md) adds closed guard stages without changing response acceptance or original ProviderError/failure/uncertainty classifications. `cargo test --workspace --locked diagnostic -- --test-threads 2` covers fixed/redacted decoder and actual HTTP failures, unchanged no-replay/poisoning, closed cursor-free IPC44 events, bounded broadcasts/slow-consumer disconnects, exact terminal session/run scope and duplicate rejection. An HMAC-authenticated, version-negotiated in-memory connection exercises real HTTP→durable root failure→typed client subscription ordering, with no diagnostic history or replay. CLI coverage preserves the draft/model/transcript and shows only fixed text plus the local run locator. These tests do not inspect a real provider response or prove the earlier failure's cause. No parser guard is relaxed. Live diagnosis needs a separately authorized fresh request; absence of an ephemeral reason is not retry permission.
+
+[ADR0037](adr/0037-native-stream-media-type-compatibility.md) adds a failing-before real HTTP regression for native SSE without Content-Type, retaining exact completed output/tool/reasoning/usage and prepared-byte no-replay rules. Three tests exercise absent and valid types; explicit empty/conflicting/duplicated types; untyped HTML/JSON/empty/partial/wrong-model/invalid-usage bodies; oversized declarations; and untyped-body cancellation/deadlines. Shared OpenCode/OAuth media-type checks remain strict. The six-model native root image/tool/receipt flow now uses an untyped first response and a typed continuation. These are synthetic compatibility checks, not proof of the live header's value or a successful native inference sample.
+
+[ADR0038](adr/0038-native-completed-output-items.md) adds a failing-before native empty-terminal-array regression backed by complete item events. Four unit tests cover equality with old normalized outputs, full/empty dual-source reconciliation, reordered complete indices, refusal/text/reasoning/functions, ignored extensions, conflicting identity/usage/output, duplicates/gaps/partial sources, late or mismatched deltas, response isolation and aggregate source bounds. Native HTTP tests exercise complete item events plus empty terminal output, gap/partial/usage rejection, cancellation after cached items and no replay. All six root image/tool/receipt flows use an untyped item-event first response and full-output continuation. No result is manufactured from deltas alone; OpenCode remains on the old constructor. The live completed-identity classification still does not identify its exact predicate.
+
+## Native application binding
+
+```sh
+cargo test -p morons-server --lib --locked run_supervisor::tests::native -- --test-threads 2
+cargo test -p morons-cli --lib --locked native_models
+```
+
+Synthetic application tests cover native text/image tools and receipt-bound continuation without an OpenCode key; both mixed-provider directions with deliberately different credential generations and later model-setting changes; wrong/missing/corrupt binding evidence; foreground tools-free turn separation and background installation unaffected by unrelated credential changes; cancellation while waiting for the native lease; replacement invalidating a later turn without replay; reviewed policy/credential admission and explicit picker/local-limit disclosure. Existing migration coverage additionally reopens populated schema-29 OpenCode task history without inventing bindings. These do not verify real login, refresh rotation, subscription entitlement, provider data practices, costs or native release artifacts.
 
 ## Local performance probes
 

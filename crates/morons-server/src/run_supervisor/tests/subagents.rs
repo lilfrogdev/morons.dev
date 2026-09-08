@@ -19,8 +19,8 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
     store
         .set_subagent_model_setting(
             PersistenceMutationRequestId::from_bytes([0x73; 16]),
-            crate::persistence::SubagentModelSetting::OpenCode {
-                service: RunOpenCodeService::Go,
+            crate::persistence::SubagentModelSetting::Explicit {
+                service: RunService::Go,
                 model_id: "glm-5.3-flash".to_owned(),
             },
         )
@@ -43,7 +43,7 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
             session_id,
             text: "Delegate two independent checks.".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -182,7 +182,27 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
     ));
     application.shutdown().await;
     drop(application);
-    SessionStore::open_for_test(root.path()).expect("durable subagent result should reopen");
+    drop(SessionStore::open_for_test(root.path()).expect("durable subagent result should reopen"));
+    let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    db.execute("DELETE FROM task_model_bindings", []).unwrap();
+    crate::persistence::data_use::tests::restore_schema_29(&db);
+    drop(db);
+    let store = SessionStore::open_for_test(root.path())
+        .expect("historical v29 task results should migrate without invented bindings");
+    let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM task_model_bindings", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert!(
+        root.path()
+            .join("backups/sessions-before-schema-v29.sqlite3")
+            .exists()
+    );
+    drop(db);
+    drop(store);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -215,7 +235,7 @@ async fn cancelling_a_parent_run_stops_its_subagent_batch() {
             session_id,
             text: "Delegate a stalled check.".to_owned(),
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await

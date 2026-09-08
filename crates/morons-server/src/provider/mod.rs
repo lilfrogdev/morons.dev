@@ -2,14 +2,26 @@ mod anthropic_messages;
 mod cancellation;
 mod catalog;
 mod chat_completions;
+mod data_use;
+pub(crate) mod dispatch;
 mod error;
+pub mod openai_codex;
+pub(crate) mod response_diagnostic;
+mod response_http;
+pub use data_use::DataUseRestrictions;
 mod gemini;
+mod http_client;
 pub(crate) mod json;
 mod models;
+mod profile;
+pub use profile::{ModelProfile, ModelService, find_model_profile};
+pub mod openai_auth;
 mod opencode;
 mod outcome;
 mod request;
 mod responses;
+#[cfg(test)]
+pub(crate) use responses::native_tests::completed_item_stream_fixture;
 mod sse;
 
 pub(crate) use crate::persistence::OpenCodeCredentialLease;

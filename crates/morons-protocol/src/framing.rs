@@ -15,7 +15,7 @@ pub const MAX_FRAME_PAYLOAD_BYTES: usize = 12 * 1024 * 1024;
 #[non_exhaustive]
 pub enum FrameError {
     Io(io::Error),
-    Json(serde_json::Error),
+    Json,
     PayloadTooLarge {
         payload_bytes: usize,
         maximum_payload_bytes: usize,
@@ -26,7 +26,7 @@ impl fmt::Display for FrameError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "frame I/O failed: {error}"),
-            Self::Json(error) => write!(formatter, "frame JSON is invalid: {error}"),
+            Self::Json => formatter.write_str("frame JSON is invalid"),
             Self::PayloadTooLarge {
                 payload_bytes,
                 maximum_payload_bytes,
@@ -42,7 +42,7 @@ impl Error for FrameError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::Json(error) => Some(error),
+            Self::Json => None,
             Self::PayloadTooLarge { .. } => None,
         }
     }
@@ -55,8 +55,8 @@ impl From<io::Error> for FrameError {
 }
 
 impl From<serde_json::Error> for FrameError {
-    fn from(error: serde_json::Error) -> Self {
-        Self::Json(error)
+    fn from(_error: serde_json::Error) -> Self {
+        Self::Json
     }
 }
 
@@ -326,7 +326,17 @@ mod tests {
             .await
             .expect_err("malformed client message should be rejected");
 
-        assert!(matches!(error, FrameError::Json(_)));
+        assert!(matches!(error, FrameError::Json));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn malformed_authentication_frames_never_disclose_parser_values_or_field_names() {
+        let payload=br#"{"type":"hello","protocol_version":40,"client_version":"test","never-log-this-code":true}"#;
+        let (mut writer, mut reader) = tokio::io::duplex(512);
+        write_raw_frame(&mut writer, payload).await;
+        let error = read_client_message(&mut reader).await.unwrap_err();
+        assert!(!format!("{error:?} {error}").contains("never-log-this-code"));
+        assert!(std::error::Error::source(&error).is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]

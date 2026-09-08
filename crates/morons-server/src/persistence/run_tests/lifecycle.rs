@@ -75,7 +75,7 @@ async fn complete_provider_outcome_commits_assistant_and_terminal_run() {
             MutationRequestId::from_bytes([0x22; 16]),
             session.id,
             "answer this",
-            RunOpenCodeService::Zen,
+            RunService::Zen,
             TEST_MODEL,
         )
         .await

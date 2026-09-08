@@ -31,10 +31,12 @@ The application consists of a long-running local server and a separate terminal 
 - The shared coding core favors simple verified changes. Main-model planning and subagent implementation are prompt-led, user-overridable defaults, not enforced tool restrictions.
 - Images enter through clipboard paste, drag and drop, explicit paths, or `read`, appear as atomic filename markers, and persist as structured bounded session attachments.
 - OpenCode Zen and OpenCode Go use one concrete provider integration with reviewed Responses, Chat Completions, Anthropic Messages, and Gemini routes while remaining distinct service and billing identities.
+- Native ChatGPT uses a separate reviewed Codex Responses adapter and credential identity. Task batches durably bind their own selected model and credential generation before dispatch; no cross-provider credential or model fallback is allowed.
 - A reviewed built-in manifest, not remote catalog metadata, defines supported service, model, protocol, image, tool, limit, and data-use combinations.
+- Independent default-off training and zero-retention restrictions are enforced by server admission; unknown policy cannot satisfy a restriction, and changes cannot recall already admitted work.
 - Session identity and lifetime are independent of client connections and temporary runtimes.
 - Direct user input is durably attributed to `LocalOwner` and commits atomically with a new run identity.
-- Every run records an explicit OpenCode service and model, and each session permits one nonterminal top-level run without an input queue.
+- Every run records an explicit provider service, model and provider-local credential generation, and each session permits one nonterminal top-level run without an input queue.
 - Canonical transcripts contain complete attributed entries; assistant text deltas and Python kernel memory are ephemeral.
 - Context compaction preserves canonical history and stores only source-bound lossy checkpoints; no hidden memory crosses sessions.
 - Session snapshots and durable event subscriptions compose through one gap-free cursor boundary.
@@ -69,7 +71,8 @@ Treat repositories, model output, commands, skills, protocol messages, images, a
 - Users needing isolation must run the complete application inside their own container, virtual machine, or restricted operating-system account.
 - Validate and bound data at process, filesystem, image-decoding, persistence, terminal, provider, and network boundaries without misrepresenting validation as confinement.
 - Keep Morons-managed provider credentials in dedicated owner-controlled server state outside SQLite, backups, attachments, configuration, and IPC control state.
-- Accept credentials only through authenticated local IPC after non-echoing terminal input; never deliberately inject them into command arguments or child environments.
+- Accept manually entered API keys only through authenticated local IPC after non-echoing terminal input. Native OAuth starts from authenticated owner intent; codes and tokens stay in the server's fixed callback/exchange flow, never token-paste or credential-import IPC.
+- Never deliberately inject Morons-managed credentials into command arguments or child environments. OAuth navigation URLs belong to dedicated ephemeral browser interaction, never prompts, Morons history, ordinary status or logs. The authenticated login dialog may auto-open the fixed URL through a shell-free OS launcher and copy it only on explicit owner action; launcher arguments, browser history and clipboard managers may retain that navigation URL. Tokens/codes/verifiers are never launcher or clipboard input.
 - Do not claim that owner-only files are confidential from arbitrary processes running as the same user. User environment credentials and credential agents are intentionally available to local commands.
 - Never intentionally expose Morons-managed credentials through kernels, model prompts, protocol responses, audit facts, errors, or logs.
 - Treat remote model catalogs and provider responses as untrusted input that cannot select an origin, protocol, capability, or credential scope.

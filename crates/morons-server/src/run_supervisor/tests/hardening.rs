@@ -100,7 +100,7 @@ async fn image_pressure_compacts_before_loading_an_oversized_image_context() {
         .complete_compaction(
             accepted.run.id,
             operation,
-            RunOpenCodeService::Zen,
+            RunService::Zen,
             "gpt-5-nano".to_owned(),
             "Earlier images summarized.".to_owned(),
         )
@@ -119,7 +119,7 @@ async fn image_pressure_compacts_before_loading_an_oversized_image_context() {
 
 pub(super) fn selection() -> RunModelSelection {
     RunModelSelection {
-        service: RunOpenCodeService::Zen,
+        service: RunService::Zen,
         model_id: "muse-spark-1.2".to_owned(),
         protocol_revision: 1,
         maximum_input_tokens: 96_000,
@@ -140,7 +140,7 @@ async fn submit(
             session_id,
             text,
             attachments: Vec::new(),
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await
@@ -294,7 +294,7 @@ async fn oversized_prefix_uses_disclosed_bounded_excerpts_and_external_corruptio
     let status = application
         .execute_for_local_owner(ApplicationRequest::GetSessionContext {
             session_id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
         })
         .await;

@@ -10,14 +10,14 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    OpenCodeModel, OpenCodeService, ProviderError, ProviderProtocol, find_open_code_model,
-    json::parse_strict_value,
+    ModelCapabilities, OpenCodeModel, OpenCodeService, ProviderError, ProviderProtocol,
+    find_open_code_model, json::parse_strict_value,
 };
 
 pub const MAX_PROVIDER_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 const MAX_INPUT_ITEMS: usize = 256;
 const MAX_INPUT_TEXT_BYTES: usize = 512 * 1024;
-const MAX_AGGREGATE_INPUT_BYTES: usize = 12 * 1024 * 1024;
+pub(super) const MAX_AGGREGATE_INPUT_BYTES: usize = 12 * 1024 * 1024;
 const MAX_INPUT_IMAGES: usize = 16;
 const MAX_INPUT_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_AGGREGATE_IMAGE_BYTES: usize = 6 * 1024 * 1024;
@@ -313,7 +313,7 @@ impl OpenCodeResponseRequest {
         {
             return Err(ProviderError::InvalidRequest);
         }
-        validate_input(&input, model)?;
+        validate_input(&input, model.protocol, model.capabilities)?;
         if !tools.definitions.is_empty() && !model.capabilities.tool_calls {
             return Err(ProviderError::InvalidRequest);
         }
@@ -464,7 +464,11 @@ impl RequestEncoder<'_> {
     }
 }
 
-fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<(), ProviderError> {
+pub(super) fn validate_input(
+    input: &[ProviderInputItem],
+    protocol: ProviderProtocol,
+    capabilities: ModelCapabilities,
+) -> Result<usize, ProviderError> {
     if input.is_empty() || input.len() > MAX_INPUT_ITEMS {
         return Err(ProviderError::InvalidRequest);
     }
@@ -485,7 +489,7 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
             ProviderInputItem::MultimodalMessage { role, parts, phase } => {
                 if *role != ProviderMessageRole::User
                     || phase.is_some()
-                    || !model.capabilities.image_input
+                    || !capabilities.image_input
                     || parts.is_empty()
                     || parts.len() > MAX_INPUT_IMAGES * 2 + 1
                 {
@@ -558,8 +562,8 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
                 if arguments.is_empty()
                     || arguments.len() > MAX_TOOL_ARGUMENT_BYTES
                     || opaque_continuation.as_ref().is_some_and(|continuation| {
-                        model.protocol != ProviderProtocol::Gemini
-                            || !model.capabilities.reasoning_continuation
+                        protocol != ProviderProtocol::Gemini
+                            || !capabilities.reasoning_continuation
                             || continuation.is_empty()
                             || continuation.len() > MAX_ENCRYPTED_REASONING_BYTES
                     })
@@ -589,9 +593,9 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
                 encrypted_content,
             } => {
                 validate_identifier(id, MAX_PROVIDER_CALL_ID_BYTES)?;
-                if model.protocol != ProviderProtocol::Responses
+                if protocol != ProviderProtocol::Responses
                     || (summaries.is_empty() && encrypted_content.is_none())
-                    || (encrypted_content.is_some() && !model.capabilities.reasoning_continuation)
+                    || (encrypted_content.is_some() && !capabilities.reasoning_continuation)
                     || summaries.len() > MAX_REASONING_SUMMARIES
                     || summaries
                         .iter()
@@ -614,7 +618,7 @@ fn validate_input(input: &[ProviderInputItem], model: &OpenCodeModel) -> Result<
             return Err(ProviderError::InvalidRequest);
         }
     }
-    Ok(())
+    Ok(aggregate_bytes)
 }
 
 fn validate_tool_definitions(tools: &[ProviderTool]) -> Result<(), ProviderError> {
@@ -696,6 +700,17 @@ pub(super) fn validate_identifier(value: &str, maximum_bytes: usize) -> Result<(
         return Err(ProviderError::InvalidRequest);
     }
     Ok(())
+}
+
+pub(super) fn responses_input(input: &[ProviderInputItem]) -> impl Serialize + '_ {
+    input.iter().map(WireInputItem::from).collect::<Vec<_>>()
+}
+pub(super) fn responses_tools(tools: &PreparedProviderTools) -> impl Serialize + '_ {
+    tools
+        .definitions
+        .iter()
+        .map(WireTool::from)
+        .collect::<Vec<_>>()
 }
 
 #[derive(Serialize)]

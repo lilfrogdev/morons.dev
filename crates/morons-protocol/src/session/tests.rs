@@ -8,10 +8,10 @@ use super::{
 };
 use crate::{
     ApplicationSettings, ClientMessage, LocalCommandId, LocalCommandStatus, MessageId,
-    OpenCodeApiKey, OpenCodeCredentialStatus, OpenCodeModelCapabilities, OpenCodeModelRetention,
-    OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeModelTrainingUse, OpenCodeService,
-    ProviderProtocol, RunFailureKind, RunId, RunState, RunSummary, SubagentModelSetting,
-    ToolCallId, ToolKind, ToolResultStatus, TranscriptCursor, TranscriptPageDirection,
+    ModelCapabilities, ModelRetention, ModelSelection, ModelService, ModelSummary,
+    ModelTrainingUse, OpenCodeApiKey, OpenCodeCredentialStatus, ProviderProtocol, RunFailureKind,
+    RunId, RunState, RunSummary, SubagentModelSetting, ToolCallId, ToolKind, ToolResultStatus,
+    TranscriptCursor, TranscriptPageDirection,
 };
 
 const TEST_API_KEY: &str = "not-a-real-protocol-key";
@@ -206,7 +206,7 @@ fn context_status_contract_has_stable_json_shapes() {
     let session_id = SessionId::from_bytes([0x19; 16]);
     let request = ApplicationRequest::GetSessionContext {
         session_id,
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "muse-spark-1.2".to_owned(),
     };
     assert_eq!(
@@ -226,7 +226,7 @@ fn context_status_contract_has_stable_json_shapes() {
             },
             project_context: None,
             session_id,
-            service: OpenCodeService::Zen,
+            service: ModelService::Zen,
             model_id: "muse-spark-1.2".to_owned(),
             context_policy_version: 4,
             estimated_input_tokens: 12_000,
@@ -301,7 +301,7 @@ fn run_request_has_stable_json_shape() {
         session_id: SessionId::from_bytes([0x13; 16]),
         text: "sensitive prompt text".to_owned(),
         attachments: Vec::new(),
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "muse-spark-1.2".to_owned(),
     };
     let debug = format!("{request:?}");
@@ -333,7 +333,7 @@ fn image_submission_contract_is_stable_and_debug_redacts_payload() {
             marker_start: 4,
             data_base64: "c2Vuc2l0aXZlLWltYWdl".to_owned(),
         }],
-        service: OpenCodeService::Zen,
+        service: ModelService::Zen,
         model_id: "gpt-5.4".to_owned(),
     };
     let debug = format!("{request:?}");
@@ -506,47 +506,45 @@ fn model_catalog_contract_has_stable_json_shape() {
         json!("gemini")
     );
     assert_eq!(
-        serde_json::to_value(OpenCodeModelTrainingUse::MayUsePromptsAndCompletions)
+        serde_json::to_value(ModelTrainingUse::MayUsePromptsAndCompletions)
             .expect("training use should encode"),
         json!("may_use_prompts_and_completions")
     );
     assert_eq!(
-        serde_json::to_value(OpenCodeModelTrainingUse::NotDocumented)
-            .expect("training use should encode"),
+        serde_json::to_value(ModelTrainingUse::NotDocumented).expect("training use should encode"),
         json!("not_documented")
     );
     assert_eq!(
-        serde_json::to_value(OpenCodeModelRetention::NotZeroDataRetention)
+        serde_json::to_value(ModelRetention::NotZeroDataRetention)
             .expect("retention should encode"),
         json!("not_zero_data_retention")
     );
     assert_eq!(
-        serde_json::to_value(OpenCodeModelRetention::NotDocumented)
-            .expect("retention should encode"),
+        serde_json::to_value(ModelRetention::NotDocumented).expect("retention should encode"),
         json!("not_documented")
     );
 
-    let request = ApplicationRequest::ListOpenCodeModels {
-        service: OpenCodeService::Go,
+    let request = ApplicationRequest::ListModels {
+        service: ModelService::Go,
     };
     assert_eq!(
         serde_json::to_value(request).expect("model query should encode"),
         json!({
-            "operation": "list_open_code_models",
+            "operation": "list_models",
             "service": "go",
         })
     );
 
-    let response = ApplicationResponse::OpenCodeModelsListed {
-        service: OpenCodeService::Go,
-        models: vec![OpenCodeModelSummary {
-            service: OpenCodeService::Go,
+    let response = ApplicationResponse::ModelsListed {
+        service: ModelService::Go,
+        models: vec![ModelSummary {
+            service: ModelService::Go,
             id: "grok-4.6".to_owned(),
             display_name: "Grok 4.6".to_owned(),
             available: true,
             protocol: ProviderProtocol::Responses,
             protocol_revision: 1,
-            capabilities: OpenCodeModelCapabilities {
+            capabilities: ModelCapabilities {
                 text_input: true,
                 image_input: false,
                 text_output: true,
@@ -556,14 +554,15 @@ fn model_catalog_contract_has_stable_json_shape() {
             },
             maximum_input_tokens: 96_000,
             maximum_output_tokens: 32_000,
-            training_use: OpenCodeModelTrainingUse::NotUsed,
-            retention: OpenCodeModelRetention::UpToThirtyDays,
+            training_use: ModelTrainingUse::NotUsed,
+            retention: ModelRetention::UpToThirtyDays,
+            output_limit_is_local: false,
         }],
     };
     assert_eq!(
         serde_json::to_value(response).expect("model response should encode"),
         json!({
-            "result": "open_code_models_listed",
+            "result": "models_listed",
             "service": "go",
             "models": [{
                 "service": "go",
@@ -584,6 +583,7 @@ fn model_catalog_contract_has_stable_json_shape() {
                 "maximum_output_tokens": 32000,
                 "training_use": "not_used",
                 "retention": "up_to_thirty_days",
+                "output_limit_is_local": false,
             }],
         })
     );
@@ -592,43 +592,43 @@ fn model_catalog_contract_has_stable_json_shape() {
 #[test]
 fn default_model_contract_has_stable_json_shapes() {
     assert_eq!(
-        serde_json::to_value(ApplicationRequest::GetDefaultOpenCodeModel)
+        serde_json::to_value(ApplicationRequest::GetDefaultModel)
             .expect("default model query should encode"),
-        json!({ "operation": "get_default_open_code_model" })
+        json!({ "operation": "get_default_model" })
     );
-    let request = ApplicationRequest::SetDefaultOpenCodeModel {
+    let request = ApplicationRequest::SetDefaultModel {
         mutation_request_id: MutationRequestId::from_bytes([0x29; 16]),
-        service: OpenCodeService::Go,
+        service: ModelService::Go,
         model_id: "grok-4.6".to_owned(),
     };
     assert_eq!(
         serde_json::to_value(request).expect("default model mutation should encode"),
         json!({
-            "operation": "set_default_open_code_model",
+            "operation": "set_default_model",
             "mutation_request_id": "mut_29292929292929292929292929292929",
             "service": "go",
             "model_id": "grok-4.6",
         })
     );
-    let selection = OpenCodeModelSelection {
-        service: OpenCodeService::Go,
+    let selection = ModelSelection {
+        service: ModelService::Go,
         model_id: "grok-4.6".to_owned(),
     };
     assert_eq!(
-        serde_json::to_value(ApplicationResponse::DefaultOpenCodeModel {
+        serde_json::to_value(ApplicationResponse::DefaultModel {
             selection: Some(selection.clone()),
         })
         .expect("default model response should encode"),
         json!({
-            "result": "default_open_code_model",
+            "result": "default_model",
             "selection": { "service": "go", "model_id": "grok-4.6" },
         })
     );
     assert_eq!(
-        serde_json::to_value(ApplicationResponse::DefaultOpenCodeModelUpdated { selection })
+        serde_json::to_value(ApplicationResponse::DefaultModelUpdated { selection })
             .expect("default model update should encode"),
         json!({
-            "result": "default_open_code_model_updated",
+            "result": "default_model_updated",
             "selection": { "service": "go", "model_id": "grok-4.6" },
         })
     );
@@ -641,8 +641,8 @@ fn application_settings_contract_has_stable_json_shapes() {
             .expect("settings query should encode"),
         json!({ "operation": "get_application_settings" })
     );
-    let setting = SubagentModelSetting::OpenCode {
-        service: OpenCodeService::Go,
+    let setting = SubagentModelSetting::Explicit {
+        service: ModelService::Go,
         model_id: "glm-5.3-flash".to_owned(),
     };
     assert_eq!(
@@ -655,7 +655,7 @@ fn application_settings_contract_has_stable_json_shapes() {
             "operation": "set_subagent_model_setting",
             "mutation_request_id": "mut_2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
             "setting": {
-                "mode": "open_code",
+                "mode": "explicit",
                 "service": "go",
                 "model_id": "glm-5.3-flash",
             },
@@ -664,13 +664,14 @@ fn application_settings_contract_has_stable_json_shapes() {
     assert_eq!(
         serde_json::to_value(ApplicationResponse::ApplicationSettings {
             settings: ApplicationSettings {
+                data_use: Default::default(),
                 subagent_model: SubagentModelSetting::InheritParent {},
             },
         })
         .expect("settings response should encode"),
         json!({
             "result": "application_settings",
-            "settings": { "subagent_model": { "mode": "inherit_parent" } },
+            "settings": { "subagent_model": { "mode": "inherit_parent" }, "data_use": { "sequence": 0, "block_training_use": false, "require_zero_retention": false } },
         })
     );
     assert!(
@@ -687,6 +688,7 @@ fn application_settings_contract_has_stable_json_shapes() {
     assert_eq!(
         serde_json::to_value(ApplicationResponse::ApplicationSettingsUpdated {
             settings: ApplicationSettings {
+                data_use: Default::default(),
                 subagent_model: setting,
             },
         })
@@ -694,14 +696,36 @@ fn application_settings_contract_has_stable_json_shapes() {
         json!({
             "result": "application_settings_updated",
             "settings": {
+                "data_use": { "sequence": 0, "block_training_use": false, "require_zero_retention": false },
                 "subagent_model": {
-                    "mode": "open_code",
+                    "mode": "explicit",
                     "service": "go",
                     "model_id": "glm-5.3-flash",
                 },
             },
         })
     );
+}
+
+#[test]
+fn data_use_policy_wire_is_explicit_closed_and_typed() {
+    let value = json!({"operation":"set_data_use_policy","mutation_request_id":"mut_2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a","policy":{"sequence":0,"block_training_use":true,"require_zero_retention":false}});
+    let request: ApplicationRequest = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), value);
+    for field in ["block_training_use", "require_zero_retention"] {
+        let mut invalid = value.clone();
+        invalid["policy"][field] = json!("false");
+        assert!(serde_json::from_value::<ApplicationRequest>(invalid).is_err());
+    }
+    let mut unknown = value.clone();
+    unknown["policy"]["account_plan"] = json!("enterprise");
+    assert!(serde_json::from_value::<ApplicationRequest>(unknown).is_err());
+    let mut missing = value;
+    missing["policy"]
+        .as_object_mut()
+        .unwrap()
+        .remove("sequence");
+    assert!(serde_json::from_value::<ApplicationRequest>(missing).is_err());
 }
 
 #[test]
@@ -827,7 +851,7 @@ fn run_response_has_stable_json_shape() {
             id: RunId::from_bytes([0x31; 16]),
             session_id: SessionId::from_bytes([0x32; 16]),
             user_message_id: MessageId::from_bytes([0x33; 16]),
-            service: OpenCodeService::Go,
+            service: ModelService::Go,
             model_id: "grok-4.6".to_owned(),
             protocol_revision: 1,
             credential_generation: 4,

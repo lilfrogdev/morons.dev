@@ -89,6 +89,8 @@ impl Backend {
             .connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))?;
         if self.context_data_version.get() != Some(version) {
+            self.validate_data_use_policy()?;
+            self.validate_task_bindings()?;
             self.validate_context_checkpoint_digests()?;
             self.validate_maintenance_records()?;
             self.context_data_version.set(Some(version));

@@ -1,4 +1,8 @@
 use std::{fmt, sync::Arc};
+mod native_diagnostic;
+#[cfg(test)]
+mod native_diagnostic_tests;
+pub(crate) use native_diagnostic::NativeResponseDiagnostic;
 
 use morons_protocol::{
     ApplicationEvent, SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
@@ -18,6 +22,7 @@ const ASSISTANT_DELTA_QUEUE_CAPACITY: usize = 64;
 
 pub(crate) struct SessionEventHub {
     assistant_deltas: broadcast::Sender<AssistantDelta>,
+    native_diagnostics: broadcast::Sender<NativeResponseDiagnostic>,
 }
 
 #[derive(Clone)]
@@ -52,6 +57,8 @@ pub(crate) struct SessionSubscription {
     pub(crate) cursor: SessionEventCursor,
     pub(crate) notifications: watch::Receiver<u64>,
     pub(crate) assistant_deltas: broadcast::Receiver<AssistantDelta>,
+    pub(crate) native_diagnostics: broadcast::Receiver<NativeResponseDiagnostic>,
+    pub(super) native_protocol_failure: bool,
     pub(super) active_run: Option<RunId>,
     pub(super) terminal_run: Option<RunId>,
 }
@@ -75,6 +82,9 @@ impl SessionSubscription {
         self.cursor = event.cursor;
         if let Some(ApplicationEvent::SessionRunChanged { run, .. }) = &event.event {
             let run_id = to_persistence_run_id(run.id);
+            self.native_protocol_failure = run.state == morons_protocol::RunState::Failed
+                && run.service == morons_protocol::ModelService::OpenAiChatGpt
+                && run.failure == Some(morons_protocol::RunFailureKind::ProviderProtocol);
             if run.state.is_terminal() {
                 if self.active_run == Some(run_id) {
                     self.active_run = None;
@@ -85,6 +95,13 @@ impl SessionSubscription {
                 self.terminal_run = None;
             }
         }
+    }
+
+    pub(crate) fn accepts_native_diagnostic(&self, diagnostic: &NativeResponseDiagnostic) -> bool {
+        diagnostic.session_id == self.session_id
+            && self.native_protocol_failure
+            && self.active_run.is_none()
+            && self.terminal_run == Some(diagnostic.run_id)
     }
 
     pub(crate) fn accepts_delta(&mut self, delta: &AssistantDelta) -> bool {
@@ -102,7 +119,21 @@ impl SessionSubscription {
 impl SessionEventHub {
     pub(crate) fn new() -> Arc<Self> {
         let (assistant_deltas, _) = broadcast::channel(ASSISTANT_DELTA_QUEUE_CAPACITY);
-        Arc::new(Self { assistant_deltas })
+        let (native_diagnostics, _) = broadcast::channel(64);
+        Arc::new(Self {
+            assistant_deltas,
+            native_diagnostics,
+        })
+    }
+
+    pub(crate) fn publish_native_diagnostic(&self, diagnostic: NativeResponseDiagnostic) {
+        let _ = self.native_diagnostics.send(diagnostic);
+    }
+
+    pub(super) fn subscribe_native_diagnostics(
+        &self,
+    ) -> broadcast::Receiver<NativeResponseDiagnostic> {
+        self.native_diagnostics.subscribe()
     }
 
     pub(crate) fn publish_assistant_delta(&self, delta: AssistantDelta) {
@@ -130,6 +161,8 @@ mod tests {
             cursor: first,
             notifications: receiver,
             assistant_deltas,
+            native_diagnostics: broadcast::channel(1).1,
+            native_protocol_failure: false,
             active_run: None,
             terminal_run: None,
         };

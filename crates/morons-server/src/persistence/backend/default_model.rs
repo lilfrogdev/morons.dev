@@ -9,7 +9,7 @@ use super::{
 };
 use crate::persistence::{
     DefaultModelSelection, MutationRequestId, PersistenceError, PersistenceResourceLimit,
-    RunOpenCodeService, types::REQUEST_FINGERPRINT_BYTES,
+    RunService, types::REQUEST_FINGERPRINT_BYTES,
 };
 
 const MAX_DEFAULT_MODEL_SELECTIONS: i64 = 10_000;
@@ -31,7 +31,7 @@ impl Backend {
                 [],
                 |row| {
                     Ok(DefaultModelSelection {
-                        service: RunOpenCodeService::from_record(row.get(0)?)?,
+                        service: RunService::from_record(row.get(0)?)?,
                         model_id: row.get(1)?,
                     })
                 },
@@ -56,7 +56,7 @@ impl Backend {
                 |row| {
                     Ok((
                         row.get::<_, [u8; 32]>(0)?,
-                        RunOpenCodeService::from_record(row.get(1)?)?,
+                        RunService::from_record(row.get(1)?)?,
                         row.get::<_, String>(2)?,
                     ))
                 },
@@ -76,6 +76,7 @@ impl Backend {
             (None, None) => {}
         }
 
+        self.admit_model_data_use(selection.service, &selection.model_id)?;
         let selection_count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM default_model_selections",
             [],

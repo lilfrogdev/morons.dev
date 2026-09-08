@@ -68,6 +68,10 @@ pub enum ServerMessage {
     SubscriptionEnded {
         error: ApplicationError,
     },
+    OpenAiLoginFinished {
+        attempt_id: crate::MutationRequestId,
+        outcome: crate::OpenAiLoginResult,
+    },
 }
 
 impl ServerMessage {

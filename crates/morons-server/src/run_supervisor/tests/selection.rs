@@ -8,17 +8,17 @@ async fn model_catalog_query_returns_only_reviewed_server_metadata() {
     let application = ServerApplication::from_session_store_for_test(store, &base);
 
     let outcome = application
-        .execute_for_local_owner(ApplicationRequest::ListOpenCodeModels {
-            service: OpenCodeService::Go,
+        .execute_for_local_owner(ApplicationRequest::ListModels {
+            service: ModelService::Go,
         })
         .await
         .expect("model catalog query should succeed");
-    let ApplicationOutcome::Response(ApplicationResponse::OpenCodeModelsListed { service, models }) =
+    let ApplicationOutcome::Response(ApplicationResponse::ModelsListed { service, models }) =
         outcome
     else {
         panic!("model catalog query should return model summaries");
     };
-    assert_eq!(service, OpenCodeService::Go);
+    assert_eq!(service, ModelService::Go);
     assert!(models.iter().all(|model| model.service == service));
     assert!(
         models
@@ -37,9 +37,8 @@ async fn model_catalog_query_returns_only_reviewed_server_metadata() {
     assert!(models.iter().any(|model| {
         model.id == "muse-spark-1.2-contributor"
             && model.available
-            && model.training_use
-                == morons_protocol::OpenCodeModelTrainingUse::MayUsePromptsAndCompletions
-            && model.retention == morons_protocol::OpenCodeModelRetention::NotZeroDataRetention
+            && model.training_use == morons_protocol::ModelTrainingUse::MayUsePromptsAndCompletions
+            && model.retention == morons_protocol::ModelRetention::NotZeroDataRetention
     }));
     assert!(models.iter().any(|model| {
         model.id == "qwen3.8-max"
@@ -50,8 +49,8 @@ async fn model_catalog_query_returns_only_reviewed_server_metadata() {
     assert!(models.iter().any(|model| {
         model.id == "grok-4.5"
             && !model.available
-            && model.training_use == morons_protocol::OpenCodeModelTrainingUse::NotDocumented
-            && model.retention == morons_protocol::OpenCodeModelRetention::NotDocumented
+            && model.training_use == morons_protocol::ModelTrainingUse::NotDocumented
+            && model.retention == morons_protocol::ModelRetention::NotDocumented
     }));
 
     let captured = captured_request
@@ -70,17 +69,17 @@ async fn default_model_selection_is_reviewed_idempotent_and_queryable() {
     let application = ServerApplication::from_session_store_for_test(store, "http://127.0.0.1:9");
 
     let empty = application
-        .execute_for_local_owner(ApplicationRequest::GetDefaultOpenCodeModel)
+        .execute_for_local_owner(ApplicationRequest::GetDefaultModel)
         .await
         .expect("empty default query should succeed");
     assert!(matches!(
         empty,
-        ApplicationOutcome::Response(ApplicationResponse::DefaultOpenCodeModel { selection: None })
+        ApplicationOutcome::Response(ApplicationResponse::DefaultModel { selection: None })
     ));
 
-    let request = ApplicationRequest::SetDefaultOpenCodeModel {
+    let request = ApplicationRequest::SetDefaultModel {
         mutation_request_id: MutationRequestId::from_bytes([0x61; 16]),
-        service: OpenCodeService::Go,
+        service: ModelService::Go,
         model_id: "grok-4.6".to_owned(),
     };
     for _ in 0..2 {
@@ -90,26 +89,26 @@ async fn default_model_selection_is_reviewed_idempotent_and_queryable() {
             .expect("default selection should succeed");
         assert!(matches!(
             selected,
-            ApplicationOutcome::Response(ApplicationResponse::DefaultOpenCodeModelUpdated {
+            ApplicationOutcome::Response(ApplicationResponse::DefaultModelUpdated {
                 selection
-            }) if selection.service == OpenCodeService::Go && selection.model_id == "grok-4.6"
+            }) if selection.service == ModelService::Go && selection.model_id == "grok-4.6"
         ));
     }
     let loaded = application
-        .execute_for_local_owner(ApplicationRequest::GetDefaultOpenCodeModel)
+        .execute_for_local_owner(ApplicationRequest::GetDefaultModel)
         .await
         .expect("selected default should be queried");
     assert!(matches!(
         loaded,
-        ApplicationOutcome::Response(ApplicationResponse::DefaultOpenCodeModel {
+        ApplicationOutcome::Response(ApplicationResponse::DefaultModel {
             selection: Some(selection)
-        }) if selection.service == OpenCodeService::Go && selection.model_id == "grok-4.6"
+        }) if selection.service == ModelService::Go && selection.model_id == "grok-4.6"
     ));
 
     let unsupported = application
-        .execute_for_local_owner(ApplicationRequest::SetDefaultOpenCodeModel {
+        .execute_for_local_owner(ApplicationRequest::SetDefaultModel {
             mutation_request_id: MutationRequestId::from_bytes([0x62; 16]),
-            service: OpenCodeService::Go,
+            service: ModelService::Go,
             model_id: "not-reviewed".to_owned(),
         })
         .await;
@@ -138,8 +137,8 @@ async fn subagent_model_setting_is_reviewed_idempotent_and_queryable() {
 
     let request = ApplicationRequest::SetSubagentModelSetting {
         mutation_request_id: MutationRequestId::from_bytes([0x63; 16]),
-        setting: SubagentModelSetting::OpenCode {
-            service: OpenCodeService::Go,
+        setting: SubagentModelSetting::Explicit {
+            service: ModelService::Go,
             model_id: "glm-5.3-flash".to_owned(),
         },
     };
@@ -154,8 +153,8 @@ async fn subagent_model_setting_is_reviewed_idempotent_and_queryable() {
                 settings
             }) if matches!(
                 settings.subagent_model,
-                SubagentModelSetting::OpenCode {
-                    service: OpenCodeService::Go,
+                SubagentModelSetting::Explicit {
+                    service: ModelService::Go,
                     ref model_id,
                 } if model_id == "glm-5.3-flash"
             )
@@ -174,8 +173,8 @@ async fn subagent_model_setting_is_reviewed_idempotent_and_queryable() {
     let unsupported = application
         .execute_for_local_owner(ApplicationRequest::SetSubagentModelSetting {
             mutation_request_id: MutationRequestId::from_bytes([0x64; 16]),
-            setting: SubagentModelSetting::OpenCode {
-                service: OpenCodeService::Go,
+            setting: SubagentModelSetting::Explicit {
+                service: ModelService::Go,
                 model_id: "not-reviewed".to_owned(),
             },
         })

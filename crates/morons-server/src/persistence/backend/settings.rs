@@ -8,7 +8,7 @@ use super::{
     },
 };
 use crate::persistence::{
-    MutationRequestId, PersistenceError, PersistenceResourceLimit, RunOpenCodeService,
+    MutationRequestId, PersistenceError, PersistenceResourceLimit, RunService,
     SubagentModelSetting, types::REQUEST_FINGERPRINT_BYTES,
 };
 
@@ -62,6 +62,9 @@ impl Backend {
             (None, None) => {}
         }
 
+        if let SubagentModelSetting::Explicit { service, model_id } = &setting {
+            self.admit_model_data_use(*service, model_id)?;
+        }
         let selection_count: i64 = self.connection.query_row(
             "SELECT COUNT(*) FROM subagent_model_selections",
             [],
@@ -125,8 +128,8 @@ fn subagent_model_from_columns(
     let model_id = row.get::<_, Option<String>>(model_index)?;
     match (kind, service, model_id) {
         (1, None, None) => Ok(SubagentModelSetting::InheritParent {}),
-        (2, Some(service), Some(model_id)) => Ok(SubagentModelSetting::OpenCode {
-            service: RunOpenCodeService::from_record(service)?,
+        (2, Some(service), Some(model_id)) => Ok(SubagentModelSetting::Explicit {
+            service: RunService::from_record(service)?,
             model_id,
         }),
         _ => Err(rusqlite::Error::InvalidColumnType(
@@ -140,7 +143,7 @@ fn subagent_model_from_columns(
 fn setting_to_record(setting: &SubagentModelSetting) -> (i64, Option<i64>, Option<&str>) {
     match setting {
         SubagentModelSetting::InheritParent {} => (1, None, None),
-        SubagentModelSetting::OpenCode { service, model_id } => {
+        SubagentModelSetting::Explicit { service, model_id } => {
             (2, Some(service.to_record()), Some(model_id))
         }
     }

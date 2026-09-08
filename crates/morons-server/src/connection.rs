@@ -1,4 +1,6 @@
 use std::{error::Error, fmt, time::Duration};
+#[cfg(test)]
+mod native_diagnostics_tests;
 
 use morons_protocol::{
     ApplicationResponse, ClientMessage, FrameError, PROTOCOL_VERSION, ServerMessage,
@@ -30,6 +32,7 @@ pub enum ConnectionError {
     Frame(FrameError),
     UnexpectedClientMessage,
     SubscriptionWriteTimedOut,
+    SubscriberLagged,
 }
 
 impl fmt::Display for ConnectionError {
@@ -42,6 +45,9 @@ impl fmt::Display for ConnectionError {
             Self::SubscriptionWriteTimedOut => {
                 formatter.write_str("application subscriber stopped accepting events")
             }
+            Self::SubscriberLagged => {
+                formatter.write_str("application subscriber fell behind diagnostic events")
+            }
         }
     }
 }
@@ -50,7 +56,9 @@ impl Error for ConnectionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Frame(error) => Some(error),
-            Self::UnexpectedClientMessage | Self::SubscriptionWriteTimedOut => None,
+            Self::UnexpectedClientMessage
+            | Self::SubscriptionWriteTimedOut
+            | Self::SubscriberLagged => None,
         }
     }
 }
@@ -109,6 +117,9 @@ where
         };
 
         match application.execute_for_local_owner(request).await {
+            Ok(ApplicationOutcome::OpenAiLogin(login)) => {
+                return stream_openai_login(connection, request_id, login).await;
+            }
             Ok(ApplicationOutcome::Response(response)) => {
                 write_server_message(connection, &ServerMessage::response(request_id, response))
                     .await?;
@@ -166,6 +177,46 @@ where
             }
         }
     }
+}
+
+pub(crate) async fn stream_openai_login<S>(
+    connection: &mut S,
+    request_id: u64,
+    mut login: crate::login_supervisor::LoginConnection,
+) -> Result<(), ConnectionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let start = ApplicationResponse::OpenAiLoginStarted {
+        attempt_id: login.id,
+        url: login.url.take().expect("new login URL"),
+    };
+    write_subscription_message(connection, &ServerMessage::response(request_id, start)).await?;
+    let (mut reader, mut writer) = tokio::io::split(connection);
+    let incoming = read_client_message(&mut reader);
+    tokio::pin!(incoming);
+    let result = tokio::select! {
+        biased;
+        message=&mut incoming=> {
+            match message? {
+                Some(ClientMessage::Request {request:morons_protocol::ApplicationRequest::CancelOpenAiLogin {attempt_id},..})=>{
+                    login.cancel(attempt_id).map_err(|_|ConnectionError::UnexpectedClientMessage)?;
+                    login.finish().await
+                }
+                None=>return Ok(()),
+                _=>return Err(ConnectionError::UnexpectedClientMessage),
+            }
+        }
+        result=login.finish()=>result,
+    };
+    write_subscription_message(
+        &mut writer,
+        &ServerMessage::OpenAiLoginFinished {
+            attempt_id: login.id,
+            outcome: result,
+        },
+    )
+    .await
 }
 
 async fn stream_session_catalog_events<S>(
@@ -229,6 +280,7 @@ async fn stream_session_events<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let mut pending_diagnostic = None;
     let (mut reader, mut writer) = tokio::io::split(connection);
     let client_message = read_client_message(&mut reader);
     tokio::pin!(client_message);
@@ -258,6 +310,13 @@ where
         if *subscription.notifications.borrow() != observed_notification {
             continue;
         }
+        // A diagnostic is published after commit. Catch up the durable stream first.
+        if let Some(diagnostic) = pending_diagnostic.take()
+            && subscription.accepts_native_diagnostic(&diagnostic)
+        {
+            write_subscription_message(&mut writer, &ServerMessage::event(diagnostic.into_event()))
+                .await?;
+        }
 
         tokio::select! {
             biased;
@@ -270,6 +329,14 @@ where
             changed = subscription.notifications.changed() => {
                 if changed.is_err() {
                     return Ok(());
+                }
+            }
+            diagnostic = subscription.native_diagnostics.recv() => {
+                match diagnostic {
+                    Ok(diagnostic) if diagnostic.session_id == subscription.session_id => pending_diagnostic = Some(diagnostic),
+                    Ok(_) => {},
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => return Err(ConnectionError::SubscriberLagged),
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
                 }
             }
             delta = subscription.assistant_deltas.recv() => {

@@ -3,8 +3,8 @@ use std::{fs, path::PathBuf, process, sync::Arc, time::Duration};
 use morons_cli::ApplicationClient;
 
 use morons_protocol::{
-    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, MutationRequestId,
-    OpenCodeService, RunId, RunState, SessionId, SubagentModelSetting,
+    ApplicationError, ApplicationEvent, ApplicationRequest, ApplicationResponse, ModelService,
+    MutationRequestId, RunId, RunState, SessionId, SubagentModelSetting,
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -26,7 +26,7 @@ use crate::{
     persistence::{
         ActivationOutcome, MAX_TRANSCRIPT_TEXT_BYTES,
         MutationRequestId as PersistenceMutationRequestId, PrepareOperationOutcome,
-        ProviderOperationFailureState, RunFailureKind, RunModelSelection, RunOpenCodeService,
+        ProviderOperationFailureState, RunFailureKind, RunModelSelection, RunService,
         RunState as PersistenceRunState, SessionStore,
     },
     provider::{
@@ -35,8 +35,10 @@ use crate::{
     },
 };
 
+mod data_use;
 mod hardening;
 pub(crate) mod maintenance;
+mod native;
 mod observations;
 mod project_guidance;
 mod providers;
@@ -62,20 +64,39 @@ async fn append_completed_context_run(
     marker: &str,
     assistant_padding: usize,
 ) {
+    append_completed_model_run(
+        store,
+        session_id,
+        request_byte,
+        marker,
+        assistant_padding,
+        RunModelSelection {
+            service: RunService::Zen,
+            model_id: "muse-spark-1.2".into(),
+            protocol_revision: 1,
+            maximum_input_tokens: 96_000,
+            maximum_output_tokens: 32_000,
+            supports_tool_calls: true,
+            supports_image_input: false,
+        },
+    )
+    .await;
+}
+
+async fn append_completed_model_run(
+    store: &SessionStore,
+    session_id: crate::persistence::SessionId,
+    request_byte: u8,
+    marker: &str,
+    assistant_padding: usize,
+    selection: RunModelSelection,
+) -> crate::persistence::RunId {
     let accepted = store
         .accept_session_input(
             PersistenceMutationRequestId::from_bytes([request_byte; 16]),
             session_id,
             marker.to_owned(),
-            RunModelSelection {
-                service: RunOpenCodeService::Zen,
-                model_id: "muse-spark-1.2".to_owned(),
-                protocol_revision: 1,
-                maximum_input_tokens: 96_000,
-                maximum_output_tokens: 32_000,
-                supports_tool_calls: true,
-                supports_image_input: false,
-            },
+            selection,
         )
         .await
         .expect("context fixture run should be accepted");
@@ -129,6 +150,7 @@ async fn append_completed_context_run(
         )
         .await
         .expect("fixture run should complete");
+    accepted.run.id
 }
 
 async fn wait_for_terminal(

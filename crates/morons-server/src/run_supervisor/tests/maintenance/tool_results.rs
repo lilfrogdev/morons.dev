@@ -74,7 +74,7 @@ async fn large_tool_results_prepare_background_before_the_next_run_hits_capacity
                 application
                     .execute_for_local_owner(ApplicationRequest::GetSessionContext {
                         session_id,
-                        service: OpenCodeService::Zen,
+                        service: ModelService::Zen,
                         model_id: "muse-spark-1.2".to_owned(),
                     })
                     .await
@@ -112,7 +112,7 @@ async fn large_tool_results_prepare_background_before_the_next_run_hits_capacity
         application
             .execute_for_local_owner(ApplicationRequest::GetSessionContext {
                 session_id,
-                service: OpenCodeService::Zen,
+                service: ModelService::Zen,
                 model_id: "muse-spark-1.2".to_owned(),
             })
             .await
@@ -143,7 +143,7 @@ async fn submit(
                 session_id,
                 text,
                 attachments: Vec::new(),
-                service: OpenCodeService::Zen,
+                service: ModelService::Zen,
                 model_id: "muse-spark-1.2".to_owned(),
             })
             .await

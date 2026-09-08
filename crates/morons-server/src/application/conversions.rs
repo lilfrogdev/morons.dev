@@ -1,12 +1,11 @@
 use morons_protocol::{
-    ApplicationError, ApplicationResponse, MessageId as ProtocolMessageId,
-    MutationRequestId as ProtocolMutationRequestId,
-    OpenCodeCredentialStatus as ProtocolOpenCodeCredentialStatus, OpenCodeModelCapabilities,
-    OpenCodeModelRetention, OpenCodeModelSummary, OpenCodeModelTrainingUse,
-    OpenCodeService as ProtocolOpenCodeService, ProviderProtocol as ProtocolProviderProtocol,
-    ResourceLimit, RunFailureKind as ProtocolRunFailureKind, RunId as ProtocolRunId,
-    RunState as ProtocolRunState, RunSummary,
-    SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
+    ApplicationError, ApplicationResponse, MessageId as ProtocolMessageId, ModelCapabilities,
+    ModelRetention as ProtocolModelRetention, ModelService as ProtocolModelService, ModelSummary,
+    ModelTrainingUse as ProtocolModelTrainingUse, MutationRequestId as ProtocolMutationRequestId,
+    OpenCodeCredentialStatus as ProtocolOpenCodeCredentialStatus,
+    ProviderProtocol as ProtocolProviderProtocol, ResourceLimit,
+    RunFailureKind as ProtocolRunFailureKind, RunId as ProtocolRunId, RunState as ProtocolRunState,
+    RunSummary, SessionCatalogEventCursor as ProtocolSessionCatalogEventCursor,
     SessionEventCursor as ProtocolSessionEventCursor, SessionId as ProtocolSessionId,
     SessionListCursor as ProtocolSessionListCursor, SessionSummary,
     SkillSource as ProtocolSkillSource, SkillSummary as ProtocolSkillSummary,
@@ -19,23 +18,21 @@ use super::ApplicationOutcome;
 use crate::{
     persistence::{
         AcceptedRun, MutationRequestId, OpenCodeCredentialStatus, PersistenceError,
-        PersistenceResourceLimit, Run, RunFailureKind, RunId, RunOpenCodeService, RunState,
-        Session, SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
+        PersistenceResourceLimit, Run, RunFailureKind, RunId, RunService, RunState, Session,
+        SessionCatalogEventCursor, SessionEventCursor, SessionId, SessionListCursor,
         SubagentModelSetting, TranscriptCursor, TranscriptEntry,
     },
-    provider::{
-        ModelRetention, ModelTrainingUse, OpenCodeModelAvailability, OpenCodeService,
-        ProviderProtocol,
-    },
+    provider::{ModelProfile, ModelRetention, ModelService, ModelTrainingUse, ProviderProtocol},
 };
 
 pub(super) fn to_run_model_selection(
-    model: &crate::provider::OpenCodeModel,
+    model: &crate::provider::ModelProfile,
 ) -> crate::persistence::RunModelSelection {
     crate::persistence::RunModelSelection {
         service: match model.service {
-            OpenCodeService::Zen => RunOpenCodeService::Zen,
-            OpenCodeService::Go => RunOpenCodeService::Go,
+            ModelService::Zen => RunService::Zen,
+            ModelService::Go => RunService::Go,
+            ModelService::OpenAiChatGpt => RunService::OpenAiChatGpt,
         },
         model_id: model.id.to_owned(),
         protocol_revision: model.protocol_revision,
@@ -53,24 +50,27 @@ pub(super) fn input_accepted_response(accepted: AcceptedRun) -> ApplicationOutco
     })
 }
 
-pub(super) const fn to_persistence_service(service: ProtocolOpenCodeService) -> RunOpenCodeService {
+pub(super) const fn to_persistence_service(service: ProtocolModelService) -> RunService {
     match service {
-        ProtocolOpenCodeService::Zen => RunOpenCodeService::Zen,
-        ProtocolOpenCodeService::Go => RunOpenCodeService::Go,
+        ProtocolModelService::Zen => RunService::Zen,
+        ProtocolModelService::Go => RunService::Go,
+        ProtocolModelService::OpenAiChatGpt => RunService::OpenAiChatGpt,
     }
 }
 
-pub(super) const fn to_provider_service(service: ProtocolOpenCodeService) -> OpenCodeService {
+pub(super) const fn to_provider_service(service: ProtocolModelService) -> ModelService {
     match service {
-        ProtocolOpenCodeService::Zen => OpenCodeService::Zen,
-        ProtocolOpenCodeService::Go => OpenCodeService::Go,
+        ProtocolModelService::Zen => ModelService::Zen,
+        ProtocolModelService::Go => ModelService::Go,
+        ProtocolModelService::OpenAiChatGpt => ModelService::OpenAiChatGpt,
     }
 }
 
-pub(super) const fn to_protocol_service(service: RunOpenCodeService) -> ProtocolOpenCodeService {
+pub(super) const fn to_protocol_service(service: RunService) -> ProtocolModelService {
     match service {
-        RunOpenCodeService::Zen => ProtocolOpenCodeService::Zen,
-        RunOpenCodeService::Go => ProtocolOpenCodeService::Go,
+        RunService::Zen => ProtocolModelService::Zen,
+        RunService::Go => ProtocolModelService::Go,
+        RunService::OpenAiChatGpt => ProtocolModelService::OpenAiChatGpt,
     }
 }
 
@@ -189,31 +189,29 @@ pub(super) fn to_protocol_skill_summary(
     }
 }
 
-pub(super) fn to_protocol_model_summary(
-    availability: OpenCodeModelAvailability,
-) -> Option<OpenCodeModelSummary> {
-    let model = availability.model;
+pub(super) fn to_protocol_model_summary(model: ModelProfile, available: bool) -> ModelSummary {
     let training_use = match model.data_use.training {
-        ModelTrainingUse::NotUsed => OpenCodeModelTrainingUse::NotUsed,
+        ModelTrainingUse::NotUsed => ProtocolModelTrainingUse::NotUsed,
         ModelTrainingUse::MayUsePromptsAndCompletions => {
-            OpenCodeModelTrainingUse::MayUsePromptsAndCompletions
+            ProtocolModelTrainingUse::MayUsePromptsAndCompletions
         }
-        ModelTrainingUse::NotDocumented => OpenCodeModelTrainingUse::NotDocumented,
+        ModelTrainingUse::NotDocumented => ProtocolModelTrainingUse::NotDocumented,
     };
     let retention = match model.data_use.retention {
-        ModelRetention::None => OpenCodeModelRetention::None,
-        ModelRetention::UpToThirtyDays => OpenCodeModelRetention::UpToThirtyDays,
-        ModelRetention::NotZeroDataRetention => OpenCodeModelRetention::NotZeroDataRetention,
-        ModelRetention::NotDocumented => OpenCodeModelRetention::NotDocumented,
+        ModelRetention::None => ProtocolModelRetention::None,
+        ModelRetention::UpToThirtyDays => ProtocolModelRetention::UpToThirtyDays,
+        ModelRetention::NotZeroDataRetention => ProtocolModelRetention::NotZeroDataRetention,
+        ModelRetention::NotDocumented => ProtocolModelRetention::NotDocumented,
     };
-    Some(OpenCodeModelSummary {
+    ModelSummary {
         service: match model.service {
-            OpenCodeService::Zen => ProtocolOpenCodeService::Zen,
-            OpenCodeService::Go => ProtocolOpenCodeService::Go,
+            ModelService::Zen => ProtocolModelService::Zen,
+            ModelService::Go => ProtocolModelService::Go,
+            ModelService::OpenAiChatGpt => ProtocolModelService::OpenAiChatGpt,
         },
         id: model.id.to_owned(),
         display_name: model.display_name.to_owned(),
-        available: availability.available,
+        available,
         protocol: match model.protocol {
             ProviderProtocol::Responses => ProtocolProviderProtocol::Responses,
             ProviderProtocol::ChatCompletions => ProtocolProviderProtocol::ChatCompletions,
@@ -221,7 +219,7 @@ pub(super) fn to_protocol_model_summary(
             ProviderProtocol::Gemini => ProtocolProviderProtocol::Gemini,
         },
         protocol_revision: model.protocol_revision,
-        capabilities: OpenCodeModelCapabilities {
+        capabilities: ModelCapabilities {
             text_input: model.capabilities.text_input,
             image_input: model.capabilities.image_input,
             text_output: model.capabilities.text_output,
@@ -233,7 +231,8 @@ pub(super) fn to_protocol_model_summary(
         maximum_output_tokens: model.maximum_output_tokens,
         training_use,
         retention,
-    })
+        output_limit_is_local: model.output_limit_is_local,
+    }
 }
 
 pub(super) fn to_persistence_subagent_model_setting(
@@ -243,8 +242,8 @@ pub(super) fn to_persistence_subagent_model_setting(
         morons_protocol::SubagentModelSetting::InheritParent {} => {
             SubagentModelSetting::InheritParent {}
         }
-        morons_protocol::SubagentModelSetting::OpenCode { service, model_id } => {
-            SubagentModelSetting::OpenCode {
+        morons_protocol::SubagentModelSetting::Explicit { service, model_id } => {
+            SubagentModelSetting::Explicit {
                 service: to_persistence_service(service),
                 model_id,
             }
@@ -259,8 +258,8 @@ pub(super) fn to_protocol_subagent_model_setting(
         SubagentModelSetting::InheritParent {} => {
             morons_protocol::SubagentModelSetting::InheritParent {}
         }
-        SubagentModelSetting::OpenCode { service, model_id } => {
-            morons_protocol::SubagentModelSetting::OpenCode {
+        SubagentModelSetting::Explicit { service, model_id } => {
+            morons_protocol::SubagentModelSetting::Explicit {
                 service: to_protocol_service(service),
                 model_id,
             }
@@ -270,8 +269,8 @@ pub(super) fn to_protocol_subagent_model_setting(
 
 pub(super) fn to_protocol_model_selection(
     selection: crate::persistence::DefaultModelSelection,
-) -> morons_protocol::OpenCodeModelSelection {
-    morons_protocol::OpenCodeModelSelection {
+) -> morons_protocol::ModelSelection {
+    morons_protocol::ModelSelection {
         service: to_protocol_service(selection.service),
         model_id: selection.model_id,
     }
@@ -326,6 +325,10 @@ const fn to_protocol_run_failure(failure: RunFailureKind) -> ProtocolRunFailureK
             ProtocolRunFailureKind::AuthenticationOrEntitlement
         }
         RunFailureKind::RateLimited => ProtocolRunFailureKind::RateLimited,
+        RunFailureKind::DataUseRestricted => ProtocolRunFailureKind::DataUseRestricted,
+        RunFailureKind::CredentialReauthenticationRequired => {
+            ProtocolRunFailureKind::CredentialReauthenticationRequired
+        }
         RunFailureKind::ProviderUnavailable => ProtocolRunFailureKind::ProviderUnavailable,
         RunFailureKind::ProviderRejected => ProtocolRunFailureKind::ProviderRejected,
         RunFailureKind::ProviderProtocol => ProtocolRunFailureKind::ProviderProtocol,
@@ -536,7 +539,17 @@ pub(super) fn to_session_summary(session: Session) -> SessionSummary {
     }
 }
 
-pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError {
+pub(crate) fn to_protocol_data_use(
+    policy: crate::persistence::DataUsePolicy,
+) -> morons_protocol::DataUsePolicy {
+    morons_protocol::DataUsePolicy {
+        sequence: policy.sequence,
+        block_training_use: policy.restrictions.block_training_use,
+        require_zero_retention: policy.restrictions.require_zero_retention,
+    }
+}
+
+pub(crate) fn to_application_error(error: PersistenceError) -> ApplicationError {
     if matches!(
         &error,
         PersistenceError::Io(_)
@@ -577,10 +590,18 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
         PersistenceError::CredentialNotConfigured => {
             ApplicationError::OpenCodeCredentialNotConfigured
         }
+        PersistenceError::OpenAiCredentialNotConfigured => {
+            ApplicationError::OpenAiCredentialNotConfigured
+        }
+        PersistenceError::CredentialReauthenticationRequired => {
+            ApplicationError::CredentialReauthenticationRequired
+        }
         PersistenceError::CredentialMutationNotApplied => {
             ApplicationError::CredentialMutationNotApplied
         }
         PersistenceError::ImageInputUnsupported => ApplicationError::UnsupportedModel,
+        PersistenceError::DataUseRestricted => ApplicationError::DataUseRestricted,
+        PersistenceError::DataUsePolicyChanged => ApplicationError::DataUsePolicyChanged,
         PersistenceError::ResourceLimit {
             resource: PersistenceResourceLimit::Sessions,
         } => ApplicationError::ResourceLimit {
@@ -602,7 +623,8 @@ pub(super) fn to_application_error(error: PersistenceError) -> ApplicationError 
                 | PersistenceResourceLimit::LogicalSequence
                 | PersistenceResourceLimit::CredentialGeneration
                 | PersistenceResourceLimit::CredentialMutations
-                | PersistenceResourceLimit::ModelSelections,
+                | PersistenceResourceLimit::ModelSelections
+                | PersistenceResourceLimit::DataUsePolicies,
         } => ApplicationError::ResourceLimit {
             resource: ResourceLimit::Storage,
         },

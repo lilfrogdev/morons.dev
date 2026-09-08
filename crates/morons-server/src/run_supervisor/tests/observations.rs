@@ -77,7 +77,7 @@ async fn observations_are_model_protocol_and_skill_bound_and_exclude_hidden_comm
     for kind in 0..3 {
         let mut other = selection();
         match kind {
-            0 => other.service = RunOpenCodeService::Go,
+            0 => other.service = RunService::Go,
             1 => other.model_id = "gpt-5-nano".to_owned(),
             _ => other.protocol_revision = 2,
         }
@@ -203,7 +203,7 @@ async fn new_checkpoint_invalidates_old_usage_and_records_only_completed_compact
         .complete_compaction(
             accepted.run.id,
             operation,
-            RunOpenCodeService::Zen,
+            RunService::Zen,
             selection().model_id,
             "SOURCE SUMMARY".to_owned(),
         )

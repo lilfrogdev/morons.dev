@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 27;
+const SCHEMA_VERSION: i64 = 30;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -50,6 +50,9 @@ const SCHEMA_V24: &str = include_str!("../schema_v24.sql");
 const SCHEMA_V25: &str = include_str!("../schema_v25.sql");
 const SCHEMA_V26: &str = include_str!("../schema_v26.sql");
 const SCHEMA_V27: &str = include_str!("../schema_v27.sql");
+const SCHEMA_V28: &str = include_str!("../schema_v28.sql");
+const SCHEMA_V29: &str = include_str!("../schema_v29.sql");
+const SCHEMA_V30: &str = include_str!("../schema_v30.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -57,6 +60,7 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("credential_audit_facts", "table"),
     ("credential_mutation_requests", "table"),
     ("credential_mutation_requests_by_state", "index"),
+    ("credential_mutation_requests_by_provider", "index"),
     ("compaction_operations", "table"),
     ("compaction_operations_by_prefix", "index"),
     ("compaction_maintenance_jobs", "table"),
@@ -72,6 +76,8 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("delivery_events", "table"),
     ("delivery_events_by_session", "index"),
     ("deleted_mutation_tombstones", "table"),
+    ("data_use_policies", "table"),
+    ("data_use_policies_by_sequence", "index"),
     ("default_model_selections", "table"),
     ("default_model_selections_by_sequence", "index"),
     ("subagent_model_selections", "table"),
@@ -92,6 +98,9 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("local_commands_one_active_per_session", "index"),
     ("logical_sequences", "table"),
     ("mutation_requests", "table"),
+    ("provider_binding_epoch", "table"),
+    ("task_model_bindings", "table"),
+    ("task_model_bindings_by_run", "index"),
     ("provider_operation_facts", "table"),
     ("provider_operation_facts_by_run", "index"),
     ("repository_import_active_session", "index"),
@@ -152,6 +161,27 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("worktree_generation_facts", "table"),
     ("worktree_generation_facts_by_workspace", "index"),
 ];
+
+#[cfg(test)]
+pub(crate) fn schema_29_fixture() -> Connection {
+    let connection = schema_28_fixture();
+    connection.execute_batch(SCHEMA_V29).unwrap();
+    connection
+}
+
+#[cfg(test)]
+pub(crate) fn schema_28_fixture() -> Connection {
+    let connection = Connection::open_in_memory().unwrap();
+    for schema in [
+        SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+        SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
+        SCHEMA_V16, SCHEMA_V17, SCHEMA_V18, SCHEMA_V19, SCHEMA_V20, SCHEMA_V21, SCHEMA_V22,
+        SCHEMA_V23, SCHEMA_V24, SCHEMA_V25, SCHEMA_V26, SCHEMA_V27, SCHEMA_V28,
+    ] {
+        connection.execute_batch(schema).unwrap();
+    }
+    connection
+}
 
 pub(crate) fn open(paths: &StoragePaths) -> Result<Connection, PersistenceError> {
     if !paths.database_exists()? {
@@ -216,6 +246,9 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V25)?;
     connection.execute_batch(SCHEMA_V26)?;
     connection.execute_batch(SCHEMA_V27)?;
+    connection.execute_batch(SCHEMA_V28)?;
+    connection.execute_batch(SCHEMA_V29)?;
+    connection.execute_batch(SCHEMA_V30)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -333,6 +366,9 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (25, SCHEMA_V25),
         (26, SCHEMA_V26),
         (27, SCHEMA_V27),
+        (28, SCHEMA_V28),
+        (29, SCHEMA_V29),
+        (30, SCHEMA_V30),
     ] {
         if version > schema_version {
             migrate_schema(connection, schema)?;

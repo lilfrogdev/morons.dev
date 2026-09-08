@@ -1,15 +1,17 @@
+pub(crate) mod auth;
 mod context;
 mod input;
+mod native_diagnostic;
 mod render;
 mod viewport;
 
 use std::{error::Error, fmt};
 
 use morons_protocol::{
-    ApplicationEvent, ApplicationSettings, LocalCommandId, MessageId, OpenCodeApiKey,
-    OpenCodeCredentialStatus, OpenCodeModelSelection, OpenCodeModelSummary, OpenCodeService,
-    RunFailureKind, RunId, RunState, RunSummary, SessionContextStatus, SessionId, SessionSummary,
-    SkillSummary, SubagentModelSetting, TranscriptCursor, TranscriptEntry,
+    ApplicationEvent, ApplicationSettings, LocalCommandId, MessageId, ModelSelection, ModelService,
+    ModelSummary, OpenCodeApiKey, OpenCodeCredentialStatus, RunFailureKind, RunId, RunState,
+    RunSummary, SessionContextStatus, SessionId, SessionSummary, SkillSummary,
+    SubagentModelSetting, TranscriptCursor, TranscriptEntry,
 };
 use ratatui::Frame;
 
@@ -126,12 +128,15 @@ pub(super) enum AppAction {
     },
     ShowContext {
         session_id: SessionId,
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
     },
     LoadSettings,
+    SetDataUsePolicy {
+        policy: morons_protocol::DataUsePolicy,
+    },
     SetDefaultModel {
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
     },
     SetSubagentModel {
@@ -141,7 +146,7 @@ pub(super) enum AppAction {
         session_id: SessionId,
         text: String,
         attachments: Vec<morons_protocol::ImageUpload>,
-        service: OpenCodeService,
+        service: ModelService,
         model_id: String,
     },
     ExecuteLocalCommand {
@@ -157,6 +162,15 @@ pub(super) enum AppAction {
         session_id: SessionId,
         command_id: LocalCommandId,
     },
+    OpenAiStatus,
+    OpenAiBegin {
+        expected_generation: u64,
+    },
+    OpenAiRemove {
+        expected_generation: u64,
+    },
+    OpenAiCancel,
+    OpenAiLink(crate::login_link::LinkAction),
     SetCredential {
         expected_generation: u64,
         api_key: OpenCodeApiKey,
@@ -220,6 +234,10 @@ impl fmt::Debug for AppAction {
                 .field("model_id", model_id)
                 .finish(),
             Self::LoadSettings => formatter.write_str("LoadSettings"),
+            Self::SetDataUsePolicy { policy } => formatter
+                .debug_struct("SetDataUsePolicy")
+                .field("policy", policy)
+                .finish(),
             Self::SetDefaultModel { service, model_id } => formatter
                 .debug_struct("SetDefaultModel")
                 .field("service", service)
@@ -266,6 +284,11 @@ impl fmt::Debug for AppAction {
                 .field("session_id", session_id)
                 .field("command_id", command_id)
                 .finish(),
+            Self::OpenAiStatus => formatter.write_str("OpenAiStatus"),
+            Self::OpenAiBegin { .. } => formatter.write_str("OpenAiBegin"),
+            Self::OpenAiRemove { .. } => formatter.write_str("OpenAiRemove"),
+            Self::OpenAiCancel => formatter.write_str("OpenAiCancel"),
+            Self::OpenAiLink(action) => formatter.debug_tuple("OpenAiLink").field(action).finish(),
             Self::SetCredential {
                 expected_generation,
                 ..
@@ -336,6 +359,10 @@ pub(super) const fn terminal_run_presentation(run: &RunSummary) -> Option<Termin
                 Some(RunFailureKind::ToolExecution) => "Tool execution failed",
                 Some(RunFailureKind::ResourceLimit) => "Run exceeded a resource limit",
                 Some(RunFailureKind::Internal) => "Morons encountered an internal failure",
+                Some(RunFailureKind::DataUseRestricted) => "Model blocked by data-use policy",
+                Some(RunFailureKind::CredentialReauthenticationRequired) => {
+                    "Provider requires a new login"
+                }
                 None => "Failure reason is unavailable",
             },
         ),
@@ -350,17 +377,19 @@ pub(super) const fn terminal_run_presentation(run: &RunSummary) -> Option<Termin
     Some(TerminalRunPresentation { heading, detail })
 }
 
-pub(super) const fn service_label(service: OpenCodeService) -> &'static str {
+pub(super) const fn service_label(service: ModelService) -> &'static str {
     match service {
-        OpenCodeService::Zen => "Zen",
-        OpenCodeService::Go => "Go",
+        ModelService::Zen => "Zen",
+        ModelService::Go => "Go",
+        ModelService::OpenAiChatGpt => "ChatGPT",
     }
 }
 
-const fn model_catalog_index(service: OpenCodeService) -> usize {
+const fn model_catalog_index(service: ModelService) -> usize {
     match service {
-        OpenCodeService::Zen => 0,
-        OpenCodeService::Go => 1,
+        ModelService::Zen => 0,
+        ModelService::Go => 1,
+        ModelService::OpenAiChatGpt => 2,
     }
 }
 
@@ -415,13 +444,16 @@ pub(super) struct AppState {
     pub(super) selected_session: usize,
     pub(super) models: Vec<PresentedModel>,
     pub(super) selected_model: Option<usize>,
-    pub(super) default_model: Option<OpenCodeModelSelection>,
-    pub(super) loaded_model_catalogs: [bool; 2],
+    pub(super) default_model: Option<ModelSelection>,
+    pub(super) loaded_model_catalogs: [bool; 3],
     pub(super) model_dialog: Option<ModelDialog>,
     pub(super) settings: Option<ApplicationSettings>,
     pub(super) settings_dialog: Option<SettingsDialog>,
     pub(super) credential: Option<OpenCodeCredentialStatus>,
     pub(super) credential_dialog: Option<CredentialDialog>,
+    auth_dialog: Option<auth::AuthDialog>,
+    auth_scroll: u16,
+    auth_link_buttons: Option<auth::LinkButtons>,
     pub(super) information_dialog: Option<InformationDialog>,
     pub(super) information_scroll: u16,
     pub(super) rename_dialog: Option<PromptBuffer>,
@@ -448,12 +480,15 @@ impl AppState {
             models: Vec::new(),
             selected_model: None,
             default_model: None,
-            loaded_model_catalogs: [false; 2],
+            loaded_model_catalogs: [false; 3],
             model_dialog: None,
             settings: None,
             settings_dialog: None,
             credential: None,
             credential_dialog: None,
+            auth_dialog: None,
+            auth_scroll: 0,
+            auth_link_buttons: None,
             information_dialog: initial_information_dialog(),
             information_scroll: 0,
             rename_dialog: None,
@@ -625,6 +660,7 @@ impl AppState {
         self.view == View::Session
             && self.pending.is_none()
             && self.credential_dialog.is_none()
+            && self.auth_dialog.is_none()
             && self.model_dialog.is_none()
             && self.settings_dialog.is_none()
             && !self.confirm_stop
@@ -818,13 +854,13 @@ impl AppState {
 
     pub(super) fn replace_models(
         &mut self,
-        service: OpenCodeService,
-        models: Vec<OpenCodeModelSummary>,
+        service: ModelService,
+        models: Vec<ModelSummary>,
     ) -> Result<(), UiStateError> {
         if models.iter().any(|model| model.service != service) {
             return Err(UiStateError::ResourceScopeMismatch);
         }
-        let selected = self.selected_model().map(|model| OpenCodeModelSelection {
+        let selected = self.selected_model().map(|model| ModelSelection {
             service: model.model.service,
             model_id: model.model.id.clone(),
         });
@@ -841,7 +877,11 @@ impl AppState {
                     .as_ref()
                     .and_then(|selection| self.available_model_index(selection))
             })
-            .or_else(|| self.models.iter().position(|model| model.model.available));
+            .or_else(|| {
+                self.models.iter().position(|model| {
+                    model.model.available && model.model.service != ModelService::OpenAiChatGpt
+                })
+            });
         let dialog_matches = self.model_dialog_matches().len();
         if let Some(dialog) = self.model_dialog.as_mut() {
             dialog.selected = dialog.selected.min(dialog_matches.saturating_sub(1));
@@ -849,7 +889,7 @@ impl AppState {
         Ok(())
     }
 
-    pub(super) fn install_default_model(&mut self, selection: Option<OpenCodeModelSelection>) {
+    pub(super) fn install_default_model(&mut self, selection: Option<ModelSelection>) {
         self.default_model = selection;
         if let Some(index) = self
             .default_model
@@ -861,7 +901,9 @@ impl AppState {
             .selected_model()
             .is_none_or(|model| !model.model.available)
         {
-            self.selected_model = self.models.iter().position(|model| model.model.available);
+            self.selected_model = self.models.iter().position(|model| {
+                model.model.available && model.model.service != ModelService::OpenAiChatGpt
+            });
         }
     }
 
@@ -873,7 +915,23 @@ impl AppState {
     }
 
     pub(super) fn install_settings(&mut self, settings: ApplicationSettings) {
+        if self
+            .settings
+            .as_ref()
+            .is_some_and(|current| current.data_use.sequence > settings.data_use.sequence)
+        {
+            return;
+        }
         self.settings = Some(settings);
+    }
+
+    pub(super) fn model_policy_blocked(&self, model: &ModelSummary) -> bool {
+        self.settings.as_ref().is_some_and(|settings| {
+            (settings.data_use.block_training_use
+                && model.training_use != morons_protocol::ModelTrainingUse::NotUsed)
+                || (settings.data_use.require_zero_retention
+                    && model.retention != morons_protocol::ModelRetention::None)
+        })
     }
 
     pub(super) fn open_settings_dialog(&mut self) {
@@ -900,7 +958,7 @@ impl AppState {
                 ) => true,
                 (
                     SubagentModelCandidate::Model(index),
-                    Some(SubagentModelSetting::OpenCode { service, model_id }),
+                    Some(SubagentModelSetting::Explicit { service, model_id }),
                 ) => self.models.get(*index).is_some_and(|model| {
                     model.model.service == *service && model.model.id == *model_id
                 }),
@@ -1004,7 +1062,7 @@ impl AppState {
         matches.into_iter().map(|(_, index)| index).collect()
     }
 
-    fn available_model_index(&self, selection: &OpenCodeModelSelection) -> Option<usize> {
+    fn available_model_index(&self, selection: &ModelSelection) -> Option<usize> {
         self.models.iter().position(|model| {
             model.model.available
                 && model.model.service == selection.service
@@ -1244,6 +1302,32 @@ impl AppState {
                 session.active_command_id = active.then_some(command_id);
                 Ok(())
             }
+            ApplicationEvent::SessionNativeResponseDiagnostic {
+                session_id,
+                run_id,
+                reason,
+            } => {
+                let session = self.session_mut(session_id)?;
+                if session.is_historical_window()
+                    || session.active_run_id.is_some()
+                    || session.active_command_id.is_some()
+                {
+                    return Ok(());
+                }
+                if !session.runs.iter().any(|run| {
+                    run.id == run_id
+                        && run.service == ModelService::OpenAiChatGpt
+                        && run.state == RunState::Failed
+                        && run.failure == Some(morons_protocol::RunFailureKind::ProviderProtocol)
+                }) {
+                    return Err(UiStateError::ResourceScopeMismatch);
+                }
+                self.set_status(format!(
+                    "{} Run: {run_id:?}",
+                    native_diagnostic::native_response_message(reason)
+                ));
+                Ok(())
+            }
             ApplicationEvent::SessionAssistantDelta {
                 session_id,
                 run_id,
@@ -1281,7 +1365,7 @@ impl AppState {
     }
 
     pub(super) fn session_input_accepted(&mut self, run: RunSummary) -> Result<(), UiStateError> {
-        self.install_default_model(Some(OpenCodeModelSelection {
+        self.install_default_model(Some(ModelSelection {
             service: run.service,
             model_id: run.model_id.clone(),
         }));
@@ -1439,11 +1523,11 @@ impl PresentedSession {
 pub(super) struct PresentedModel {
     pub(super) id: SafeText,
     pub(super) display_name: SafeText,
-    pub(super) model: OpenCodeModelSummary,
+    pub(super) model: ModelSummary,
 }
 
 impl PresentedModel {
-    fn new(model: OpenCodeModelSummary) -> Self {
+    fn new(model: ModelSummary) -> Self {
         Self {
             id: SafeText::from_untrusted(&model.id),
             display_name: SafeText::from_untrusted(&model.display_name),

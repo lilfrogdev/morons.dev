@@ -15,6 +15,7 @@ name = "morons-server"
 path = "src/main.rs"
 
 [dependencies]
+base64.workspace = true
 bytes.workspace = true
 getrandom.workspace = true
 hmac.workspace = true

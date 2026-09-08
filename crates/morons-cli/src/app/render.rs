@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use morons_protocol::{
-    OpenCodeModelRetention, OpenCodeModelTrainingUse, RunId, RunState, SubagentModelSetting,
-};
+use morons_protocol::{ModelRetention, ModelTrainingUse, RunId, RunState, SubagentModelSetting};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -66,18 +64,25 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     if let Some(input) = app.rename_dialog.as_ref() {
         render_rename_dialog(frame, area, input.as_str());
     }
+    app.auth_link_buttons = None;
+    if let Some(dialog) = app.auth_dialog.as_ref() {
+        app.auth_link_buttons = super::auth::render(frame, dialog, &mut app.auth_scroll);
+    }
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let credential = match app.credential {
         Some(status) if status.configured => {
-            format!("credential configured · generation {}", status.generation)
+            format!(
+                "OpenCode credential configured · generation {}",
+                status.generation
+            )
         }
         Some(status) => format!(
-            "credential not configured · generation {}",
+            "OpenCode credential not configured · generation {}",
             status.generation
         ),
-        None => "credential status loading".to_owned(),
+        None => "OpenCode credential status loading".to_owned(),
     };
     let line = Line::from(vec![
         Span::styled(" morons ", Style::default().add_modifier(Modifier::BOLD)),
@@ -151,7 +156,9 @@ fn render_models(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .iter()
         .map(|model| {
             let service = service_label(model.model.service);
-            let availability = if model.model.available {
+            let availability = if app.model_policy_blocked(&model.model) {
+                " data-use blocked"
+            } else if model.model.available {
                 ""
             } else {
                 " unavailable"
@@ -187,7 +194,17 @@ fn render_session(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
         u16::try_from(skills.len().min(5) + 2).unwrap_or(7)
     });
     let transcript_reserve = u16::from(area.height > 0);
-    let model_height = if area.height >= 7 { 3 } else { 0 };
+    let model_height = if area.height >= 9
+        && app
+            .selected_model()
+            .is_some_and(|model| model.model.output_limit_is_local)
+    {
+        5
+    } else if area.height >= 7 {
+        3
+    } else {
+        0
+    };
     let prompt_available = area
         .height
         .saturating_sub(transcript_reserve)
@@ -551,8 +568,17 @@ fn render_model_disclosure(
         }
         None => Line::from("No reviewed model is currently available"),
     };
+    let mut lines = vec![line];
+    if model.is_some_and(|model| model.model.output_limit_is_local) {
+        lines.push(Line::from(
+            "Local output limit only; remote generation/charges may exceed it.",
+        ));
+        lines.push(Line::from(
+            "Selectable metadata is not proof of subscription entitlement.",
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(line).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL)),
         area,
     );
 }
@@ -579,8 +605,8 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     match app.settings_dialog.as_ref() {
         Some(SettingsDialog::Overview) => {
-            let width = area.width.min(76);
-            let height = area.height.min(7);
+            let width = area.width.min(88);
+            let height = area.height.min(13);
             let popup = Rect {
                 x: area.x + area.width.saturating_sub(width) / 2,
                 y: area.y + area.height.saturating_sub(height) / 2,
@@ -594,7 +620,7 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 .map(|settings| &settings.subagent_model)
             {
                 Some(SubagentModelSetting::InheritParent {}) => "Inherit parent".to_owned(),
-                Some(SubagentModelSetting::OpenCode { service, model_id }) => {
+                Some(SubagentModelSetting::Explicit { service, model_id }) => {
                     let available = app.models.iter().any(|model| {
                         model.model.available
                             && model.model.capabilities.text_input
@@ -619,19 +645,37 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 )),
                 Line::from(value),
             ]);
-            let list = List::new(vec![item])
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Settings · Enter change · Esc close "),
-                )
-                .highlight_style(
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol("› ");
+            let flag = |value: Option<bool>| match value {
+                Some(true) => "ON",
+                Some(false) => "OFF",
+                None => "Loading",
+            };
+            let policy = app.settings.as_ref().map(|settings| settings.data_use);
+            let list = List::new(vec![
+                item,
+                ListItem::new(format!(
+                    "t · Block training use: {}",
+                    flag(policy.map(|p| p.block_training_use))
+                )),
+                ListItem::new(format!(
+                    "r · Require zero data retention: {}",
+                    flag(policy.map(|p| p.require_zero_retention))
+                )),
+                ListItem::new("Unknown/account-controlled policy cannot satisfy restrictions."),
+                ListItem::new("Changes do not recall already admitted requests or tool effects."),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Settings · Enter change · Esc close "),
+            )
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .highlight_symbol("› ");
             let mut state = ListState::default().with_selected(Some(0));
             frame.render_stateful_widget(list, popup, &mut state);
         }
@@ -650,7 +694,7 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 .constraints([
                     Constraint::Length(3),
                     Constraint::Min(3),
-                    Constraint::Length(3),
+                    Constraint::Length(5),
                 ])
                 .split(popup);
             frame.render_widget(
@@ -680,6 +724,11 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                             Span::raw(model.id.first_line()),
                             Span::raw(" · "),
                             Span::raw(model.display_name.first_line()),
+                            Span::raw(if app.model_policy_blocked(&model.model) {
+                                " · data-use blocked"
+                            } else {
+                                ""
+                            }),
                             Span::styled(
                                 format!(" · protocol {}", model.model.protocol_revision),
                                 Style::default().fg(Color::DarkGray),
@@ -746,7 +795,7 @@ fn render_model_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(3),
-            Constraint::Length(3),
+            Constraint::Length(5),
         ])
         .split(popup);
     frame.render_widget(
@@ -789,6 +838,11 @@ fn render_model_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 Span::raw(" · "),
                 Span::raw(model.display_name.first_line()),
                 Span::styled(current, Style::default().fg(Color::Green)),
+                Span::raw(if app.model_policy_blocked(&model.model) {
+                    " · data-use blocked"
+                } else {
+                    ""
+                }),
             ]))
         })
         .collect::<Vec<_>>();
@@ -867,7 +921,7 @@ fn render_information_dialog(
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure global subagent model · /login configure or replace the OpenCode credential · /logout remove it after confirmation · /context inspect · /compact [instructions] summarize · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure global subagent model · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · /help session help · ? browser help · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             16,
         ),
@@ -1024,19 +1078,19 @@ fn active_work_label(session: &SessionView) -> &'static str {
         })
 }
 
-const fn training_label(training: OpenCodeModelTrainingUse) -> &'static str {
+const fn training_label(training: ModelTrainingUse) -> &'static str {
     match training {
-        OpenCodeModelTrainingUse::NotUsed => "not used",
-        OpenCodeModelTrainingUse::MayUsePromptsAndCompletions => "may use prompts/completions",
-        OpenCodeModelTrainingUse::NotDocumented => "not documented",
+        ModelTrainingUse::NotUsed => "not used",
+        ModelTrainingUse::MayUsePromptsAndCompletions => "may use prompts/completions",
+        ModelTrainingUse::NotDocumented => "not documented",
     }
 }
 
-const fn retention_label(retention: OpenCodeModelRetention) -> &'static str {
+const fn retention_label(retention: ModelRetention) -> &'static str {
     match retention {
-        OpenCodeModelRetention::None => "none",
-        OpenCodeModelRetention::UpToThirtyDays => "up to 30 days",
-        OpenCodeModelRetention::NotZeroDataRetention => "not ZDR",
-        OpenCodeModelRetention::NotDocumented => "not documented",
+        ModelRetention::None => "none",
+        ModelRetention::UpToThirtyDays => "up to 30 days",
+        ModelRetention::NotZeroDataRetention => "not ZDR",
+        ModelRetention::NotDocumented => "not documented",
     }
 }

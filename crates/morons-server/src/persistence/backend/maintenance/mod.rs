@@ -12,7 +12,7 @@ use super::{
         time_to_sql,
     },
 };
-use crate::persistence::{PersistenceError, Run, RunOpenCodeService, SessionId};
+use crate::persistence::{PersistenceError, Run, RunService, SessionId};
 use records::{Job, MAX_JOBS, State, hash_parts, latest_parent, result_digest, validate_result};
 
 impl Backend {
@@ -79,6 +79,10 @@ impl Backend {
         {
             return Err(invalid());
         }
+        let policy_sequence: u64 = self.connection.query_row("SELECT COALESCE(MAX(accepted_sequence), 0) FROM data_use_policies WHERE accepted_sequence < ?1", [sequence_to_sql(job.sequence)?], |row| nonnegative_integer_from_row(row, 0))?;
+        if policy_sequence != job.data_use_sequence {
+            return Err(invalid());
+        }
         let valid: bool = self.connection.query_row(
             "SELECT EXISTS (SELECT 1 FROM session_run_states WHERE session_id = ?1 AND entry_high_water >= ?2)
              AND EXISTS (SELECT 1 FROM session_entries WHERE session_id = ?1 AND entry_sequence = ?3 + 1 AND entry_kind = 1)
@@ -112,13 +116,8 @@ impl Backend {
         &self,
         run: &Run,
     ) -> Result<Option<[u8; 32]>, PersistenceError> {
-        let service = match run.service {
-            RunOpenCodeService::Zen => crate::provider::OpenCodeService::Zen,
-            RunOpenCodeService::Go => crate::provider::OpenCodeService::Go,
-        };
-        let Some(model) = crate::provider::open_code_models()
-            .iter()
-            .find(|model| model.service == service && model.id == run.model_id)
+        let Some(model) =
+            crate::provider::find_model_profile(run.service.model_service(), &run.model_id)
         else {
             return Ok(None);
         };
@@ -172,8 +171,9 @@ impl Backend {
                             [&job.session.as_bytes()[..]],
                             |row| row.get(0),
                         )?;
-                        let credential = self.credentials.status();
+                        let credential = self.model_credential_status(job.run.service)?;
                         (archived
+                            || self.data_use_policy()?.sequence != job.data_use_sequence
                             || !credential.configured
                             || credential.generation != job.run.credential_generation
                             || latest_parent(&self.connection, job.session)?

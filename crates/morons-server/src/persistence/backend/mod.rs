@@ -7,10 +7,12 @@ mod context_status;
 mod context_usage;
 mod creation;
 mod credential_mutation;
+mod data_use;
 mod default_model;
 pub(super) mod image_attachment;
 pub(super) mod local_command;
 mod maintenance;
+mod model_credentials;
 pub(super) mod project_context;
 mod queries;
 mod records;
@@ -26,17 +28,24 @@ mod session_delete;
 mod session_events;
 mod session_mutation;
 mod settings;
+mod task_binding;
 mod tool_execution;
 mod workspace_creation;
 mod worktree_generation;
 
 use rusqlite::Connection;
 
-use super::{PersistenceError, credentials::CredentialStore, database, paths::StoragePaths};
+use super::{
+    PersistenceError,
+    credentials::{CredentialStore, openai::OpenAiCredentialStore},
+    database,
+    paths::StoragePaths,
+};
 
 pub(crate) struct Backend {
     pub(super) connection: Connection,
     pub(super) credentials: CredentialStore,
+    pub(super) openai_credentials: OpenAiCredentialStore,
     pub(super) paths: StoragePaths,
     context_data_version: std::cell::Cell<Option<i64>>,
     maintenance_enabled: bool,
@@ -46,10 +55,12 @@ impl Backend {
     pub(crate) fn open(application_root: &std::path::Path) -> Result<Self, PersistenceError> {
         let paths = StoragePaths::prepare(application_root)?;
         let credentials = CredentialStore::open(application_root)?;
+        let openai_credentials = OpenAiCredentialStore::open(application_root)?;
         let connection = database::open(&paths)?;
         let mut backend = Self {
             connection,
             credentials,
+            openai_credentials,
             paths,
             context_data_version: std::cell::Cell::new(None),
             maintenance_enabled: false,
@@ -58,6 +69,7 @@ impl Backend {
         backend.ensure_context_integrity()?;
         backend.recover_compaction_operations()?;
         backend.recover_credential_mutations()?;
+        backend.openai_credentials.recover_refresh()?;
         backend.recover_maintenance_jobs()?;
         backend.recover_incomplete_session_creations()?;
         backend.recover_tool_operations()?;
