@@ -1,6 +1,8 @@
-//! Staged hosted-search contract. No transport, credential access or application admission.
+//! Staged hosted-search contract and one-shot transport. No application admission.
 mod decode;
 mod output;
+mod transport;
+pub use transport::{PreparedSearch, SearchAttempt, SearchProvider};
 
 use std::fmt;
 
@@ -27,13 +29,7 @@ pub struct SearchRequest {
 }
 impl SearchRequest {
     pub fn new(query: &str, restrictions: DataUseRestrictions) -> Result<Self, ProviderError> {
-        let model = MODELS
-            .iter()
-            .find(|model| model.id == MODEL)
-            .ok_or(ProviderError::UnsupportedModel)?;
-        if !restrictions.permits(model.data_use) {
-            return Err(ProviderError::DataUseRestricted);
-        }
+        check_policy(restrictions)?;
         if query.trim().is_empty()
             || query.len() > crate::tools::MAX_WEB_SEARCH_QUERY_BYTES
             || query.chars().any(char::is_control)
@@ -102,6 +98,18 @@ impl fmt::Debug for SearchResult {
             .field("find_in_page_calls", &self.find_in_page_calls)
             .field("usage", &self.usage)
             .finish()
+    }
+}
+
+fn check_policy(restrictions: DataUseRestrictions) -> Result<(), ProviderError> {
+    let model = MODELS
+        .iter()
+        .find(|model| model.id == MODEL)
+        .ok_or(ProviderError::UnsupportedModel)?;
+    if restrictions.permits(model.data_use) {
+        Ok(())
+    } else {
+        Err(ProviderError::DataUseRestricted)
     }
 }
 

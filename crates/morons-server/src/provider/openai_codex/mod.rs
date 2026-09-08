@@ -7,6 +7,7 @@ mod turn;
 
 use super::{ModelCapabilities, ModelDataUse, ModelRetention, ModelTrainingUse};
 pub use request::{CodexRequest, CodexRequestLimits};
+pub(super) use transport::{ENDPOINT as NATIVE_RESPONSES_ENDPOINT, credential_error};
 pub use transport::{OpenAiCodexProvider, PreparedCodexDispatch};
 pub use turn::CodexTurn;
 
