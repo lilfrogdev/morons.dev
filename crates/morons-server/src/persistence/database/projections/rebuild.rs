@@ -85,11 +85,12 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
             accepted.maximum_input_tokens,
             accepted.maximum_output_tokens,
             (SELECT COUNT(*) FROM provider_operation_facts AS provider
-             WHERE provider.run_id = accepted.run_id AND provider.fact_kind = 1),
+             WHERE provider.run_id = accepted.run_id AND provider.fact_kind = 3),
             (SELECT COUNT(*) FROM tool_calls AS call
              WHERE call.run_id = accepted.run_id),
             (SELECT COUNT(*) FROM tool_calls AS call
-             WHERE call.run_id = accepted.run_id AND call.tool_kind BETWEEN 4 AND 7),
+             WHERE call.run_id = accepted.run_id
+               AND call.tool_kind IN (4, 5, 6, 7, 9, 10, 11, 13, 14)),
             COALESCE((SELECT SUM(length(result.result_payload))
                       FROM tool_operation_facts AS result
                       WHERE result.run_id = accepted.run_id
