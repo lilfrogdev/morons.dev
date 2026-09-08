@@ -124,7 +124,22 @@ async fn root_image_tool_flow(model: &'static str) {
                     serde_json::json!({"id":"rs_native","type":"reasoning","summary":[{"type":"summary_text","text":"bounded summary"}],"encrypted_content":"synthetic-native-continuation"}),
                     serde_json::json!({"id":"fc_native","type":"function_call","status":"completed","call_id":"native_read","name":"read","arguments":arguments})
                 );
-                write_native_model(&mut stream, "resp_native_read", &output, model).await;
+                // Native may omit the media type; receipt-bound continuation
+                // must still complete through the same strict decoder (ADR0037).
+                let response = provider_output_body("resp_native_read", &output)
+                    .replace("muse-spark-1.2", model);
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            response.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
             } else {
                 assert!(body["input"].to_string().contains("data:image/png;base64,"));
                 assert!(

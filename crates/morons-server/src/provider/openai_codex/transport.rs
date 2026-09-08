@@ -194,8 +194,13 @@ impl PreparedCodexDispatch<'_> {
                 ));
             }
         }
-        require_content_type(response.headers(), "text/event-stream")
-            .map_err(|e| self.turn.record_failure(e, ResponseStage::ContentType))?;
+        // This fixed streaming route can omit Content-Type (ADR0037). Absence
+        // still selects only the strict SSE decoder below, never a fallback.
+        // A present conflicting/empty value is not equivalent to absence.
+        if response.headers().contains_key(CONTENT_TYPE) {
+            require_content_type(response.headers(), "text/event-stream")
+                .map_err(|e| self.turn.record_failure(e, ResponseStage::ContentType))?;
+        }
         validate_content_length(response.headers(), MAX_PROVIDER_STREAM_BYTES)
             .map_err(|e| self.turn.record_failure(e, ResponseStage::BodyBounds))?;
         let mut values = response.headers().get_all(ROUTING_HEADER).iter();

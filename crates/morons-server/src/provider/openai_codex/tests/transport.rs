@@ -1,6 +1,7 @@
 use super::*;
 mod boundaries;
 mod diagnostics;
+mod media_type;
 mod models;
 use crate::{
     persistence::{MutationRequestId, SessionStore, credential_tests::TestRoot},
