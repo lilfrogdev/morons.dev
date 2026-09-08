@@ -6,6 +6,7 @@ mod data_use;
 pub(crate) mod dispatch;
 mod error;
 pub mod openai_codex;
+pub mod openai_web;
 pub(crate) mod response_diagnostic;
 mod response_http;
 pub use data_use::DataUseRestrictions;

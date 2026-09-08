@@ -73,7 +73,7 @@ pub(super) fn validate_usage(
     })
 }
 
-pub(super) fn validate_response_identifier(
+pub(in crate::provider) fn validate_response_identifier(
     value: &str,
     maximum_bytes: usize,
 ) -> Result<(), ProviderError> {
@@ -96,7 +96,7 @@ pub(super) fn validate_event_type(event_type: &str) -> Result<(), ProviderError>
     Ok(())
 }
 
-pub(super) fn validate_event_value(
+pub(in crate::provider) fn validate_event_value(
     value: &Value,
     depth: usize,
     nodes: &mut usize,
