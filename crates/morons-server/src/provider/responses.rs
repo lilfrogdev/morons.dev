@@ -778,7 +778,7 @@ impl ResponsesDecoder {
     }
 }
 
-fn validate_ping_record(data: &[u8]) -> Result<(), ProviderError> {
+pub(super) fn validate_ping_record(data: &[u8]) -> Result<(), ProviderError> {
     let value = parse_strict_value(data).map_err(|_| ProviderError::MalformedResponse)?;
     let mut event_nodes = 0;
     validate_event_value(&value, 0, &mut event_nodes)?;
@@ -814,5 +814,18 @@ mod tests;
 mod validation;
 mod wire;
 
-use validation::*;
+use validation::{
+    append_bounded, parse_message_content, validate_event_type, validate_response_tool_name,
+    validate_usage,
+};
+pub(super) use validation::{validate_event_value, validate_response_identifier};
+
+pub(super) fn decode_usage(
+    value: Value,
+    input_limit: u32,
+    output_limit: u32,
+) -> Result<ProviderUsage, ProviderError> {
+    let usage = serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
+    validate_usage(usage, input_limit, output_limit)
+}
 use wire::*;
