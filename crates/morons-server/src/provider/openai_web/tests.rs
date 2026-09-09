@@ -7,6 +7,9 @@ fn item_call() -> Value {
 fn item_message() -> Value {
     json!({"id":"msg_fixture","type":"message","role":"assistant","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"Fixture answer.","annotations":[{"type":"url_citation","url":"https://example.com/source","title":"Fixture source","start_index":0,"end_index":7}]}]})
 }
+pub(super) fn response_fixture() -> Vec<u8> {
+    wire(&events())
+}
 fn events() -> Vec<Value> {
     vec![
         json!({"type":"response.created","response":{"id":"resp_fixture","object":"response","model":MODEL,"status":"in_progress"}}),

@@ -20,7 +20,7 @@ use http_body_util::Full;
 use std::sync::Arc;
 use tokio::time::{self, Instant};
 
-const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+pub(in crate::provider) const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
 const ROUTING_HEADER: &str = "x-codex-turn-state";
 const MAX_ROUTING_BYTES: usize = 4096;
 pub struct OpenAiCodexProvider {
@@ -281,7 +281,7 @@ impl PreparedCodexDispatch<'_> {
         Ok(outcome)
     }
 }
-fn credential_error(error: OpenAiCredentialError) -> ProviderError {
+pub(in crate::provider) fn credential_error(error: OpenAiCredentialError) -> ProviderError {
     match error {
         OpenAiCredentialError::Cancelled => ProviderError::Cancelled,
         OpenAiCredentialError::Deadline => ProviderError::TotalTimeout,
