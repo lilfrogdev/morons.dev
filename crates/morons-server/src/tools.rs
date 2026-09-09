@@ -25,7 +25,7 @@ pub(crate) use worktree::recovery_plan_is_valid;
 
 mod hosted_web;
 pub(crate) use hosted_web::{HostedWebResult, WebCitation, WebReceipt};
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 11;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 12;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
@@ -523,6 +523,7 @@ pub(crate) enum ToolErrorKind {
     Interrupted,
     NotDispatched,
     Uncertain,
+    WebSearchUncertain(crate::web_diagnostic::WebFailure),
     Filesystem,
     Network,
     InvalidResponse,
@@ -580,7 +581,10 @@ impl ToolResult {
     }
 
     pub(crate) const fn is_uncertain(&self) -> bool {
-        matches!(self.error_kind(), Some(ToolErrorKind::Uncertain))
+        matches!(
+            self.error_kind(),
+            Some(ToolErrorKind::Uncertain | ToolErrorKind::WebSearchUncertain(_))
+        )
     }
 
     pub(crate) fn provider_output(&self) -> Result<String, serde_json::Error> {
@@ -592,6 +596,13 @@ impl ToolResult {
             Self::Ok { output } => output.summary(),
             Self::Error { error, output } => {
                 let mut summary = format!("{} failed: {}", error.tool_label(), error.label());
+                if let ToolErrorKind::WebSearchUncertain(failure) = error {
+                    summary.push_str(&format!(
+                        " (stage: {}; category: {})",
+                        failure.stage.label(),
+                        failure.category.label()
+                    ));
+                }
                 if let Some(output) = output {
                     summary.push('\n');
                     summary.push_str(&output.summary());
@@ -629,6 +640,9 @@ impl ToolErrorKind {
             Self::Interrupted => "interrupted",
             Self::NotDispatched => "not dispatched",
             Self::Uncertain => "external effect or service usage is uncertain; nothing was retried",
+            Self::WebSearchUncertain(_) => {
+                "OpenAI web search is uncertain; service usage may have occurred; nothing was retried"
+            }
             Self::Filesystem => "filesystem operation failed",
             Self::Network => "network request failed",
             Self::InvalidResponse => "search service returned an invalid response",
@@ -947,6 +961,10 @@ fn bounded_text(value: &str, maximum: usize) -> &str {
 
 pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> bool {
     match result {
+        ToolResult::Error {
+            error: ToolErrorKind::WebSearchUncertain(_),
+            output,
+        } => matches!(tool, ToolKind::WebSearch | ToolKind::Task) && output.is_none(),
         ToolResult::Error { error, output } => output.as_ref().is_none_or(|output| match tool {
             ToolKind::Bash => {
                 matches!(

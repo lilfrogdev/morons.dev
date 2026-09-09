@@ -169,7 +169,19 @@ async fn hosted_transport_denial_framing_and_bad_results_never_retry() {
                 | (4, ProviderError::ResponseLimitExceeded)
                 | (5, ProviderError::MalformedResponse)
         ));
-        assert!(!format!("{error:?} {error}").contains("PRIVATE"));
+        let failure = attempt.failure(error);
+        assert_eq!(
+            failure.stage,
+            [
+                WebStage::HttpStatus,
+                WebStage::HttpStatus,
+                WebStage::ContentType,
+                WebStage::Sse,
+                WebStage::BodyBounds,
+                WebStage::Headers
+            ][i]
+        );
+        assert!(!format!("{error:?} {error} {failure:?}").contains("PRIVATE"));
         assert!(matches!(
             provider
                 .prepare(&mut attempt, DataUseRestrictions::default(), &mut cancel)
@@ -355,6 +367,20 @@ async fn hosted_transport_cancel_and_deadline_poison_an_inflight_attempt() {
             result,
             Err(ProviderError::Cancelled | ProviderError::TotalTimeout)
         ));
+        let failure = attempt.failure(result.unwrap_err());
+        // Peer header writes do not prove the client consumed them before cancellation/deadline.
+        assert!(matches!(
+            failure.stage,
+            WebStage::Headers | WebStage::BodyFraming
+        ));
+        assert_eq!(
+            failure.category,
+            if deadline {
+                crate::web_diagnostic::WebCategory::TotalTimeout
+            } else {
+                crate::web_diagnostic::WebCategory::Cancelled
+            }
+        );
         let (_, mut fresh) = provider_cancellation();
         assert!(matches!(
             provider

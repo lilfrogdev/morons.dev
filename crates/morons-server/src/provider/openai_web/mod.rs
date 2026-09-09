@@ -1,5 +1,6 @@
 //! Hosted-search contract and one-shot transport. Application admission lives in the owned tool executor.
 mod decode;
+mod diagnostic;
 mod output;
 mod transport;
 pub use transport::{PreparedSearch, SearchAttempt, SearchProvider};

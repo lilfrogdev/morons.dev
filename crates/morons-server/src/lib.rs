@@ -10,6 +10,7 @@ pub mod provider;
 mod run_supervisor;
 mod skills;
 mod tools;
+mod web_diagnostic;
 
 pub use application::{ApplicationStartupError, ServerApplication};
 pub use connection::{
