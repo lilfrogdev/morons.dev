@@ -1,14 +1,22 @@
 use super::*;
 use serde_json::{Value, json};
 
+mod diagnostic;
+mod sources;
+
 fn item_call() -> Value {
     json!({"id":"ws_fixture","type":"web_search_call","status":"completed","action":{"type":"search","queries":["fixture"],"sources":[{"type":"url","url":"https://example.com/source"}]}})
 }
 fn item_message() -> Value {
     json!({"id":"msg_fixture","type":"message","role":"assistant","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"Fixture answer.","annotations":[{"type":"url_citation","url":"https://example.com/source","title":"Fixture source","start_index":0,"end_index":7}]}]})
 }
-pub(super) fn response_fixture() -> Vec<u8> {
+pub(crate) fn response_fixture() -> Vec<u8> {
     wire(&events())
+}
+pub(crate) fn response_sources_fixture() -> Vec<u8> {
+    let mut data = events();
+    data[1]["item"]["action"]["sources"] = sources::sources(11);
+    wire(&data)
 }
 fn events() -> Vec<Value> {
     vec![

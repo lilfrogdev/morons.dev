@@ -126,6 +126,10 @@ async fn delete_history(task: bool, migrate: bool) {
             store.task_model_binding(run, call.call_id).await.unwrap()
         );
         drop(store);
+        db.execute_batch(
+            "PRAGMA foreign_keys=OFF; DROP TABLE web_model_bindings; DROP TABLE web_binding_epoch;",
+        )
+        .unwrap();
         let original = include_str!("../schema_v30.sql");
         let start = original.find("CREATE TABLE task_model_bindings (").unwrap();
         let end = original[start..].find("PRAGMA user_version").unwrap() + start;

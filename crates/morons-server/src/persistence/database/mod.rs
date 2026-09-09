@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-pub(super) const SCHEMA_VERSION: i64 = 31;
+pub(super) const SCHEMA_VERSION: i64 = 32;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -54,6 +54,7 @@ const SCHEMA_V28: &str = include_str!("../schema_v28.sql");
 const SCHEMA_V29: &str = include_str!("../schema_v29.sql");
 const SCHEMA_V30: &str = include_str!("../schema_v30.sql");
 const SCHEMA_V31: &str = include_str!("../schema_v31.sql");
+const SCHEMA_V32: &str = include_str!("../schema_v32.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -102,6 +103,9 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("provider_binding_epoch", "table"),
     ("task_model_bindings", "table"),
     ("task_model_bindings_by_run", "index"),
+    ("web_binding_epoch", "table"),
+    ("web_model_bindings", "table"),
+    ("web_model_bindings_by_run", "index"),
     ("provider_operation_facts", "table"),
     ("provider_operation_facts_by_run", "index"),
     ("repository_import_active_session", "index"),
@@ -251,6 +255,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V29)?;
     connection.execute_batch(SCHEMA_V30)?;
     connection.execute_batch(SCHEMA_V31)?;
+    connection.execute_batch(SCHEMA_V32)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -372,6 +377,7 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (29, SCHEMA_V29),
         (30, SCHEMA_V30),
         (31, SCHEMA_V31),
+        (32, SCHEMA_V32),
     ] {
         if version > schema_version {
             migrate_schema(connection, schema)?;

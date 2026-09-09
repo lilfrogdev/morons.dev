@@ -32,6 +32,7 @@ The application consists of a long-running local server and a separate terminal 
 - Images enter through clipboard paste, drag and drop, explicit paths, or `read`, appear as atomic filename markers, and persist as structured bounded session attachments.
 - OpenCode Zen and OpenCode Go use one concrete provider integration with reviewed Responses, Chat Completions, Anthropic Messages, and Gemini routes while remaining distinct service and billing identities.
 - Native ChatGPT uses a separate reviewed Codex Responses adapter and credential identity. Task batches durably bind their own selected model and credential generation before dispatch; no cross-provider credential or model fallback is allowed.
+- Web search uses only OpenAI-hosted search through the server's ChatGPT credential broker. Root tools and task batches durably bind the separate search identity; only the query enters its request. Historical Brave results remain readable, but there is no Brave executor, key lookup, selector, or fallback.
 - A reviewed built-in manifest, not remote catalog metadata, defines supported service, model, protocol, image, tool, limit, and data-use combinations.
 - Independent default-off training and zero-retention restrictions are enforced by server admission; unknown policy cannot satisfy a restriction, and changes cannot recall already admitted work.
 - Session identity and lifetime are independent of client connections and temporary runtimes.

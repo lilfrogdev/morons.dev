@@ -258,6 +258,7 @@ async fn read_image_tool_stores_bytes_outside_sqlite_and_returns_multimodal_cont
 async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
     let root = TestRoot::new("web-search-tool-loop");
     let selected = TestRoot::new("web-search-directory");
+    fs::write(selected.path().join("keep.txt"), "keep").unwrap();
     let store = SessionStore::open_for_test(root.path()).expect("session store should open");
     store
         .set_open_code_credential(
@@ -275,6 +276,14 @@ async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
         )
         .await
         .expect("session should be created");
+    store
+        .set_openai_credential(
+            PersistenceMutationRequestId::from_bytes([0x94; 16]),
+            0,
+            super::native::synthetic_tokens(),
+        )
+        .await
+        .unwrap();
     let (provider_base, provider_requests, provider_task) =
         spawn_web_search_tool_loop_provider().await;
     let (search_origin, search_request, search_task) = spawn_search_adapter().await;
@@ -309,16 +318,19 @@ async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
     let search_request = search_request
         .await
         .expect("search request should be captured");
-    assert!(search_request.starts_with(
-        "GET /search?q=current%20Rust%20release&count=10&safesearch=moderate&spellcheck=1 HTTP/1.1"
-    ));
+    assert!(search_request.starts_with("POST /search HTTP/1.1"));
+    assert!(search_request.contains("\"type\":\"web_search\""));
+    assert!(search_request.contains("\"model\":\"gpt-5.5\""));
+    assert!(!search_request.contains("find the current Rust site"));
+    assert!(!search_request.contains("x-subscription-token"));
     let provider_requests = provider_requests
         .await
         .expect("provider requests should be captured");
     assert_eq!(provider_requests.len(), 2);
     assert!(provider_requests[0].contains("\"name\":\"web_search\""));
-    assert!(provider_requests[1].contains("https://www.rust-lang.org/"));
-    assert!(provider_requests[1].contains("Rust is a programming language"));
+    assert!(provider_requests[1].contains("https://example.com/source"));
+    assert!(provider_requests[1].contains("Fixture answer."));
+    assert!(provider_requests[1].contains("\\\"receipt\\\""));
     assert!(
         !provider_requests
             .iter()
@@ -363,9 +375,40 @@ async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
             ..
         }
     ));
+    if let morons_protocol::TranscriptEntry::ToolResult { summary, .. } = &entries[2] {
+        assert!(summary.contains("https://example.com/source"));
+        assert!(summary.contains("Fixture answer."));
+        assert!(summary.contains("separate from coding usage"));
+    }
     application.shutdown().await;
     drop(application);
-    SessionStore::open_for_test(root.path()).expect("web search history should reopen");
+    let store = SessionStore::open_for_test(root.path()).expect("web search history should reopen");
+    store
+        .set_session_archived(
+            PersistenceMutationRequestId::from_bytes([0x95; 16]),
+            session.id,
+            true,
+        )
+        .await
+        .unwrap();
+    store
+        .delete_session(
+            PersistenceMutationRequestId::from_bytes([0x96; 16]),
+            session.id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(selected.path().join("keep.txt")).unwrap(),
+        "keep"
+    );
+    let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM web_model_bindings", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
     let database = fs::read(root.path().join("data").join("sessions.sqlite3"))
         .expect("database should be readable");
     assert!(!contains_bytes(&database, b"not-a-real-search-key"));

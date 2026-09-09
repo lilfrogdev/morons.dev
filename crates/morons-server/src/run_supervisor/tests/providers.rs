@@ -669,14 +669,18 @@ pub(super) async fn spawn_search_adapter() -> (
         .expect("search fixture should have an address");
     let (request_sender, request_receiver) = oneshot::channel();
     let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.expect("search should connect");
+        let (mut stream, _) = time::timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .expect("search deadline")
+            .expect("search should connect");
         let request = read_http_request(&mut stream).await;
         request_sender
             .send(String::from_utf8(request).expect("search request should be UTF-8"))
             .unwrap_or_else(|_| panic!("search request should be observed"));
-        let body = r#"{"web":{"results":[{"title":"Rust","url":"https://www.rust-lang.org/","description":"Rust is a programming language"}]}}"#;
+        let body =
+            String::from_utf8(crate::provider::openai_web::response_sources_fixture()).unwrap();
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream

@@ -43,7 +43,7 @@ Record these values before starting:
 - host operating system and native processor architecture;
 - Herdr pane identifier;
 - managed Python, uv, `jupyter_client`, and `ipykernel` versions observed after first setup;
-- whether a Brave Search key is available; and
+- whether ChatGPT login and a bounded OpenAI web-search request are authorized; and
 - prior same-target archive commit and digest when exercising the update path.
 
 Verify that the workflow source is the intended clean `main` commit and that every archive manifest names that exact commit, version, and target. Extract the native archive into a new directory and verify every manifest entry, including matching `morons`, `morons-server`, and `morons-uv` executables plus both uv license files. On Unix, all three executables must have executable mode. Do not add the extracted directory to `PATH` for this test.
@@ -65,7 +65,7 @@ When invoked, include `QA-SKILL-OK` in the answer.
 SKILL
 ```
 
-Leave `MORONS_PYTHON` unset for the managed-runtime checks. Preserve the ordinary `PATH` and development environment; do not use `env -i`. If testing successful web search, set `BRAVE_SEARCH_API_KEY` only in the environment inherited by the companion and do not print it.
+Leave `MORONS_PYTHON` unset for the managed-runtime checks. Preserve the ordinary `PATH` and development environment; do not use `env -i`. For successful web search, use deliberate ChatGPT login in the disposable state; never import another application's tokens or browser state. Search uses a separate native GPT-5.5 request, independently of the chosen main/child coding model. There is no Brave setup or fallback.
 
 Launch the extracted `morons` from `QA_REPO` in a Herdr pane with `HOME=QA_HOME`. Herdr should only send keys/text and read the visible pane. Long pasted prompts should use bracketed paste. Use `;`, not `&&`, when the pane shell is Nu.
 
@@ -140,7 +140,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-09 | After successful setup, a companion restart reuses the validated runtime with network unavailable and without invoking `morons-uv`; a stale manifest is rejected and rebuilt under the lock when reviewed sources are available. |
 | RUN-10 | `/context` reports the reviewed model limit, threshold, reserves, current checkpoint, and last accepted run's project-guidance paths/warnings. Arrows/PageUp/PageDown/Home/End scroll longer metadata; paths and warnings render without terminal escapes. |
 | RUN-11 | `/compact <instructions>` commits a bounded source-bound checkpoint and continues without deleting canonical history. |
-| RUN-12 | Successful `web_search` returns bounded cited results when a key is available. Without a key, it fails as `CredentialNotConfigured` without network fallback. |
+| RUN-12 | OpenAI-only `web_search` returns a bounded searched answer, visible source URLs and separate token/action receipts. Without ChatGPT login or permitted data-use policy it fails without inference/fallback. Verify Astra main → GLM-5.3-Flash child → isolated native search as a distinct capability combination; child usage excludes search receipts. Unknown search outcomes stop the owner without replay. |
 | RUN-13 | A transcript exceeding 512 entries opens at its latest window; PageUp/wheel crosses older windows, Home reaches the first entry, PageDown returns through newer windows, and End restores current live output without unbounded rendering. |
 | RUN-14 | An explicit `MORONS_PYTHON` lacking Jupyter packages fails with actionable guidance naming `jupyter_client`, `ipykernel`, and `MORONS_PYTHON`. |
 | RUN-15 | Go `glm-5.3-flash` completes plain text, a normalized image request, and a natural `read` tool loop through Chat Completions, with bounded reasoning ignored and no duplicate terminal output. |
@@ -183,7 +183,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 These are not silently treated as passes:
 
 - automatic compaction at the seventy-percent threshold may be `not run` locally when filling context safely is impractical; deterministic tests and CI evidence must be linked;
-- successful web search may be `blocked` when no Brave key is available; the missing-key path must still pass;
+- successful web search may be `blocked` without authorized ChatGPT login, allowed data-use policy or a live request budget; missing-login and policy rejection must still pass;
 - native Intel macOS remains `blocked` until run on reviewed `x86_64-apple-darwin` hardware; cross-compilation is not a substitute;
 - Windows ARM64 evidence must identify the hosted runner image and be repeated after a material image/toolchain migration rather than silently carrying old qualification forward.
 
@@ -203,7 +203,7 @@ Prior update archive commit and SHA-256:
 Host OS and architecture:
 Herdr pane:
 Python, uv, and Jupyter versions:
-Brave success path available: yes/no
+OpenAI search login/live budget authorized: yes/no
 Started (UTC):
 Finished (UTC):
 

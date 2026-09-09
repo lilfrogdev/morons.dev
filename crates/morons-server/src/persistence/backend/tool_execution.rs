@@ -345,6 +345,8 @@ impl Backend {
         operation_id: ToolOperationId,
     ) -> Result<(), PersistenceError> {
         let binding = self.task_binding_candidate(run_id, call_id, operation_id)?;
+        let web_binding =
+            self.web_binding_candidate(run_id, call_id, operation_id, binding.as_ref())?;
         let fact_id = random_identifier()?;
         let audit_id = random_identifier()?;
         let now = current_time_milliseconds()?;
@@ -358,6 +360,9 @@ impl Backend {
         let sequence = next_sequence(&transaction)?;
         if let Some(binding) = binding {
             super::task_binding::insert(&transaction, binding, sequence)?;
+        }
+        if let Some(binding) = web_binding {
+            super::web_binding::insert(&transaction, binding, sequence)?;
         }
         let audit_sequence = next_sequence(&transaction)?;
         transaction.execute(
@@ -464,6 +469,7 @@ impl Backend {
             result_payload = encode_payload(&result)?;
             result_bytes = u64::try_from(result_payload.len()).map_err(|_| limit())?;
         }
+        super::web_binding::validate_result(&transaction, call_id, &result)?;
         let (fact_kind, result_status) = classify_result(&result, dispatched)?;
         let workspace_event_id = result.is_uncertain().then(random_identifier).transpose()?;
         let new_result_bytes = run
@@ -628,6 +634,12 @@ impl Backend {
                 )?;
                 continue;
             }
+            let hosted_web = operation.input.kind() == ToolKind::WebSearch
+                && self.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM web_model_bindings WHERE call_id=?1)",
+                    [operation.call_id.as_bytes()],
+                    |row| row.get::<_, bool>(0),
+                )?;
             let result =
                 if operation.input.kind() == ToolKind::RunCommand {
                     let payload = operation.recovery_plan.as_deref().ok_or(
@@ -652,7 +664,7 @@ impl Backend {
                     } else {
                         ToolErrorKind::NotDispatched
                     })
-                } else if operation.input.kind().is_mutation() {
+                } else if operation.input.kind().is_mutation() || hosted_web {
                     ToolResult::error(if operation.dispatched {
                         ToolErrorKind::Uncertain
                     } else {
@@ -1091,7 +1103,7 @@ fn classify_result(result: &ToolResult, dispatched: bool) -> Result<(i64, i64), 
     match result {
         ToolResult::Ok { .. } if dispatched => Ok((TOOL_FACT_COMPLETED, TOOL_RESULT_SUCCEEDED)),
         ToolResult::Error {
-            error: ToolErrorKind::Uncertain,
+            error: ToolErrorKind::Uncertain | ToolErrorKind::WebSearchUncertain(_),
             ..
         } if dispatched => Ok((TOOL_FACT_UNCERTAIN, TOOL_RESULT_UNCERTAIN)),
         ToolResult::Error {

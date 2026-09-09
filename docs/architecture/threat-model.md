@@ -122,7 +122,7 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - A dispatched inference request is retried and incurs duplicate usage.
 - Provider response identifiers become authoritative conversation state and make local recovery depend on external retention.
 - A context-bearing command, tool, skill, or image unintentionally sends sensitive local content to a provider.
-- A malformed web query, redirect, proxy setting, or response causes the Brave Search credential to be sent outside its fixed reviewed endpoint, or the credential is persisted, logged, audited, rendered, or included in model context. The environment-supplied credential remains deliberately visible to same-user child execution.
+- A root or child web request adopts a different native credential, borrows an OpenCode generation, sends parent history/files beyond the explicit query, bypasses current model data-use restrictions, leaks broker authorization outside the fixed OpenAI route, or silently falls back to another search provider. A malformed or partial response fabricates a searched answer/citation/usage receipt, source URLs trigger automatic local navigation, or child search uncertainty permits another parent request. OpenAI-only source-bound dispatch, strict complete results, separate receipts and outer-task no-replay ownership are specified in ADR0043; no Brave executor remains.
 - A missing or rotating `x-opencode-session` value defeats OpenCode routing and prompt-cache affinity, while reusing one value across unrelated root or child conversations creates unintended correlation and traffic concentration.
 - Concurrent child inference multiplies provider usage, exceeds expected spend, or lets credential replacement race a later child turn.
 

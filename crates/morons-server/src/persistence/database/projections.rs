@@ -1713,7 +1713,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                        AND image.state = 2
                  ))
                 OR
-                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10)
+                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
                  AND accepted.tool_limits_version = accepted.tool_catalog_version
                  AND accepted.execution_image_generation IS NULL
                  AND EXISTS (
@@ -1727,12 +1727,12 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
                OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
-               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7, 8, 9, 10))
-               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7, 8, 9, 10))
-               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7, 8, 9, 10))
-               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7, 8, 9, 10))
-               OR (call.tool_kind = 14 AND run.tool_catalog_version NOT IN (8, 9, 10))
-               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10))
+               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
+               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
+               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7, 8, 9, 10, 11, 12, 13))
+               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7, 8, 9, 10, 11, 12, 13))
+               OR (call.tool_kind = 14 AND run.tool_catalog_version NOT IN (8, 9, 10, 11, 12, 13))
+               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id
@@ -1929,9 +1929,11 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
 
     let mut statement = connection.prepare(
         "SELECT terminal.fact_kind, terminal.result_status, terminal.result_payload,
-                call.tool_kind, call.input_payload
+                call.tool_kind, call.input_payload, accepted.tool_catalog_version,
+                EXISTS(SELECT 1 FROM web_model_bindings WHERE call_id=call.call_id)
          FROM tool_operation_facts AS terminal
          JOIN tool_calls AS call ON call.call_id = terminal.call_id
+         JOIN run_accepted_facts AS accepted ON accepted.run_id=call.run_id
          WHERE terminal.fact_kind BETWEEN 3 AND 6",
     )?;
     let results = statement
@@ -1942,10 +1944,13 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                 row.get::<_, Vec<u8>>(2)?,
                 row.get::<_, i64>(3)?,
                 row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, bool>(6)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    for (fact_kind, result_status, payload, tool_kind, input_payload) in results {
+    for (fact_kind, result_status, payload, tool_kind, input_payload, catalog, web_bound) in results
+    {
         let result: ToolResult =
             serde_json::from_slice(&payload).map_err(|_| PersistenceError::InvalidState {
                 reason: "a canonical tool result has an invalid typed payload",
@@ -1965,6 +1970,15 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                     error: ToolErrorKind::Uncertain,
                     ..
                 } => fact_kind == 6 && result_status == 4,
+                ToolResult::Error {
+                    error: ToolErrorKind::WebSearchUncertain(failure),
+                    ..
+                } => {
+                    fact_kind == 6
+                        && result_status == 4
+                        && u16::try_from(catalog).is_ok_and(|c| failure.valid_for_catalog(c))
+                        && web_bound
+                }
                 ToolResult::Error {
                     error:
                         ToolErrorKind::Interrupted

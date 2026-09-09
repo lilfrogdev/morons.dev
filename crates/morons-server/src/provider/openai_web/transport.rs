@@ -1,4 +1,4 @@
-use super::{MAX_RESPONSE_BYTES, SearchRequest, SearchResult, check_policy, decode_response};
+use super::{MAX_RESPONSE_BYTES, SearchRequest, SearchResult, check_policy};
 use crate::provider::{
     DataUseRestrictions, ProviderCancellation, ProviderError,
     http_client::{ProviderHttpClient, bounded_client},
@@ -6,6 +6,7 @@ use crate::provider::{
     openai_codex::{NATIVE_RESPONSES_ENDPOINT, credential_error},
     response_http::*,
 };
+use crate::web_diagnostic::{WebFailure, WebStage};
 use http::{
     Request, Uri,
     header::{ACCEPT, CONTENT_TYPE, USER_AGENT},
@@ -29,6 +30,13 @@ pub struct SearchAttempt {
     request_id: String,
     request: SearchRequest,
     spent: bool,
+    stage: WebStage,
+}
+impl SearchAttempt {
+    /// Only the owned caller handling execute's returned error may publish this classification.
+    pub(crate) fn failure(&self, error: ProviderError) -> WebFailure {
+        super::diagnostic::failure(self.stage, error)
+    }
 }
 impl fmt::Debug for SearchAttempt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -75,6 +83,7 @@ impl SearchProvider {
             request_id: identifier(b"morons.dev/openai-web-request/v1\0", operation, generation),
             request: SearchRequest::new(query, policy)?,
             spent: false,
+            stage: WebStage::Admission,
         })
     }
     fn validate(
@@ -111,7 +120,7 @@ impl SearchProvider {
         })
     }
     #[cfg(test)]
-    fn for_test(credentials: Arc<OpenAiCredentialProvider>, endpoint: Uri) -> Self {
+    pub(crate) fn for_test(credentials: Arc<OpenAiCredentialProvider>, endpoint: Uri) -> Self {
         let mut provider = Self::new(credentials);
         provider.client = bounded_client(
             true,
@@ -128,11 +137,13 @@ impl PreparedSearch<'_> {
         policy: DataUseRestrictions,
         cancellation: &mut ProviderCancellation,
     ) -> Result<SearchResult, ProviderError> {
+        self.attempt.stage = WebStage::Admission;
         self.provider.validate(self.attempt, policy)?;
         if cancellation.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
         self.attempt.spent = true;
+        self.attempt.stage = WebStage::Request;
         let mut request = Request::builder()
             .method("POST")
             .uri(self.provider.endpoint.clone())
@@ -154,6 +165,7 @@ impl PreparedSearch<'_> {
         let start = Instant::now();
         let deadline = start + self.provider.total_timeout;
         let headers = (start + RESPONSE_HEADER_TIMEOUT).min(deadline);
+        self.attempt.stage = WebStage::Headers;
         let response = tokio::select! {
             biased;
             ()=cancellation.cancelled()=>return Err(ProviderError::Cancelled),
@@ -162,6 +174,7 @@ impl PreparedSearch<'_> {
         drop(self.lease);
         validate_response_headers(response.headers())?;
         if response.status() != http::StatusCode::OK {
+            self.attempt.stage = WebStage::HttpStatus;
             let status = response.status();
             read_response_body_with_cancellation(
                 response.into_body(),
@@ -177,16 +190,20 @@ impl PreparedSearch<'_> {
                 return Err(ProviderError::MalformedResponse);
             }
         }
+        self.attempt.stage = WebStage::ContentType;
         if response.headers().contains_key(CONTENT_TYPE) {
             require_content_type(response.headers(), "text/event-stream")?;
         }
+        self.attempt.stage = WebStage::BodyBounds;
         validate_content_length(response.headers(), MAX_RESPONSE_BYTES)?;
         let mut incoming = response.into_body();
         let mut body = Vec::new();
+        self.attempt.stage = WebStage::BodyFraming;
         while let Some(frame) = next_frame(&mut incoming, deadline, cancellation).await? {
             let data = frame
                 .into_data()
                 .map_err(|_| ProviderError::MalformedResponse)?;
+            self.attempt.stage = WebStage::BodyBounds;
             if body
                 .len()
                 .checked_add(data.len())
@@ -195,11 +212,12 @@ impl PreparedSearch<'_> {
                 return Err(ProviderError::ResponseLimitExceeded);
             }
             body.extend_from_slice(&data);
+            self.attempt.stage = WebStage::BodyFraming;
         }
         if cancellation.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
-        decode_response(&body)
+        super::decode::decode_response_at(&body, &mut self.attempt.stage)
     }
 }
 fn identifier(domain: &[u8], operation: [u8; 16], generation: u64) -> String {

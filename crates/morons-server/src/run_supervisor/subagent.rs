@@ -36,6 +36,7 @@ pub(super) struct SubagentExecutor {
 
 #[derive(Clone)]
 struct SubagentRunConfig {
+    web_binding: Option<crate::persistence::WebBinding>,
     project_text: Option<Arc<str>>,
     session_id: [u8; 16],
     call_id: [u8; 16],
@@ -49,7 +50,23 @@ struct SubagentRunConfig {
 
 enum ChildStop {
     Cancelled,
+    WebUncertain(ToolErrorKind),
     Persistence(crate::persistence::PersistenceError),
+}
+
+fn record_child_stop(current: &mut Option<ToolErrorKind>, observed: ToolErrorKind) {
+    // Keep the first closed web diagnosis while siblings drain. Uncertainty outranks cancellation.
+    if matches!(current, Some(ToolErrorKind::WebSearchUncertain(_))) {
+        return;
+    }
+    if matches!(
+        observed,
+        ToolErrorKind::Uncertain | ToolErrorKind::WebSearchUncertain(_)
+    ) {
+        *current = Some(observed);
+    } else {
+        current.get_or_insert(observed);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -89,6 +106,7 @@ impl SubagentExecutor {
         let Some(mut config) = binding_config(&parent.run, call_id, binding) else {
             return Ok(ToolResult::error(ToolErrorKind::ModelUnavailable));
         };
+        config.web_binding = Some(self.sessions.web_binding(parent.run.id, call_id).await?);
         config.project_text = parent
             .project
             .as_ref()
@@ -137,7 +155,11 @@ impl SubagentExecutor {
                         Some(Ok(Ok(result))) if stop_error.is_none() => results.push(result),
                         Some(Ok(Ok(_))) => {}
                         Some(Ok(Err(ChildStop::Cancelled))) => {
-                            stop_error.get_or_insert(ToolErrorKind::Cancelled);
+                            record_child_stop(&mut stop_error, ToolErrorKind::Cancelled);
+                            batch_handle.cancel();
+                        }
+                        Some(Ok(Err(ChildStop::WebUncertain(error)))) => {
+                            record_child_stop(&mut stop_error, error);
                             batch_handle.cancel();
                         }
                         Some(Ok(Err(ChildStop::Persistence(error)))) => {
@@ -146,7 +168,7 @@ impl SubagentExecutor {
                             batch_handle.cancel();
                         }
                         Some(Err(_)) => {
-                            stop_error = Some(ToolErrorKind::Uncertain);
+                            record_child_stop(&mut stop_error, ToolErrorKind::Uncertain);
                             batch_handle.cancel();
                         }
                         None => break,
@@ -179,6 +201,8 @@ impl SubagentExecutor {
         working_directory: PathBuf,
         mut cancellation: ProviderCancellation,
     ) -> Result<SubagentResult, ChildStop> {
+        let mut web_searches = Vec::new();
+        let result = async {
         let permit = tokio::select! {
             permit = Arc::clone(&self.permits).acquire_owned() => {
                 permit.expect("the subagent semaphore is never closed")
@@ -446,22 +470,30 @@ impl SubagentExecutor {
                             arguments,
                             opaque_continuation,
                         });
+                        let hosted_web = call.input.kind() == ToolKind::WebSearch;
                         let result = self
                             .execute_child_tool(
                                 working_directory.clone(),
                                 call.input,
+                                (&config, index, u16::try_from(provider_call_ids.len()).unwrap_or(u16::MAX)),
                                 &cancellation,
                             )
-                            .await;
+                            .await.map_err(ChildStop::Persistence)?;
+                        if let ToolResult::Ok { output: ToolOutput::OpenAiWeb { result } } = &result {
+                            web_searches.push(result.receipt.clone());
+                        }
                         if result.error_kind() == Some(ToolErrorKind::Cancelled) {
                             return Err(ChildStop::Cancelled);
+                        }
+                        if result.is_uncertain() && hosted_web {
+                            return Err(ChildStop::WebUncertain(result.error_kind().expect("uncertain result has an error")));
                         }
                         if result.is_uncertain() {
                             return Ok(subagent_result(
                                 index,
                                 task.name,
                                 SubagentStatus::Failed,
-                                "subagent local tool effect is uncertain; inspect the selected directory before continuing",
+                                "subagent external effect or service usage is uncertain; nothing was retried",
                                 subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                             ));
                         }
@@ -503,17 +535,31 @@ impl SubagentExecutor {
                 }
             }
         }
+        }.await;
+        result.map(|mut result: SubagentResult| {
+            result.web_searches = web_searches;
+            result
+        })
     }
 
     async fn execute_child_tool(
         &self,
         working_directory: PathBuf,
         input: ToolInput,
+        scope: (&SubagentRunConfig, u16, u16),
         cancellation: &ProviderCancellation,
-    ) -> ToolResult {
+    ) -> Result<ToolResult, crate::persistence::PersistenceError> {
         let tool = input.kind();
         if tool == ToolKind::WebSearch {
-            return self.web_search.execute(&input, cancellation).await;
+            let binding = scope.0.web_binding.as_ref().ok_or(
+                crate::persistence::PersistenceError::InvalidState {
+                    reason: "child search is missing its outer binding",
+                },
+            )?;
+            return self
+                .web_search
+                .execute(&input, binding, scope.1, scope.2, cancellation)
+                .await;
         }
         let mutation = tool.is_mutation();
         let execution_cancellation = cancellation.clone();
@@ -537,11 +583,11 @@ impl SubagentExecutor {
                 ToolErrorKind::Interrupted
             })
         });
-        if result.has_image() {
+        Ok(if result.has_image() {
             ToolResult::error(ToolErrorKind::ImageInputUnsupported)
         } else {
             result
-        }
+        })
     }
 }
 
@@ -644,6 +690,7 @@ fn binding_config(
         project_text: None,
         session_id: *run.session_id.as_bytes(),
         call_id: *call_id.as_bytes(),
+        web_binding: None,
         service: binding.service,
         model_id: binding.model_id,
         credential_generation: binding.credential_generation,
@@ -690,6 +737,7 @@ fn subagent_run_config(
         project_text: None,
         session_id: *run.session_id.as_bytes(),
         call_id: *call_id.as_bytes(),
+        web_binding: None,
         service,
         model_id,
         credential_generation: run.credential_generation,
@@ -724,6 +772,7 @@ fn subagent_result(
         tool_calls: metrics.tool_calls,
         tool_mutations: metrics.tool_mutations,
         usage: metrics.usage,
+        web_searches: Vec::new(),
     }
 }
 
@@ -805,6 +854,28 @@ const fn run_failure_label(failure: RunFailureKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_diagnostic_survives_sibling_drain_without_downgrading_uncertainty() {
+        use crate::web_diagnostic::{WebCategory, WebFailure, WebStage};
+        let first = ToolErrorKind::WebSearchUncertain(WebFailure {
+            stage: WebStage::HttpStatus,
+            category: WebCategory::RequestRejected,
+        });
+        let later = ToolErrorKind::WebSearchUncertain(WebFailure {
+            stage: WebStage::BodyFraming,
+            category: WebCategory::Cancelled,
+        });
+        let mut current = None;
+        record_child_stop(&mut current, ToolErrorKind::Cancelled);
+        record_child_stop(&mut current, ToolErrorKind::Uncertain);
+        assert_eq!(current, Some(ToolErrorKind::Uncertain));
+        record_child_stop(&mut current, first);
+        for error in [ToolErrorKind::Cancelled, ToolErrorKind::Uncertain, later] {
+            record_child_stop(&mut current, error);
+            assert_eq!(current, Some(first));
+        }
+    }
 
     #[test]
     fn child_conversation_ids_are_stable_and_scoped() {

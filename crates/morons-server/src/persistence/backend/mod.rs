@@ -30,6 +30,7 @@ mod session_mutation;
 mod settings;
 mod task_binding;
 mod tool_execution;
+mod web_binding;
 mod workspace_creation;
 mod worktree_generation;
 

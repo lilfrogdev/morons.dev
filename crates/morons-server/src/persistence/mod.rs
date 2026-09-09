@@ -12,6 +12,8 @@ mod paths;
 mod run_types;
 mod task_binding;
 pub(crate) use task_binding::TaskModelBinding;
+mod web_binding;
+pub(crate) use web_binding::WebBinding;
 mod runs;
 mod types;
 mod workspace;
@@ -690,6 +692,7 @@ enum WorkerRequest {
         response: oneshot::Sender<Result<TaskModelBinding, PersistenceError>>,
     },
     DataUse(data_use::Request),
+    WebBinding(web_binding::Request),
     OpenAi(openai::OpenAiWorkerRequest),
     Maintenance(maintenance::MaintenanceRequest),
     LocalCommand(local_commands::LocalCommandWorkerRequest),
@@ -812,6 +815,7 @@ fn run_worker(
                 let _ = response.send(backend.load_task_model_binding(run_id, call_id));
             }
             WorkerRequest::DataUse(request) => request.execute(&mut backend),
+            WorkerRequest::WebBinding(request) => request.execute(&mut backend),
             WorkerRequest::Maintenance(request) => request.execute(&mut backend),
             WorkerRequest::OpenAi(request) => request.execute(&mut backend),
             WorkerRequest::LocalCommand(request) => request.execute(&mut backend),
