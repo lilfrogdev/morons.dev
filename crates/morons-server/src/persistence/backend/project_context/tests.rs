@@ -22,14 +22,14 @@ fn context_records_reject_missing_extra_rebound_oversized_and_unknown_data() {
     let context = RunProjectContext::default();
     insert(&connection, current, &context).unwrap();
     assert_eq!(load(&connection, current).unwrap(), Some(context.clone()));
-    for version in [10, 11, 12, 10] {
+    for version in [10, 11, 12, 13, 10] {
         connection
             .execute(
                 "UPDATE run_accepted_facts SET tool_catalog_version = ?1 WHERE run_id = ?2",
                 params![version, &current.as_bytes()[..]],
             )
             .unwrap();
-        if version == 12 {
+        if version == 13 {
             assert!(load(&connection, current).is_err());
         } else {
             assert_eq!(load(&connection, current).unwrap(), Some(context.clone()));

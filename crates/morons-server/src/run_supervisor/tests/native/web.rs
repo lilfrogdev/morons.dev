@@ -138,6 +138,18 @@ async fn child_web_flow(uncertain: bool) {
             .unwrap(),
             1
         );
+        let payload: Vec<u8> = db
+            .query_row(
+                "SELECT result_payload FROM tool_operation_facts WHERE fact_kind=6",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"status":"error","error":{"web_search_uncertain":{"stage":"termination","category":"malformed_response"}}})
+        );
         assert!(SessionStore::open_for_test(root.path()).is_ok());
         return;
     }

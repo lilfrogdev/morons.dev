@@ -50,8 +50,23 @@ struct SubagentRunConfig {
 
 enum ChildStop {
     Cancelled,
-    WebUncertain,
+    WebUncertain(ToolErrorKind),
     Persistence(crate::persistence::PersistenceError),
+}
+
+fn record_child_stop(current: &mut Option<ToolErrorKind>, observed: ToolErrorKind) {
+    // Keep the first closed web diagnosis while siblings drain. Uncertainty outranks cancellation.
+    if matches!(current, Some(ToolErrorKind::WebSearchUncertain(_))) {
+        return;
+    }
+    if matches!(
+        observed,
+        ToolErrorKind::Uncertain | ToolErrorKind::WebSearchUncertain(_)
+    ) {
+        *current = Some(observed);
+    } else {
+        current.get_or_insert(observed);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -140,11 +155,11 @@ impl SubagentExecutor {
                         Some(Ok(Ok(result))) if stop_error.is_none() => results.push(result),
                         Some(Ok(Ok(_))) => {}
                         Some(Ok(Err(ChildStop::Cancelled))) => {
-                            stop_error.get_or_insert(ToolErrorKind::Cancelled);
+                            record_child_stop(&mut stop_error, ToolErrorKind::Cancelled);
                             batch_handle.cancel();
                         }
-                        Some(Ok(Err(ChildStop::WebUncertain))) => {
-                            stop_error = Some(ToolErrorKind::Uncertain);
+                        Some(Ok(Err(ChildStop::WebUncertain(error)))) => {
+                            record_child_stop(&mut stop_error, error);
                             batch_handle.cancel();
                         }
                         Some(Ok(Err(ChildStop::Persistence(error)))) => {
@@ -153,7 +168,7 @@ impl SubagentExecutor {
                             batch_handle.cancel();
                         }
                         Some(Err(_)) => {
-                            stop_error = Some(ToolErrorKind::Uncertain);
+                            record_child_stop(&mut stop_error, ToolErrorKind::Uncertain);
                             batch_handle.cancel();
                         }
                         None => break,
@@ -471,7 +486,7 @@ impl SubagentExecutor {
                             return Err(ChildStop::Cancelled);
                         }
                         if result.is_uncertain() && hosted_web {
-                            return Err(ChildStop::WebUncertain);
+                            return Err(ChildStop::WebUncertain(result.error_kind().expect("uncertain result has an error")));
                         }
                         if result.is_uncertain() {
                             return Ok(subagent_result(
@@ -839,6 +854,28 @@ const fn run_failure_label(failure: RunFailureKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_diagnostic_survives_sibling_drain_without_downgrading_uncertainty() {
+        use crate::web_diagnostic::{WebCategory, WebFailure, WebStage};
+        let first = ToolErrorKind::WebSearchUncertain(WebFailure {
+            stage: WebStage::HttpStatus,
+            category: WebCategory::RequestRejected,
+        });
+        let later = ToolErrorKind::WebSearchUncertain(WebFailure {
+            stage: WebStage::BodyFraming,
+            category: WebCategory::Cancelled,
+        });
+        let mut current = None;
+        record_child_stop(&mut current, ToolErrorKind::Cancelled);
+        record_child_stop(&mut current, ToolErrorKind::Uncertain);
+        assert_eq!(current, Some(ToolErrorKind::Uncertain));
+        record_child_stop(&mut current, first);
+        for error in [ToolErrorKind::Cancelled, ToolErrorKind::Uncertain, later] {
+            record_child_stop(&mut current, error);
+            assert_eq!(current, Some(first));
+        }
+    }
 
     #[test]
     fn child_conversation_ids_are_stable_and_scoped() {

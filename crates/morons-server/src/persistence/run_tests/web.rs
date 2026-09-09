@@ -6,6 +6,8 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod diagnostic;
+
 fn tokens() -> crate::provider::openai_auth::OAuthTokens {
     crate::provider::openai_auth::OAuthTokens::fixture(
         "web-fixture-account",

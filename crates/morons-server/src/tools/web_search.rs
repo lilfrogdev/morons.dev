@@ -100,7 +100,11 @@ impl WebSearchToolExecutor {
         let result = match dispatch.execute(policy, &mut cancellation).await {
             Ok(result) => result,
             // Deliberately conservative: no complete outcome means service effects/usage may exist.
-            Err(_) => return Ok(ToolResult::error(ToolErrorKind::Uncertain)),
+            Err(error) => {
+                return Ok(ToolResult::error(ToolErrorKind::WebSearchUncertain(
+                    attempt.failure(error),
+                )));
+            }
         };
         let usage = result.usage;
         Ok(ToolResult::Ok {

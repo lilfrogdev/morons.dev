@@ -192,6 +192,15 @@ fn load(connection: &Connection, call: ToolCallId) -> Result<WebBinding, Persist
         let result: crate::tools::ToolResult =
             serde_json::from_slice(&bytes).map_err(|_| invalid())?;
         match result {
+            crate::tools::ToolResult::Error {
+                error: crate::tools::ToolErrorKind::WebSearchUncertain(_),
+                output,
+            } => {
+                let terminal: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM tool_operation_facts WHERE call_id=?1 AND fact_kind=6 AND result_status=4)", [call.as_bytes()], |r| r.get(0))?;
+                if !diagnostic_allowed(connection, &binding)? || output.is_some() || !terminal {
+                    return Err(invalid());
+                }
+            }
             crate::tools::ToolResult::Ok {
                 output: crate::tools::ToolOutput::WebSearch { .. },
             } => return Err(invalid()),
@@ -260,10 +269,17 @@ pub(super) fn validate_result(
         [call.as_bytes()],
         |r| r.get(0),
     )?;
+    let diagnostic = matches!(
+        result.error_kind(),
+        Some(crate::tools::ToolErrorKind::WebSearchUncertain(_))
+    );
     if !bound {
-        return Ok(());
+        return if diagnostic { Err(invalid()) } else { Ok(()) };
     }
     let binding = load(connection, call)?;
+    if diagnostic && !diagnostic_allowed(connection, &binding)? {
+        return Err(invalid());
+    }
     match result {
         crate::tools::ToolResult::Ok {
             output: crate::tools::ToolOutput::OpenAiWeb { result },
@@ -291,6 +307,16 @@ pub(super) fn validate_result(
         _ => {}
     }
     Ok(())
+}
+fn diagnostic_allowed(
+    connection: &Connection,
+    binding: &WebBinding,
+) -> Result<bool, PersistenceError> {
+    if binding.generation == 0 {
+        return Ok(false);
+    }
+    // Canonical acceptance, not a cached/derived run projection, owns this result vocabulary.
+    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM run_accepted_facts WHERE run_id=?1 AND tool_catalog_version=12 AND tool_limits_version=12)", [binding.run_id.as_bytes()], |r| r.get(0))?)
 }
 fn invalid() -> PersistenceError {
     PersistenceError::InvalidState {

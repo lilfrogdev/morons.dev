@@ -10,14 +10,24 @@ use crate::provider::{
     },
     sse::SseDecoder,
 };
+use crate::web_diagnostic::WebStage;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// Decode a complete bounded response; never returns partial/delta-only answers.
 pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
+    decode_response_at(body, &mut WebStage::BodyBounds)
+}
+
+pub(super) fn decode_response_at(
+    body: &[u8],
+    stage: &mut WebStage,
+) -> Result<SearchResult, ProviderError> {
+    *stage = WebStage::BodyBounds;
     if body.len() > MAX_RESPONSE_BYTES {
         return Err(ProviderError::ResponseLimitExceeded);
     }
+    *stage = WebStage::Sse;
     let mut sse = SseDecoder::new();
     let records = sse.push(body)?;
     sse.finish()?;
@@ -32,9 +42,11 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
     let mut delta_bytes = 0;
     for record in records {
         if record.event.as_deref() == Some("ping") {
+            *stage = WebStage::Sse;
             validate_ping_record(&record.data)?;
             continue;
         }
+        *stage = WebStage::Termination;
         if record.data == b"[DONE]" {
             if terminal.is_none() || done || record.event.is_some() {
                 return Err(ProviderError::MalformedResponse);
@@ -45,29 +57,45 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
         if terminal.is_some() || done {
             return Err(ProviderError::MalformedResponse);
         }
+        *stage = WebStage::Json;
         let value =
             parse_strict_value(&record.data).map_err(|_| ProviderError::MalformedResponse)?;
+        *stage = WebStage::EventEnvelope;
         validate_event_value(&value, 0, &mut nodes)?;
         let kind = string(&value, "type")?;
-        if record.event.as_deref().is_some_and(|name| name != kind)
-            || number(&value, "sequence_number")? != sequence
-        {
+        if record.event.as_deref().is_some_and(|name| name != kind) {
+            return Err(ProviderError::MalformedResponse);
+        }
+        *stage = WebStage::Sequence;
+        if number(&value, "sequence_number")? != sequence {
             return Err(ProviderError::MalformedResponse);
         }
         sequence += 1;
+        *stage = WebStage::EventKind;
         match kind {
             "response.created" | "response.in_progress" => {
+                *stage = WebStage::Lifecycle;
                 let response = value
                     .get("response")
                     .ok_or(ProviderError::MalformedResponse)?;
+                *stage = WebStage::ResponseIdentity;
                 let id = string(response, "id")?;
                 validate_response_identifier(id, 128)?;
+                *stage = WebStage::Lifecycle;
                 if string(response, "object")? != "response"
                     || string(response, "status")? != "in_progress"
-                    || response
-                        .get("model")
-                        .is_some_and(|m| !m.is_null() && m.as_str() != Some(MODEL))
-                    || response_id.as_ref().is_some_and(|old| old != id)
+                {
+                    return Err(ProviderError::MalformedResponse);
+                }
+                *stage = WebStage::ResponseModel;
+                if response
+                    .get("model")
+                    .is_some_and(|m| !m.is_null() && m.as_str() != Some(MODEL))
+                {
+                    return Err(ProviderError::MalformedResponse);
+                }
+                *stage = WebStage::ResponseIdentity;
+                if response_id.as_ref().is_some_and(|old| old != id)
                     || (kind == "response.created" && response_id.is_some())
                 {
                     return Err(ProviderError::MalformedResponse);
@@ -75,22 +103,34 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
                 response_id = Some(id.to_owned());
             }
             "response.completed" => {
+                *stage = WebStage::Completion;
                 let response = value
                     .get("response")
                     .ok_or(ProviderError::MalformedResponse)?;
+                *stage = WebStage::ResponseIdentity;
                 let id = string(response, "id")?;
                 validate_response_identifier(id, 128)?;
-                if response_id.as_deref() != Some(id)
-                    || string(response, "object")? != "response"
-                    || string(response, "model")? != MODEL
-                    || string(response, "status")? != "completed"
-                {
+                if response_id.as_deref() != Some(id) {
                     return Err(ProviderError::MalformedResponse);
                 }
+                *stage = WebStage::Lifecycle;
+                if string(response, "object")? != "response" {
+                    return Err(ProviderError::MalformedResponse);
+                }
+                *stage = WebStage::ResponseModel;
+                if string(response, "model")? != MODEL {
+                    return Err(ProviderError::MalformedResponse);
+                }
+                *stage = WebStage::Lifecycle;
+                if string(response, "status")? != "completed" {
+                    return Err(ProviderError::MalformedResponse);
+                }
+                *stage = WebStage::OutputItem;
                 let output = array(response, "output")?;
                 if output.len() > MAX_ITEMS {
                     return Err(ProviderError::ResponseLimitExceeded);
                 }
+                *stage = WebStage::OutputConsistency;
                 if items.keys().copied().ne(0..items.len()) {
                     return Err(ProviderError::MalformedResponse);
                 }
@@ -115,6 +155,7 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
                         return Err(ProviderError::MalformedResponse);
                     }
                 }
+                *stage = WebStage::Citation;
                 for ((index, part, annotation), (item_id, value)) in &annotations {
                     let item = output.get(*index).ok_or(ProviderError::MalformedResponse)?;
                     let content = array(item, "content")?
@@ -126,6 +167,7 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
                         return Err(ProviderError::MalformedResponse);
                     }
                 }
+                *stage = WebStage::Usage;
                 let usage = decode_usage(
                     response
                         .get("usage")
@@ -134,11 +176,13 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
                     96_000,
                     32_000,
                 )?;
-                terminal = Some(output::parse(output, usage)?);
+                terminal = Some(output::parse(output, usage, stage)?);
                 items = BTreeMap::new();
             }
             "response.output_item.done" => {
+                *stage = WebStage::Lifecycle;
                 active(&response_id)?;
+                *stage = WebStage::OutputItem;
                 let index = index(&value)?;
                 let item = value.get("item").ok_or(ProviderError::MalformedResponse)?;
                 if !item.is_object() || items.insert(index, item.clone()).is_some() {
@@ -146,7 +190,9 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
                 }
             }
             "response.output_text.delta" => {
+                *stage = WebStage::Lifecycle;
                 active(&response_id)?;
+                *stage = WebStage::OutputConsistency;
                 let index = index(&value)?;
                 let part = usize::try_from(number(&value, "content_index")?)
                     .map_err(|_| ProviderError::MalformedResponse)?;
@@ -169,7 +215,9 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
                 entry.1.push_str(delta);
             }
             "response.output_text.annotation.added" => {
+                *stage = WebStage::Lifecycle;
                 active(&response_id)?;
+                *stage = WebStage::Citation;
                 let index = index(&value)?;
                 let part = usize::try_from(number(&value, "content_index")?)
                     .map_err(|_| ProviderError::MalformedResponse)?;
@@ -191,7 +239,9 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
                 }
             }
             "response.output_item.added" => {
+                *stage = WebStage::Lifecycle;
                 active(&response_id)?;
+                *stage = WebStage::OutputItem;
                 let position = index(&value)?;
                 let item = value.get("item").ok_or(ProviderError::MalformedResponse)?;
                 if items.contains_key(&position)
@@ -214,11 +264,13 @@ pub fn decode_response(body: &[u8]) -> Result<SearchResult, ProviderError> {
             | "response.web_search_call.searching"
             | "response.web_search_call.completed" => {
                 // Bounded progress grants no completed item, search or citation authority.
+                *stage = WebStage::Lifecycle;
                 active(&response_id)?;
             }
             _ => return Err(ProviderError::MalformedResponse),
         }
     }
+    *stage = WebStage::Termination;
     terminal.ok_or(ProviderError::IncompleteResponse)
 }
 fn active(id: &Option<String>) -> Result<(), ProviderError> {

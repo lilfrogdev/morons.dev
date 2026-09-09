@@ -1,5 +1,6 @@
 use super::{Citation, MAX_ACTIONS, MAX_ANSWER_BYTES, MAX_CITATIONS, MAX_ITEMS, SearchResult};
 use crate::provider::{ProviderError, ProviderUsage, responses::validate_response_identifier};
+use crate::web_diagnostic::WebStage;
 use http::Uri;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -44,7 +45,12 @@ pub(super) fn url(value: &str) -> Result<(), ProviderError> {
     Ok(())
 }
 
-pub(super) fn parse(items: &[Value], usage: ProviderUsage) -> Result<SearchResult, ProviderError> {
+pub(super) fn parse(
+    items: &[Value],
+    usage: ProviderUsage,
+    stage: &mut WebStage,
+) -> Result<SearchResult, ProviderError> {
+    *stage = WebStage::OutputItem;
     if items.is_empty() || items.len() > MAX_ITEMS {
         return Err(ProviderError::MalformedResponse);
     }
@@ -59,6 +65,7 @@ pub(super) fn parse(items: &[Value], usage: ProviderUsage) -> Result<SearchResul
     };
     let mut final_messages = 0;
     for item in items {
+        *stage = WebStage::OutputItem;
         let id = string(item, "id")?;
         validate_response_identifier(id, 128)?;
         if !ids.insert(id) {
@@ -66,6 +73,7 @@ pub(super) fn parse(items: &[Value], usage: ProviderUsage) -> Result<SearchResul
         }
         match string(item, "type")? {
             "web_search_call" => {
+                *stage = WebStage::SearchAction;
                 if string(item, "status")? != "completed" {
                     return Err(ProviderError::MalformedResponse);
                 }
@@ -126,6 +134,7 @@ pub(super) fn parse(items: &[Value], usage: ProviderUsage) -> Result<SearchResul
                 }
             }
             "message" => {
+                *stage = WebStage::AssistantMessage;
                 if string(item, "role")? != "assistant" || string(item, "status")? != "completed" {
                     return Err(ProviderError::MalformedResponse);
                 }
@@ -142,6 +151,7 @@ pub(super) fn parse(items: &[Value], usage: ProviderUsage) -> Result<SearchResul
                 let mut answer = String::new();
                 let mut citations = Vec::new();
                 for part in content {
+                    *stage = WebStage::AssistantMessage;
                     if string(part, "type")? != "output_text"
                         || part.get("logprobs").is_some_and(|v| {
                             !v.is_null() && v.as_array().is_none_or(|v| !v.is_empty())
@@ -153,6 +163,7 @@ pub(super) fn parse(items: &[Value], usage: ProviderUsage) -> Result<SearchResul
                     if text.len() + answer.len() > MAX_ANSWER_BYTES {
                         return Err(ProviderError::ResponseLimitExceeded);
                     }
+                    *stage = WebStage::Citation;
                     let annotations = array(part, "annotations")?;
                     if annotations.len() + citations.len() > MAX_CITATIONS {
                         return Err(ProviderError::ResponseLimitExceeded);
@@ -184,6 +195,7 @@ pub(super) fn parse(items: &[Value], usage: ProviderUsage) -> Result<SearchResul
                 }
             }
             "reasoning" => {
+                *stage = WebStage::Reasoning;
                 // No reasoning content or summaries are promoted into the search result.
                 if item
                     .get("status")
@@ -195,11 +207,16 @@ pub(super) fn parse(items: &[Value], usage: ProviderUsage) -> Result<SearchResul
             _ => return Err(ProviderError::MalformedResponse),
         }
     }
-    if final_messages != 1
-        || result.answer.trim().is_empty()
-        || result.citations.is_empty()
-        || result.search_calls == 0
-    {
+    *stage = WebStage::Completion;
+    if final_messages != 1 || result.answer.trim().is_empty() {
+        return Err(ProviderError::MalformedResponse);
+    }
+    *stage = WebStage::Citation;
+    if result.citations.is_empty() {
+        return Err(ProviderError::MalformedResponse);
+    }
+    *stage = WebStage::SearchAction;
+    if result.search_calls == 0 {
         return Err(ProviderError::MalformedResponse);
     }
     Ok(result)
