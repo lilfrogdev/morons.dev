@@ -19,7 +19,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-const SCHEMA_VERSION: i64 = 30;
+pub(super) const SCHEMA_VERSION: i64 = 31;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -53,6 +53,7 @@ const SCHEMA_V27: &str = include_str!("../schema_v27.sql");
 const SCHEMA_V28: &str = include_str!("../schema_v28.sql");
 const SCHEMA_V29: &str = include_str!("../schema_v29.sql");
 const SCHEMA_V30: &str = include_str!("../schema_v30.sql");
+const SCHEMA_V31: &str = include_str!("../schema_v31.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -249,6 +250,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V28)?;
     connection.execute_batch(SCHEMA_V29)?;
     connection.execute_batch(SCHEMA_V30)?;
+    connection.execute_batch(SCHEMA_V31)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -369,6 +371,7 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (28, SCHEMA_V28),
         (29, SCHEMA_V29),
         (30, SCHEMA_V30),
+        (31, SCHEMA_V31),
     ] {
         if version > schema_version {
             migrate_schema(connection, schema)?;
