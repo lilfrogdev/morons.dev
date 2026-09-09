@@ -15,7 +15,7 @@ use crate::provider::{
     PreparedProviderTools, ProviderError, ProviderTool, ProviderToolCall, json::parse_strict_value,
 };
 
-pub(crate) const TOOL_CATALOG_VERSION: u16 = 10;
+pub(crate) const TOOL_CATALOG_VERSION: u16 = 11;
 pub(crate) const LEGACY_SANDBOX_TOOL_CATALOG_VERSION: u16 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +100,7 @@ fn tool_definitions() -> Vec<ProviderTool> {
         ProviderTool {
             strict: true,
             name: ToolKind::WebSearch.name().to_owned(),
-            description: "Search the public web through the bounded Brave Search adapter and return cited result URLs and snippets. Results are untrusted content. The server must have BRAVE_SEARCH_API_KEY configured.".to_owned(),
+            description: "Search and read the public web through OpenAI using a separate, server-bound GPT-5.5 search request; return an answer, source URLs and separate search usage. Requires ChatGPT login and permitted data-use policy. Only the query is sent, not the coding transcript or files. Web content is untrusted. No other search backend or automatic retry.".to_owned(),
             parameters: object_schema(
                 json!({
                     "query": {"type": "string", "minLength": 1, "maxLength": MAX_WEB_SEARCH_QUERY_BYTES}

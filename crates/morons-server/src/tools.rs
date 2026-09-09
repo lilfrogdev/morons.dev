@@ -23,7 +23,9 @@ pub(crate) use path::{ToolPath, WorktreePath};
 pub(crate) use web_search::WebSearchToolExecutor;
 pub(crate) use worktree::recovery_plan_is_valid;
 
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 10;
+mod hosted_web;
+pub(crate) use hosted_web::{HostedWebResult, WebCitation, WebReceipt};
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 11;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
@@ -53,7 +55,6 @@ pub(crate) const MAX_WEB_SEARCH_RESULTS: usize = 10;
 pub(crate) const MAX_WEB_SEARCH_TITLE_BYTES: usize = 512;
 pub(crate) const MAX_WEB_SEARCH_URL_BYTES: usize = 4 * 1024;
 pub(crate) const MAX_WEB_SEARCH_SNIPPET_BYTES: usize = 4 * 1024;
-pub(crate) const MAX_WEB_SEARCH_BODY_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_REPLACEMENTS: usize = 32;
 pub(crate) const MAX_REPLACEMENT_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_SUBAGENT_TASKS: usize = 3;
@@ -467,6 +468,8 @@ pub(crate) struct SubagentResult {
     pub tool_calls: u16,
     pub tool_mutations: u16,
     pub usage: SubagentUsage,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web_searches: Vec<WebReceipt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,6 +527,8 @@ pub(crate) enum ToolErrorKind {
     Network,
     InvalidResponse,
     CredentialNotConfigured,
+    DataUseRestricted,
+    WebSearchUnavailable,
     KernelUnavailable,
     ExecutionFailed,
     ImageInputUnsupported,
@@ -623,11 +628,15 @@ impl ToolErrorKind {
             Self::Cancelled => "cancelled",
             Self::Interrupted => "interrupted",
             Self::NotDispatched => "not dispatched",
-            Self::Uncertain => "local effect is uncertain",
+            Self::Uncertain => "external effect or service usage is uncertain; nothing was retried",
             Self::Filesystem => "filesystem operation failed",
             Self::Network => "network request failed",
             Self::InvalidResponse => "search service returned an invalid response",
-            Self::CredentialNotConfigured => "search credential is not configured",
+            Self::CredentialNotConfigured => "OpenAI web search requires ChatGPT login",
+            Self::DataUseRestricted => "OpenAI web search is blocked by data-use restrictions",
+            Self::WebSearchUnavailable => {
+                "OpenAI web search identity is unavailable or changed; no fallback"
+            }
             Self::KernelUnavailable => {
                 "IPython runtime unavailable; reinstall the matching Morons package, retry first setup with network access, or set MORONS_PYTHON to an expert-managed Python with jupyter_client and ipykernel"
             }
@@ -706,10 +715,14 @@ pub(crate) enum ToolOutput {
         stdout: String,
         stderr: String,
     },
+    /// Read compatibility only: historical Brave results are never relabelled.
     WebSearch {
         query: String,
         results: Vec<WebSearchResult>,
         truncated: bool,
+    },
+    OpenAiWeb {
+        result: HostedWebResult,
     },
     Ipython {
         execution_count: Option<u32>,
@@ -736,7 +749,7 @@ impl ToolOutput {
             Self::Written { .. } => ToolKind::Write,
             Self::Edited { .. } => ToolKind::Edit,
             Self::Bash { .. } => ToolKind::Bash,
-            Self::WebSearch { .. } => ToolKind::WebSearch,
+            Self::WebSearch { .. } | Self::OpenAiWeb { .. } => ToolKind::WebSearch,
             Self::Ipython { .. } => ToolKind::Ipython,
             Self::Task { .. } => ToolKind::Task,
         }
@@ -822,6 +835,7 @@ impl ToolOutput {
                 }
                 summary
             }
+            Self::OpenAiWeb { result } => result.summary(),
             Self::WebSearch {
                 results, truncated, ..
             } => format!(
@@ -884,6 +898,10 @@ impl ToolOutput {
                     }
                     summary.push('\n');
                     summary.push_str(&result.output);
+                    for receipt in &result.web_searches {
+                        summary.push('\n');
+                        summary.push_str(&receipt.summary());
+                    }
                 }
                 summary
             }
@@ -1077,6 +1095,9 @@ pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> 
                 && stderr.len() <= MAX_COMMAND_OUTPUT_BYTES
         }
         ToolResult::Ok {
+            output: ToolOutput::OpenAiWeb { result },
+        } => result.is_valid(),
+        ToolResult::Ok {
             output: ToolOutput::WebSearch { query, results, .. },
         } => {
             valid_web_search_query(query)
@@ -1124,6 +1145,8 @@ fn validate_subagent_results(results: &[SubagentResult]) -> bool {
                 && result.provider_turns <= MAX_SUBAGENT_PROVIDER_TURNS
                 && result.tool_calls <= MAX_SUBAGENT_TOOL_CALLS
                 && result.tool_mutations <= MAX_SUBAGENT_MUTATIONS
+                && result.web_searches.len() <= usize::from(result.tool_calls)
+                && result.web_searches.iter().all(WebReceipt::is_valid)
         })
 }
 
@@ -1132,6 +1155,12 @@ pub(crate) fn validate_canonical_result_for_input(input: &ToolInput, result: &To
         return false;
     }
     match (input, result) {
+        (
+            ToolInput::WebSearch { query },
+            ToolResult::Ok {
+                output: ToolOutput::OpenAiWeb { result },
+            },
+        ) => query == &result.query,
         (
             ToolInput::Task { tasks, .. },
             ToolResult::Ok {

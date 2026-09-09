@@ -77,10 +77,10 @@ impl RunSupervisor {
     ) -> Arc<Self> {
         let managed_python_root = sessions.managed_python_root();
         Self::with_tools(
-            sessions,
+            sessions.clone(),
             provider,
             session_events,
-            WebSearchToolExecutor::new(),
+            WebSearchToolExecutor::new(sessions),
             IpythonSupervisor::new(managed_python_root),
         )
     }
@@ -93,10 +93,10 @@ impl RunSupervisor {
         search_origin: String,
     ) -> Arc<Self> {
         Self::with_tools(
-            sessions,
+            sessions.clone(),
             provider,
             session_events,
-            WebSearchToolExecutor::for_test(search_origin),
+            WebSearchToolExecutor::for_test(sessions, search_origin),
             IpythonSupervisor::for_test(),
         )
     }
@@ -108,10 +108,10 @@ impl RunSupervisor {
         session_events: Arc<SessionEventHub>,
     ) -> Arc<Self> {
         Self::with_tools(
-            sessions,
+            sessions.clone(),
             provider,
             session_events,
-            WebSearchToolExecutor::for_test("http://127.0.0.1:9/search".to_owned()),
+            WebSearchToolExecutor::for_test(sessions, "http://127.0.0.1:9/search".to_owned()),
             IpythonSupervisor::for_test(),
         )
     }
@@ -780,13 +780,17 @@ impl RunSupervisor {
                     | PersistenceError::OpenAiCredentialNotConfigured
                     | PersistenceError::CredentialReauthenticationRequired
                     | PersistenceError::InvalidInput { .. },
-                ) if tool == ToolKind::Task => {
+                ) if matches!(tool, ToolKind::Task | ToolKind::WebSearch) => {
                     self.sessions
                         .complete_tool_result(
                             run_id,
                             call.call_id,
                             call.operation_id,
-                            ToolResult::error(crate::tools::ToolErrorKind::ModelUnavailable),
+                            ToolResult::error(if tool == ToolKind::WebSearch {
+                                crate::tools::ToolErrorKind::CredentialNotConfigured
+                            } else {
+                                crate::tools::ToolErrorKind::ModelUnavailable
+                            }),
                         )
                         .await?;
                     continue;
@@ -818,9 +822,10 @@ impl RunSupervisor {
                     )
                     .await?
             } else if tool == ToolKind::WebSearch {
+                let binding = self.sessions.web_binding(run_id, call.call_id).await?;
                 self.web_search
-                    .execute(&execution_input, &execution_cancellation)
-                    .await
+                    .execute(&execution_input, &binding, 0, 0, &execution_cancellation)
+                    .await?
             } else if tool == ToolKind::Ipython {
                 self.ipython
                     .execute(

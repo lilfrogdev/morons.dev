@@ -66,8 +66,10 @@ impl Backend {
             || job.run.session_id != job.session
             || !job.run.state.is_terminal()
             || job.run.context_policy_version != 4
-            || job.run.tool_catalog_version != 10
-            || job.run.tool_limits_version != 10
+            || !matches!(
+                (job.run.tool_catalog_version, job.run.tool_limits_version),
+                (10, 10) | (11, 11)
+            )
             || job.run.execution_image_generation.is_some()
             || job.source >= job.run.source_entry_high_water
             || job.through < job.run.source_entry_high_water

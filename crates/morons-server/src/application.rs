@@ -1191,7 +1191,10 @@ impl ServerApplication {
             sessions.clone(),
             providers.clone(),
             events.clone(),
-            crate::tools::WebSearchToolExecutor::for_test("http://127.0.0.1:9/search".into()),
+            crate::tools::WebSearchToolExecutor::for_test(
+                sessions.clone(),
+                format!("{base}/backend-api/codex/responses"),
+            ),
             crate::tools::IpythonSupervisor::for_test(),
         );
         Self::from_supervised_parts(

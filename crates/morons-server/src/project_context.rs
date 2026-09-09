@@ -98,7 +98,7 @@ impl RunProjectContext {
     pub(crate) fn context_bytes_for_policy(&self, version: u16) -> Option<usize> {
         let prefix = match version {
             9 => PREFIX_V9,
-            10 => PREFIX_V10,
+            10 | 11 => PREFIX_V10,
             _ => return None,
         };
         Some(

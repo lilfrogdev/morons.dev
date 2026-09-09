@@ -4,6 +4,7 @@ mod compaction;
 mod diagnostics;
 mod lifecycle;
 mod mixed;
+mod web;
 
 const NATIVE_MODELS: [&str; 6] = [
     "gpt-5.5",
@@ -14,7 +15,7 @@ const NATIVE_MODELS: [&str; 6] = [
     "gpt-daybreak-blue-latest",
 ];
 
-fn synthetic_tokens() -> crate::provider::openai_auth::OAuthTokens {
+pub(super) fn synthetic_tokens() -> crate::provider::openai_auth::OAuthTokens {
     let expires = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

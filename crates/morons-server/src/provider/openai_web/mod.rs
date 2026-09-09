@@ -1,4 +1,4 @@
-//! Staged hosted-search contract and one-shot transport. No application admission.
+//! Hosted-search contract and one-shot transport. Application admission lives in the owned tool executor.
 mod decode;
 mod output;
 mod transport;
@@ -115,3 +115,5 @@ fn check_policy(restrictions: DataUseRestrictions) -> Result<(), ProviderError> 
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) use tests::response_fixture;

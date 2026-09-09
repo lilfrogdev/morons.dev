@@ -12,7 +12,7 @@ pub(crate) fn restore_schema_29(connection: &Connection) {
         0
     );
     let reference = super::super::database::schema_29_fixture();
-    connection.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE; DROP TABLE task_model_bindings; DROP TABLE provider_binding_epoch;").unwrap();
+    connection.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE; DROP TABLE web_model_bindings; DROP TABLE web_binding_epoch; DROP TABLE task_model_bindings; DROP TABLE provider_binding_epoch;").unwrap();
     restore_tables(
         connection,
         &reference,

@@ -111,7 +111,7 @@ impl SearchProvider {
         })
     }
     #[cfg(test)]
-    fn for_test(credentials: Arc<OpenAiCredentialProvider>, endpoint: Uri) -> Self {
+    pub(crate) fn for_test(credentials: Arc<OpenAiCredentialProvider>, endpoint: Uri) -> Self {
         let mut provider = Self::new(credentials);
         provider.client = bounded_client(
             true,

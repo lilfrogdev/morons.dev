@@ -45,7 +45,7 @@ pub(crate) fn load(
         };
     }
     let snapshot = snapshot.ok_or_else(invalid)?;
-    if !matches!(version, 9 | 10)
+    if !matches!(version, 9..=11)
         || snapshot.len() > MAX_SNAPSHOT_BYTES
         || expected != Some(digest(run_id, &snapshot))
     {

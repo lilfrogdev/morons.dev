@@ -36,6 +36,7 @@ pub(super) struct SubagentExecutor {
 
 #[derive(Clone)]
 struct SubagentRunConfig {
+    web_binding: Option<crate::persistence::WebBinding>,
     project_text: Option<Arc<str>>,
     session_id: [u8; 16],
     call_id: [u8; 16],
@@ -49,6 +50,7 @@ struct SubagentRunConfig {
 
 enum ChildStop {
     Cancelled,
+    WebUncertain,
     Persistence(crate::persistence::PersistenceError),
 }
 
@@ -89,6 +91,7 @@ impl SubagentExecutor {
         let Some(mut config) = binding_config(&parent.run, call_id, binding) else {
             return Ok(ToolResult::error(ToolErrorKind::ModelUnavailable));
         };
+        config.web_binding = Some(self.sessions.web_binding(parent.run.id, call_id).await?);
         config.project_text = parent
             .project
             .as_ref()
@@ -140,6 +143,10 @@ impl SubagentExecutor {
                             stop_error.get_or_insert(ToolErrorKind::Cancelled);
                             batch_handle.cancel();
                         }
+                        Some(Ok(Err(ChildStop::WebUncertain))) => {
+                            stop_error = Some(ToolErrorKind::Uncertain);
+                            batch_handle.cancel();
+                        }
                         Some(Ok(Err(ChildStop::Persistence(error)))) => {
                             persistence_error.get_or_insert(error);
                             stop_error = Some(ToolErrorKind::Uncertain);
@@ -179,6 +186,8 @@ impl SubagentExecutor {
         working_directory: PathBuf,
         mut cancellation: ProviderCancellation,
     ) -> Result<SubagentResult, ChildStop> {
+        let mut web_searches = Vec::new();
+        let result = async {
         let permit = tokio::select! {
             permit = Arc::clone(&self.permits).acquire_owned() => {
                 permit.expect("the subagent semaphore is never closed")
@@ -446,22 +455,30 @@ impl SubagentExecutor {
                             arguments,
                             opaque_continuation,
                         });
+                        let hosted_web = call.input.kind() == ToolKind::WebSearch;
                         let result = self
                             .execute_child_tool(
                                 working_directory.clone(),
                                 call.input,
+                                (&config, index, u16::try_from(provider_call_ids.len()).unwrap_or(u16::MAX)),
                                 &cancellation,
                             )
-                            .await;
+                            .await.map_err(ChildStop::Persistence)?;
+                        if let ToolResult::Ok { output: ToolOutput::OpenAiWeb { result } } = &result {
+                            web_searches.push(result.receipt.clone());
+                        }
                         if result.error_kind() == Some(ToolErrorKind::Cancelled) {
                             return Err(ChildStop::Cancelled);
+                        }
+                        if result.is_uncertain() && hosted_web {
+                            return Err(ChildStop::WebUncertain);
                         }
                         if result.is_uncertain() {
                             return Ok(subagent_result(
                                 index,
                                 task.name,
                                 SubagentStatus::Failed,
-                                "subagent local tool effect is uncertain; inspect the selected directory before continuing",
+                                "subagent external effect or service usage is uncertain; nothing was retried",
                                 subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                             ));
                         }
@@ -503,17 +520,31 @@ impl SubagentExecutor {
                 }
             }
         }
+        }.await;
+        result.map(|mut result: SubagentResult| {
+            result.web_searches = web_searches;
+            result
+        })
     }
 
     async fn execute_child_tool(
         &self,
         working_directory: PathBuf,
         input: ToolInput,
+        scope: (&SubagentRunConfig, u16, u16),
         cancellation: &ProviderCancellation,
-    ) -> ToolResult {
+    ) -> Result<ToolResult, crate::persistence::PersistenceError> {
         let tool = input.kind();
         if tool == ToolKind::WebSearch {
-            return self.web_search.execute(&input, cancellation).await;
+            let binding = scope.0.web_binding.as_ref().ok_or(
+                crate::persistence::PersistenceError::InvalidState {
+                    reason: "child search is missing its outer binding",
+                },
+            )?;
+            return self
+                .web_search
+                .execute(&input, binding, scope.1, scope.2, cancellation)
+                .await;
         }
         let mutation = tool.is_mutation();
         let execution_cancellation = cancellation.clone();
@@ -537,11 +568,11 @@ impl SubagentExecutor {
                 ToolErrorKind::Interrupted
             })
         });
-        if result.has_image() {
+        Ok(if result.has_image() {
             ToolResult::error(ToolErrorKind::ImageInputUnsupported)
         } else {
             result
-        }
+        })
     }
 }
 
@@ -644,6 +675,7 @@ fn binding_config(
         project_text: None,
         session_id: *run.session_id.as_bytes(),
         call_id: *call_id.as_bytes(),
+        web_binding: None,
         service: binding.service,
         model_id: binding.model_id,
         credential_generation: binding.credential_generation,
@@ -690,6 +722,7 @@ fn subagent_run_config(
         project_text: None,
         session_id: *run.session_id.as_bytes(),
         call_id: *call_id.as_bytes(),
+        web_binding: None,
         service,
         model_id,
         credential_generation: run.credential_generation,
@@ -724,6 +757,7 @@ fn subagent_result(
         tool_calls: metrics.tool_calls,
         tool_mutations: metrics.tool_mutations,
         usage: metrics.usage,
+        web_searches: Vec::new(),
     }
 }
 
