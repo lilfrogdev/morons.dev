@@ -638,7 +638,7 @@ async fn schema_26_migrates_without_scheduling_historical_sessions() {
         .connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 30);
+    assert_eq!(version, crate::persistence::database::SCHEMA_VERSION);
     let jobs: i64 = backend
         .connection
         .query_row(

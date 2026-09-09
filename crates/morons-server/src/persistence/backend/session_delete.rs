@@ -206,6 +206,7 @@ impl Backend {
             "DELETE FROM tool_image_attachments WHERE session_id = ?1",
             "DELETE FROM tool_operation_facts WHERE session_id = ?1",
             "DELETE FROM tool_uncertainty_acknowledgements WHERE session_id = ?1",
+            "DELETE FROM task_model_bindings WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1)",
             "DELETE FROM tool_calls WHERE session_id = ?1",
             "DELETE FROM image_attachments WHERE session_id = ?1",
             "DELETE FROM compaction_maintenance_events WHERE job_id IN (SELECT job_id FROM compaction_maintenance_jobs WHERE session_id = ?1)",
