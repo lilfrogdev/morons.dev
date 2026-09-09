@@ -11,6 +11,17 @@ pub(crate) struct WebFailure {
     pub category: WebCategory,
 }
 
+impl WebFailure {
+    pub const fn valid_for_catalog(self, catalog: u16) -> bool {
+        match self.stage {
+            WebStage::SearchQueries | WebStage::SearchSources | WebStage::SearchActionCount => {
+                catalog == 13
+            }
+            _ => matches!(catalog, 12 | 13),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WebStage {
@@ -33,6 +44,9 @@ pub(crate) enum WebStage {
     OutputConsistency,
     Usage,
     SearchAction,
+    SearchQueries,
+    SearchSources,
+    SearchActionCount,
     AssistantMessage,
     Citation,
     Reasoning,
@@ -61,6 +75,9 @@ impl WebStage {
             Self::OutputConsistency => "output-consistency",
             Self::Usage => "usage",
             Self::SearchAction => "search-action",
+            Self::SearchQueries => "search-queries",
+            Self::SearchSources => "search-sources",
+            Self::SearchActionCount => "search-action-count",
             Self::AssistantMessage => "assistant-message",
             Self::Citation => "citation",
             Self::Reasoning => "reasoning",

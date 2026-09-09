@@ -15,7 +15,7 @@ use crate::provider::{
     PreparedProviderTools, ProviderError, ProviderTool, ProviderToolCall, json::parse_strict_value,
 };
 
-pub(crate) const TOOL_CATALOG_VERSION: u16 = 12;
+pub(crate) const TOOL_CATALOG_VERSION: u16 = 13;
 pub(crate) const LEGACY_SANDBOX_TOOL_CATALOG_VERSION: u16 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

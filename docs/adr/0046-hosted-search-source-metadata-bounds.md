@@ -1,0 +1,21 @@
+# ADR 0046: Separate consulted-source metadata from citations
+
+## Status and evidence
+
+Accepted before implementation. A separately authorized fresh Astra-led search reported the closed local stage `search_action` / category `response_limit_exceeded`. That stage contains three count guards: generated queries, consulted sources and hosted actions. The actual counts and exact predicate were not collected; the earlier generic failure is still unclassified. Neither failure is replayed or retrospectively diagnosed here.
+
+Independent public-contract review found a cardinality error: the parser caps `web_search_call.action.sources` using the final-answer citation limit. The [OpenAI web-search guide](https://developers.openai.com/api/docs/guides/tools-web-search) states that sources is the complete list of consulted URLs, often larger than the most-relevant inline citations; `search_context_size: low` does not guarantee a source/citation count. The [OpenAI Python schema at 8011140bbeb771d56425602950875bf87beae39e](https://github.com/openai/openai-python/blob/8011140bbeb771d56425602950875bf87beae39e/src/openai/types/responses/response_function_web_search.py) defines optional query and source lists separately from message URL annotations. API examples are contract evidence, not native-account entitlement or remote spending limits.
+
+## Decision and boundary change
+
+Use a distinct **128 consulted-source descriptors per complete response**, aggregated across all search actions, instead of the accidental ten-per-action citation-derived limit. Count descriptors without deduplication, validate their existing type and bounded HTTP(S) URL rules, then discard them as before. They do not become returned citations, navigation instructions, durable memory or evidence of search billing. This deliberately expands local metadata acceptance, not citation output. The fixed request and `include` field do not change.
+
+The existing256KiB total SSE source, strict JSON/node budgets,128output indices,8hosted actions,8generated queries per search action,10returned citations,16KiBanswer,512-byte titles,4KiBURLs, usage/model/identity/lifecycle/complete-source checks and deadlines remain unchanged. Whole-response limits still dominate oversized metadata even below128descriptors. This is not a backend cap and does not guarantee every legitimate remote response fits.
+
+Add three closed code-owned diagnostic stages, `SearchQueries`, `SearchSources` and `SearchActionCount`, so a future failure distinguishes these guards without recording remote counts/strings. Older `SearchAction` diagnostics remain unchanged and ambiguous. Tool catalog/limits13 records the revised acceptance policy and diagnostic vocabulary. Existing catalog12 diagnostics remain readable; the new stages require canonical catalog13 acceptance rather than a mutable/derived projection. Historical request/result bytes, source bindings, schema32, IPC44, coding Responses5 and hosted wire contract1 remain unchanged. No active old run is resumed/replayed under new limits.
+
+Root/child ownership, current data-use admission, credential generation, uncertainty/draining/no-retry, main/subagent selection and terminal-safe presentation remain unchanged. No credentials, provider bodies, model-returned names, account claims, reasoning or raw counts are captured. The two retained failed probes and selected files remain intact; no fresh live request is implied by this repair.
+
+## Qualification
+
+First reproduce rejection of one valid cited answer with eleven consulted URLs. Verify acceptance up to128aggregate descriptors; reject129including a multi-action aggregate; keep the ten-citation/eight-query/eight-action limits. Check complete-item/terminal paths, malformed metadata URLs/types, strict new-stage serialization and canonical catalog12-versus13 admission. Exercise owned root and Astra→Go GLM synthetic flows with more consulted sources than citations. Run all locked local gates, exact-head CI and immutable post-merge checks in a focused dependent PR. Keep application PR115 draft until a separately authorized fresh live probe qualifies it; synthetic repair does not prove which limit caused the retained live rejection.

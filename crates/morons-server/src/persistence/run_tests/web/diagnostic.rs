@@ -17,6 +17,60 @@ fn failure() -> ToolResult {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn source_diagnostic_vocabulary_requires_catalog13_without_rewriting_catalog12() {
+    let root = TestRoot::new("web-source-catalog");
+    let store = SessionStore::open_for_test(root.path()).unwrap();
+    install(&store, 0).await;
+    let (run, call) = prepare(&store, true, false).await;
+    store
+        .mark_tool_dispatched(run, call.call_id, call.operation_id)
+        .await
+        .unwrap();
+    let result = ToolResult::error(ToolErrorKind::WebSearchUncertain(WebFailure {
+        stage: WebStage::SearchSources,
+        category: WebCategory::ResponseLimitExceeded,
+    }));
+    store
+        .complete_tool_result(run, call.call_id, call.operation_id, result.clone())
+        .await
+        .unwrap();
+    drop(store);
+    assert!(SessionStore::open_for_test(root.path()).is_ok());
+    let db = Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    db.execute(
+        "UPDATE run_accepted_facts SET tool_catalog_version=12,tool_limits_version=12",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE runs SET tool_catalog_version=12,tool_limits_version=12",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE provider_operation_facts SET tool_catalog_version=12,tool_limits_version=12 WHERE fact_kind=1",[]).unwrap();
+    assert!(SessionStore::open_for_test(root.path()).is_err());
+    let legacy = ToolResult::error(ToolErrorKind::WebSearchUncertain(WebFailure {
+        stage: WebStage::SearchAction,
+        category: WebCategory::ResponseLimitExceeded,
+    }));
+    let bytes = serde_json::to_vec(&legacy).unwrap();
+    db.execute(
+        "UPDATE tool_operation_facts SET result_payload=?1 WHERE fact_kind=6",
+        [&bytes],
+    )
+    .unwrap();
+    assert!(SessionStore::open_for_test(root.path()).is_ok());
+    let saved: Vec<u8> = db
+        .query_row(
+            "SELECT result_payload FROM tool_operation_facts WHERE fact_kind=6",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(saved, bytes);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn root_web_diagnostic_commits_uncertainty_and_survives_reopen_without_replay() {
     let root = TestRoot::new("web-diagnostic-root");
     let store = Arc::new(SessionStore::open_for_test(root.path()).unwrap());
@@ -116,7 +170,7 @@ async fn root_web_diagnostic_commits_uncertainty_and_survives_reopen_without_rep
     .unwrap();
     assert!(store.web_binding(run, call.call_id).await.is_err());
     db.execute(
-        "UPDATE run_accepted_facts SET tool_catalog_version=12,tool_limits_version=12",
+        "UPDATE run_accepted_facts SET tool_catalog_version=13,tool_limits_version=13",
         [],
     )
     .unwrap();

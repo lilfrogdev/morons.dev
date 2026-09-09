@@ -25,7 +25,7 @@ pub(crate) use worktree::recovery_plan_is_valid;
 
 mod hosted_web;
 pub(crate) use hosted_web::{HostedWebResult, WebCitation, WebReceipt};
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 12;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 13;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;

@@ -14,6 +14,9 @@ fn web_diagnostic_is_closed_bounded_scoped_and_preserves_legacy_uncertain_bytes(
         stage: WebStage::ResponseModel,
         category: WebCategory::MalformedResponse,
     };
+    assert!(failure.valid_for_catalog(12));
+    assert!(failure.valid_for_catalog(13));
+    assert!(!failure.valid_for_catalog(11));
     let result = ToolResult::error(ToolErrorKind::WebSearchUncertain(failure));
     assert!(result.is_uncertain());
     assert!(validate_canonical_result(ToolKind::WebSearch, &result));
@@ -29,6 +32,23 @@ fn web_diagnostic_is_closed_bounded_scoped_and_preserves_legacy_uncertain_bytes(
     assert!(summary.contains("stage: response-model; category: malformed-response"));
     assert!(summary.contains("nothing was retried"));
     assert!(summary.is_ascii() && summary.len() < 256 && !summary.chars().any(char::is_control));
+    for stage in [
+        WebStage::SearchQueries,
+        WebStage::SearchSources,
+        WebStage::SearchActionCount,
+    ] {
+        let scoped = WebFailure {
+            stage,
+            category: WebCategory::ResponseLimitExceeded,
+        };
+        assert!(!scoped.valid_for_catalog(12));
+        assert!(scoped.valid_for_catalog(13));
+        assert!(!scoped.valid_for_catalog(14));
+        assert_eq!(
+            serde_json::from_str::<WebFailure>(&serde_json::to_string(&scoped).unwrap()).unwrap(),
+            scoped
+        );
+    }
     for bad in [
         r#"{"stage":"PRIVATE","category":"malformed_response"}"#,
         r#"{"stage":"response_model","category":"PRIVATE"}"#,
