@@ -76,5 +76,6 @@ impl Drop for TestRoot {
 mod admission;
 mod attachments_and_history;
 mod counters;
+mod deletion;
 mod lifecycle;
 mod selection;
