@@ -79,7 +79,7 @@ async fn child_web_flow(uncertain: bool) {
                 2=>{
                     assert!(request.starts_with("POST /backend-api/codex/responses"));assert_eq!(body["model"],"gpt-5.5");assert_eq!(body["tools"].as_array().unwrap().len(),1);assert_eq!(body["tools"][0]["type"],"web_search");assert_eq!(request_header(&request,"originator"),"morons");
                     assert!(!request.contains("PRIVATE_PARENT"));assert!(!request.contains("PRIVATE_TASK_CONTEXT"));assert!(!request.contains("synthetic-glm-web-key"));
-                    let body=if uncertain { b"data: [DONE]\n\n".to_vec() } else { crate::provider::openai_web::response_fixture() };write_provider_headers(&mut stream,body.len()).await;stream.write_all(&body).await.unwrap();stream.shutdown().await.unwrap();
+                    let body=if uncertain { b"data: [DONE]\n\n".to_vec() } else { crate::provider::openai_web::response_sources_fixture() };write_provider_headers(&mut stream,body.len()).await;stream.write_all(&body).await.unwrap();stream.shutdown().await.unwrap();
                     if uncertain { assert!(time::timeout(Duration::from_millis(200),listener.accept()).await.is_err()); break; }
                 }
                 _=>unreachable!(),

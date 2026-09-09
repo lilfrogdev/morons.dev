@@ -68,7 +68,7 @@ impl Backend {
             || job.run.context_policy_version != 4
             || !matches!(
                 (job.run.tool_catalog_version, job.run.tool_limits_version),
-                (10, 10) | (11, 11) | (12, 12)
+                (10, 10) | (11, 11) | (12, 12) | (13, 13)
             )
             || job.run.execution_image_generation.is_some()
             || job.source >= job.run.source_entry_high_water

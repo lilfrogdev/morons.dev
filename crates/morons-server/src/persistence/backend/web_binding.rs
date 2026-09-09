@@ -193,11 +193,14 @@ fn load(connection: &Connection, call: ToolCallId) -> Result<WebBinding, Persist
             serde_json::from_slice(&bytes).map_err(|_| invalid())?;
         match result {
             crate::tools::ToolResult::Error {
-                error: crate::tools::ToolErrorKind::WebSearchUncertain(_),
+                error: crate::tools::ToolErrorKind::WebSearchUncertain(failure),
                 output,
             } => {
                 let terminal: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM tool_operation_facts WHERE call_id=?1 AND fact_kind=6 AND result_status=4)", [call.as_bytes()], |r| r.get(0))?;
-                if !diagnostic_allowed(connection, &binding)? || output.is_some() || !terminal {
+                if !diagnostic_allowed(connection, &binding, failure)?
+                    || output.is_some()
+                    || !terminal
+                {
                     return Err(invalid());
                 }
             }
@@ -269,15 +272,21 @@ pub(super) fn validate_result(
         [call.as_bytes()],
         |r| r.get(0),
     )?;
-    let diagnostic = matches!(
-        result.error_kind(),
-        Some(crate::tools::ToolErrorKind::WebSearchUncertain(_))
-    );
+    let diagnostic = match result.error_kind() {
+        Some(crate::tools::ToolErrorKind::WebSearchUncertain(failure)) => Some(failure),
+        _ => None,
+    };
     if !bound {
-        return if diagnostic { Err(invalid()) } else { Ok(()) };
+        return if diagnostic.is_some() {
+            Err(invalid())
+        } else {
+            Ok(())
+        };
     }
     let binding = load(connection, call)?;
-    if diagnostic && !diagnostic_allowed(connection, &binding)? {
+    if let Some(failure) = diagnostic
+        && !diagnostic_allowed(connection, &binding, failure)?
+    {
         return Err(invalid());
     }
     match result {
@@ -311,12 +320,18 @@ pub(super) fn validate_result(
 fn diagnostic_allowed(
     connection: &Connection,
     binding: &WebBinding,
+    failure: crate::web_diagnostic::WebFailure,
 ) -> Result<bool, PersistenceError> {
     if binding.generation == 0 {
         return Ok(false);
     }
     // Canonical acceptance, not a cached/derived run projection, owns this result vocabulary.
-    Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM run_accepted_facts WHERE run_id=?1 AND tool_catalog_version=12 AND tool_limits_version=12)", [binding.run_id.as_bytes()], |r| r.get(0))?)
+    let (catalog, limits): (u16, u16) = connection.query_row(
+        "SELECT tool_catalog_version,tool_limits_version FROM run_accepted_facts WHERE run_id=?1",
+        [binding.run_id.as_bytes()],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    Ok(catalog == limits && failure.valid_for_catalog(catalog))
 }
 fn invalid() -> PersistenceError {
     PersistenceError::InvalidState {

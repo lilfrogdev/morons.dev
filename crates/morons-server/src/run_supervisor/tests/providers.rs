@@ -677,7 +677,8 @@ pub(super) async fn spawn_search_adapter() -> (
         request_sender
             .send(String::from_utf8(request).expect("search request should be UTF-8"))
             .unwrap_or_else(|_| panic!("search request should be observed"));
-        let body = String::from_utf8(crate::provider::openai_web::response_fixture()).unwrap();
+        let body =
+            String::from_utf8(crate::provider::openai_web::response_sources_fixture()).unwrap();
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()

@@ -1,4 +1,7 @@
-use super::{Citation, MAX_ACTIONS, MAX_ANSWER_BYTES, MAX_CITATIONS, MAX_ITEMS, SearchResult};
+use super::{
+    Citation, MAX_ACTIONS, MAX_ANSWER_BYTES, MAX_CITATIONS, MAX_CONSULTED_SOURCES, MAX_ITEMS,
+    SearchResult,
+};
 use crate::provider::{ProviderError, ProviderUsage, responses::validate_response_identifier};
 use crate::web_diagnostic::WebStage;
 use http::Uri;
@@ -64,6 +67,7 @@ pub(super) fn parse(
         usage,
     };
     let mut final_messages = 0;
+    let mut consulted_sources = 0_usize;
     for item in items {
         *stage = WebStage::OutputItem;
         let id = string(item, "id")?;
@@ -81,6 +85,7 @@ pub(super) fn parse(
                 match string(action, "type")? {
                     "search" => {
                         // Search queries can be omitted by the provider, but malformed present fields reject.
+                        *stage = WebStage::SearchQueries;
                         if let Some(query) = action.get("query").filter(|v| !v.is_null()) {
                             bounded_query(query)?;
                         }
@@ -95,11 +100,13 @@ pub(super) fn parse(
                             }
                         }
                         if let Some(sources) = action.get("sources").filter(|v| !v.is_null()) {
+                            *stage = WebStage::SearchSources;
                             let sources =
                                 sources.as_array().ok_or(ProviderError::MalformedResponse)?;
-                            if sources.len() > MAX_CITATIONS {
-                                return Err(ProviderError::ResponseLimitExceeded);
-                            }
+                            consulted_sources = consulted_sources
+                                .checked_add(sources.len())
+                                .filter(|n| *n <= MAX_CONSULTED_SOURCES)
+                                .ok_or(ProviderError::ResponseLimitExceeded)?;
                             for source in sources {
                                 if string(source, "type")? != "url" {
                                     return Err(ProviderError::MalformedResponse);
@@ -126,6 +133,7 @@ pub(super) fn parse(
                     }
                     _ => return Err(ProviderError::MalformedResponse),
                 }
+                *stage = WebStage::SearchActionCount;
                 if usize::from(
                     result.search_calls + result.open_page_calls + result.find_in_page_calls,
                 ) > MAX_ACTIONS
