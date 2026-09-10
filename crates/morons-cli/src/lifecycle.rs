@@ -58,6 +58,9 @@ pub enum ConnectOrStartError {
 impl ConnectOrStartError {
     const fn safe_description(&self) -> &'static str {
         match self {
+            Self::Control(ControlError::SocketPathTooLong) => {
+                "local Unix socket path is too long; use a shorter absolute HOME for a separate Morons profile; existing state is not moved"
+            }
             Self::Control(_) => {
                 "local control state could not be validated; automatic replacement was refused"
             }
@@ -266,6 +269,27 @@ mod tests {
                 "local control state could not be validated; automatic replacement was refused",
             ),
             (
+                ConnectOrStartError::Control(ControlError::SocketPathTooLong),
+                "ConnectOrStartError::Control",
+                "local Unix socket path is too long; use a shorter absolute HOME for a separate Morons profile; existing state is not moved",
+            ),
+            (
+                ConnectOrStartError::Control(ControlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    SENSITIVE,
+                ))),
+                "ConnectOrStartError::Control",
+                "local control state could not be validated; automatic replacement was refused",
+            ),
+            (
+                ConnectOrStartError::Control(ControlError::Io(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    SENSITIVE,
+                ))),
+                "ConnectOrStartError::Control",
+                "local control state could not be validated; automatic replacement was refused",
+            ),
+            (
                 ConnectOrStartError::CompanionIo(io::Error::other(SENSITIVE)),
                 "ConnectOrStartError::CompanionIo",
                 "packaged server companion could not be loaded or launched; reinstall matching Morons binaries together",
@@ -343,5 +367,17 @@ mod tests {
         assert!(!server_is_unavailable(&io::Error::from(
             io::ErrorKind::InvalidData
         )));
+    }
+
+    #[test]
+    fn terminal_application_error_reports_socket_path_diagnosis() {
+        let error = crate::TerminalApplicationError::Connect(ConnectOrStartError::Control(
+            ControlError::SocketPathTooLong,
+        ));
+        assert_eq!(
+            error.to_string(),
+            "local server connection failed: local Unix socket path is too long; use a shorter absolute HOME for a separate Morons profile; existing state is not moved"
+        );
+        assert_eq!(format!("{error:?}"), "TerminalApplicationError::Connect");
     }
 }

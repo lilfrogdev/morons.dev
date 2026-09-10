@@ -1,5 +1,8 @@
 use std::{io, path::Path};
 
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+
 use interprocess::local_socket::{ListenerOptions, Name, tokio::Stream};
 
 use crate::HostEpoch;
@@ -25,6 +28,23 @@ use {
 
 #[cfg(windows)]
 const OWNER_ONLY_PIPE_SDDL: &str = "D:P(A;;GA;;;OW)";
+
+/// Closed, redacted endpoint-local reason for a proven native pathname overflow.
+/// It deliberately carries no path, epoch, key, or source-error detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativePathCapacityOverflow;
+
+/// Reviewed inclusive `sun_path` capacities: 104 bytes on macOS, 108 on Linux.
+#[cfg(unix)]
+fn native_pathname_capacity() -> Option<usize> {
+    if cfg!(target_os = "macos") {
+        Some(104)
+    } else if cfg!(target_os = "linux") {
+        Some(108)
+    } else {
+        None
+    }
+}
 
 pub(crate) struct LocalEndpoint {
     name: Name<'static>,
@@ -89,7 +109,36 @@ impl LocalEndpoint {
         &self.identifier
     }
 
+    /// Side-effect-free native-byte capacity check on the actually generated Unix
+    /// pathname. success only means no proven length overflow; other platforms keep
+    /// their existing transport behavior.
+    pub(crate) fn check_native_path_capacity(&self) -> Result<(), NativePathCapacityOverflow> {
+        #[cfg(unix)]
+        {
+            let Some(capacity) = native_pathname_capacity() else {
+                return Ok(());
+            };
+            let bytes = self.path.as_os_str().as_bytes();
+            if bytes.contains(&0) {
+                // NUL input stays with converter binding; never length-labeled.
+                return Ok(());
+            }
+            if bytes.len() > capacity {
+                return Err(NativePathCapacityOverflow);
+            }
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn listener_options(&self) -> io::Result<ListenerOptions<'static>> {
+        self.check_native_path_capacity().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "local socket pathname exceeds this platform's capacity",
+            )
+        })?;
+
         let options = ListenerOptions::new()
             .name(self.name())
             .reclaim_name(false)
@@ -322,4 +371,171 @@ pub(crate) fn encode_hex(bytes: &[u8]) -> String {
         encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
     }
     encoded
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    #[cfg(target_os = "macos")]
+    const EXPECTED_CAPACITY: usize = 104;
+    #[cfg(target_os = "linux")]
+    const EXPECTED_CAPACITY: usize = 108;
+
+    fn synthetic_dir(total_path_len: usize, epoch: &HostEpoch) -> PathBuf {
+        let identifier = endpoint_identifier(epoch);
+        assert!(total_path_len >= identifier.len() + 3);
+        let directory_len = total_path_len - identifier.len() - 1;
+        let mut bytes = vec![b'a'; directory_len];
+        bytes[0] = b'/';
+        let directory = PathBuf::from(OsStr::from_bytes(&bytes));
+        assert_eq!(
+            directory.join(&identifier).as_os_str().as_bytes().len(),
+            total_path_len
+        );
+        directory
+    }
+
+    fn endpoint_with(total_path_len: usize, epoch_bytes: [u8; 16]) -> LocalEndpoint {
+        let epoch = HostEpoch::from_bytes(epoch_bytes);
+        let directory = synthetic_dir(total_path_len, &epoch);
+        let endpoint = LocalEndpoint::new(&directory, &epoch).unwrap();
+        assert_eq!(endpoint.path, directory.join(endpoint_identifier(&epoch)));
+        assert_eq!(endpoint.path.parent(), Some(directory.as_path()));
+        assert_eq!(
+            endpoint.path.file_name(),
+            Some(OsStr::new(endpoint.identifier()))
+        );
+        assert_eq!(endpoint.path.as_os_str().as_bytes().len(), total_path_len);
+        endpoint
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn assert_capacity(endpoint: &LocalEndpoint, total: usize) {
+        assert_eq!(endpoint.path.as_os_str().as_bytes().len(), total);
+        if total <= EXPECTED_CAPACITY {
+            assert_eq!(endpoint.check_native_path_capacity(), Ok(()));
+            assert!(endpoint.listener_options().is_ok());
+        } else {
+            assert_eq!(
+                endpoint.check_native_path_capacity(),
+                Err(NativePathCapacityOverflow)
+            );
+            assert_eq!(
+                endpoint.listener_options().unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn epoch_identifiers_are_unchanged() {
+        for (bytes, expected) in [
+            ([0; 16], "server-00000000000000000000000000000000.sock"),
+            ([0xff; 16], "server-ffffffffffffffffffffffffffffffff.sock"),
+        ] {
+            let epoch = HostEpoch::from_bytes(bytes);
+            assert_eq!(endpoint_identifier(&epoch), expected);
+            assert_eq!(expected.len(), 44);
+            assert_eq!(endpoint_with(80, bytes).identifier(), expected);
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn capacity_boundary_and_identifiers() {
+        assert_eq!(native_pathname_capacity(), Some(EXPECTED_CAPACITY));
+        for bytes in [[0; 16], [0xff; 16]] {
+            for total in [
+                EXPECTED_CAPACITY - 1,
+                EXPECTED_CAPACITY,
+                EXPECTED_CAPACITY + 1,
+            ] {
+                assert_capacity(&endpoint_with(total, bytes), total);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn multibyte_paths_count_native_bytes() {
+        let epoch = HostEpoch::from_bytes([0x42; 16]);
+        for total in [EXPECTED_CAPACITY, EXPECTED_CAPACITY + 1] {
+            let directory_len = total - endpoint_identifier(&epoch).len() - 1;
+            let directory = format!("/é{}", "a".repeat(directory_len - 3));
+            let endpoint = LocalEndpoint::new(Path::new(&directory), &epoch).unwrap();
+            assert_eq!(
+                endpoint.path,
+                Path::new(&directory).join(endpoint.identifier())
+            );
+            let text = endpoint.path.to_str().unwrap();
+            assert!(text.chars().count() <= EXPECTED_CAPACITY);
+            assert!(text.chars().count() < text.len());
+            assert_capacity(&endpoint, total);
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn non_utf8_paths_count_native_bytes_not_lossy_bytes() {
+        let epoch = HostEpoch::from_bytes([0x42; 16]);
+        for total in [EXPECTED_CAPACITY, EXPECTED_CAPACITY + 1] {
+            let directory_len = total - endpoint_identifier(&epoch).len() - 1;
+            let mut bytes = vec![b'a'; directory_len];
+            bytes[0] = b'/';
+            bytes[1] = 0xff;
+            let directory = Path::new(OsStr::from_bytes(&bytes));
+            let endpoint = LocalEndpoint::new(directory, &epoch).unwrap();
+            assert_eq!(endpoint.path, directory.join(endpoint.identifier()));
+            assert!(endpoint.path.to_str().is_none());
+            assert!(endpoint.path.to_string_lossy().len() > total);
+            assert_capacity(&endpoint, total);
+        }
+    }
+
+    #[test]
+    fn interior_nul_is_never_length_labeled() {
+        let epoch = HostEpoch::from_bytes([0x11; 16]);
+        for directory in [String::from("/a\0b"), format!("/{}\0b", "a".repeat(120))] {
+            let error = match LocalEndpoint::new(Path::new(&directory), &epoch) {
+                Err(error) => error,
+                Ok(_) => panic!("interior NUL must be rejected"),
+            };
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn long_path_constructs_but_listener_rejects_with_fixed_redacted_error() {
+        let first = endpoint_with(130, [0; 16]);
+        let second = endpoint_with(180, [0xff; 16]);
+        assert_capacity(&first, 130);
+        assert_capacity(&second, 180);
+        let first_error = first.listener_options().unwrap_err();
+        let second_error = second.listener_options().unwrap_err();
+        assert_eq!(first_error.to_string(), second_error.to_string());
+        assert_eq!(format!("{first_error:?}"), format!("{second_error:?}"));
+        for text in [first_error.to_string(), format!("{first_error:?}")] {
+            assert!(!text.is_empty());
+            assert!(!text.contains("server-"));
+            assert!(!text.contains(".sock"));
+            assert!(!text.contains('/'));
+            assert!(!text.contains(&"0".repeat(32)));
+            assert!(!text.contains(&"f".repeat(32)));
+        }
+    }
+
+    #[test]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    fn other_unix_targets_have_no_reviewed_capacity_limit() {
+        assert_eq!(native_pathname_capacity(), None);
+        for total in [103, 104, 105, 107, 108, 109, 130] {
+            let endpoint = endpoint_with(total, [0; 16]);
+            assert_eq!(endpoint.check_native_path_capacity(), Ok(()));
+            assert!(endpoint.listener_options().is_ok());
+        }
+    }
 }

@@ -32,6 +32,7 @@ pub enum ControlError {
     Json(serde_json::Error),
     Randomness(RandomnessError),
     HostAlreadyRunning,
+    SocketPathTooLong,
     InvalidState { reason: &'static str },
 }
 
@@ -46,6 +47,7 @@ impl fmt::Display for ControlError {
             Self::HostAlreadyRunning => {
                 formatter.write_str("another server owns the local control root")
             }
+            Self::SocketPathTooLong => formatter.write_str("local Unix socket path is too long"),
             Self::InvalidState { reason } => {
                 write!(formatter, "local control state is invalid: {reason}")
             }
@@ -59,6 +61,7 @@ impl Error for ControlError {
             Self::Io(error) => Some(error),
             Self::Json(error) => Some(error),
             Self::Randomness(error) => Some(error),
+            Self::SocketPathTooLong => None,
             Self::HostAlreadyRunning | Self::InvalidState { .. } => None,
         }
     }
@@ -204,6 +207,7 @@ impl ClientEndpoint {
         paths: ControlPaths,
         mut observed: impl FnMut(DiscoveryObservation, &ControlPaths),
     ) -> Result<ClientEndpointDiscovery, ControlError> {
+        paths.check_socket_path_capacity()?;
         if !paths.root_directory.try_exists()? {
             return Ok(ClientEndpointDiscovery::Absent);
         }
@@ -303,6 +307,7 @@ struct ServerControl {
 
 impl ServerControl {
     fn acquire(paths: ControlPaths) -> Result<Self, ControlError> {
+        paths.check_socket_path_capacity()?;
         let control_directory_existed = paths.prepare_for_server()?;
         let host_lock = acquire_host_lock(&paths, control_directory_existed)?;
         let authentication_key = if paths.authentication_key_path().try_exists()? {
@@ -418,6 +423,24 @@ impl ControlPaths {
             control_directory: root_directory.join("control"),
             runtime_directory: root_directory.join("run"),
             root_directory,
+        }
+    }
+
+    fn check_socket_path_capacity(&self) -> Result<(), ControlError> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            // Geometry only: all epochs yield equal identifier lengths, not equal identities.
+            let host_epoch = HostEpoch::from_bytes([0; crate::HOST_EPOCH_BYTES]);
+            let endpoint = LocalEndpoint::new(&self.runtime_directory, &host_epoch)?;
+            endpoint
+                .check_native_path_capacity()
+                .map_err(|_| ControlError::SocketPathTooLong)
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            let _ = self;
+            Ok(())
         }
     }
 
