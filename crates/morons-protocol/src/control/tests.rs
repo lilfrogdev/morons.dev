@@ -146,7 +146,7 @@ async fn unpublished_key_write_is_starting_but_published_or_abandoned_corruption
 
 #[test]
 fn newly_created_host_lock_during_discovery_is_not_missing_state_corruption() {
-    let paths = temporary_control_paths("concurrent-lock-publication");
+    let paths = temporary_control_paths("lock-publication");
     ensure_private_directory(&paths.root_directory).unwrap();
     ensure_private_directory(&paths.control_directory).unwrap();
     let mut owner = None;
@@ -162,7 +162,7 @@ fn newly_created_host_lock_during_discovery_is_not_missing_state_corruption() {
 
 #[test]
 fn initializer_starting_after_the_lock_probe_does_not_expose_partial_key_data() {
-    let paths = temporary_control_paths("concurrent-key-publication");
+    let paths = temporary_control_paths("key-publication");
     ensure_private_directory(&paths.root_directory).unwrap();
     ensure_private_directory(&paths.control_directory).unwrap();
     drop(super::acquire_host_lock(&paths, false).unwrap());
@@ -244,6 +244,146 @@ async fn successor_recovers_constrained_stale_registration() {
     drop(client);
     drop(successor);
     std::fs::remove_dir_all(paths.root_directory).expect("test control root should be removable");
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod socket_path_preflight {
+    use super::*;
+    use std::{error::Error as _, fs, os::unix::fs::PermissionsExt, path::PathBuf};
+
+    fn overlong_control_paths() -> ControlPaths {
+        let parent = temporary_control_paths("pf").root_directory;
+        ensure_private_directory(&parent).unwrap();
+        ControlPaths::from_root(parent.join("o".repeat(100)))
+    }
+
+    #[test]
+    fn overlong_fresh_root_is_rejected_before_any_control_state() {
+        let paths = overlong_control_paths();
+        assert!(matches!(
+            ClientEndpoint::discover_with_paths(paths.clone()),
+            Err(ControlError::SocketPathTooLong)
+        ));
+        assert!(!paths.root_directory.try_exists().unwrap());
+        assert!(matches!(
+            ClientEndpoint::load_with_paths(paths.clone()),
+            Err(ControlError::SocketPathTooLong)
+        ));
+        assert!(!paths.root_directory.try_exists().unwrap());
+        assert!(matches!(
+            ServerEndpoint::prepare_with_paths(paths.clone()),
+            Err(ControlError::SocketPathTooLong)
+        ));
+        assert!(!paths.root_directory.try_exists().unwrap());
+        fs::remove_dir_all(paths.root_directory.parent().unwrap()).unwrap();
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct StateEntry {
+        path: PathBuf,
+        mode: u32,
+        contents: Option<Vec<u8>>,
+    }
+
+    fn snapshot(path: &std::path::Path) -> Vec<StateEntry> {
+        let metadata = fs::symlink_metadata(path).unwrap();
+        let mut entries = vec![StateEntry {
+            path: path.to_owned(),
+            mode: metadata.permissions().mode(),
+            contents: if metadata.is_dir() {
+                None
+            } else {
+                Some(fs::read(path).unwrap())
+            },
+        }];
+        if metadata.is_dir() {
+            for child in fs::read_dir(path).unwrap() {
+                entries.extend(snapshot(&child.unwrap().path()));
+            }
+        }
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        entries
+    }
+
+    #[test]
+    fn overlong_existing_root_preserves_sentinel_state_on_rejection() {
+        let paths = overlong_control_paths();
+        for directory in [
+            &paths.root_directory,
+            &paths.control_directory,
+            &paths.runtime_directory,
+        ] {
+            ensure_private_directory(directory).unwrap();
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o750)).unwrap();
+        }
+        for (path, contents) in [
+            (paths.authentication_key_path(), "sentinel-key"),
+            (paths.registration_path(), "sentinel-registration"),
+            (paths.host_lock_path(), "sentinel-lock"),
+            (
+                paths
+                    .control_directory
+                    .join(".endpoint.json.0123456789abcdef0123456789abcdef.tmp"),
+                "sentinel-temporary",
+            ),
+            (
+                paths.runtime_directory.join("extra-sentinel"),
+                "sentinel-runtime",
+            ),
+        ] {
+            fs::write(&path, contents).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        let parent = paths.root_directory.parent().unwrap();
+        let before = snapshot(parent);
+        assert!(matches!(
+            ClientEndpoint::discover_with_paths(paths.clone()),
+            Err(ControlError::SocketPathTooLong)
+        ));
+        assert_eq!(snapshot(parent), before);
+        assert!(matches!(
+            ClientEndpoint::load_with_paths(paths.clone()),
+            Err(ControlError::SocketPathTooLong)
+        ));
+        assert_eq!(snapshot(parent), before);
+        assert!(matches!(
+            ServerEndpoint::prepare_with_paths(paths.clone()),
+            Err(ControlError::SocketPathTooLong)
+        ));
+        assert_eq!(snapshot(parent), before);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn nul_errors_keep_io_classification() {
+        for suffix in ["n\0ul".to_owned(), format!("{}\0ul", "o".repeat(100))] {
+            let parent = temporary_control_paths("pf").root_directory;
+            let paths = ControlPaths::from_root(parent.join(suffix));
+            assert!(matches!(
+                ClientEndpoint::discover_with_paths(paths.clone()),
+                Err(ControlError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidInput
+            ));
+            assert!(!parent.try_exists().unwrap());
+            assert!(matches!(
+                ClientEndpoint::load_with_paths(paths.clone()),
+                Err(ControlError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidInput
+            ));
+            assert!(!parent.try_exists().unwrap());
+            assert!(matches!(
+                ServerEndpoint::prepare_with_paths(paths),
+                Err(ControlError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidInput
+            ));
+            assert!(!parent.try_exists().unwrap());
+        }
+    }
+
+    #[test]
+    fn socket_path_too_long_display_and_source_are_fixed() {
+        let error = ControlError::SocketPathTooLong;
+        assert_eq!(error.to_string(), "local Unix socket path is too long");
+        assert_eq!(format!("{error:?}"), "SocketPathTooLong");
+        assert!(error.source().is_none());
+    }
 }
 
 #[test]
