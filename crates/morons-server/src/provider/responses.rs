@@ -49,6 +49,7 @@ struct DeltaAccumulator {
 pub(super) struct ResponsesDecoder {
     sse: SseDecoder,
     expected_model: &'static str,
+    response_model_alias: Option<&'static str>,
     maximum_input_tokens: u32,
     maximum_output_tokens: u32,
     expected_sequence: u64,
@@ -70,6 +71,7 @@ impl ResponsesDecoder {
         Self {
             sse: SseDecoder::new(),
             expected_model,
+            response_model_alias: None,
             maximum_input_tokens,
             maximum_output_tokens,
             expected_sequence: 0,
@@ -89,8 +91,13 @@ impl ResponsesDecoder {
         maximum_output_tokens: u32,
     ) -> Self {
         let mut decoder = Self::new(expected_model, maximum_input_tokens, maximum_output_tokens);
+        decoder.response_model_alias = native::response_model_alias(expected_model);
         decoder.native_items = Some(native::NativeCompletedItems::default());
         decoder
+    }
+
+    fn matches_response_model(&self, model: &str) -> bool {
+        model == self.expected_model || self.response_model_alias == Some(model)
     }
 
     pub(super) fn failure_stage(&self) -> ResponseStage {
@@ -335,7 +342,7 @@ impl ResponsesDecoder {
         if response
             .model
             .as_deref()
-            .is_some_and(|model| model != self.expected_model)
+            .is_some_and(|model| !self.matches_response_model(model))
         {
             return Err(ProviderError::MalformedResponse);
         }
@@ -445,7 +452,7 @@ impl ResponsesDecoder {
         self.stage.set(ResponseStage::CompletedIdentity);
         validate_response_identifier(&response.id, MAX_PROVIDER_IDENTIFIER_BYTES)?;
         self.stage.set(ResponseStage::ResponseModel);
-        if response.model != self.expected_model {
+        if !self.matches_response_model(&response.model) {
             return Err(ProviderError::MalformedResponse);
         }
         self.stage.set(ResponseStage::CompletedIdentity);

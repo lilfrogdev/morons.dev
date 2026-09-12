@@ -23,3 +23,7 @@ There is no new IPC shape/version, persistence schema, credential format, reques
 ## Qualification
 
 Add six-model admission/policy/credential/default/picker tests, exact body/header/no-cap contracts and unsupported-model checks, actual loopback root text/image/tool/receipt flows for every new model, and shared child/compaction/reopen bindings using new selections. Preserve full5.5/OpenCode golden and persistence tests. Run locked fmt/check/Clippy debug+release/workspace tests/deny/build and exact-head platform/security checks before further owner sampling. Real subscription requests, Daybreak access, billing, refresh and signed/native release qualification are not implied. No additional inference without a new explicit budget and complete draft/model/directory verification before Enter. Diagnostic improvements must expose only closed code-owned stages, never raw provider bodies, parser sources, headers, hidden reasoning or credential data.
+
+## Reviewed response-alias follow-up
+
+[ADR0048](0048-native-daybreak-response-alias.md) narrowly supersedes exact response-name equality for the documented native Daybreak Blue → Sol resolution. Requests and durable attribution remain Daybreak; other native models and non-native decoders retain exact equality. This is not a request rewrite, automatic fallback, historical payload diagnosis or permission to accept future alias targets.
