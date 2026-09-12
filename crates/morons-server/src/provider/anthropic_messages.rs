@@ -78,8 +78,6 @@ pub(super) struct AnthropicMessagesDecoder {
     output: Vec<ProviderOutputItem>,
     provider_sequence: u64,
     output_item_ids: BTreeSet<String>,
-    #[cfg(debug_assertions)]
-    diagnostic_stage: &'static str,
 }
 
 impl AnthropicMessagesDecoder {
@@ -106,21 +104,10 @@ impl AnthropicMessagesDecoder {
             output: Vec::new(),
             provider_sequence: 0,
             output_item_ids: BTreeSet::new(),
-            #[cfg(debug_assertions)]
-            diagnostic_stage: "awaiting an SSE record",
         }
-    }
-
-    #[cfg(debug_assertions)]
-    pub(super) const fn diagnostic_stage(&self) -> &'static str {
-        self.diagnostic_stage
     }
 
     pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "decoding SSE framing";
-        }
         let records = self.sse.push(chunk)?;
         let mut events = Vec::new();
         for record in records {
@@ -194,22 +181,10 @@ impl AnthropicMessagesDecoder {
         &mut self,
         record: SseRecord,
     ) -> Result<Option<ProviderStreamEvent>, ProviderError> {
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "decoding strict event JSON";
-        }
         let value =
             parse_strict_value(&record.data).map_err(|_| ProviderError::MalformedResponse)?;
         let mut nodes = 0_usize;
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating event resource bounds";
-        }
         validate_event_value(&value, 0, &mut nodes)?;
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating the event envelope";
-        }
         let event_type = value
             .get("type")
             .and_then(Value::as_str)
@@ -219,57 +194,27 @@ impl AnthropicMessagesDecoder {
         }
         match event_type {
             "ping" => {
-                #[cfg(debug_assertions)]
-                {
-                    self.diagnostic_stage = "validating a ping event";
-                }
                 validate_ping(value)?;
                 Ok(None)
             }
             "message_start" => {
-                #[cfg(debug_assertions)]
-                {
-                    self.diagnostic_stage = "validating a message-start event";
-                }
                 self.message_start(value)?;
                 Ok(None)
             }
             "content_block_start" => {
-                #[cfg(debug_assertions)]
-                {
-                    self.diagnostic_stage = "validating a content-block-start event";
-                }
                 self.content_block_start(value)?;
                 Ok(None)
             }
-            "content_block_delta" => {
-                #[cfg(debug_assertions)]
-                {
-                    self.diagnostic_stage = "validating a content-block-delta event";
-                }
-                self.content_block_delta(value)
-            }
+            "content_block_delta" => self.content_block_delta(value),
             "content_block_stop" => {
-                #[cfg(debug_assertions)]
-                {
-                    self.diagnostic_stage = "validating a content-block-stop event";
-                }
                 self.content_block_stop(value)?;
                 Ok(None)
             }
             "message_delta" => {
-                #[cfg(debug_assertions)]
-                {
-                    self.diagnostic_stage = "validating a message-delta event";
-                }
                 self.message_delta(value)?;
                 Ok(None)
             }
             "message_stop" => {
-                #[cfg(debug_assertions)]
-                {
-                    self.diagnostic_stage = "validating a message-stop event";
-                }
                 self.message_stop(value)?;
                 Ok(None)
             }

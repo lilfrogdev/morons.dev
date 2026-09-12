@@ -211,6 +211,13 @@ impl ModelTurn {
     }
 }
 impl ModelDispatch<'_> {
+    pub(crate) const fn diagnostic_attempt_id(&self) -> Option<u64> {
+        match self {
+            Self::OpenCode(dispatch) => dispatch.diagnostic_attempt_id(),
+            Self::ChatGpt(_) => None,
+        }
+    }
+
     pub(crate) async fn execute<F: FnMut(ProviderStreamEvent)>(
         self,
         policy: DataUseRestrictions,

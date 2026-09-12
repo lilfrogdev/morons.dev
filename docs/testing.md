@@ -28,6 +28,18 @@ Two test threads match CI and reduce SQLite-heavy fixture contention. Timing pro
 
 Ignored live provider tests intentionally require non-echoing credential input and billable inference; Python gates require an installed or downloaded Jupyter runtime. Never run every ignored test indiscriminately. Follow `docs/release-candidate-qa.md` and obtain authorization before billable requests or credential-state changes.
 
+## Opt-in provider debugging
+
+```sh
+cargo test -p morons-server --lib --locked debug_log -- --test-threads 2
+cargo test -p morons-server --lib --locked diagnostic -- --test-threads 2
+cargo test -p morons-server --lib --locked qa_transport -- --test-threads 2
+```
+
+[ADR 0049](adr/0049-opt-in-provider-debug-mode.md) and [ADR 0050](adr/0050-closed-runtime-debug-diagnostics.md) define the closed sink/transport/runtime schema. Queue and blocked-writer tests prove producer and guard completion before draining/releasing the blocked resource, with generous test watchdogs rather than tight scheduler-latency assertions. Failure cleanup releases the writer and joins test workers. Keep production100ms shutdown grace,32queue slots,512record attempts and1024encoded bytes unchanged.
+
+For a separately scoped foreground smoke, use a fresh profile with no credentials and the exact matching pair. Start normally and verify no extra diagnostic records. Stop through the matching authenticated client; start `morons-server --debug` under that same fresh profile in a separate terminal, then attach its matching client. Expect the `MORONS_DEBUG ` start record, not a normal UI panel or a log file. Stop and confirm process/terminal restoration. Unknown/duplicate arguments reject before state preparation. No environment variable, debug-build default or later client can activate logging in an existing server. Keep stdout's readiness banner separate from stderr. If the owner redirects stderr, use an owner-controlled path outside repositories; same-user tools can still read it. Do not capture raw provider bodies/headers, environment dumps, credentials or browser data. A model/tool diagnostic scenario needs its own live authority; do not infer billing, no dispatch or zero usage from missing records.
+
 ## Terminal input delivery
 
 [ADR 0034](adr/0034-lossless-terminal-input-delivery.md) covers bounded backpressure without silent input loss. `cargo test -p morons-cli --lib --locked terminal::queue_tests` verifies burst key/paste/Enter order with a full queue, closed-receiver rejection and Drop waking a backpressured reader before joining it. These synthetic tests use no real terminal, clipboard or inference. A live draft-only check must compare the complete intended prompt before Enter; preserve any already submitted truncated input instead of rewriting or replaying it. Input delivery success does not qualify provider protocol compatibility.

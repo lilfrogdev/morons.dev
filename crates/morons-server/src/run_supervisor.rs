@@ -1,3 +1,5 @@
+use crate::debug_log::DebugNormalizationStage;
+
 mod subagent;
 
 use std::{
@@ -36,8 +38,8 @@ use crate::{
     tools::{
         BashToolExecutor, DirectToolExecutor, IpythonSupervisor, TOOL_CATALOG_VERSION,
         ToolCallValidationError, ToolKind, ToolResult, ValidatedProviderCall,
-        WebSearchToolExecutor, developer_instruction, parse_provider_calls,
-        parse_subagent_provider_calls, provider_tools,
+        WebSearchToolExecutor, developer_instruction, parse_provider_calls_diagnosed,
+        parse_subagent_provider_calls_diagnosed, provider_tools,
     },
 };
 
@@ -300,6 +302,12 @@ impl RunSupervisor {
                         ProviderOperationFailureState::Failed,
                     )
                     .await?;
+                crate::debug_log::emit(crate::debug_log::DebugEvent::Resource {
+                    location: crate::debug_log::DebugLocation::Root {
+                        run_id: *run_id.as_bytes(),
+                    },
+                    resource: crate::debug_log::DebugResource::RootDeadline,
+                });
                 return Ok(());
             }
             if cancellation.is_cancelled() {
@@ -477,6 +485,12 @@ impl RunSupervisor {
                             ProviderOperationFailureState::Uncertain,
                         )
                         .await?;
+                    crate::debug_log::emit(crate::debug_log::DebugEvent::Resource {
+                        location: crate::debug_log::DebugLocation::Root {
+                            run_id: *run_id.as_bytes(),
+                        },
+                        resource: crate::debug_log::DebugResource::RootDeadline,
+                    });
                     return Ok(());
                 }
                 Ok(outcome) => outcome,
@@ -513,7 +527,12 @@ impl RunSupervisor {
                     return Ok(());
                 }
             };
-            match normalize_provider_turn(outcome, context.run.tool_catalog_version) {
+            let mut stage = DebugNormalizationStage::Other;
+            match normalize_provider_turn_diagnosed(
+                outcome,
+                context.run.tool_catalog_version,
+                &mut stage,
+            ) {
                 Ok(NormalizedTurn::Final(assistant)) => {
                     self.sessions
                         .complete_run_success(run_id, operation_id, assistant)
@@ -538,7 +557,7 @@ impl RunSupervisor {
                                 .await?;
                             return Ok(());
                         }
-                        Err(PersistenceError::ResourceLimit { .. }) => {
+                        Err(PersistenceError::ResourceLimit { resource }) => {
                             self.sessions
                                 .finish_run_failure(
                                     run_id,
@@ -547,6 +566,12 @@ impl RunSupervisor {
                                     ProviderOperationFailureState::Failed,
                                 )
                                 .await?;
+                            crate::debug_log::emit(crate::debug_log::DebugEvent::Resource {
+                                location: crate::debug_log::DebugLocation::Root {
+                                    run_id: *run_id.as_bytes(),
+                                },
+                                resource: resource.into(),
+                            });
                             return Ok(());
                         }
                         Err(error) => return Err(error),
@@ -601,6 +626,13 @@ impl RunSupervisor {
                             ProviderOperationFailureState::Failed,
                         )
                         .await?;
+                    crate::debug_log::emit(crate::debug_log::DebugEvent::Normalization {
+                        location: crate::debug_log::DebugLocation::Root {
+                            run_id: *run_id.as_bytes(),
+                        },
+                        stage,
+                        resource_limit: failure == RunFailureKind::ResourceLimit,
+                    });
                     return Ok(());
                 }
             }
@@ -620,6 +652,10 @@ impl RunSupervisor {
         run_id: RunId,
         error: PersistenceError,
     ) -> Result<(), PersistenceError> {
+        let resource = match &error {
+            PersistenceError::ResourceLimit { resource } => Some((*resource).into()),
+            _ => None,
+        };
         let failure = match error {
             PersistenceError::ResourceLimit { .. } => RunFailureKind::ResourceLimit,
             PersistenceError::DataUseRestricted => RunFailureKind::DataUseRestricted,
@@ -629,6 +665,14 @@ impl RunSupervisor {
         self.sessions
             .finish_run_failure(run_id, None, failure, ProviderOperationFailureState::Failed)
             .await?;
+        if let Some(resource) = resource {
+            crate::debug_log::emit(crate::debug_log::DebugEvent::Resource {
+                location: crate::debug_log::DebugLocation::Root {
+                    run_id: *run_id.as_bytes(),
+                },
+                resource,
+            });
+        }
         Ok(())
     }
 
@@ -1246,28 +1290,45 @@ enum NormalizedTurn {
     },
 }
 
+#[cfg(test)]
 fn normalize_provider_turn(
     outcome: ProviderOutcome,
     tool_catalog_version: u16,
 ) -> Result<NormalizedTurn, RunFailureKind> {
-    normalize_tool_provider_turn(outcome, |calls| {
+    normalize_provider_turn_diagnosed(
+        outcome,
+        tool_catalog_version,
+        &mut DebugNormalizationStage::Other,
+    )
+}
+
+fn normalize_provider_turn_diagnosed(
+    outcome: ProviderOutcome,
+    tool_catalog_version: u16,
+    stage: &mut DebugNormalizationStage,
+) -> Result<NormalizedTurn, RunFailureKind> {
+    normalize_tool_provider_turn(outcome, stage, |calls, stage| {
         if tool_catalog_version != TOOL_CATALOG_VERSION {
+            *stage = DebugNormalizationStage::Catalog;
             return Err(ToolCallValidationError::InvalidProviderOutput);
         }
-        parse_provider_calls(calls, tool_catalog_version)
+        parse_provider_calls_diagnosed(calls, tool_catalog_version, stage)
     })
 }
 
 fn normalize_subagent_provider_turn(
     outcome: ProviderOutcome,
+    stage: &mut DebugNormalizationStage,
 ) -> Result<NormalizedTurn, RunFailureKind> {
-    normalize_tool_provider_turn(outcome, parse_subagent_provider_calls)
+    normalize_tool_provider_turn(outcome, stage, parse_subagent_provider_calls_diagnosed)
 }
 
 fn normalize_tool_provider_turn(
     outcome: ProviderOutcome,
+    stage: &mut DebugNormalizationStage,
     parse_calls: impl FnOnce(
         Vec<ProviderToolCall>,
+        &mut DebugNormalizationStage,
     ) -> Result<Vec<ValidatedProviderCall>, ToolCallValidationError>,
 ) -> Result<NormalizedTurn, RunFailureKind> {
     let has_tool_calls = outcome
@@ -1275,7 +1336,7 @@ fn normalize_tool_provider_turn(
         .iter()
         .any(|item| matches!(item, ProviderOutputItem::ToolCall(_)));
     if !has_tool_calls {
-        return completed_assistant(outcome).map(NormalizedTurn::Final);
+        return completed_assistant_diagnosed(outcome, stage).map(NormalizedTurn::Final);
     }
     let mut commentary = None;
     let mut calls = Vec::<ProviderToolCall>::new();
@@ -1302,18 +1363,13 @@ fn normalize_tool_provider_turn(
                 saw_call = true;
                 calls.push(call);
             }
-            ProviderOutputItem::AssistantMessage(message) => {
-                eprintln!(
-                    "provider output rejected: tool-turn message; phase={:?}; after_call={saw_call}; duplicate={}; empty={}",
-                    message.phase,
-                    commentary.is_some(),
-                    message.text.is_empty(),
-                );
+            ProviderOutputItem::AssistantMessage(_) => {
+                *stage = DebugNormalizationStage::ToolTurnMessage;
                 return Err(RunFailureKind::InvalidProviderOutput);
             }
         }
     }
-    let calls = parse_calls(calls).map_err(map_tool_validation)?;
+    let calls = parse_calls(calls, stage).map_err(map_tool_validation)?;
     Ok(NormalizedTurn::Tools {
         turn: CompletedToolTurn {
             provider_response_id: outcome.provider_response_id,
@@ -1342,6 +1398,13 @@ const fn map_tool_validation(error: ToolCallValidationError) -> RunFailureKind {
 pub(crate) fn completed_assistant(
     outcome: ProviderOutcome,
 ) -> Result<CompletedAssistant, RunFailureKind> {
+    completed_assistant_diagnosed(outcome, &mut DebugNormalizationStage::Other)
+}
+
+fn completed_assistant_diagnosed(
+    outcome: ProviderOutcome,
+    stage: &mut DebugNormalizationStage,
+) -> Result<CompletedAssistant, RunFailureKind> {
     let mut final_message = None;
     for item in outcome.output {
         match item {
@@ -1349,26 +1412,27 @@ pub(crate) fn completed_assistant(
                 if message.phase != Some(ProviderMessagePhase::Commentary) =>
             {
                 if final_message.replace(message).is_some() {
-                    eprintln!("provider output rejected: multiple final messages");
+                    *stage = DebugNormalizationStage::FinalMessageMultiple;
                     return Err(RunFailureKind::InvalidProviderOutput);
                 }
             }
             ProviderOutputItem::AssistantMessage(_) | ProviderOutputItem::Reasoning(_) => {}
             ProviderOutputItem::ToolCall(_) => {
-                eprintln!("provider output rejected: tool call in final response");
+                *stage = DebugNormalizationStage::ToolInFinal;
                 return Err(RunFailureKind::InvalidProviderOutput);
             }
         }
     }
     let message = final_message.ok_or_else(|| {
-        eprintln!("provider output rejected: missing final message");
+        *stage = DebugNormalizationStage::FinalMessageMissing;
         RunFailureKind::InvalidProviderOutput
     })?;
     if message.text.is_empty() {
-        eprintln!("provider output rejected: empty final message");
+        *stage = DebugNormalizationStage::FinalMessageEmpty;
         return Err(RunFailureKind::InvalidProviderOutput);
     }
     if message.text.len() > MAX_TRANSCRIPT_TEXT_BYTES {
+        *stage = DebugNormalizationStage::OutputBytes;
         return Err(RunFailureKind::ResourceLimit);
     }
     Ok(CompletedAssistant {

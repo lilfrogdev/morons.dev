@@ -346,6 +346,10 @@ impl OpenCodeResponseRequest {
         self.model
     }
 
+    pub(super) const fn maximum_output_tokens(&self) -> u32 {
+        self.maximum_output_tokens
+    }
+
     pub(super) fn opencode_session_header(&self) -> String {
         const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut value = String::with_capacity(4 + self.opencode_session_id.len() * 2);

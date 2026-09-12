@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 use serde_json::Value;
-#[cfg(debug_assertions)]
-use sha2::{Digest as _, Sha256};
+
+use crate::debug_log::{DebugFinish, DebugStage};
 
 use super::{
     ProviderAssistantMessage, ProviderError, ProviderMessagePhase, ProviderOutcome,
@@ -33,7 +33,16 @@ struct ToolCallAccumulator {
     arguments: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ChatDiagnosticSnapshot {
+    pub(super) stage: DebugStage,
+    pub(super) finish: DebugFinish,
+    pub(super) done: bool,
+    pub(super) usage_seen: bool,
+}
+
 pub(super) struct ChatCompletionsDecoder {
+    diagnostic: ChatDiagnosticSnapshot,
     sse: SseDecoder,
     expected_model: &'static str,
     maximum_input_tokens: u32,
@@ -49,8 +58,6 @@ pub(super) struct ChatCompletionsDecoder {
     provider_sequence: u64,
     done: bool,
     post_terminal_envelope_seen: bool,
-    #[cfg(debug_assertions)]
-    diagnostic_stage: &'static str,
 }
 
 impl ChatCompletionsDecoder {
@@ -60,6 +67,12 @@ impl ChatCompletionsDecoder {
         maximum_output_tokens: u32,
     ) -> Self {
         Self {
+            diagnostic: ChatDiagnosticSnapshot {
+                stage: DebugStage::SseFraming,
+                finish: DebugFinish::Absent,
+                done: false,
+                usage_seen: false,
+            },
             sse: SseDecoder::new(),
             expected_model,
             maximum_input_tokens,
@@ -75,21 +88,15 @@ impl ChatCompletionsDecoder {
             provider_sequence: 0,
             done: false,
             post_terminal_envelope_seen: false,
-            #[cfg(debug_assertions)]
-            diagnostic_stage: "awaiting an SSE record",
         }
     }
 
-    #[cfg(debug_assertions)]
-    pub(super) const fn diagnostic_stage(&self) -> &'static str {
-        self.diagnostic_stage
+    pub(super) const fn diagnostic_snapshot(&self) -> ChatDiagnosticSnapshot {
+        self.diagnostic
     }
 
     pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "decoding SSE framing";
-        }
+        self.diagnostic.stage = DebugStage::SseFraming;
         let records = self.sse.push(chunk)?;
         let mut events = Vec::new();
         for record in records {
@@ -98,13 +105,37 @@ impl ChatCompletionsDecoder {
         Ok(events)
     }
 
+    #[cfg(test)]
     pub(super) fn finish(self) -> Result<ProviderOutcome, ProviderError> {
+        self.finish_diagnosed().0
+    }
+
+    pub(super) fn finish_diagnosed(
+        self,
+    ) -> (
+        Result<ProviderOutcome, ProviderError>,
+        ChatDiagnosticSnapshot,
+    ) {
+        let mut snapshot = self.diagnostic_snapshot();
+        let result = self.finish_inner(&mut snapshot);
+        (result, snapshot)
+    }
+
+    fn finish_inner(
+        self,
+        snapshot: &mut ChatDiagnosticSnapshot,
+    ) -> Result<ProviderOutcome, ProviderError> {
+        snapshot.stage = DebugStage::SseFraming;
         self.sse.finish()?;
+        snapshot.stage = DebugStage::Termination;
         if !self.done {
             return Err(ProviderError::IncompleteResponse);
         }
+        snapshot.stage = DebugStage::Identity;
         let response_id = self.response_id.ok_or(ProviderError::IncompleteResponse)?;
+        snapshot.stage = DebugStage::Usage;
         let usage = self.usage.ok_or(ProviderError::IncompleteResponse)?;
+        snapshot.stage = DebugStage::FinishReason;
         let finish_reason = self
             .finish_reason
             .as_deref()
@@ -119,6 +150,7 @@ impl ChatCompletionsDecoder {
             "model_context_window_exceeded" => return Err(ProviderError::IncompleteResponse),
             _ => return Err(ProviderError::MalformedResponse),
         }
+        snapshot.stage = DebugStage::Delta;
         if !self.role_seen || (self.text.is_empty() && self.tool_calls.is_empty()) {
             return Err(ProviderError::MalformedResponse);
         }
@@ -139,6 +171,7 @@ impl ChatCompletionsDecoder {
             ));
         }
         for (expected_index, (index, call)) in self.tool_calls.into_iter().enumerate() {
+            snapshot.stage = DebugStage::ToolCall;
             if usize::try_from(index).ok() != Some(expected_index) {
                 return Err(ProviderError::MalformedResponse);
             }
@@ -146,6 +179,7 @@ impl ChatCompletionsDecoder {
             let name = call.name.ok_or(ProviderError::IncompleteResponse)?;
             validate_identifier(&id, MAX_PROVIDER_CALL_ID_BYTES)?;
             validate_tool_name(&name)?;
+            snapshot.stage = DebugStage::ArgumentJson;
             if call.arguments.is_empty() || call.arguments.len() > MAX_TOOL_ARGUMENT_BYTES {
                 return Err(ProviderError::MalformedResponse);
             }
@@ -162,6 +196,7 @@ impl ChatCompletionsDecoder {
                 opaque_continuation: None,
             }));
         }
+        snapshot.stage = DebugStage::Complete;
         Ok(ProviderOutcome {
             provider_response_id: response_id,
             output,
@@ -173,37 +208,25 @@ impl ChatCompletionsDecoder {
         &mut self,
         record: SseRecord,
     ) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating an SSE record";
-        }
+        self.diagnostic.stage = DebugStage::Envelope;
         if record.event.is_some() {
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "validating the SSE event name";
-            }
             return Err(ProviderError::MalformedResponse);
         }
         if self.done {
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "validating a post-terminal no-op";
-            }
+            self.diagnostic.stage = DebugStage::Termination;
             if is_done_marker(&record.data) {
                 return Ok(Vec::new());
             }
             if self.post_terminal_envelope_seen {
                 return Err(ProviderError::MalformedResponse);
             }
+            self.diagnostic.stage = DebugStage::Json;
             let value =
                 parse_strict_value(&record.data).map_err(|_| ProviderError::MalformedResponse)?;
+            self.diagnostic.usage_seen |= value.get("usage").is_some_and(|usage| !usage.is_null());
+            self.diagnostic.stage = DebugStage::Envelope;
             let mut nodes = 0_usize;
             validate_event_value(&value, 0, &mut nodes)?;
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "decoding a post-terminal chunk";
-                diagnose_unknown_chunk_fields(&value);
-            }
             if let Ok(trailer) = serde_json::from_value::<ChatCostTrailer>(value.clone())
                 && trailer.choices.is_empty()
                 && trailer.cost.is_valid()
@@ -213,15 +236,8 @@ impl ChatCompletionsDecoder {
             }
             let chunk: ChatChunk =
                 serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "validating post-terminal chunk identity";
-            }
             self.validate_chunk_identity(&chunk)?;
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "validating the post-terminal empty shape";
-            }
+            self.diagnostic.stage = DebugStage::Choices;
             return if chunk.choices.is_empty() && chunk.usage.is_none() {
                 self.post_terminal_envelope_seen = true;
                 Ok(Vec::new())
@@ -230,40 +246,25 @@ impl ChatCompletionsDecoder {
             };
         }
         if is_done_marker(&record.data) {
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "validating the done marker";
-            }
+            self.diagnostic.stage = DebugStage::Termination;
             if self.finish_reason.is_none() || self.usage.is_none() {
                 return Err(ProviderError::IncompleteResponse);
             }
             self.done = true;
+            self.diagnostic.done = true;
             return Ok(Vec::new());
         }
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "decoding strict chunk JSON";
-        }
+        self.diagnostic.stage = DebugStage::Json;
         let value =
             parse_strict_value(&record.data).map_err(|_| ProviderError::MalformedResponse)?;
+        self.diagnostic.usage_seen |= value.get("usage").is_some_and(|usage| !usage.is_null());
+        self.diagnostic.stage = DebugStage::Envelope;
         let mut nodes = 0_usize;
         validate_event_value(&value, 0, &mut nodes)?;
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "decoding the chunk structure";
-            diagnose_unknown_chunk_fields(&value);
-        }
         let chunk: ChatChunk =
             serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating chunk identity";
-        }
         self.validate_chunk_identity(&chunk)?;
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating chunk choices";
-        }
+        self.diagnostic.stage = DebugStage::Choices;
         let terminal_usage_choice = self.finish_reason.as_deref().is_some_and(|finish_reason| {
             chunk.usage.is_some()
                 && self.usage.is_none()
@@ -282,15 +283,22 @@ impl ChatCompletionsDecoder {
 
         let mut events = Vec::new();
         if !terminal_usage_choice && let Some(choice) = chunk.choices.into_iter().next() {
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "validating a choice delta";
-            }
             if choice.index != 0 || choice.logprobs.is_some() {
                 return Err(ProviderError::MalformedResponse);
             }
             events.extend(self.process_delta(choice.delta)?);
             if let Some(reason) = choice.finish_reason {
+                self.diagnostic.stage = DebugStage::FinishReason;
+                self.diagnostic.finish = match reason.as_str() {
+                    "stop" => DebugFinish::Stop,
+                    "tool_calls" => DebugFinish::ToolCalls,
+                    "length" => DebugFinish::Length,
+                    "content_filter" => DebugFinish::ContentFilter,
+                    "sensitive" => DebugFinish::Sensitive,
+                    "network_error" => DebugFinish::NetworkError,
+                    "model_context_window_exceeded" => DebugFinish::ContextWindowExceeded,
+                    _ => DebugFinish::Other,
+                };
                 if reason.is_empty() || reason.len() > MAX_PROVIDER_IDENTIFIER_BYTES {
                     return Err(ProviderError::MalformedResponse);
                 }
@@ -298,23 +306,10 @@ impl ChatCompletionsDecoder {
             }
         }
         if let Some(usage) = chunk.usage {
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "validating chat usage";
-            }
+            self.diagnostic.stage = DebugStage::Usage;
             let usage = self.validate_usage(usage)?;
             match self.usage {
                 Some(existing) if !usage_refines(existing, usage) => {
-                    #[cfg(debug_assertions)]
-                    eprintln!(
-                        "chat usage refinement rejected: input_changed={} output_decreased={} total_decreased={} cached_decreased={} cache_write_decreased={} reasoning_decreased={}",
-                        existing.input_tokens != usage.input_tokens,
-                        existing.output_tokens > usage.output_tokens,
-                        existing.total_tokens > usage.total_tokens,
-                        existing.cached_input_tokens > usage.cached_input_tokens,
-                        existing.cache_write_input_tokens > usage.cache_write_input_tokens,
-                        existing.reasoning_output_tokens > usage.reasoning_output_tokens,
-                    );
                     return Err(ProviderError::MalformedResponse);
                 }
                 Some(_) | None => self.usage = Some(usage),
@@ -324,6 +319,7 @@ impl ChatCompletionsDecoder {
     }
 
     fn validate_chunk_identity(&mut self, chunk: &ChatChunk) -> Result<(), ProviderError> {
+        self.diagnostic.stage = DebugStage::Identity;
         if chunk
             .object
             .as_deref()
@@ -366,26 +362,15 @@ impl ChatCompletionsDecoder {
         &mut self,
         delta: ChatDelta,
     ) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating the delta role";
-        }
+        self.diagnostic.stage = DebugStage::Delta;
         if let Some(role) = delta.role {
             if role != "assistant" {
                 return Err(ProviderError::MalformedResponse);
             }
             self.role_seen = true;
         }
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating legacy function-call output";
-        }
         if delta.function_call.is_some() {
             return Err(ProviderError::MalformedResponse);
-        }
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating reasoning deltas";
         }
         for reasoning in [delta.reasoning, delta.reasoning_content]
             .into_iter()
@@ -400,10 +385,6 @@ impl ChatCompletionsDecoder {
                 .filter(|bytes| *bytes <= MAX_ACCUMULATED_TEXT_BYTES)
                 .ok_or(ProviderError::ResponseLimitExceeded)?;
         }
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating reasoning details";
-        }
         if let Some(details) = delta.reasoning_details {
             let encoded =
                 serde_json::to_vec(&details).map_err(|_| ProviderError::MalformedResponse)?;
@@ -417,10 +398,6 @@ impl ChatCompletionsDecoder {
                 .ok_or(ProviderError::ResponseLimitExceeded)?;
         }
 
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "recording text and tool deltas";
-        }
         let mut events = Vec::new();
         if let Some(content) = delta.content.filter(|content| !content.is_empty()) {
             events.push(self.record_text_delta(content, false)?);
@@ -429,6 +406,7 @@ impl ChatCompletionsDecoder {
             events.push(self.record_text_delta(refusal, true)?);
         }
         if let Some(calls) = delta.tool_calls {
+            self.diagnostic.stage = DebugStage::ToolCall;
             if calls.len() > MAX_TOOL_COUNT {
                 return Err(ProviderError::ResponseLimitExceeded);
             }
@@ -532,8 +510,6 @@ impl ChatCompletionsDecoder {
             .unwrap_or(0);
         let cached = match (detailed_cached, usage.prompt_cache_hit_tokens) {
             (Some(detailed), Some(top_level)) if detailed != top_level => {
-                #[cfg(debug_assertions)]
-                eprintln!("chat usage rejection: cache sources disagree");
                 return Err(ProviderError::MalformedResponse);
             }
             (Some(detailed), _) => detailed,
@@ -588,10 +564,6 @@ impl ChatCompletionsDecoder {
             || miss_mismatch
             || invalid_reasoning
         {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "chat usage rejection flags: unsupported={unsupported_usage} prompt_zero={prompt_zero} completion_zero={completion_zero} input_limit={input_limit} output_limit={output_limit} total_mismatch={total_mismatch} invalid_cache={invalid_cache} miss_mismatch={miss_mismatch} invalid_reasoning={invalid_reasoning}"
-            );
             return Err(ProviderError::MalformedResponse);
         }
         Ok(ProviderUsage {
@@ -735,37 +707,6 @@ struct CompletionTokenDetails {
     rejected_prediction_tokens: Option<u64>,
 }
 
-#[cfg(debug_assertions)]
-fn diagnose_unknown_chunk_fields(value: &Value) {
-    const KNOWN: &[&str] = &[
-        "id",
-        "object",
-        "request_id",
-        "created",
-        "model",
-        "choices",
-        "usage",
-        "system_fingerprint",
-        "service_tier",
-        "web_search",
-        "cost",
-    ];
-    let Some(object) = value.as_object() else {
-        return;
-    };
-    for key in object.keys().filter(|key| !KNOWN.contains(&key.as_str())) {
-        let digest = Sha256::digest(key.as_bytes());
-        let fingerprint = digest[..8]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        eprintln!(
-            "chat completions chunk has unknown field bytes={} fingerprint={fingerprint}",
-            key.len()
-        );
-    }
-}
-
 const fn usage_refines(previous: ProviderUsage, next: ProviderUsage) -> bool {
     previous.input_tokens == next.input_tokens
         && previous.output_tokens <= next.output_tokens
@@ -826,6 +767,9 @@ fn validate_event_value(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod diagnostic_tests;
 
 #[cfg(test)]
 mod tests;

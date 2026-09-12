@@ -120,6 +120,8 @@ When enabled, one supervised background request globally can prepare a bounded o
 
 Context estimates reuse compatible successful provider usage plus a bounded new tail when available; conservative byte/item/image guards still apply independently. `/context` shows the estimate's source and the latest matching successful root call's cache and timing counters. Those counters exclude compaction, subagents, and failed requests and are not a complete bill. Foreground compaction counts and elapsed times are reported separately from the latest background job.
 
+For opt-in diagnostics, stop the existing companion with its matching client, run the exact `morons-server --debug` in a separate terminal under the same profile, then connect its matching client. Only this explicit foreground flag enables bounded closed metadata on stderr; `RUST_LOG` and debug builds do not enable it. There is no automatic log file or extra normal UI output. Records may be lost and missing receipts mean unknown usage, not zero. See [the debug procedure](docs/testing.md#opt-in-provider-debugging).
+
 Every OpenCode Zen and Go inference request carries one stable, derived `x-opencode-session` identifier for its Morons conversation. The root value remains constant across the durable session's runs, foreground compaction, and tool turns. Each task child receives a distinct value stable across its own turns. Each background compaction request has a separate job conversation identity. These identifiers are not sent on public model-catalog requests.
 
 ## Project guidance and coding defaults

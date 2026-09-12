@@ -46,13 +46,6 @@ struct DeltaAccumulator {
     refusal: bool,
 }
 
-#[cfg(test)]
-pub(super) struct ResponsesDiagnostic {
-    pub(super) event_type: Option<String>,
-    pub(super) sequence_number: Option<u64>,
-    pub(super) stage: &'static str,
-}
-
 pub(super) struct ResponsesDecoder {
     sse: SseDecoder,
     expected_model: &'static str,
@@ -66,12 +59,6 @@ pub(super) struct ResponsesDecoder {
     terminal: Option<Result<ProviderOutcome, ProviderError>>,
     native_items: Option<native::NativeCompletedItems>,
     stage: Cell<ResponseStage>,
-    #[cfg(test)]
-    diagnostic_event_type: Option<String>,
-    #[cfg(test)]
-    diagnostic_sequence_number: Option<u64>,
-    #[cfg(test)]
-    diagnostic_stage: &'static str,
 }
 
 impl ResponsesDecoder {
@@ -93,12 +80,6 @@ impl ResponsesDecoder {
             terminal: None,
             native_items: None,
             stage: Cell::new(ResponseStage::SseFraming),
-            #[cfg(test)]
-            diagnostic_event_type: None,
-            #[cfg(test)]
-            diagnostic_sequence_number: None,
-            #[cfg(test)]
-            diagnostic_stage: "awaiting the first SSE record",
         }
     }
 
@@ -116,26 +97,11 @@ impl ResponsesDecoder {
         self.stage.get()
     }
 
-    #[cfg(test)]
-    pub(super) fn diagnostic(&self) -> ResponsesDiagnostic {
-        ResponsesDiagnostic {
-            event_type: self.diagnostic_event_type.clone(),
-            sequence_number: self.diagnostic_sequence_number,
-            stage: self.diagnostic_stage,
-        }
-    }
-
     pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
         self.stage.set(ResponseStage::SseFraming);
         let records = self.sse.push(chunk)?;
         let mut events = Vec::new();
         for record in records {
-            #[cfg(test)]
-            {
-                self.diagnostic_event_type = None;
-                self.diagnostic_sequence_number = None;
-                self.diagnostic_stage = "decoding an SSE record";
-            }
             if let Some(event) = self.process_record(record)? {
                 events.push(event);
             }
@@ -161,21 +127,11 @@ impl ResponsesDecoder {
     ) -> Result<Option<ProviderStreamEvent>, ProviderError> {
         self.stage.set(ResponseStage::SseFraming);
         if record.event.as_deref() == Some("ping") {
-            #[cfg(test)]
-            {
-                self.diagnostic_event_type = record.event.clone();
-                self.diagnostic_stage = "validating a transport ping";
-            }
             validate_ping_record(&record.data)?;
             return Ok(None);
         }
         self.stage.set(ResponseStage::Lifecycle);
         if record.data == b"[DONE]" {
-            #[cfg(test)]
-            {
-                self.diagnostic_event_type = record.event.clone();
-                self.diagnostic_stage = "validating the done marker";
-            }
             if record.event.is_some() || self.state != StreamState::Terminal {
                 return Err(ProviderError::MalformedResponse);
             }
@@ -183,24 +139,11 @@ impl ResponsesDecoder {
             return Ok(None);
         }
         if matches!(self.state, StreamState::Terminal | StreamState::DoneMarker) {
-            #[cfg(test)]
-            {
-                self.diagnostic_event_type = record.event.clone();
-                self.diagnostic_stage = "rejecting a record after the terminal response";
-            }
             return Err(ProviderError::MalformedResponse);
-        }
-        #[cfg(test)]
-        {
-            self.diagnostic_stage = "decoding event JSON";
         }
         self.stage.set(ResponseStage::Json);
         let value =
             parse_strict_value(&record.data).map_err(|_| ProviderError::MalformedResponse)?;
-        #[cfg(test)]
-        {
-            self.diagnostic_stage = "validating event structure";
-        }
         self.stage.set(ResponseStage::EventBounds);
         let mut event_nodes = 0;
         validate_event_value(&value, 0, &mut event_nodes)?;
@@ -220,12 +163,6 @@ impl ResponsesDecoder {
         self.stage.set(ResponseStage::EventKind);
         validate_event_type(&envelope.event_type)?;
         self.stage.set(ResponseStage::EventEnvelope);
-        #[cfg(test)]
-        {
-            self.diagnostic_event_type = Some(envelope.event_type.clone());
-            self.diagnostic_sequence_number = Some(envelope.sequence_number);
-            self.diagnostic_stage = "validating event envelope";
-        }
         if record
             .event
             .as_deref()
@@ -271,10 +208,6 @@ impl ResponsesDecoder {
             }
             "response.output_text.delta" => {
                 self.require_active()?;
-                #[cfg(test)]
-                {
-                    self.diagnostic_stage = "validating an output-text delta";
-                }
                 self.stage.set(ResponseStage::TextDelta);
                 let event: TextDeltaEvent =
                     serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
@@ -293,10 +226,6 @@ impl ResponsesDecoder {
             }
             "response.refusal.delta" => {
                 self.require_active()?;
-                #[cfg(test)]
-                {
-                    self.diagnostic_stage = "validating a refusal delta";
-                }
                 self.stage.set(ResponseStage::RefusalDelta);
                 let event: RefusalDeltaEvent =
                     serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
@@ -312,10 +241,6 @@ impl ResponsesDecoder {
             }
             "response.function_call_arguments.delta" => {
                 self.require_active()?;
-                #[cfg(test)]
-                {
-                    self.diagnostic_stage = "validating a function-arguments delta";
-                }
                 self.stage.set(ResponseStage::ArgumentDelta);
                 let event: FunctionArgumentsDeltaEvent =
                     serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
@@ -324,17 +249,9 @@ impl ResponsesDecoder {
             }
             "response.completed" => {
                 self.require_active()?;
-                #[cfg(test)]
-                {
-                    self.diagnostic_stage = "decoding the completed response";
-                }
                 self.stage.set(ResponseStage::CompletedEnvelope);
                 let event: CompletedEvent =
                     serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
-                #[cfg(test)]
-                {
-                    self.diagnostic_stage = "validating the completed response";
-                }
                 let outcome = self.parse_completed(event.response)?;
                 self.terminal = Some(Ok(outcome));
                 self.state = StreamState::Terminal;
@@ -525,10 +442,6 @@ impl ResponsesDecoder {
         &mut self,
         response: CompletedResponse,
     ) -> Result<ProviderOutcome, ProviderError> {
-        #[cfg(test)]
-        {
-            self.diagnostic_stage = "validating completed-response identity";
-        }
         self.stage.set(ResponseStage::CompletedIdentity);
         validate_response_identifier(&response.id, MAX_PROVIDER_IDENTIFIER_BYTES)?;
         self.stage.set(ResponseStage::ResponseModel);
@@ -547,10 +460,6 @@ impl ResponsesDecoder {
             || response.output.len() > MAX_OUTPUT_ITEMS
         {
             return Err(ProviderError::MalformedResponse);
-        }
-        #[cfg(test)]
-        {
-            self.diagnostic_stage = "validating completed-response usage";
         }
         self.stage.set(ResponseStage::Usage);
         let usage = validate_usage(
@@ -602,10 +511,6 @@ impl ResponsesDecoder {
                 .ok_or(ProviderError::MalformedResponse)?;
             match item_type {
                 "message" => {
-                    #[cfg(test)]
-                    {
-                        self.diagnostic_stage = "validating a completed assistant message";
-                    }
                     self.stage.set(ResponseStage::AssistantMessage);
                     let message: WireOutputMessage = serde_json::from_value(item)
                         .map_err(|_| ProviderError::MalformedResponse)?;
@@ -649,10 +554,6 @@ impl ResponsesDecoder {
                     ));
                 }
                 "reasoning" => {
-                    #[cfg(test)]
-                    {
-                        self.diagnostic_stage = "validating a completed reasoning item";
-                    }
                     self.stage.set(ResponseStage::Reasoning);
                     let reasoning: WireReasoning = serde_json::from_value(item)
                         .map_err(|_| ProviderError::MalformedResponse)?;
@@ -690,10 +591,6 @@ impl ResponsesDecoder {
                     }));
                 }
                 "function_call" => {
-                    #[cfg(test)]
-                    {
-                        self.diagnostic_stage = "validating a completed function call";
-                    }
                     self.stage.set(ResponseStage::FunctionCall);
                     let tool_call: WireFunctionCall = serde_json::from_value(item)
                         .map_err(|_| ProviderError::MalformedResponse)?;

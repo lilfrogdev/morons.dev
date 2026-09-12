@@ -1,6 +1,7 @@
 mod application;
 mod command_supervisor;
 mod connection;
+pub mod debug_log;
 mod login_supervisor;
 mod maintenance_supervisor;
 mod persistence;

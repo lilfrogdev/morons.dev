@@ -155,6 +155,7 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-24 | A tool result that makes the current run alone exceed context terminates that run durably with a resource-limit failure; the session does not remain busy. Cancelling or failing compaction installs no partial checkpoint and never retries the provider. |
 | RUN-25 | Global/ancestor `AGENTS.override.md`/`AGENTS.md`/`CLAUDE.md` discovery obeys precedence and limits, reports skips, pins guidance through a run and its children, refreshes only on new input, and honors the server-startup opt-out. Canonical history and source files remain unchanged by snapshot cleanup; link deterministic pinning/corruption/migration regressions. |
 | RUN-26 | Representative implementation requests use the selected main model to plan/review and the configured child model to execute/check; discussion and explicit direct-execution requests work without mandatory delegation. Record actual model behavior separately from prompt-composition tests; no prompt guarantees compliance. |
+| RUN-28 | Follow the [explicit-debug procedure](testing.md#opt-in-provider-debugging): default silence, foreground-only `--debug`, closed bounded metadata, no ordinary UI/log-file addition and clean stop. Diagnostic loss is unknown, not zero provider usage. Any live model scenario is separately authorized. |
 
 ### Images
 
