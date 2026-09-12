@@ -241,6 +241,11 @@ impl SubagentExecutor {
                 },
             );
         }
+        let location = crate::debug_log::DebugLocation::Child {
+            session_id: config.session_id,
+            task_call_id: config.call_id,
+            child_index: index,
+        };
         let mut usage = SubagentUsage::default();
         let mut provider_turns = 0_u16;
         let mut tool_calls = 0_u16;
@@ -269,6 +274,7 @@ impl SubagentExecutor {
                 return Err(ChildStop::Cancelled);
             }
             if provider_turns >= MAX_SUBAGENT_PROVIDER_TURNS {
+                crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildProviderTurn });
                 return Ok(subagent_result(
                     index,
                     task.name,
@@ -278,6 +284,7 @@ impl SubagentExecutor {
                 ));
             }
             let Some(estimated_input_tokens) = estimate_provider_input(&input) else {
+                crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildContextEstimate });
                 return Ok(subagent_result(
                     index,
                     task.name,
@@ -287,6 +294,7 @@ impl SubagentExecutor {
                 ));
             };
             if estimated_input_tokens > config.maximum_input_tokens {
+                crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildContextBudget });
                 return Ok(subagent_result(
                     index,
                     task.name,
@@ -360,8 +368,19 @@ impl SubagentExecutor {
                 }
                 Err(error) => return Err(ChildStop::Persistence(error)),
             };
+            let provider_attempt_id = dispatch.diagnostic_attempt_id();
             provider_turns = provider_turns.saturating_add(1);
-            let outcome = match dispatch.execute(policy, &mut cancellation, |_| {}).await {
+            let result = dispatch.execute(policy, &mut cancellation, |_| {}).await;
+            crate::debug_log::emit(crate::debug_log::DebugEvent::Child {
+                session_id: config.session_id,
+                task_call_id: config.call_id,
+                child_index: index,
+                child_attempt: provider_turns,
+                provider_attempt_id,
+                receipt_accepted: result.is_ok(),
+                error: result.as_ref().err().copied(),
+            });
+            let outcome = match result {
                 Ok(outcome) => outcome,
                 Err(ProviderError::Cancelled) => return Err(ChildStop::Cancelled),
                 Err(error) => {
@@ -374,6 +393,7 @@ impl SubagentExecutor {
                 }
             };
             if !add_usage(&mut usage, outcome.usage) {
+                crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildUsageOverflow });
                 return Ok(subagent_result(
                     index,
                     task.name,
@@ -382,9 +402,11 @@ impl SubagentExecutor {
                     subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                 ));
             }
-            match normalize_subagent_provider_turn(outcome) {
+            let mut stage = crate::debug_log::DebugNormalizationStage::Other;
+            match normalize_subagent_provider_turn(outcome, &mut stage) {
                 Ok(NormalizedTurn::Final(assistant)) => {
                     if assistant.text.len() > MAX_SUBAGENT_OUTPUT_BYTES {
+                        crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildFinalOutput });
                         return Ok(subagent_result(
                             index,
                             task.name,
@@ -417,6 +439,7 @@ impl SubagentExecutor {
                             .checked_add(additional_mutations)
                             .is_none_or(|count| count > MAX_SUBAGENT_MUTATIONS)
                     {
+                        crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildToolBudget });
                         return Ok(subagent_result(
                             index,
                             task.name,
@@ -470,6 +493,7 @@ impl SubagentExecutor {
                             arguments,
                             opaque_continuation,
                         });
+                        let tool = crate::debug_log::DebugToolKind::from(call.input.kind());
                         let hosted_web = call.input.kind() == ToolKind::WebSearch;
                         let result = self
                             .execute_child_tool(
@@ -479,6 +503,56 @@ impl SubagentExecutor {
                                 &cancellation,
                             )
                             .await.map_err(ChildStop::Persistence)?;
+                        let error = result.error_kind().map(|error| {
+                            use crate::debug_log::DebugToolError as D;
+                            match error {
+                                ToolErrorKind::InvalidPath => D::InvalidPath,
+                                ToolErrorKind::NotFound => D::NotFound,
+                                ToolErrorKind::WrongNodeKind => D::WrongNodeKind,
+                                ToolErrorKind::LinkOrReparsePoint => D::LinkOrReparsePoint,
+                                ToolErrorKind::ChangedDuringOperation => D::ChangedDuringOperation,
+                                ToolErrorKind::BinaryFile => D::BinaryFile,
+                                ToolErrorKind::InvalidUtf8 => D::InvalidUtf8,
+                                ToolErrorKind::DigestMismatch => D::DigestMismatch,
+                                ToolErrorKind::ReplacementNotFound => D::ReplacementNotFound,
+                                ToolErrorKind::ReplacementAmbiguous => D::ReplacementAmbiguous,
+                                ToolErrorKind::ReplacementOverlap => D::ReplacementOverlap,
+                                ToolErrorKind::AlreadyExists => D::AlreadyExists,
+                                ToolErrorKind::ResourceLimit => D::ResourceLimit,
+                                ToolErrorKind::OutputLimit => D::OutputLimit,
+                                ToolErrorKind::TimedOut => D::TimedOut,
+                                ToolErrorKind::InactivityTimeout => D::InactivityTimeout,
+                                ToolErrorKind::Cancelled => D::Cancelled,
+                                ToolErrorKind::Interrupted => D::Interrupted,
+                                ToolErrorKind::NotDispatched => D::NotDispatched,
+                                ToolErrorKind::Uncertain => D::Uncertain,
+                                ToolErrorKind::WebSearchUncertain(_) => D::WebSearchUncertain,
+                                ToolErrorKind::Filesystem => D::Filesystem,
+                                ToolErrorKind::Network => D::Network,
+                                ToolErrorKind::InvalidResponse => D::InvalidResponse,
+                                ToolErrorKind::CredentialNotConfigured => D::CredentialNotConfigured,
+                                ToolErrorKind::DataUseRestricted => D::DataUseRestricted,
+                                ToolErrorKind::WebSearchUnavailable => D::WebSearchUnavailable,
+                                ToolErrorKind::KernelUnavailable => D::KernelUnavailable,
+                                ToolErrorKind::ExecutionFailed => D::ExecutionFailed,
+                                ToolErrorKind::ImageInputUnsupported => D::ImageInputUnsupported,
+                                ToolErrorKind::ModelUnavailable => D::ModelUnavailable,
+                            }
+                        });
+                        let (exit_code, signal) = match &result {
+                            ToolResult::Ok { output: ToolOutput::Bash { exit_code, signal, .. } }
+                            | ToolResult::Error { output: Some(ToolOutput::Bash { exit_code, signal, .. }), .. } => (*exit_code, *signal),
+                            _ => (None, None),
+                        };
+                        crate::debug_log::emit(crate::debug_log::DebugEvent::ChildTool {
+                            location,
+                            child_attempt: provider_turns,
+                            tool_ordinal: u16::try_from(provider_call_ids.len()).unwrap_or(u16::MAX),
+                            tool,
+                            error,
+                            exit_code,
+                            signal,
+                        });
                         if let ToolResult::Ok { output: ToolOutput::OpenAiWeb { result } } = &result {
                             web_searches.push(result.receipt.clone());
                         }
@@ -521,6 +595,11 @@ impl SubagentExecutor {
                     }
                 }
                 Err(failure) => {
+                    crate::debug_log::emit(crate::debug_log::DebugEvent::Normalization {
+                        location,
+                        stage,
+                        resource_limit: failure == RunFailureKind::ResourceLimit,
+                    });
                     return Ok(subagent_result(
                         index,
                         task.name,

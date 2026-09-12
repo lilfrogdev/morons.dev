@@ -40,6 +40,22 @@ impl Backend {
             "SELECT run_id FROM run_accepted_facts WHERE session_id = ?1 ORDER BY fact_sequence DESC LIMIT 1",
             [&session_id.as_bytes()[..]], |row| row.get::<_, [u8;16]>(0),
         ).optional()?;
+        let matching_run = latest_run
+            .map(|id| {
+                super::run_records::load_required_run(&self.connection, RunId::from_bytes(id))
+            })
+            .transpose()?
+            .filter(|run| {
+                run.service == selection.service
+                    && run.model_id == selection.model_id
+                    && run.protocol_revision == selection.protocol_revision
+            });
+        let execution = matching_run
+            .as_ref()
+            .map(|run| super::context_execution::policy(&self.connection, run.id))
+            .transpose()?
+            .unwrap_or(super::context_execution::ExecutionPolicy::Legacy);
+        let usage_admission = execution == super::context_execution::ExecutionPolicy::NativeUsage;
         let skills = match latest_run {
             Some(id) => load_run_skills(&self.connection, RunId::from_bytes(id))?,
             None => crate::skills::RunSkillContext::default(),
@@ -71,24 +87,54 @@ impl Backend {
                 .map_or(0, |checkpoint| checkpoint.source_entry_high_water),
             through,
         )?;
-        let observation = self.observe_context_usage(
-            session_id,
-            ContextModel {
-                service: selection.service,
-                model_id: &selection.model_id,
-                protocol_revision: selection.protocol_revision,
-            },
-            checkpoint.as_ref(),
-            through,
-            &skills,
-            project.as_ref(),
-        )?;
+        if usage_admission
+            && let Some(run) = &matching_run
+            && checkpoint
+                .as_ref()
+                .is_some_and(|cp| cp.source_entry_high_water >= run.source_entry_high_water)
+        {
+            budget.include(&self.context_budget(
+                session_id,
+                run.source_entry_high_water - 1,
+                run.source_entry_high_water,
+            )?);
+        }
+        let observation = if usage_admission {
+            self.observe_run_usage(
+                matching_run
+                    .as_ref()
+                    .expect("usage admission has a matching run"),
+                checkpoint.as_ref(),
+                through,
+                &skills,
+                project.as_ref(),
+            )?
+        } else {
+            self.observe_context_usage(
+                session_id,
+                ContextModel {
+                    service: selection.service,
+                    model_id: &selection.model_id,
+                    protocol_revision: selection.protocol_revision,
+                },
+                checkpoint.as_ref(),
+                through,
+                &skills,
+                project.as_ref(),
+            )?
+        };
         budget.observed_input_tokens = observation
             .as_ref()
             .map(|observation| observation.estimated_tokens);
         let (completed_compactions, last_compaction_milliseconds) =
             self.compaction_metrics(session_id, checkpoint.as_ref())?;
         Ok(SessionContextStatus {
+            usage_admission,
+            admission_input_tokens: u32::try_from(execution.estimate(&budget, extra_bytes))
+                .unwrap_or(u32::MAX),
+            source_bytes: budget.bytes.saturating_add(extra_bytes as u64),
+            maximum_source_bytes: usage_admission
+                .then_some(super::context_execution::MAX_SOURCE_BYTES),
             background_compaction: self.maintenance_observation(session_id)?,
             project_context: project.as_ref().map(|project| project.summary()),
             estimated_input_tokens: u32::try_from(budget.estimated_tokens(extra_bytes))

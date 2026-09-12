@@ -1,6 +1,7 @@
 use super::*;
 mod admission;
 mod compaction;
+mod context_continuation;
 mod diagnostics;
 mod lifecycle;
 mod mixed;
@@ -54,6 +55,11 @@ async fn native_root_executes_image_tools_and_receipt_bound_reasoning_without_op
 }
 
 async fn root_image_tool_flow(model: &'static str) {
+    let response_model = if model == "gpt-daybreak-blue-latest" {
+        "gpt-5.6-sol"
+    } else {
+        model
+    };
     let root = TestRoot::new("native-root");
     let selected = TestRoot::new("native-selected");
     fs::write(selected.path().join("AGENTS.md"), "NATIVE_PROJECT_GUIDANCE").unwrap();
@@ -133,7 +139,7 @@ async fn root_image_tool_flow(model: &'static str) {
                 );
                 // Native may omit the media type; receipt-bound continuation
                 // must still complete through the same strict decoder (ADR0037).
-                let response = native_item_output_body("resp_native_read", &output, model);
+                let response = native_item_output_body("resp_native_read", &output, response_model);
                 stream
                     .write_all(
                         format!(
@@ -153,7 +159,7 @@ async fn root_image_tool_flow(model: &'static str) {
                         .to_string()
                         .contains("synthetic-native-continuation")
                 );
-                write_native_model(&mut stream,"resp_native_final",r#"{"id":"msg_native","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Image inspected.","annotations":[]}]}"#, model).await;
+                write_native_model(&mut stream,"resp_native_final",r#"{"id":"msg_native","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Image inspected.","annotations":[]}]}"#, response_model).await;
             }
         }
     });

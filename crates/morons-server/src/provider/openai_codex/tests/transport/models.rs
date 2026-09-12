@@ -1,10 +1,74 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn daybreak_documented_response_alias_keeps_the_requested_model() {
+    let (_root, _store, provider, listener) = setup().await;
+    let peer = tokio::spawn(async move {
+        let (mut socket, _) = time::timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let request = mock_request(&mut socket).await;
+        let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("POST /backend-api/codex/responses "));
+        assert!(!headers.to_lowercase().contains("responses-lite"));
+        assert!(headers.contains("originator: morons"));
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["model"], "gpt-daybreak-blue-latest");
+        assert_eq!(body["store"], false);
+        assert!(body.get("access_programs").is_none());
+        assert!(body.get("max_output_tokens").is_none());
+        let response = String::from_utf8(sse(5))
+            .unwrap()
+            .replace("gpt-5.5", "gpt-5.6-sol");
+        respond(&mut socket, "200 OK", "", response.as_bytes()).await;
+        listener
+    });
+    let mut turn = provider
+        .new_turn([1; 16], [2; 16], 1, "gpt-daybreak-blue-latest")
+        .unwrap();
+    let first = request(&turn);
+    let (_, mut cancel) = provider_cancellation();
+    let result = provider
+        .prepare_dispatch(
+            &mut turn,
+            &first,
+            DataUseRestrictions::default(),
+            &mut cancel,
+        )
+        .await
+        .unwrap()
+        .execute(DataUseRestrictions::default(), &mut cancel, |_| {})
+        .await;
+    let listener = peer.await.unwrap();
+    assert!(
+        result.is_ok(),
+        "documented native Daybreak response alias must be accepted"
+    );
+    assert_eq!(result.unwrap().usage.total_tokens, 15);
+    assert!(
+        provider
+            .prepare_dispatch(
+                &mut turn,
+                &first,
+                DataUseRestrictions::default(),
+                &mut cancel
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        time::timeout(Duration::from_millis(30), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn new_native_model_rejection_or_alias_mismatch_never_falls_back_or_replays() {
     for (model, status, response_model) in [
         ("gpt-6-astra", "403 Forbidden", "gpt-6-astra"),
-        ("gpt-daybreak-blue-latest", "200 OK", "gpt-5.6-sol"),
+        ("gpt-daybreak-blue-latest", "200 OK", "gpt-5.6-terra"),
         ("gpt-5.6-terra", "401 Unauthorized", "gpt-5.6-terra"),
     ] {
         let (_root, _store, provider, listener) = setup().await;

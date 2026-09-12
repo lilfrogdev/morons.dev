@@ -291,10 +291,19 @@ fn live_transcript_window_stays_bounded_and_requests_a_fresh_tail() {
             created_at_milliseconds: 300,
         },
     })
-    .expect("live entry should rotate the bounded window");
+    .expect("live pressure should freeze the contiguous window");
 
     let open = app.session.as_ref().expect("session should remain open");
-    assert_eq!(open.entries.len(), TRANSCRIPT_WINDOW_TARGET_ENTRIES + 1);
+    assert_eq!(open.entries.len(), MAX_CLIENT_TRANSCRIPT_ENTRIES);
+    assert_eq!(
+        open.entries.first().unwrap().id,
+        MessageId::from_bytes([1; 16])
+    );
+    assert_eq!(
+        open.entries.last().unwrap().id,
+        MessageId::from_bytes([128; 16])
+    );
+    assert!(open.deferred_newer_output);
     assert!(app.requires_tail_refresh());
     assert_eq!(
         app.request_tail_refresh(),
@@ -308,9 +317,9 @@ fn live_transcript_window_stays_bounded_and_requests_a_fresh_tail() {
 
 #[test]
 fn transcript_viewport_uses_visible_page_and_preserves_entry_anchor_on_reflow() {
-    let first = TranscriptBlockKey::Entry(MessageId::from_bytes([0x61; 16]));
-    let second = TranscriptBlockKey::Entry(MessageId::from_bytes([0x62; 16]));
-    let third = TranscriptBlockKey::Entry(MessageId::from_bytes([0x63; 16]));
+    let first = TranscriptBlockKey::Entry(MessageId::from_bytes([0x61; 16]), 0);
+    let second = TranscriptBlockKey::Entry(MessageId::from_bytes([0x62; 16]), 0);
+    let third = TranscriptBlockKey::Entry(MessageId::from_bytes([0x63; 16]), 0);
     let mut viewport = TranscriptViewport::default();
     viewport.update_layout(80, 6, Some(vec![(first, 8), (second, 8)]));
     assert_eq!(viewport.top(), 10);
@@ -338,7 +347,7 @@ fn mouse_wheel_scrolls_in_rendered_line_steps() {
     let mut app = AppState::new("test-server");
     app.open_session(session, Vec::new(), vec![run], None, None)
         .expect("session should open");
-    let first = TranscriptBlockKey::Entry(MessageId::from_bytes([0x71; 16]));
+    let first = TranscriptBlockKey::Entry(MessageId::from_bytes([0x71; 16]), 0);
     app.transcript_viewport
         .update_layout(80, 6, Some(vec![(first, 20)]));
     assert_eq!(app.transcript_viewport.top(), 14);

@@ -74,14 +74,25 @@ pub(super) fn description(context: Option<&SessionContextStatus>) -> SafeText {
             )
         },
     );
+    let policy = if context.usage_admission {
+        "native usage policy 1; fallback when unavailable"
+    } else {
+        "legacy conservative policy"
+    };
+    let source_limit = context.maximum_source_bytes.map_or_else(
+        || "legacy envelope".to_owned(),
+        |value| format!("{value} byte cap"),
+    );
     SafeText::from_untrusted(&format!(
-        "Model: {} / {}\nEstimate: ~{} / {} tokens ({source})\nConservative guard: {} / {} (hard limits unchanged)\nAuto threshold: {} · output reserve: {}\nEntry and image limits apply independently.\nCheckpoint: {checkpoint}\n\n{call}\nCompleted foreground compactions: {} · latest checkpoint foreground elapsed {duration}\nRoot usage excludes compaction, subagents and failed calls.\nThese observations are not a complete bill.\n\nBackground compaction: {enabled}\n{latest}\nUnused summaries can still cost quota/money. Status refreshes when this view is reopened.\n\n{project}\n\nUp/Down/PageUp/PageDown/Home/End scroll · Enter/Esc close",
+        "Model: {} / {}\nEstimate: ~{} / {} tokens ({source})\nLegacy byte-heavy estimate: {} / {}\nAdmission: ~{} ({policy})\nSource: {} bytes / {source_limit}\nAuto threshold: {} · output reserve: {}\nEntry and image limits apply independently.\nCheckpoint: {checkpoint}\n\n{call}\nCompleted foreground compactions: {} · latest checkpoint foreground elapsed {duration}\nRoot usage excludes compaction, subagents and failed calls.\nThese observations are not a complete bill.\n\nBackground compaction: {enabled}\n{latest}\nUnused summaries can still cost quota/money. Status refreshes when this view is reopened.\n\n{project}\n\nUp/Down/PageUp/PageDown/Home/End scroll · Enter/Esc close",
         super::service_label(context.service),
         context.model_id,
         context.estimated_input_tokens,
         context.maximum_input_tokens,
         context.conservative_input_tokens,
         context.maximum_input_tokens,
+        context.admission_input_tokens,
+        context.source_bytes,
         context.compaction_threshold_tokens,
         context.maximum_output_tokens,
         context.completed_compactions,

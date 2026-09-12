@@ -11,6 +11,7 @@ use super::{
     TextReplacement, ToolInput, ToolKind, ToolPath, ValidatedProviderCall, WorktreePath,
     valid_subagent_name, validate_ipython_cell,
 };
+use crate::debug_log::DebugNormalizationStage;
 use crate::provider::{
     PreparedProviderTools, ProviderError, ProviderTool, ProviderToolCall, json::parse_strict_value,
 };
@@ -171,14 +172,29 @@ pub(crate) fn validate_canonical_input(input: &ToolInput) -> bool {
         == Some(input)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_provider_calls(
     calls: Vec<ProviderToolCall>,
     catalog_version: u16,
 ) -> Result<Vec<ValidatedProviderCall>, ToolCallValidationError> {
+    parse_provider_calls_diagnosed(calls, catalog_version, &mut DebugNormalizationStage::Other)
+}
+
+pub(crate) fn parse_provider_calls_diagnosed(
+    calls: Vec<ProviderToolCall>,
+    catalog_version: u16,
+    stage: &mut DebugNormalizationStage,
+) -> Result<Vec<ValidatedProviderCall>, ToolCallValidationError> {
     if calls.is_empty() || catalog_version != TOOL_CATALOG_VERSION {
+        *stage = if calls.is_empty() {
+            DebugNormalizationStage::CallCount
+        } else {
+            DebugNormalizationStage::Catalog
+        };
         return Err(ToolCallValidationError::InvalidProviderOutput);
     }
     if calls.len() > MAX_TOOL_CALLS_PER_TURN {
+        *stage = DebugNormalizationStage::CallCount;
         return Err(ToolCallValidationError::ResourceLimit);
     }
     let mut identifiers = BTreeSet::new();
@@ -186,15 +202,14 @@ pub(crate) fn parse_provider_calls(
         .into_iter()
         .map(|call| {
             if !identifiers.insert(call.provider_call_id.clone()) {
+                *stage = DebugNormalizationStage::DuplicateCallId;
                 return Err(ToolCallValidationError::InvalidProviderOutput);
             }
             let value = parse_strict_value(call.arguments.as_bytes()).map_err(|_| {
-                eprintln!("provider output rejected: tool argument JSON");
+                *stage = DebugNormalizationStage::ArgumentJson;
                 ToolCallValidationError::InvalidProviderOutput
             })?;
-            let input = parse_input(&call.name, value, false).inspect_err(|_| {
-                eprintln!("provider output rejected: tool argument validation");
-            })?;
+            let input = parse_input_diagnosed(&call.name, value, false, stage)?;
             Ok(ValidatedProviderCall {
                 provider_call_id: call.provider_call_id,
                 input,
@@ -204,15 +219,23 @@ pub(crate) fn parse_provider_calls(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn parse_subagent_provider_calls(
     calls: Vec<ProviderToolCall>,
 ) -> Result<Vec<ValidatedProviderCall>, ToolCallValidationError> {
-    let calls = parse_provider_calls(calls, TOOL_CATALOG_VERSION)?;
+    parse_subagent_provider_calls_diagnosed(calls, &mut DebugNormalizationStage::Other)
+}
+
+pub(crate) fn parse_subagent_provider_calls_diagnosed(
+    calls: Vec<ProviderToolCall>,
+    stage: &mut DebugNormalizationStage,
+) -> Result<Vec<ValidatedProviderCall>, ToolCallValidationError> {
+    let calls = parse_provider_calls_diagnosed(calls, TOOL_CATALOG_VERSION, stage)?;
     if calls
         .iter()
         .any(|call| matches!(call.input.kind(), ToolKind::Ipython | ToolKind::Task))
     {
-        eprintln!("provider output rejected: forbidden child tool");
+        *stage = DebugNormalizationStage::ForbiddenChildTool;
         return Err(ToolCallValidationError::InvalidProviderOutput);
     }
     Ok(calls)
@@ -223,19 +246,32 @@ fn parse_input(
     value: Value,
     allow_legacy_command: bool,
 ) -> Result<ToolInput, ToolCallValidationError> {
+    parse_input_diagnosed(
+        name,
+        value,
+        allow_legacy_command,
+        &mut DebugNormalizationStage::Other,
+    )
+}
+
+fn parse_input_diagnosed(
+    name: &str,
+    value: Value,
+    allow_legacy_command: bool,
+    stage: &mut DebugNormalizationStage,
+) -> Result<ToolInput, ToolCallValidationError> {
+    *stage = DebugNormalizationStage::Other;
     match name {
         "read" => {
+            *stage = DebugNormalizationStage::ToolFieldSet;
             require_read_fields(&value)?;
+            *stage = DebugNormalizationStage::ToolType;
             let arguments: Read = decode(value)?;
+            *stage = DebugNormalizationStage::ReadWindow;
             if arguments.offset == 0 || arguments.limit == 0 || arguments.limit > MAX_READ_LINES {
-                eprintln!(
-                    "tool input rejected: read window bounds; zero_offset={}; zero_limit={}; limit_exceeded={}",
-                    arguments.offset == 0,
-                    arguments.limit == 0,
-                    arguments.limit > MAX_READ_LINES,
-                );
                 return Err(ToolCallValidationError::InvalidProviderOutput);
             }
+            *stage = DebugNormalizationStage::Path;
             Ok(ToolInput::Read {
                 path: ToolPath::parse(&arguments.path).map_err(invalid)?,
                 offset: arguments.offset,
@@ -243,19 +279,26 @@ fn parse_input(
             })
         }
         "write" => {
+            *stage = DebugNormalizationStage::ToolFieldSet;
             require_fields(&value, &["path", "content"])?;
+            *stage = DebugNormalizationStage::ToolType;
             let arguments: Write = decode(value)?;
+            *stage = DebugNormalizationStage::OutputBytes;
             if arguments.content.len() as u64 > MAX_FILE_BYTES {
                 return Err(ToolCallValidationError::ResourceLimit);
             }
+            *stage = DebugNormalizationStage::Path;
             Ok(ToolInput::Write {
                 path: ToolPath::parse(&arguments.path).map_err(invalid)?,
                 content: arguments.content,
             })
         }
         "edit" => {
+            *stage = DebugNormalizationStage::ToolFieldSet;
             require_fields(&value, &["path", "replacements"])?;
+            *stage = DebugNormalizationStage::ToolType;
             let arguments: Edit = decode(value)?;
+            *stage = DebugNormalizationStage::EditBounds;
             if arguments.replacements.is_empty()
                 || arguments.replacements.len() > MAX_REPLACEMENTS
                 || arguments
@@ -263,7 +306,6 @@ fn parse_input(
                     .iter()
                     .any(|replacement| replacement.old_text.is_empty())
             {
-                eprintln!("tool input rejected: edit replacement bounds");
                 return Err(ToolCallValidationError::InvalidProviderOutput);
             }
             let replacement_bytes =
@@ -275,20 +317,26 @@ fn parse_input(
                             .checked_add(replacement.old_text.len())?
                             .checked_add(replacement.new_text.len())
                     });
+            *stage = DebugNormalizationStage::OutputBytes;
             if replacement_bytes.is_none_or(|bytes| bytes > MAX_REPLACEMENT_BYTES) {
                 return Err(ToolCallValidationError::ResourceLimit);
             }
+            *stage = DebugNormalizationStage::Path;
             Ok(ToolInput::Edit {
                 path: ToolPath::parse(&arguments.path).map_err(invalid)?,
                 replacements: arguments.replacements,
             })
         }
         "bash" => {
+            *stage = DebugNormalizationStage::ToolFieldSet;
             require_fields(&value, &["command"])?;
+            *stage = DebugNormalizationStage::ToolType;
             let arguments: Bash = decode(value)?;
+            *stage = DebugNormalizationStage::Other;
             if arguments.command.is_empty() || arguments.command.contains('\0') {
                 return Err(ToolCallValidationError::InvalidProviderOutput);
             }
+            *stage = DebugNormalizationStage::OutputBytes;
             if arguments.command.len() > MAX_BASH_COMMAND_BYTES {
                 return Err(ToolCallValidationError::ResourceLimit);
             }
@@ -297,11 +345,15 @@ fn parse_input(
             })
         }
         "web_search" => {
+            *stage = DebugNormalizationStage::ToolFieldSet;
             require_fields(&value, &["query"])?;
+            *stage = DebugNormalizationStage::ToolType;
             let arguments: WebSearch = decode(value)?;
+            *stage = DebugNormalizationStage::Other;
             if arguments.query.is_empty() || arguments.query.contains(['\0', '\r', '\n']) {
                 return Err(ToolCallValidationError::InvalidProviderOutput);
             }
+            *stage = DebugNormalizationStage::OutputBytes;
             if arguments.query.len() > MAX_WEB_SEARCH_QUERY_BYTES {
                 return Err(ToolCallValidationError::ResourceLimit);
             }
@@ -310,11 +362,15 @@ fn parse_input(
             })
         }
         "ipython" => {
+            *stage = DebugNormalizationStage::ToolFieldSet;
             require_fields(&value, &["cell"])?;
+            *stage = DebugNormalizationStage::ToolType;
             let arguments: Ipython = decode(value)?;
+            *stage = DebugNormalizationStage::OutputBytes;
             if arguments.cell.len() > MAX_IPYTHON_CELL_BYTES {
                 return Err(ToolCallValidationError::ResourceLimit);
             }
+            *stage = DebugNormalizationStage::Other;
             if !validate_ipython_cell(&arguments.cell) {
                 return Err(ToolCallValidationError::InvalidProviderOutput);
             }
@@ -323,8 +379,11 @@ fn parse_input(
             })
         }
         "task" => {
+            *stage = DebugNormalizationStage::ToolFieldSet;
             require_fields(&value, &["context", "tasks"])?;
+            *stage = DebugNormalizationStage::ToolType;
             let arguments: Task = decode(value)?;
+            *stage = DebugNormalizationStage::TaskBounds;
             validate_task_arguments(&arguments)?;
             Ok(ToolInput::Task {
                 context: arguments.context,
@@ -444,7 +503,7 @@ fn parse_input(
             })
         }
         _ => {
-            eprintln!("provider output rejected: unknown tool name");
+            *stage = DebugNormalizationStage::UnknownTool;
             Err(ToolCallValidationError::InvalidProviderOutput)
         }
     }
@@ -452,7 +511,6 @@ fn parse_input(
 
 fn validate_task_arguments(arguments: &Task) -> Result<(), ToolCallValidationError> {
     if arguments.context.trim().is_empty() || arguments.context.contains('\0') {
-        eprintln!("tool input rejected: task context bounds");
         return Err(ToolCallValidationError::InvalidProviderOutput);
     }
     if arguments.context.len() > MAX_SUBAGENT_CONTEXT_BYTES
@@ -477,7 +535,6 @@ fn validate_task_arguments(arguments: &Task) -> Result<(), ToolCallValidationErr
                     .is_some_and(|name| !valid_subagent_name(name))
         })
     {
-        eprintln!("tool input rejected: task assignment or name bounds");
         return Err(ToolCallValidationError::InvalidProviderOutput);
     }
     let mut names = BTreeSet::new();
@@ -510,7 +567,6 @@ fn require_read_fields(value: &Value) -> Result<(), ToolCallValidationError> {
             .keys()
             .any(|field| !matches!(field.as_str(), "path" | "offset" | "limit"))
     {
-        eprintln!("tool input rejected: missing or unknown read fields");
         return Err(ToolCallValidationError::InvalidProviderOutput);
     }
     Ok(())
@@ -521,24 +577,13 @@ fn require_fields(value: &Value, fields: &[&str]) -> Result<(), ToolCallValidati
         .as_object()
         .ok_or(ToolCallValidationError::InvalidProviderOutput)?;
     if object.len() != fields.len() || fields.iter().any(|field| !object.contains_key(*field)) {
-        eprintln!(
-            "tool input rejected: missing or unknown fields; expected={fields:?}; missing={}; timeout={}; timeout_ms={}; workdir={}; description={}",
-            fields.iter().any(|field| !object.contains_key(*field)),
-            object.contains_key("timeout"),
-            object.contains_key("timeout_ms"),
-            object.contains_key("workdir"),
-            object.contains_key("description"),
-        );
         return Err(ToolCallValidationError::InvalidProviderOutput);
     }
     Ok(())
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T, ToolCallValidationError> {
-    serde_json::from_value(value).map_err(|_| {
-        eprintln!("tool input rejected: argument type or nested fields");
-        ToolCallValidationError::InvalidProviderOutput
-    })
+    serde_json::from_value(value).map_err(|_| ToolCallValidationError::InvalidProviderOutput)
 }
 
 fn validate_child_name(value: &str) -> Result<(), ToolCallValidationError> {
@@ -556,8 +601,7 @@ fn valid_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn invalid(error: super::ToolErrorKind) -> ToolCallValidationError {
-    eprintln!("tool input rejected: {}", error.label());
+fn invalid(_: super::ToolErrorKind) -> ToolCallValidationError {
     ToolCallValidationError::InvalidProviderOutput
 }
 
@@ -668,6 +712,9 @@ struct RunCommand {
     arguments: Vec<String>,
     working_directory: String,
 }
+
+#[cfg(test)]
+mod diagnostic_tests;
 
 #[cfg(test)]
 mod tests {

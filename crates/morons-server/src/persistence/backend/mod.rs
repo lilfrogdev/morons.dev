@@ -2,6 +2,7 @@ pub(super) mod command_execution;
 mod compaction;
 mod context_budget;
 mod context_compaction;
+pub(super) mod context_execution;
 mod context_history;
 mod context_status;
 mod context_usage;

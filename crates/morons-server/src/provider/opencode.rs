@@ -1,3 +1,7 @@
+mod diagnostic;
+
+use crate::debug_log::{self, DebugStage};
+use diagnostic::TransportDiagnostic;
 use std::{sync::Arc, time::Duration};
 
 use super::response_http::*;
@@ -11,8 +15,6 @@ use hyper::body::Incoming;
 use tokio::time::{self, Instant};
 use zeroize::Zeroizing;
 
-#[cfg(test)]
-use super::responses::ResponsesDiagnostic;
 use super::{
     OpenCodeCredentialLease, OpenCodeModelAvailability, OpenCodeResponseRequest, OpenCodeService,
     ProviderCancellation, ProviderError, ProviderOutcome, ProviderProtocol, ProviderStreamEvent,
@@ -114,9 +116,14 @@ pub(crate) struct PreparedOpenCodeDispatch<'a> {
     client: &'a OpenCodeClient,
     request: &'a OpenCodeResponseRequest,
     body: Bytes,
+    diagnostic_attempt_id: Option<u64>,
 }
 
 impl PreparedOpenCodeDispatch<'_> {
+    pub(crate) const fn diagnostic_attempt_id(&self) -> Option<u64> {
+        self.diagnostic_attempt_id
+    }
+
     pub(crate) async fn execute<F>(
         self,
         cancellation: &mut ProviderCancellation,
@@ -125,15 +132,23 @@ impl PreparedOpenCodeDispatch<'_> {
     where
         F: FnMut(ProviderStreamEvent),
     {
-        self.client
+        let mut diagnostic = TransportDiagnostic::new(self.request);
+        let attempt_id = self.diagnostic_attempt_id();
+        let result = self
+            .client
             .execute(
                 self.credential,
                 self.request,
                 self.body,
                 cancellation,
                 on_event,
+                &mut diagnostic,
             )
-            .await
+            .await;
+        if let Some(event) = diagnostic.event(attempt_id, &result) {
+            debug_log::emit(event);
+        }
+        result
     }
 }
 
@@ -187,6 +202,7 @@ impl OpenCodeProvider {
             client: &self.client,
             request,
             body,
+            diagnostic_attempt_id: debug_log::next_attempt_id(),
         })
     }
 }
@@ -194,8 +210,6 @@ impl OpenCodeProvider {
 struct OpenCodeClient {
     client: ProviderHttpClient,
     endpoints: EndpointSet,
-    #[cfg(test)]
-    emit_decoder_diagnostics: bool,
 }
 
 enum InferenceDecoder {
@@ -243,45 +257,25 @@ impl InferenceDecoder {
         }
     }
 
-    fn finish(self) -> Result<ProviderOutcome, ProviderError> {
-        match self {
+    fn finish(
+        self,
+        diagnostic: &mut TransportDiagnostic,
+    ) -> Result<ProviderOutcome, ProviderError> {
+        diagnostic.stage(DebugStage::Termination);
+        let result = match self {
             Self::Responses(decoder) => decoder.finish(),
-            Self::ChatCompletions(decoder) => decoder.finish(),
+            Self::ChatCompletions(decoder) => {
+                let (result, snapshot) = decoder.finish_diagnosed();
+                diagnostic.snapshot(snapshot);
+                result
+            }
             Self::AnthropicMessages(decoder) => decoder.finish(),
             Self::Gemini(decoder) => decoder.finish(),
+        };
+        if result.is_ok() {
+            diagnostic.stage(DebugStage::Complete);
         }
-    }
-
-    #[cfg(debug_assertions)]
-    fn chat_diagnostic_stage(&self) -> Option<&'static str> {
-        match self {
-            Self::Responses(_) | Self::AnthropicMessages(_) | Self::Gemini(_) => None,
-            Self::ChatCompletions(decoder) => Some(decoder.diagnostic_stage()),
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    fn anthropic_diagnostic_stage(&self) -> Option<&'static str> {
-        match self {
-            Self::Responses(_) | Self::ChatCompletions(_) | Self::Gemini(_) => None,
-            Self::AnthropicMessages(decoder) => Some(decoder.diagnostic_stage()),
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    fn gemini_diagnostic_stage(&self) -> Option<&'static str> {
-        match self {
-            Self::Responses(_) | Self::ChatCompletions(_) | Self::AnthropicMessages(_) => None,
-            Self::Gemini(decoder) => Some(decoder.diagnostic_stage()),
-        }
-    }
-
-    #[cfg(test)]
-    fn responses_diagnostic(&self) -> Option<ResponsesDiagnostic> {
-        match self {
-            Self::Responses(decoder) => Some(decoder.diagnostic()),
-            Self::ChatCompletions(_) | Self::AnthropicMessages(_) | Self::Gemini(_) => None,
-        }
+        result
     }
 }
 
@@ -306,17 +300,31 @@ impl OpenCodeClient {
         body: Bytes,
         cancellation: &mut ProviderCancellation,
         on_event: F,
+        diagnostic: &mut TransportDiagnostic,
     ) -> Result<ProviderOutcome, ProviderError>
     where
         F: FnMut(ProviderStreamEvent),
     {
         let response = self
-            .send_inference(credential.api_key_bytes(), request, body, cancellation)
+            .send_inference(
+                credential.api_key_bytes(),
+                request,
+                body,
+                cancellation,
+                diagnostic,
+            )
             .await;
         drop(credential);
         let (response, deadline) = response?;
-        self.consume_inference(response, deadline, request, cancellation, on_event)
-            .await
+        self.consume_inference(
+            response,
+            deadline,
+            request,
+            cancellation,
+            on_event,
+            diagnostic,
+        )
+        .await
     }
 
     async fn fetch_catalog_inner(
@@ -355,6 +363,7 @@ impl OpenCodeClient {
         request: &OpenCodeResponseRequest,
         body: Bytes,
         cancellation: &mut ProviderCancellation,
+        diagnostic: &mut TransportDiagnostic,
     ) -> Result<(Response<Incoming>, Instant), ProviderError> {
         if cancellation.is_cancelled() {
             return Err(ProviderError::Cancelled);
@@ -388,6 +397,7 @@ impl OpenCodeClient {
             .body(Full::new(body))
             .map_err(|_| ProviderError::Transport)?;
         let deadline = Instant::now() + PROVIDER_TOTAL_TIMEOUT;
+        diagnostic.stage(DebugStage::Headers);
         let response = tokio::select! {
             biased;
             () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
@@ -407,12 +417,15 @@ impl OpenCodeClient {
         request: &OpenCodeResponseRequest,
         cancellation: &mut ProviderCancellation,
         mut on_event: F,
+        diagnostic: &mut TransportDiagnostic,
     ) -> Result<ProviderOutcome, ProviderError>
     where
         F: FnMut(ProviderStreamEvent),
     {
+        diagnostic.stage(DebugStage::HeaderFraming);
         validate_response_headers(response.headers())?;
         if !response.status().is_success() {
+            diagnostic.stage(DebugStage::BodyFraming);
             let status = response.status();
             read_response_body_with_cancellation(
                 response.into_body(),
@@ -421,77 +434,30 @@ impl OpenCodeClient {
                 cancellation,
             )
             .await?;
+            diagnostic.stage(DebugStage::HttpStatus);
             return Err(classify_status(status));
         }
+        diagnostic.stage(DebugStage::ContentType);
         require_content_type(response.headers(), "text/event-stream")?;
         let mut response_body = response.into_body();
         let mut decoder = InferenceDecoder::new(request);
-        while let Some(frame) = next_frame(&mut response_body, deadline, cancellation).await? {
+        loop {
+            diagnostic.stage(DebugStage::BodyFraming);
+            let Some(frame) = next_frame(&mut response_body, deadline, cancellation).await? else {
+                break;
+            };
             let data = frame
                 .into_data()
                 .map_err(|_| ProviderError::MalformedResponse)?;
             let decoded = decoder.push(&data);
-            if decoded.is_err() {
-                #[cfg(debug_assertions)]
-                if let Some(stage) = decoder.chat_diagnostic_stage() {
-                    eprintln!("chat completions decoder rejected provider data while {stage}");
-                }
-                #[cfg(debug_assertions)]
-                if let Some(stage) = decoder.anthropic_diagnostic_stage() {
-                    eprintln!("Anthropic Messages decoder rejected provider data while {stage}");
-                }
-                #[cfg(debug_assertions)]
-                if let Some(stage) = decoder.gemini_diagnostic_stage() {
-                    eprintln!("Gemini decoder rejected provider data while {stage}");
-                }
-                #[cfg(test)]
-                if self.emit_decoder_diagnostics
-                    && let Some(diagnostic) = decoder.responses_diagnostic()
-                {
-                    emit_decoder_diagnostic(diagnostic);
-                }
+            if let InferenceDecoder::ChatCompletions(decoder) = &decoder {
+                diagnostic.snapshot(decoder.diagnostic_snapshot());
             }
             for event in decoded? {
                 on_event(event);
             }
         }
-        #[cfg(debug_assertions)]
-        let chat_diagnostic_stage = decoder.chat_diagnostic_stage();
-        #[cfg(debug_assertions)]
-        let anthropic_diagnostic_stage = decoder.anthropic_diagnostic_stage();
-        #[cfg(debug_assertions)]
-        let gemini_diagnostic_stage = decoder.gemini_diagnostic_stage();
-        #[cfg(test)]
-        let diagnostic = self
-            .emit_decoder_diagnostics
-            .then(|| decoder.responses_diagnostic())
-            .flatten();
-        let outcome = decoder.finish();
-        #[cfg(debug_assertions)]
-        if outcome.is_err()
-            && let Some(stage) = chat_diagnostic_stage
-        {
-            eprintln!("chat completions decoder could not finish after {stage}");
-        }
-        #[cfg(debug_assertions)]
-        if outcome.is_err()
-            && let Some(stage) = anthropic_diagnostic_stage
-        {
-            eprintln!("Anthropic Messages decoder could not finish after {stage}");
-        }
-        #[cfg(debug_assertions)]
-        if outcome.is_err()
-            && let Some(stage) = gemini_diagnostic_stage
-        {
-            eprintln!("Gemini decoder could not finish after {stage}");
-        }
-        #[cfg(test)]
-        if outcome.is_err()
-            && let Some(diagnostic) = diagnostic
-        {
-            emit_decoder_diagnostic(diagnostic);
-        }
-        outcome
+        decoder.finish(diagnostic)
     }
 
     #[cfg(test)]
@@ -505,20 +471,26 @@ impl OpenCodeClient {
     where
         F: FnMut(ProviderStreamEvent),
     {
+        let mut diagnostic = TransportDiagnostic::new(request);
         let body = request.encoded_body();
         let (response, deadline) = self
-            .send_inference(api_key, request, body, cancellation)
+            .send_inference(api_key, request, body, cancellation, &mut diagnostic)
             .await?;
-        self.consume_inference(response, deadline, request, cancellation, on_event)
-            .await
+        self.consume_inference(
+            response,
+            deadline,
+            request,
+            cancellation,
+            on_event,
+            &mut diagnostic,
+        )
+        .await
     }
 
     fn build(endpoints: EndpointSet, allow_http: bool) -> Self {
         Self {
             client: bounded_client(allow_http, None),
             endpoints,
-            #[cfg(test)]
-            emit_decoder_diagnostics: false,
         }
     }
 
@@ -529,22 +501,8 @@ impl OpenCodeClient {
 
     #[cfg(test)]
     fn for_live_test() -> Self {
-        let mut client = Self::new();
-        client.emit_decoder_diagnostics = true;
-        client
+        Self::new()
     }
-}
-
-#[cfg(test)]
-fn emit_decoder_diagnostic(diagnostic: ResponsesDiagnostic) {
-    eprintln!(
-        "live provider decoder diagnostic: event_type={}, sequence_number={}, stage={}",
-        diagnostic.event_type.as_deref().unwrap_or("unavailable"),
-        diagnostic
-            .sequence_number
-            .map_or_else(|| "unavailable".to_owned(), |value| value.to_string()),
-        diagnostic.stage
-    );
 }
 
 fn map_credential_error(error: PersistenceError) -> ProviderError {

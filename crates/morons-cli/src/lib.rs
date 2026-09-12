@@ -6,6 +6,7 @@ mod mutation;
 mod runtime;
 mod sessions;
 mod terminal;
+mod transcript_budget;
 
 pub use handshake::{HandshakeError, perform_handshake};
 pub use lifecycle::{ConnectOrStartError, ConnectedServer, connect_or_start};

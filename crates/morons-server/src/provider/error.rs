@@ -1,6 +1,7 @@
 use std::{error::Error, fmt};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ProviderError {
     InvalidRequest,

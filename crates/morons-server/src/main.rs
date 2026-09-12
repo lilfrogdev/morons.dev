@@ -12,8 +12,43 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CLIENT_CONNECTIONS: usize = 32;
 const CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
+const USAGE: &str = "Usage: morons-server [--debug | --help]";
+
+#[derive(Debug, PartialEq, Eq)]
+enum StartupMode {
+    Normal,
+    Debug,
+    Help,
+}
+
+fn parse_args(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Result<StartupMode, &'static str> {
+    let mut args = args.into_iter();
+    let mode = match args.next() {
+        None => StartupMode::Normal,
+        Some(arg) if arg == "--debug" => StartupMode::Debug,
+        Some(arg) if arg == "--help" => StartupMode::Help,
+        Some(_) => return Err(USAGE),
+    };
+    if args.next().is_some() {
+        return Err(USAGE);
+    }
+    Ok(mode)
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let mode = parse_args(std::env::args_os().skip(1))?;
+    if mode == StartupMode::Help {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    let _debug_guard = if mode == StartupMode::Debug {
+        Some(morons_server::debug_log::start().map_err(|_| "debug startup failed")?)
+    } else {
+        None
+    };
     let mut server = ServerEndpoint::prepare()?;
     let application = Arc::new(ServerApplication::open(&server)?);
     server.publish()?;
@@ -116,5 +151,42 @@ async fn serve_connection(
 
     if let Err(error) = handle_local_owner_requests(&mut connection, application).await {
         eprintln!("client application connection failed: {error}");
+    }
+}
+
+#[cfg(test)]
+mod debug_argument_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn debug_arguments_are_explicit_and_closed() {
+        for (args, expected) in [
+            (vec![], Ok(StartupMode::Normal)),
+            (vec!["--help"], Ok(StartupMode::Help)),
+            (vec!["--debug"], Ok(StartupMode::Debug)),
+            (vec!["--debug", "--debug"], Err(USAGE)),
+            (vec!["--help", "--debug"], Err(USAGE)),
+            (vec!["--debug", "extra"], Err(USAGE)),
+            (vec!["unknown"], Err(USAGE)),
+            (vec!["\u{1b}[31mprivate\nvalue"], Err(USAGE)),
+            (vec![""], Err(USAGE)),
+        ] {
+            assert_eq!(parse_args(args.into_iter().map(OsString::from)), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debug_non_unicode_argument_is_rejected() {
+        use std::os::unix::ffi::OsStringExt;
+        assert_eq!(parse_args([OsString::from_vec(vec![0xff])]), Err(USAGE));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn debug_non_unicode_argument_is_rejected() {
+        use std::os::windows::ffi::OsStringExt;
+        assert_eq!(parse_args([OsString::from_wide(&[0xd800])]), Err(USAGE));
     }
 }

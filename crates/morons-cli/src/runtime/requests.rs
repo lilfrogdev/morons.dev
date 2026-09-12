@@ -877,11 +877,14 @@ async fn load_session(
     })
 }
 
-async fn load_transcript_window(
-    client: &mut Client,
+async fn load_transcript_window<S>(
+    client: &mut ApplicationClient<S>,
     session_id: SessionId,
     target: TranscriptWindowTarget,
-) -> Result<TranscriptWindow, ApplicationClientError> {
+) -> Result<TranscriptWindow, ApplicationClientError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     let (mut cursor, direction) = target.request();
     let mut entries = Vec::new();
     let mut runs = Vec::new();
@@ -892,6 +895,7 @@ async fn load_transcript_window(
     let mut older_cursor = None;
     let mut newer_cursor = None;
 
+    let mut source_bytes = 0_usize;
     for index in 0..TRANSCRIPT_WINDOW_ENTRIES {
         let page = client
             .list_session_transcript(session_id, cursor, direction, TRANSCRIPT_ENTRY_PAGE_SIZE)
@@ -906,6 +910,25 @@ async fn load_transcript_window(
         {
             return Err(ApplicationClientError::EventScopeMismatch);
         }
+        if page.runs.iter().any(|run| {
+            runs.iter()
+                .any(|existing: &RunSummary| existing.id == run.id && existing != run)
+        }) || page.entries.iter().any(|entry| {
+            entries
+                .iter()
+                .any(|existing| transcript_id(existing) == transcript_id(entry))
+        }) {
+            return Err(ApplicationClientError::EventScopeMismatch);
+        }
+        let page_bytes = crate::transcript_budget::window_source_bytes(&page.entries)
+            .ok_or(ApplicationClientError::EventScopeMismatch)?;
+        let next_source_bytes = source_bytes
+            .checked_add(page_bytes)
+            .ok_or(ApplicationClientError::EventScopeMismatch)?;
+        if next_source_bytes > crate::transcript_budget::MAX_SOURCE_BYTES {
+            break;
+        }
+        source_bytes = next_source_bytes;
         if index == 0 {
             active_run_id = page.active_run_id;
             active_command_id = page.active_command_id;
@@ -918,15 +941,8 @@ async fn load_transcript_window(
         event_cursor = Some(page.event_cursor);
         entries.extend(page.entries);
         for run in page.runs {
-            match runs
-                .iter()
-                .position(|existing: &RunSummary| existing.id == run.id)
-            {
-                Some(existing) if runs[existing] != run => {
-                    return Err(ApplicationClientError::EventScopeMismatch);
-                }
-                Some(_) => {}
-                None => runs.push(run),
+            if !runs.iter().any(|existing| existing.id == run.id) {
+                runs.push(run);
             }
         }
         cursor = match direction {
@@ -957,6 +973,11 @@ async fn load_transcript_window(
         event_cursor: event_cursor.ok_or(ApplicationClientError::EventScopeMismatch)?,
     })
 }
+
+use crate::transcript_budget::entry_id as transcript_id;
+
+#[cfg(test)]
+mod transcript_tests;
 
 enum RequestResult {
     Sessions((Vec<SessionSummary>, SessionCatalogEventCursor)),

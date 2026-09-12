@@ -1,0 +1,51 @@
+# ADR 0049: Opt-in, bounded provider debugging outside the normal product UI
+
+## Status and motivation
+
+Accepted before implementation. The owner requests Go/subagent diagnosis and explicitly requires extra logs/error detail to stay out of normal/default product presentation. The last Go child failed before tools with a generic invalid-response label; its exact provider category, terminal reason and rejected payload are unknown. This decision does not diagnose that historical response or authorize replay, a model fallback, an output/turn-limit increase, or the separate Daybreak alias repair.
+
+## Decision
+
+Add explicit **`morons-server --debug`** foreground operation. No flag means disabled, including in Rust debug builds for the new diagnostics. Accept only no arguments, `--debug`, or `--help`; reject other/duplicate/non-Unicode arguments with fixed usage text before endpoint/storage preparation, without echoing them. The CLI still launches its companion with no arguments and discards its streams. Do not add a default UI panel, toast, transcript item, model-context field, IPC event/query, SQLite table, persistent setting or automatically created log file. Existing ordinary failure statuses and the native diagnostic contract in ADR0036 remain unchanged.
+
+Owners stop the existing server with its matching client, start the matching server with `--debug` in a separate terminal, then connect the normal client. An already running server cannot be switched into debug mode by a later client, repository, prompt, tool argument or environment variable. Documentation may show explicit owner-controlled stderr redirection outside repositories with owner-only shell permissions; Morons does not select/open/rotate/clean a log pathname or claim secrecy from same-user tools.
+
+Emit newline-delimited JSON records prefixed `MORONS_DEBUG ` to that server's stderr. Only a closed typed event schema is admitted: format version, debug-start marker, monotonic local diagnostic attempt number, reviewed service/protocol category, existing closed ProviderError category, closed decoder stage/finish-reason classification, boolean structural presence flags, requested output limit, accepted-versus-missing receipt state, and optional local parent session/task-call locators with child index/attempt ordinal. Never log a provider response/request ID or derived provider conversation/header identity. Logs are diagnostic observations, not durable completion/dispatch authority or proof of billing.
+
+No API accepts arbitrary message strings, format arguments, parser errors, bodies, headers, URLs, selected paths, prompts, tool arguments/results, field-name fingerprints, model echoes, credentials, account metadata, environment values, reasoning or continuation data. Unrecognized provider values map to an enum's Other/Unknown category without reflection. The selected service/protocol is code-owned; a response does not select metadata authority. This is not a general HTTP trace or `RUST_LOG=trace` facility.
+
+## Bounds and lifecycle
+
+One optional dedicated writer thread receives a bounded32-record synchronous channel. Producers use nonblocking try_send; neither async execution nor the storage worker waits on logging. At most512 admitted records of at most1024 encoded bytes (including prefix/LF) per process; after saturation, drop further records. Sequence gaps/drop counts may disclose loss but must not fabricate missing events. Errors disable/drop diagnostic output without changing inference outcomes, retry policy or storage integrity handling. Disabled mode starts no writer and emits nothing.
+
+The debug guard requests writer stop during shutdown. Never wait unboundedly for a blocked stderr/pipe: allow at most100ms to observe exit, join only an already-finished writer, otherwise leave it for process termination. Queue contents and blocked final writes may be lost. This best-effort helper owns no subprocess or durable application resource; process exit ends it. Tests must verify blocked output cannot prevent server shutdown. No diagnostic fsync, log replay, drain guarantee or erasure promise is made. The ordinary server lifecycle and shutdown of real controlled work remain authoritative.
+
+## Provider/child diagnosis
+
+Preserve the exact original ProviderError, acceptance rules and tool/outer-run result shapes. Distinguish UnexpectedContentType, RedirectDenied, MalformedResponse and IncompleteResponse in debug records rather than collapsing them into the ordinary child-facing label. Record Chat Completions HTTP/framing/decode/identity/usage/tool/termination stages and a closed finish-reason class, including Length and ContextWindowExceeded. The last reason cannot be inferred from time spent or a missing receipt.
+
+Child provider_turns increments before execute; debug wording must call it an attempt, not a completed response. Usage accumulates only from accepted outcomes. An error without an accepted receipt is not zero remote usage, even if the existing aggregate usage object contains zeros. Correlate the child's local session/task/index/attempt with an independent diagnostic attempt number, not a provider identifier. A missing or dropped record is unknown, not success, no dispatch, no tool effect or zero usage. Child logging does not create nested canonical histories, resumability, reconnect, retry or a spending cap.
+
+## Snapshot semantics
+
+Decoder snapshots contain only the closed stage/finish enums and booleans, in debug and release builds. They are available after push rejection and after consuming final validation; no second decoder, replay, outcome clone or validation relaxation is introduced. `done` means the decoder accepted the done marker, not merely that some marker bytes arrived. `usage_seen` means a parsed JSON object had a non-null top-level usage field; it does not imply valid shape, arithmetic, completeness or accepted usage. `finish` classifies a decoded choice reason by exact comparison; Absent means no reason was classified, not proof that malformed bytes contained none. Unknown, empty or oversized reason strings classify as Other without reflection. Complete is reached only after the original complete-outcome checks succeed. These are observations at a guard, not a diagnosis of a historical response.
+
+The decoder-only increment does not emit events or turn on the logger. Shared transport integration must replace legacy OpenCode debug-build-only text/fingerprint diagnostics with the opt-in closed sink before the live probe. Existing ADR0036 native diagnostics remain untouched. Resource-limit and child-tool metadata require a closed-schema decision before their implementation; arbitrary resource labels or tool output are never logging inputs.
+
+## Shared transport observation
+
+An enabled logger may allocate an independent local attempt ID on successfully prepared OpenCode dispatch, after credential acquisition and without changing its lifetime. The prepared dispatch exposes only that optional diagnostic ID for later caller correlation; native dispatch does not fabricate an OpenCode ID. Allocation is not dispatch evidence: a prepared operation can be dropped or admission can fail without an HTTP request. Do not emit invented completion on drop. An actual returned execute result produces at most one Provider record, using its unchanged ProviderError or accepted adapter outcome; the receipt flag is adapter acceptance, not canonical commit, normalized-tool acceptance or billing assurance. Requested output tokens come from the actual encoded request plan, not the model profile ceiling. No request/response/header/conversation ID is inspected for logging.
+
+Capture headers, framing, status, media type, stream-body and decoder guards without retries or altered credential/cancellation behavior. Preserve the last decoder snapshot on push rejection; do not call consuming finish afterward and overwrite it. At ordinary EOF, copy the snapshot returned by consuming finish. For non-Chat OpenCode protocols, only transport/termination/complete stages are observed in this increment; chat-only flags remain unobserved false/Absent, not assertions about those payloads. Native ADR0036 behavior is unchanged. Intermediate component tests can inspect a closed diagnostic value without starting a global sink. Legacy extra stderr paths are not the new contract and must be removed or converted in the final runtime/normalization cleanup before the qualified live probe.
+
+## Runtime extension
+
+[ADR0050](0050-closed-runtime-debug-diagnostics.md) extends this closed schema with explicit local runtime correlation, resource and normalization categories, and child-tool result scalars. The same opt-in, redaction, loss and lifecycle bounds apply; no ordinary transcript/result or retry behavior changes.
+
+## Staged qualification
+
+Implement small bounded batches: (1) sink/explicit startup and hostile/bounds/lifecycle tests; (2) typed decoder snapshots and synthetic truncation/usage/identity/tool-argument failures; (3) shared OpenCode/child correlation and default-silent integration. Each must compile and pass independent relevant checks before dependent work. Preserve failed candidates and stop a failed model assignment without automatic replacement or takeover. No strict artificial tool-call choreography or full-parent-history handoff is needed.
+
+Test default silence, explicit-only admission, unknown arguments before state effects, fixed schema/redaction, cap/queue/error behavior, blocked output shutdown, useful terminal classification, unchanged accept/reject behavior, separate children, attempted/completed distinction and normal result/transcript equivalence. Run formatting, warnings-denied debug/release Clippy and full locked workspace tests on the frozen finished candidate. Synthetic fixtures are not live-provider receipts. A small newly scoped live Go probe may follow qualified code; a failed probe does not authorize another inference or validation relaxation.
+
+No dependency, unsafe code, schema/IPC revision, provider route/capability/credential/model selection, native Daybreak contract or runtime execution limit changes are part of this decision. See ADR0013, ADR0030, ADR0036 and the security invariants.

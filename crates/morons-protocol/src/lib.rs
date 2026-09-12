@@ -45,4 +45,4 @@ pub use session::{
     SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 44;
+pub const PROTOCOL_VERSION: u32 = 45;

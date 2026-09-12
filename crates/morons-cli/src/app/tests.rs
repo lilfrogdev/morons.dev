@@ -121,6 +121,7 @@ fn session_cursor(session_id: SessionId, sequence: u64) -> SessionEventCursor {
 
 mod credentials;
 mod data_use;
+mod display;
 mod input;
 mod native_diagnostic;
 mod native_models;
@@ -129,3 +130,4 @@ mod presentation;
 mod selection;
 mod sessions;
 mod transcript;
+mod viewer;

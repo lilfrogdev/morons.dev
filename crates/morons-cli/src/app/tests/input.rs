@@ -167,6 +167,10 @@ fn slash_context_controls_query_status_and_submit_manual_compaction() {
         } if selected == session_id && model_id == "grok-4.6"
     ));
     app.context_status_loaded(SessionContextStatus {
+        usage_admission: false,
+        admission_input_tokens: 40_000,
+        source_bytes: 30_000,
+        maximum_source_bytes: None,
         background_compaction: morons_protocol::BackgroundCompactionStatus {
             enabled: false,
             latest: None,

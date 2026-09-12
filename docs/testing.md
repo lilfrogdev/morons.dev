@@ -28,6 +28,53 @@ Two test threads match CI and reduce SQLite-heavy fixture contention. Timing pro
 
 Ignored live provider tests intentionally require non-echoing credential input and billable inference; Python gates require an installed or downloaded Jupyter runtime. Never run every ignored test indiscriminately. Follow `docs/release-candidate-qa.md` and obtain authorization before billable requests or credential-state changes.
 
+## Current state and upgrades
+
+Current source pairs **IPC45 with SQLite33** ([ADR 0052](adr/0052-context-accounting-policy.md)). Stop the old server through its old matching authenticated client before launching the new complete binary pair. Protocol mismatch fails closed; it does not replace a running server. Test upgrades in an owned disposable profile first. Retained profiles require a separately reviewed migration scope; never open their SQLite while the server is running.
+
+The normal schema32→33 migration creates `backups/sessions-before-schema-v32.sqlite3` and records the first logical sequence of the new accounting policy. Verify old canonical rows/checkpoints remain unchanged and old accepted native runs remain legacy, while eligible newly accepted native runs select policy1. The backup is database-only: it excludes provider credentials, IPC keys, attachment bytes and selected working directories. Do not copy a live database file, claim a complete session backup, edit canonical rows to make an upgrade pass, or launch old binaries against migrated state. Forward migration has no supported downgrade.
+
+## Native context admission
+
+```sh
+cargo test -p morons-server --lib --locked context_execution -- --test-threads 2
+cargo test -p morons-server --lib --locked context_continuation -- --test-threads 2
+cargo test -p morons-server --lib --locked observations -- --test-threads 2
+```
+
+Owned storage fixtures exercise native epoch selection and receipt provenance without provider or tool execution; their synthetic ledger transitions and usage are not network traffic or token measurements. Eligible native pre/post-migration runs must differ only in epoch-selected execution policy. Byte-heavy fixtures distinguish successful same-run usage admission from missing/zero/wrong-generation/prior-run/latest-noncompleted evidence. Verify metadata fallback and actual context admission or required compaction, not just a policy label. Keep the older Zen advisory reuse tests: they intentionally exercise a different policy.
+
+Native loopback tests retain exact original user intent and complete tool pairs through advancing within-run compaction, reset opaque continuation after checkpoint commit, bound foreground compaction to four attempts including initial/manual, and stop failed/uncertain summaries without retry. These summaries are extra provider requests outside the32completedcoding-turn counter. Source1MiB, item/image/schema/continuation/encoding limits remain independent; low usage cannot waive them. `/context` separates admission, source and legacy estimates. Missing receipts are unknown, not zero; estimates are predictive, not a billing or exact-tokenizer attestation. No live request budget follows from these tests.
+
+## Opt-in provider debugging
+
+```sh
+cargo test -p morons-server --lib --locked debug_log -- --test-threads 2
+cargo test -p morons-server --lib --locked diagnostic -- --test-threads 2
+cargo test -p morons-server --lib --locked qa_transport -- --test-threads 2
+```
+
+[ADR 0049](adr/0049-opt-in-provider-debug-mode.md) and [ADR 0050](adr/0050-closed-runtime-debug-diagnostics.md) define the closed sink/transport/runtime schema. Queue and blocked-writer tests prove producer and guard completion before draining/releasing the blocked resource, with generous test watchdogs rather than tight scheduler-latency assertions. Failure cleanup releases the writer and joins test workers. Keep production100ms shutdown grace,32queue slots,512record attempts and1024encoded bytes unchanged.
+
+For a separately scoped foreground smoke, use a fresh profile with no credentials and the exact matching pair. Start normally and verify no extra diagnostic records. Stop through the matching authenticated client; start `morons-server --debug` under that same fresh profile in a separate terminal, then attach its matching client. Expect the `MORONS_DEBUG ` start record, not a normal UI panel or a log file. Stop and confirm process/terminal restoration. Unknown/duplicate arguments reject before state preparation. No environment variable, debug-build default or later client can activate logging in an existing server. Keep stdout's readiness banner separate from stderr. If the owner redirects stderr, use an owner-controlled path outside repositories; same-user tools can still read it. Do not capture raw provider bodies/headers, environment dumps, credentials or browser data. A model/tool diagnostic scenario needs its own live authority; do not infer billing, no dispatch or zero usage from missing records.
+
+## Navigable transcript viewer
+
+```sh
+cargo test -p morons-cli --lib --locked app::tests::viewer
+cargo test -p morons-cli --lib --locked runtime::requests::transcript_tests
+cargo test -p morons-cli --lib --locked terminal::transcript
+```
+
+[ADR 0051](adr/0051-navigable-transcript-text.md) separates full delivered text from bounded rendering. TestBackend/wire tests reach text beyond the old byte/scalar/line limits and65535rows, exercise Unicode/control sequences, checked part-local scroll, byte-aware adjacent cursors, historical-reader preservation, delta gaps/overflow and complete canonical replacement. Delivered DTO text is not an API for omitted or uncaptured tool bodies.
+
+For an authorized no-inference terminal smoke:
+1. Pin the matching pair; use a fresh credential-free profile and owned directory. Record pane identity, shell/cwd, geometry and empty draft before launch; verify each complete command draft before Enter. Do not use a retained profile or synthetic assistant-submission API.
+2. Populate at least65short context-excluded local commands with numbered markers. In a second session, use12owned bounded commands producing about60000bytes per captured stream, a6000character line, more than1100numbered lines and explicit tail markers. Verify output stays within64KiB per stream. These are real owner commands, not model runs; do not submit ordinary prompts or `/compact`.
+3. Check Home/End, adjacent PageUp/PageDown windows, wheel events, large-entry tail access and byte-budget paging below64entries. Append one bounded local command while reading old history; the reader stays anchored with a new-output indication until End.
+4. Resize while following latest and while reading a numbered row; verify tail/part anchoring and restore exact geometry. Distinguish injected terminal events from physical-device qualification and actual TTY checks from TestBackend results.
+5. Detach the client, stop the fresh server through matching authenticated IPC and verify terminal restoration/no active work. Only after stop, use the existing exclusive host lock and read-only/query-only SQLite with zero busy timeout if auditing counts. Confirm zero model runs/provider facts and unchanged selected fixtures. Retain failures outside Git; cleanup, further input or inference requires its own scope.
+
 ## Terminal input delivery
 
 [ADR 0034](adr/0034-lossless-terminal-input-delivery.md) covers bounded backpressure without silent input loss. `cargo test -p morons-cli --lib --locked terminal::queue_tests` verifies burst key/paste/Enter order with a full queue, closed-receiver rejection and Drop waking a backpressured reader before joining it. These synthetic tests use no real terminal, clipboard or inference. A live draft-only check must compare the complete intended prompt before Enter; preserve any already submitted truncated input instead of rewriting or replaying it. Input delivery success does not qualify provider protocol compatibility.
@@ -40,7 +87,7 @@ cargo test -p morons-server --lib --locked openai_auth -- --test-threads 2
 
 These tests use ephemeral loopback ports, disposable storage and synthetic tokens. They do not bind the production callback port, contact OpenAI, read real credential files or migrate retained state. They cover fixed PKCE/form fields, hostile callbacks, cancellation/drop/deadlines, token envelopes/claims, redaction, bounded HTTP and no retry/redirect following. Custody tests cover provider-scoped identity/idempotency, private files/checksums, poisoning after failed writes, same-account single-flight refresh, cancellation/abandonment, restart without replay, secret exclusion from SQLite and schema-27 migration preserving OpenCode bytes. They do not establish JWT-signature verification, real token rotation, live login/inference or native-release qualification.
 
-Native protocol diagnostics originated at IPC44/SQLite30. OpenAI-only web execution uses unchanged IPC44 with SQLite32, following the independent SQLite31 task-deletion repair (token-failure diagnostics originated at IPC 43) (native provider binding originated at IPC 42/SQLite 30; policy controls at IPC 41/SQLite 29; login at IPC 40/SQLite 28). Stop the old server with its matching client before upgrading; a protocol mismatch cannot silently fall back. Do not launch its binaries against retained QA state without a separately approved migration plan; deterministic fixtures do not authorize changing existing diagnostics. [ADR 0030](adr/0030-native-provider-and-task-bindings.md) supplies the reviewed coding/provider/policy binding; owner browser sign-in and a separately approved request budget remain necessary for live qualification.
+Historical boundaries remain documented at their original versions: native diagnostics originated at IPC44/SQLite30, OpenAI-only web at IPC44/SQLite32 after the SQLite31 task-deletion repair, token-failure diagnostics at IPC43, native binding at IPC42/SQLite30, policy controls at IPC41/SQLite29, and login at IPC40/SQLite28. These are not current executable-pair instructions; use [the IPC45/SQLite33 upgrade procedure](#current-state-and-upgrades). [ADR 0030](adr/0030-native-provider-and-task-bindings.md) supplies the reviewed coding/provider/policy binding; owner browser sign-in and a separately approved request budget remain necessary for live qualification.
 
 Synthetic login-control tests additionally cover connection-scoped cancellation, disconnects, slow consumers, abandoned drains, shutdown during admission, committed installation/cancellation races, status and provider-local removal, closed/redacted framing diagnostics, client outcome scope/generation validation with no reconnect/replay, and terminal-safe scrollable URL dialogs that reject paste/image input and clear URLs on cancellation. The old OpenCode hidden-input/removal tests now choose OpenCode in the provider menu; their secrecy and generation assertions remain. No test opens a browser or the production callback port.
 
@@ -66,7 +113,7 @@ cargo test -p morons-server --lib --locked openai_codex -- --test-threads 2
 
 [ADR 0028](adr/0028-native-codex-responses-contract.md) pins the full-Responses GPT-5.5 contract. Tests use only synthetic credentials and loopback HTTP: fixed body/headers, strict tools and normalized images, local-only output limits, policy checks, provider-instance/turn/generation/request-sequence binding, receipt-bound reasoning and sticky-header isolation, lease release after headers, cancellation/drop/deadlines, contradictory/oversized metadata and no retry/fallback. The adapter now has synthetic application-level root, mixed-provider task and compaction coverage. These checks do not qualify subscription entitlement, current account policy, remote generation/spend limits or live interoperability. Durable policy settings guard both provider identities, with exact native provider/credential and cross-provider task bindings; no retained QA upgrade or real browser/provider call is implied.
 
-[ADR 0035](adr/0035-reviewed-native-model-expansion.md) extends the exact native full-Responses matrix to Astra, Sol, Luna, Terra and Daybreak Blue. Tests assert unchanged bodies except the selected ID, local limits/unknown policy, unsupported IDs, provider denial and Blue→Sol response mismatch without fallback/replay. Root image/tool/receipt flows and policy/missing-login/default admission run for all six models. Mixed-provider children include Luna and Blue in both directions, plus Astra→Terra within native credentials; compaction adds Astra foreground and Sol background alongside GPT-5.5. Histories reopen with exact model bindings. CLI checks deliberate selection and Blue's approval disclosure. These fixtures do not establish access or repair the earlier unclassified live protocol failure. No Pi credential or configuration is imported at runtime.
+[ADR 0035](adr/0035-reviewed-native-model-expansion.md) extends the exact native full-Responses matrix to Astra, Sol, Luna, Terra and Daybreak Blue. Tests assert unchanged bodies except the selected ID, local limits/unknown policy, unsupported IDs and provider denial. [ADR 0048](adr/0048-native-daybreak-response-alias.md) adds the exact native requestedBlue→returnedSol equivalence while requests and canonical attribution stay Blue. Reverse/non-native/unreviewed names still reject (the transport mismatch fixture uses Terra), with no fallback/replay or approval/entitlement assertion. Root image/tool/receipt flows and policy/missing-login/default admission run for all six models. Mixed-provider children include Luna and Blue in both directions, plus Astra→Terra within native credentials; compaction adds Astra foreground and Sol background alongside GPT-5.5. Histories reopen with exact model bindings. CLI checks deliberate selection and Blue's approval disclosure. These fixtures do not establish access or repair the earlier unclassified live protocol failure. No Pi credential or configuration is imported at runtime.
 
 ## Native protocol diagnostics
 

@@ -4,8 +4,8 @@ use morons_protocol::{MessageId, RunId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TranscriptBlockKey {
-    Entry(MessageId),
-    Transient(RunId),
+    Entry(MessageId, usize),
+    Transient(RunId, usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +116,16 @@ impl TranscriptViewport {
             })
             .unwrap_or(self.top)
             .min(maximum_top);
+    }
+
+    pub(super) fn replace_transient(&mut self, run_id: RunId, message_id: MessageId) {
+        for metric in &mut self.blocks {
+            if let TranscriptBlockKey::Transient(id, part) = metric.key
+                && id == run_id
+            {
+                metric.key = TranscriptBlockKey::Entry(message_id, part);
+            }
+        }
     }
 
     pub(super) fn note_content_changed(&mut self) {

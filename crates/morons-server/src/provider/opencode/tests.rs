@@ -850,3 +850,5 @@ async fn live_opencode_go_anthropic_messages_contract() {
     let client = OpenCodeClient::for_live_test();
     run_live_contract_case(&client, &api_key, OpenCodeService::Go, "qwen3.8-max").await;
 }
+
+mod qa_transport;

@@ -41,8 +41,6 @@ pub(super) struct GeminiDecoder {
     provider_sequence: u64,
     done_marker_seen: bool,
     cost_trailer_seen: bool,
-    #[cfg(debug_assertions)]
-    diagnostic_stage: &'static str,
 }
 
 impl GeminiDecoder {
@@ -63,21 +61,10 @@ impl GeminiDecoder {
             provider_sequence: 0,
             done_marker_seen: false,
             cost_trailer_seen: false,
-            #[cfg(debug_assertions)]
-            diagnostic_stage: "awaiting an SSE record",
         }
-    }
-
-    #[cfg(debug_assertions)]
-    pub(super) const fn diagnostic_stage(&self) -> &'static str {
-        self.diagnostic_stage
     }
 
     pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "decoding SSE framing";
-        }
         let records = self.sse.push(chunk)?;
         let mut events = Vec::new();
         for record in records {
@@ -162,19 +149,11 @@ impl GeminiDecoder {
             self.done_marker_seen = true;
             return Ok(Vec::new());
         }
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "decoding strict Gemini event JSON";
-        }
         let value =
             parse_strict_value(&record.data).map_err(|_| ProviderError::MalformedResponse)?;
         let mut nodes = 0_usize;
         validate_event_value(&value, 0, &mut nodes)?;
         if value.get("type").and_then(Value::as_str) == Some("ping") {
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "validating the Zen Gemini cost trailer";
-            }
             if self.finish_reason.is_none() || self.usage.is_none() {
                 return Err(ProviderError::MalformedResponse);
             }
@@ -182,15 +161,8 @@ impl GeminiDecoder {
             self.cost_trailer_seen = true;
             return Ok(Vec::new());
         }
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "decoding the Gemini event structure";
-        }
-        let event: GeminiEvent = serde_json::from_value(value).map_err(|_error| {
-            #[cfg(debug_assertions)]
-            emit_unknown_field_diagnostic(&_error);
-            ProviderError::MalformedResponse
-        })?;
+        let event: GeminiEvent =
+            serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
         if event.candidates.is_none()
             && event.prompt_feedback.is_none()
             && event.usage_metadata.is_none()
@@ -199,26 +171,10 @@ impl GeminiDecoder {
         {
             return Err(ProviderError::MalformedResponse);
         }
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating Gemini response identity";
-        }
         self.validate_identity(event.response_id, event.model_version, event.create_time)?;
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating Gemini prompt feedback";
-        }
         self.validate_prompt_feedback(event.prompt_feedback)?;
         if let Some(usage) = event.usage_metadata {
-            #[cfg(debug_assertions)]
-            {
-                self.diagnostic_stage = "validating Gemini usage";
-            }
             self.record_usage(usage)?;
-        }
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating Gemini candidates";
         }
         let Some(candidates) = event.candidates else {
             return Ok(Vec::new());
@@ -293,10 +249,6 @@ impl GeminiDecoder {
         &mut self,
         candidate: GeminiCandidate,
     ) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating a Gemini candidate";
-        }
         if self.finish_reason.is_some()
             || candidate.index.is_some_and(|index| index != 0)
             || candidate.token_count.is_some_and(|tokens| {
@@ -349,10 +301,6 @@ impl GeminiDecoder {
     }
 
     fn process_part(&mut self, part: Value) -> Result<Vec<ProviderStreamEvent>, ProviderError> {
-        #[cfg(debug_assertions)]
-        {
-            self.diagnostic_stage = "validating a Gemini content part";
-        }
         let object = part.as_object().ok_or(ProviderError::MalformedResponse)?;
         if object.contains_key("text") {
             let text_part: GeminiTextPart =
@@ -501,13 +449,6 @@ impl GeminiDecoder {
             total_tokens,
         });
         Ok(())
-    }
-}
-
-#[cfg(debug_assertions)]
-fn emit_unknown_field_diagnostic(error: &serde_json::Error) {
-    if error.to_string().starts_with("unknown field `") {
-        eprintln!("Gemini decoder rejected an unknown field");
     }
 }
 

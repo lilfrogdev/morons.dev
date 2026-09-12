@@ -1,4 +1,198 @@
 use super::*;
+use crate::debug_log::DebugNormalizationStage as Stage;
+
+fn normalization_outcome(output: Vec<ProviderOutputItem>) -> ProviderOutcome {
+    ProviderOutcome {
+        provider_response_id: "response".to_owned(),
+        output,
+        usage: ProviderUsage {
+            input_tokens: 1,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 1,
+            reasoning_output_tokens: 0,
+            total_tokens: 2,
+        },
+    }
+}
+
+fn normalization_message(text: &str) -> ProviderOutputItem {
+    ProviderOutputItem::AssistantMessage(ProviderAssistantMessage {
+        provider_item_id: "message".to_owned(),
+        phase: Some(ProviderMessagePhase::FinalAnswer),
+        text: text.to_owned(),
+        refusal: false,
+    })
+}
+
+fn normalization_call(name: &str, arguments: &str) -> ProviderOutputItem {
+    ProviderOutputItem::ToolCall(ProviderToolCall {
+        provider_item_id: Some("item".to_owned()),
+        provider_call_id: "call".to_owned(),
+        name: name.to_owned(),
+        arguments: arguments.to_owned(),
+        opaque_continuation: None,
+    })
+}
+
+#[test]
+fn diagnosed_final_stages_preserve_error_order_and_resource_results() {
+    let oversized = "x".repeat(MAX_TRANSCRIPT_TEXT_BYTES + 1);
+    let cases = [
+        (
+            vec![],
+            Stage::FinalMessageMissing,
+            RunFailureKind::InvalidProviderOutput,
+        ),
+        (
+            vec![normalization_message("")],
+            Stage::FinalMessageEmpty,
+            RunFailureKind::InvalidProviderOutput,
+        ),
+        (
+            vec![normalization_message(&oversized)],
+            Stage::OutputBytes,
+            RunFailureKind::ResourceLimit,
+        ),
+        (
+            vec![normalization_message(""), normalization_message("done")],
+            Stage::FinalMessageMultiple,
+            RunFailureKind::InvalidProviderOutput,
+        ),
+        (
+            vec![
+                normalization_message(&oversized),
+                normalization_call("unknown", "{"),
+            ],
+            Stage::ToolInFinal,
+            RunFailureKind::InvalidProviderOutput,
+        ),
+        (
+            vec![
+                normalization_message(""),
+                normalization_message("done"),
+                normalization_call("unknown", "{"),
+            ],
+            Stage::FinalMessageMultiple,
+            RunFailureKind::InvalidProviderOutput,
+        ),
+    ];
+    for (output, expected_stage, expected_failure) in cases {
+        let mut stage = Stage::Other;
+        let result = super::super::completed_assistant_diagnosed(
+            normalization_outcome(output.clone()),
+            &mut stage,
+        );
+        assert_eq!(result.expect_err("must reject"), expected_failure);
+        assert_eq!(stage, expected_stage);
+        assert_eq!(
+            completed_assistant(normalization_outcome(output))
+                .expect_err("silent wrapper must reject"),
+            expected_failure
+        );
+    }
+    let mut stage = Stage::Other;
+    let result = super::super::completed_assistant_diagnosed(
+        normalization_outcome(vec![normalization_message(
+            &"x".repeat(MAX_TRANSCRIPT_TEXT_BYTES),
+        )]),
+        &mut stage,
+    )
+    .expect("exact byte limit is accepted");
+    assert_eq!(result.text.len(), MAX_TRANSCRIPT_TEXT_BYTES);
+    assert_eq!(stage, Stage::Other);
+}
+
+#[test]
+fn diagnosed_root_preserves_catalog_boundary_and_parser_stages() {
+    let invalid_catalog = crate::tools::TOOL_CATALOG_VERSION.wrapping_add(1);
+    let mut stage = Stage::Other;
+    assert!(matches!(
+        super::super::normalize_provider_turn_diagnosed(
+            normalization_outcome(vec![normalization_message("done")]),
+            invalid_catalog,
+            &mut stage
+        ),
+        Ok(NormalizedTurn::Final(_))
+    ));
+    assert_eq!(stage, Stage::Other);
+    let cases = [
+        (
+            vec![normalization_call("unknown", "{")],
+            invalid_catalog,
+            Stage::Catalog,
+        ),
+        (
+            vec![
+                normalization_message("done"),
+                normalization_call("unknown", "{"),
+            ],
+            invalid_catalog,
+            Stage::ToolTurnMessage,
+        ),
+        (
+            vec![normalization_call("unknown", "{")],
+            crate::tools::TOOL_CATALOG_VERSION,
+            Stage::ArgumentJson,
+        ),
+        (
+            vec![normalization_call("unknown", "{}")],
+            crate::tools::TOOL_CATALOG_VERSION,
+            Stage::UnknownTool,
+        ),
+        (
+            vec![normalization_call(
+                "read",
+                r#"{"path":"note.txt","offset":0,"limit":1}"#,
+            )],
+            crate::tools::TOOL_CATALOG_VERSION,
+            Stage::ReadWindow,
+        ),
+    ];
+    for (output, catalog, expected_stage) in cases {
+        let mut stage = Stage::Other;
+        assert!(matches!(
+            super::super::normalize_provider_turn_diagnosed(
+                normalization_outcome(output),
+                catalog,
+                &mut stage
+            ),
+            Err(RunFailureKind::InvalidProviderOutput)
+        ));
+        assert_eq!(stage, expected_stage);
+    }
+    let mut stage = Stage::Other;
+    assert!(matches!(
+        super::super::normalize_provider_turn_diagnosed(
+            normalization_outcome(vec![normalization_message(
+                &"x".repeat(MAX_TRANSCRIPT_TEXT_BYTES + 1)
+            )]),
+            invalid_catalog,
+            &mut stage
+        ),
+        Err(RunFailureKind::ResourceLimit)
+    ));
+    assert_eq!(stage, Stage::OutputBytes);
+}
+
+#[test]
+fn diagnosed_child_propagates_forbidden_tool_and_parser_stages() {
+    for (name, arguments, expected_stage) in [
+        ("ipython", r#"{"cell":"1"}"#, Stage::ForbiddenChildTool),
+        ("ipython", "{", Stage::ArgumentJson),
+        ("unknown", "{}", Stage::UnknownTool),
+    ] {
+        let mut stage = Stage::Other;
+        assert!(matches!(
+            super::super::normalize_subagent_provider_turn(
+                normalization_outcome(vec![normalization_call(name, arguments)]),
+                &mut stage
+            ),
+            Err(RunFailureKind::InvalidProviderOutput)
+        ));
+        assert_eq!(stage, expected_stage);
+    }
+}
 
 #[test]
 fn tool_turn_validation_accepts_unphased_commentary_and_rejects_invalid_output() {
