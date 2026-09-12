@@ -58,6 +58,23 @@ cargo test -p morons-server --lib --locked qa_transport -- --test-threads 2
 
 For a separately scoped foreground smoke, use a fresh profile with no credentials and the exact matching pair. Start normally and verify no extra diagnostic records. Stop through the matching authenticated client; start `morons-server --debug` under that same fresh profile in a separate terminal, then attach its matching client. Expect the `MORONS_DEBUG ` start record, not a normal UI panel or a log file. Stop and confirm process/terminal restoration. Unknown/duplicate arguments reject before state preparation. No environment variable, debug-build default or later client can activate logging in an existing server. Keep stdout's readiness banner separate from stderr. If the owner redirects stderr, use an owner-controlled path outside repositories; same-user tools can still read it. Do not capture raw provider bodies/headers, environment dumps, credentials or browser data. A model/tool diagnostic scenario needs its own live authority; do not infer billing, no dispatch or zero usage from missing records.
 
+## Navigable transcript viewer
+
+```sh
+cargo test -p morons-cli --lib --locked app::tests::viewer
+cargo test -p morons-cli --lib --locked runtime::requests::transcript_tests
+cargo test -p morons-cli --lib --locked terminal::transcript
+```
+
+[ADR 0051](adr/0051-navigable-transcript-text.md) separates full delivered text from bounded rendering. TestBackend/wire tests reach text beyond the old byte/scalar/line limits and65535rows, exercise Unicode/control sequences, checked part-local scroll, byte-aware adjacent cursors, historical-reader preservation, delta gaps/overflow and complete canonical replacement. Delivered DTO text is not an API for omitted or uncaptured tool bodies.
+
+For an authorized no-inference terminal smoke:
+1. Pin the matching pair; use a fresh credential-free profile and owned directory. Record pane identity, shell/cwd, geometry and empty draft before launch; verify each complete command draft before Enter. Do not use a retained profile or synthetic assistant-submission API.
+2. Populate at least65short context-excluded local commands with numbered markers. In a second session, use12owned bounded commands producing about60000bytes per captured stream, a6000character line, more than1100numbered lines and explicit tail markers. Verify output stays within64KiB per stream. These are real owner commands, not model runs; do not submit ordinary prompts or `/compact`.
+3. Check Home/End, adjacent PageUp/PageDown windows, wheel events, large-entry tail access and byte-budget paging below64entries. Append one bounded local command while reading old history; the reader stays anchored with a new-output indication until End.
+4. Resize while following latest and while reading a numbered row; verify tail/part anchoring and restore exact geometry. Distinguish injected terminal events from physical-device qualification and actual TTY checks from TestBackend results.
+5. Detach the client, stop the fresh server through matching authenticated IPC and verify terminal restoration/no active work. Only after stop, use the existing exclusive host lock and read-only/query-only SQLite with zero busy timeout if auditing counts. Confirm zero model runs/provider facts and unchanged selected fixtures. Retain failures outside Git; cleanup, further input or inference requires its own scope.
+
 ## Terminal input delivery
 
 [ADR 0034](adr/0034-lossless-terminal-input-delivery.md) covers bounded backpressure without silent input loss. `cargo test -p morons-cli --lib --locked terminal::queue_tests` verifies burst key/paste/Enter order with a full queue, closed-receiver rejection and Drop waking a backpressured reader before joining it. These synthetic tests use no real terminal, clipboard or inference. A live draft-only check must compare the complete intended prompt before Enter; preserve any already submitted truncated input instead of rewriting or replaying it. Input delivery success does not qualify provider protocol compatibility.

@@ -353,15 +353,14 @@ fn render_transcript(
                 .map(|index| (index, run))
         })
         .collect::<HashMap<usize, _>>();
-    let block_count = session.entries.len() + usize::from(session.transient.is_some());
     let plain_block = Block::default()
         .borders(Borders::ALL)
         .title(transcript_title(session, viewport));
     let inner = plain_block.inner(area);
     let measured = viewport.needs_measurement(inner.width).then(|| {
-        (0..block_count)
-            .filter_map(|index| {
-                transcript_block(session, index, block_count, &terminal_run_by_last_entry)
+        transcript_parts(session)
+            .map(|(entry, part, text)| {
+                transcript_block(session, entry, part, text, &terminal_run_by_last_entry)
             })
             .map(|block| {
                 let height = Paragraph::new(block.lines)
@@ -374,9 +373,11 @@ fn render_transcript(
     viewport.update_layout(inner.width, inner.height, measured);
 
     let (visible_blocks, local_scroll) = viewport.visible_block_range();
-    let lines = visible_blocks
-        .filter_map(|index| {
-            transcript_block(session, index, block_count, &terminal_run_by_last_entry)
+    let lines = transcript_parts(session)
+        .skip(visible_blocks.start)
+        .take(visible_blocks.len())
+        .map(|(entry, part, text)| {
+            transcript_block(session, entry, part, text, &terminal_run_by_last_entry)
         })
         .flat_map(|block| block.lines)
         .collect::<Vec<_>>();
@@ -384,9 +385,10 @@ fn render_transcript(
         .borders(Borders::ALL)
         .title(transcript_title(session, viewport));
     frame.render_widget(block, area);
-    let paragraph = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((u16::try_from(local_scroll).unwrap_or(u16::MAX), 0));
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((
+        u16::try_from(local_scroll).expect("bounded transcript part height"),
+        0,
+    ));
     frame.render_widget(paragraph, inner);
 
     if viewport.content_height() > viewport.viewport_height() && area.height > 2 {
@@ -409,13 +411,42 @@ fn render_transcript(
     }
 }
 
+fn transcript_parts(session: &SessionView) -> impl Iterator<Item = (usize, usize, &str)> {
+    session
+        .entries
+        .iter()
+        .map(|entry| &entry.text)
+        .chain(
+            session
+                .transient
+                .iter()
+                .map(|transient| &transient.presented),
+        )
+        .enumerate()
+        .flat_map(|(entry, text)| {
+            text.parts()
+                .enumerate()
+                .scan(false, move |ended_line, (part, text)| {
+                    let leading_separator = part > 0 && !*ended_line;
+                    *ended_line = text.ends_with('\n');
+                    let text = if leading_separator {
+                        text.strip_prefix('\n').unwrap_or(text)
+                    } else {
+                        text
+                    };
+                    Some((entry, part, text))
+                })
+        })
+}
+
 fn transcript_block<'a>(
     session: &'a SessionView,
     index: usize,
-    block_count: usize,
+    part: usize,
+    text: &'a str,
     terminal_run_by_last_entry: &HashMap<usize, &'a morons_protocol::RunSummary>,
-) -> Option<TranscriptBlock<'a>> {
-    let mut block = if let Some(entry) = session.entries.get(index) {
+) -> TranscriptBlock<'a> {
+    if let Some(entry) = session.entries.get(index) {
         let role_style = if entry.role == "You" {
             Style::default()
                 .fg(Color::Cyan)
@@ -429,47 +460,59 @@ fn transcript_block<'a>(
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD)
         };
-        let mut lines = vec![Line::from(Span::styled(entry.role, role_style))];
-        extend_safe_lines(&mut lines, &entry.text);
-        lines.push(Line::default());
-        if let Some(run) = terminal_run_by_last_entry.get(&index) {
-            extend_terminal_run_outcome(&mut lines, run);
+        let last = part + 1 == entry.text.part_count();
+        let mut lines = Vec::new();
+        if part == 0 {
+            lines.push(Line::from(Span::styled(entry.role, role_style)));
+            explain_graphemes(&mut lines, &entry.text);
+        }
+        extend_part_lines(&mut lines, text, last);
+        if last {
+            if let Some(run) = terminal_run_by_last_entry.get(&index) {
+                lines.push(Line::default());
+                extend_terminal_run_outcome(&mut lines, run);
+            }
+            if index + 1 < session.entries.len() || session.transient.is_some() {
+                lines.push(Line::default());
+            }
         }
         TranscriptBlock {
-            key: TranscriptBlockKey::Entry(entry.id),
+            key: TranscriptBlockKey::Entry(entry.id, part),
             lines,
         }
     } else {
-        let transient = session.transient.as_ref()?;
+        let transient = session
+            .transient
+            .as_ref()
+            .expect("part belongs to transient");
         let label = if transient.refusal {
             "Assistant refusal · streaming"
         } else {
             "Assistant · streaming"
         };
-        let mut lines = vec![Line::from(Span::styled(
-            label,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::ITALIC),
-        ))];
-        extend_safe_lines(&mut lines, &transient.presented);
-        if transient.truncated || transient.presented.was_truncated() {
+        let last = part + 1 == transient.presented.part_count();
+        let mut lines = Vec::new();
+        if part == 0 {
             lines.push(Line::from(Span::styled(
-                "Transient display limit reached",
+                label,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::ITALIC),
+            )));
+            explain_graphemes(&mut lines, &transient.presented);
+        }
+        extend_part_lines(&mut lines, text, last);
+        if last && transient.truncated {
+            lines.push(Line::from(Span::styled(
+                "Preview paused; waiting for complete message",
                 Style::default().fg(Color::Yellow),
             )));
         }
         TranscriptBlock {
-            key: TranscriptBlockKey::Transient(transient.run_id),
+            key: TranscriptBlockKey::Transient(transient.run_id, part),
             lines,
         }
-    };
-    if index.saturating_add(1) == block_count {
-        while block.lines.last().is_some_and(|line| line.spans.is_empty()) {
-            block.lines.pop();
-        }
     }
-    Some(block)
 }
 
 fn transcript_title(session: &SessionView, viewport: &TranscriptViewport) -> String {
@@ -1040,15 +1083,21 @@ fn render_stop_confirmation(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-fn extend_safe_lines<'a>(lines: &mut Vec<Line<'a>>, text: &'a SafeText) {
-    if text.as_str().is_empty() {
-        lines.push(Line::default());
-        return;
-    }
-    lines.extend(text.as_str().split('\n').map(Line::from));
-    if text.was_truncated() {
+fn extend_part_lines<'a>(lines: &mut Vec<Line<'a>>, text: &'a str, last: bool) {
+    // A structural newline separating parts is not an extra blank display row.
+    // Final deliberate empty lines belong to the delivered text and stay visible.
+    let text = if last {
+        text
+    } else {
+        text.strip_suffix('\n').unwrap_or(text)
+    };
+    lines.extend(text.split('\n').map(Line::from));
+}
+
+fn explain_graphemes(lines: &mut Vec<Line<'_>>, text: &crate::terminal::TranscriptText) {
+    if text.escaped_graphemes() {
         lines.push(Line::from(Span::styled(
-            "Display limit reached",
+            "Oversized grapheme shown as Unicode escapes",
             Style::default().fg(Color::Yellow),
         )));
     }

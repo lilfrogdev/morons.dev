@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod queue_tests;
 mod safety;
+mod transcript;
+pub(crate) use transcript::TranscriptText;
 
 use std::{
     io::{self, IsTerminal, Stdout, Write},

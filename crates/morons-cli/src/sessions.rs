@@ -710,6 +710,7 @@ where
             || !valid_session_summary(&session)
             || !cursor_in_scope
             || !snapshot_is_consistent
+            || crate::transcript_budget::window_source_bytes(&entries).is_none()
             || entries.len() > usize::from(limit)
             || runs.len() > usize::from(limit).saturating_add(1)
             || !runs_in_scope

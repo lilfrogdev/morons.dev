@@ -1,0 +1,62 @@
+# ADR 0051: Navigable transcript text without destructive display clipping
+
+## Status
+
+Milestone B accepted before functional implementation, with the source/assembly, allocation, cursor and live-window decisions in [the display bounds review](../architecture/transcript-display-bounds.md). A's test-only module becomes normal code only with a real viewer consumer. B uses a1MiB conservatively assembled-source window budget, not the earlier candidate16MiB sanitized budget. No provider/context/schema/IPC or public library API change.
+
+Historical milestone A status: representation prototype milestone A accepted; viewer/window integration remains proposed pending its own boundary review. Integration review found that the private terminal module has no production consumer for the new type yet. Compile the representation only under tests until B, rather than allowing dead code or inventing a public crate API. The shared sanitizer refactor is compiled normally; active UI behavior remains unchanged. The owner approved proceeding with display accessibility separately from provider diagnostics and context admission. Milestone A adds a bounded reusable representation and shared sanitization, not a claim that existing UI clipping is already fixed. No server/provider/IPC/schema limit changes are admitted.
+
+## Problem and references
+
+[ADR0015](0015-bounded-transcript-window-paging.md) makes history navigable in bounded entry windows, but an entry can still be clipped inside that window. `terminal/safety.rs::SafeText` stops at32KiB output,16Ki scalars,1024lines or2048scalars on one line. `PresentedTranscriptEntry::new` discards the original text after constructing that prefix. `extend_safe_lines` cannot navigate the remainder. A long first line can therefore hide later lines, not just wrap them.
+
+The transcript viewport already measures with `usize`, but `render_transcript` clamps a block's local scroll to `u16::MAX` for Ratatui. Simply increasing SafeText limits would still strand very tall blocks and increase render work. Current source-entry windows are64 entries, with128 live entries before rotation; entry-count bounds alone do not adequately control the larger presentation memory.
+
+The server's128KiB transcript text bound,512KiB serialized tool payload bound,64KiB Bash command/per-stream capture bounds, provider limits, input limits and the12MiB IPC frame limit are distinct. Tool-result DTOs are deliberate summaries: current Bash/IPython summaries contain captured output, but Read/legacy results may not contain complete underlying retained data. This change guarantees navigation through text supplied in transcript DTOs, not a new full-tool-result retrieval feature or access to uncaptured output.
+
+Retain [ADR0034](0034-lossless-terminal-input-delivery.md), the [security invariants](../architecture/security-invariants.md), canonical attribution, ephemeral deltas, `!!` context exclusion and the existing gap-free snapshot/subscription boundary.
+
+## Representation decision (milestone A)
+
+Keep existing metadata SafeText limits/semantics and PromptBuffer/CredentialBuffer unchanged. Factor the existing whole-input visible-character sanitizer into one lazy iterator used by both metadata and transcript construction, preserving escape/C1/bidi removal, newline handling and four-space tab expansion. Do not duplicate or weaken the parser.
+
+A separate TranscriptText owns complete sanitized text and UTF-8 range parts. Reject input above1MiB before allocation; cap constructed text at6MiB with checked arithmetic. No truncation success. Parts contain at most16KiB,2048Unicode scalars and128 newline characters, and never split an ordinary extended grapheme. Newlines remain in the safe text and concatenated part slices exactly reconstruct it. Parts are width-independent and may introduce a presentation-only soft break in a long line when integrated.
+
+Use the already pinned Ratatui Span::styled_graphemes API on each newline-delimited segment (that API filters controls, so newlines must be handled separately). No dependency addition. A grapheme above128UTF-8 bytes is rendered as each scalar's standard Rust Unicode escape instead of allocating an enormous terminal cell; expose a boolean for a later visible explanation. Escape units are bounded ASCII; preserve every scalar, never replace the cluster with ellipsis. Ordinary combining/ZWJ/emoji clusters remain intact. Debug/Error output reports only closed labels/numeric metadata, never text. The6x bound covers the largest scalar escape expansion and tabs; independent part/range bounds cover layout/index work.
+
+This standalone constructor is test-only until a real viewer consumer is integrated in B; it is not a new public library API and is not yet used for transcript DTOs or streaming. The existing UI remains unchanged until milestone B. Its1MiB ceiling must be checked against all server assemblers before wiring it in; no currently accepted DTO is rejected by milestone A. Constructor peak allocations are bounded by input1MiB plus intermediate sanitizer output4MiB plus final6MiB and bounded part indices; no raw text is retained after construction. Subsequent UI integration must separately bound aggregate retained/peak window memory rather than multiplying this ceiling by128 entries.
+
+## Viewer/window boundary (milestone B, accepted with the bounds review)
+
+1. Keep bounded `SafeText` for labels, dialogs and metadata. Add a separate transcript representation, sharing one sanitizer implementation rather than copying escape logic. It preserves all visible text within a validated transcript DTO. ESC/CSI/OSC/DCS/SOS/PM/APC, C1 and bidirectional controls remain inert; only trusted Ratatui code emits terminal control.
+2. Sanitize before dividing text for presentation. Escape/control-string parser state must span input/chunk/delta boundaries. No chunk starts a new interpretation of a suffix from a removed control sequence. Sanitization deliberately removes control content; that is not a promise of byte-identical terminal output.
+3. Divide visible text into bounded navigable parts, with stable entry-or-transient identity plus part index. Role headers appear on the first part; terminal outcome/footer on the last. Entry/page cursors remain about canonical entries, never presentation parts. Parts do not create fake transcript entries or model context.
+4. Measure parts rather than entire arbitrarily tall entries; render only intersecting parts. Part-local scrolling must be representable without saturating `usize` to `u16`. Preserve Home/End, page/wheel navigation, stable reader anchoring through resize, newer-output indication and historical-window isolation.
+5. A long line must continue into later parts without hiding the rest of the entry. Define artificial soft breaks explicitly and test wide/combining/emoji text. Preserve valid UTF-8 and ordinary grapheme clusters. A pathological oversized grapheme needs a bounded, explicit presentation policy; it must not force an unbounded cell or silently discard following text. This policy is an acceptance prerequisite, not an implementation guess.
+6. Bound aggregate presentation memory as well as entries. Size-aware history windows may end before64 entries using the existing adjacent-entry cursor, rather than clipping text or making older entries inaccessible. Live tail rotation must obey the byte budget and recompose through the existing gap-free refresh boundary. Do not silently lose a cursor or leave a disjoint tail.
+7. Reject impossible/oversized untrusted DTO text with the existing bounded UI/protocol error path, rather than accepting a hidden prefix. First audit all server summary assemblers and prefix overhead so the client bound cannot reject legitimate accepted output. The outer12MiB frame allowance is not an appropriate per-entry/window memory target.
+8. Streaming text remains ephemeral and independently bounded at the existing128KiB source buffer. If that preview bound is reached, freeze a contiguous preview instead of appending later small deltas after a dropped large delta. Explain that preview paused; do not cancel generation. Replace it with the complete committed DTO when received, even when the final text differs from the available preview. No durable partial-assistant feature is implied.
+
+## Historical budget proposal (resolved for B by the linked bounds review)
+
+Milestone A fixes the standalone1MiB/6MiB construction and16KiB/2048scalar/128-newline part bounds above. A16MiB aggregate sanitized window budget remains a candidate for B, not a provider requirement or approved viewer constant. Four-space tab expansion, oversized-grapheme escapes, UTF-8, part/index allocation, formatted command/tool prefixes and peak window replacement must be included. Window fetching should conservatively charge expansion before collecting pages, then verify actual retained size. Valid large entries must remain reachable through smaller windows.
+
+The original acceptance checklist was: before B, resolve exact assembler maxima, aggregate live-tail policy, cursor continuation when a byte budget stops collection, end-newline treatment between parts, and peak allocation. B uses A's bounded oversized-grapheme escape policy and must disclose that exceptional representation. Prefer existing Ratatui text APIs and existing dependencies; review source/licenses before adding a grapheme or width dependency. Do not solve the problem by dropping safety or retaining an unbounded second transcript copy.
+
+## Local integration clarification
+
+Historical ADR0015 prefix rotation is superseded by the freeze-and-refresh rule above. A capacity stop preserves every installed entry and its older cursor; following commits and deltas cannot append a disjoint suffix. Deferred command and transient completion still update activity. Oversized DTOs are validated even when their presentation will be deferred.
+
+Delta sequence numbers are run-scoped. The viewer preserves that ordinal across committed messages, pauses on a missing prefix or sequence gap, and freezes an existing preview on subscription loss. A fresh snapshot discards ephemeral preview state: without a replayable prefix it waits for the committed message rather than displaying a suffix as a full preview. This uses existing sequence fields and does not alter IPC or retry semantics. A committed message replaces its transient part identities for reader anchoring; resize retains part identity plus a bounded row offset.
+
+Final text's deliberate empty lines are retained. A non-final part's structural trailing newline is stripped for layout. If a bound falls immediately before a newline instead, consume that single leading separator in the following part: the part break already ended the preceding row. Neither case discards a deliberate final empty line. Part scalar/newline bounds plus bounded labels/outcomes keep local scrolling below u16; conversion must assert this invariant rather than saturate an oversized block. Overall window height remains usize.
+
+## Milestones and validation
+
+- First: sanitizer/part representation and adversarial unit tests, without changing provider/server behavior.
+- Second: DTO admission, byte-aware windows/live rotation, viewport part identity and rendering integration. Preserve source-bound entry ordering and subscription semantics.
+- Test text beyond every former cap, a long first line followed by a unique tail marker, maximum legitimate server text/tool/command shapes, malformed oversized DTOs, tabs, multibyte and wide text, combining/ZWJ edge cases, ESC/control-string boundaries and unterminated controls.
+- Test navigation beyond65535 logical rows, visible tail markers at narrow widths, resize anchoring, outcome/footer placement, byte-budget early page termination, adjacent older/newer cursors, live rotation, historical reading, reconnect and streaming-to-committed replacement.
+- Demonstrate bounded retained allocations/render input independent of durable history length; avoid flaky wall-clock test thresholds. Run formatter, focused tests, full workspace tests, debug/release warnings-denied Clippy, build and dependency policy on frozen source.
+
+No new diagnostic UI, raw terminal, PTY, clipboard action, repository operation, provider output cap, context-admission change, IPC field or SQLite table is proposed. If implementation requires a new transport/detail contract, stop and review that separately rather than silently expanding this ADR.

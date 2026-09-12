@@ -3,6 +3,8 @@ mod context;
 mod input;
 mod native_diagnostic;
 mod render;
+mod transcript;
+use transcript::SessionView;
 mod viewport;
 
 use std::{error::Error, fmt};
@@ -1171,22 +1173,11 @@ impl AppState {
             window.active_command_id = current.active_command_id;
         }
         let deferred_newer_output = current.deferred_newer_output;
-        let transient = if navigation == TranscriptNavigation::Latest {
-            current.transient.take()
-        } else {
-            None
-        };
         window.summary = current.summary.clone();
         let mut replacement = SessionView::new(window, Vec::new())?;
         replacement.skills = std::mem::take(&mut current.skills);
         replacement.context_status = current.context_status.take();
         replacement.shared_directory = current.shared_directory;
-        replacement.transient = transient.filter(|transient| {
-            !replacement
-                .entries
-                .iter()
-                .any(|entry| entry.role == "Assistant" && entry.run_id == Some(transient.run_id))
-        });
         replacement.deferred_newer_output =
             navigation != TranscriptNavigation::Latest && deferred_newer_output;
         *current = replacement;
@@ -1206,10 +1197,18 @@ impl AppState {
         self.transcript_page_loading = false;
     }
 
+    pub(super) fn pause_transcript_preview(&mut self) {
+        if let Some(session) = &mut self.session {
+            session.pause_preview();
+            self.transcript_viewport.note_layout_changed();
+        }
+    }
+
     pub(super) fn requires_tail_refresh(&self) -> bool {
         self.session
             .as_ref()
             .is_some_and(|session| session.tail_refresh_required)
+            && self.transcript_viewport.follows_latest()
             && !self.transcript_page_loading
     }
 
@@ -1254,9 +1253,15 @@ impl AppState {
             ApplicationEvent::SessionTranscriptEntryCommitted {
                 session_id, entry, ..
             } => {
+                crate::transcript_budget::entry_source_bytes(&entry)
+                    .ok_or(UiStateError::ResourceLimitExceeded)?;
+                if let TranscriptEntry::AssistantMessage { id, run_id, .. } = &entry {
+                    self.transcript_viewport.replace_transient(*run_id, *id);
+                }
                 let session = self.session_mut(session_id)?;
                 if session.is_historical_window() {
                     session.defer_transcript_entry(&entry);
+                    self.transcript_viewport.note_layout_changed();
                     self.transcript_viewport.note_newer_output();
                 } else if session.append_transcript_entry(entry)? {
                     self.transcript_viewport.note_content_changed();
@@ -1281,6 +1286,7 @@ impl AppState {
                 session.apply_run(run)?;
                 if historical {
                     session.deferred_newer_output = true;
+                    self.transcript_viewport.note_layout_changed();
                     self.transcript_viewport.note_newer_output();
                 } else if presentation.is_some() {
                     self.transcript_viewport.note_content_changed();
@@ -1333,14 +1339,14 @@ impl AppState {
                 run_id,
                 delta,
                 refusal,
-                ..
+                sequence,
             } => {
                 let session = self.session_mut(session_id)?;
                 if session.is_historical_window() {
                     session.deferred_newer_output = true;
                     self.transcript_viewport.note_newer_output();
                 } else {
-                    session.append_delta(run_id, &delta, refusal)?;
+                    session.append_delta(run_id, sequence, &delta, refusal)?;
                     self.transcript_viewport.note_content_changed();
                 }
                 Ok(())
@@ -1456,6 +1462,7 @@ impl AppState {
     }
 
     pub(super) fn clear_transient_assistant(&mut self) {
+        self.pause_transcript_preview();
         if self
             .session
             .as_mut()
@@ -1554,347 +1561,6 @@ impl PresentedSkill {
     }
 }
 
-pub(super) struct SessionView {
-    pub(super) summary: SessionSummary,
-    pub(super) display_name: SafeText,
-    pub(super) entries: Vec<PresentedTranscriptEntry>,
-    pub(super) runs: Vec<RunSummary>,
-    pub(super) active_run_id: Option<RunId>,
-    pub(super) active_command_id: Option<LocalCommandId>,
-    pub(super) older_cursor: Option<TranscriptCursor>,
-    pub(super) newer_cursor: Option<TranscriptCursor>,
-    deferred_newer_output: bool,
-    tail_refresh_required: bool,
-    pub(super) skills: Vec<PresentedSkill>,
-    pub(super) transient: Option<TransientAssistant>,
-    pub(super) context_status: Option<SessionContextStatus>,
-    pub(super) shared_directory: bool,
-}
-
-impl SessionView {
-    fn new(window: TranscriptWindowData, skills: Vec<SkillSummary>) -> Result<Self, UiStateError> {
-        let TranscriptWindowData {
-            summary,
-            entries,
-            runs,
-            active_run_id,
-            active_command_id,
-            older_cursor,
-            newer_cursor,
-        } = window;
-        if entries.len() > MAX_CLIENT_TRANSCRIPT_ENTRIES || runs.len() > MAX_CLIENT_RUNS {
-            return Err(UiStateError::ResourceLimitExceeded);
-        }
-        if runs.iter().any(|run| run.session_id != summary.id)
-            || [older_cursor.as_ref(), newer_cursor.as_ref()]
-                .iter()
-                .flatten()
-                .any(|cursor| cursor.as_bytes()[..16] != summary.id.as_bytes()[..])
-            || entries.iter().any(|entry| {
-                transcript_entry_run_id(entry)
-                    .is_some_and(|run_id| !runs.iter().any(|run| run.id == run_id))
-            })
-            || active_run_id.is_some_and(|active_run_id| {
-                !runs
-                    .iter()
-                    .any(|run| run.id == active_run_id && !run.state.is_terminal())
-            })
-            || (active_run_id.is_some() && active_command_id.is_some())
-        {
-            return Err(UiStateError::ResourceScopeMismatch);
-        }
-        let display_name = SafeText::from_untrusted(
-            summary
-                .display_name
-                .as_deref()
-                .unwrap_or("Untitled session"),
-        );
-        Ok(Self {
-            summary,
-            display_name,
-            entries: entries
-                .into_iter()
-                .map(PresentedTranscriptEntry::new)
-                .collect(),
-            runs,
-            active_run_id,
-            active_command_id,
-            older_cursor,
-            newer_cursor,
-            deferred_newer_output: false,
-            tail_refresh_required: false,
-            skills: skills.into_iter().map(PresentedSkill::new).collect(),
-            transient: None,
-            context_status: None,
-            shared_directory: false,
-        })
-    }
-
-    fn is_historical_window(&self) -> bool {
-        self.newer_cursor.is_some() || self.deferred_newer_output
-    }
-
-    fn defer_transcript_entry(&mut self, entry: &TranscriptEntry) {
-        if let TranscriptEntry::LocalCommand { command_id, .. } = entry
-            && self.active_command_id == Some(*command_id)
-        {
-            self.active_command_id = None;
-        }
-        if let TranscriptEntry::AssistantMessage { run_id, .. } = entry
-            && self
-                .transient
-                .as_ref()
-                .is_some_and(|transient| transient.run_id == *run_id)
-        {
-            self.transient = None;
-        }
-        self.deferred_newer_output = true;
-    }
-
-    fn append_transcript_entry(&mut self, entry: TranscriptEntry) -> Result<bool, UiStateError> {
-        let id = transcript_entry_id(&entry);
-        if self.entries.iter().any(|existing| existing.id == id) {
-            return Ok(false);
-        }
-        if self.entries.len() >= MAX_CLIENT_TRANSCRIPT_ENTRIES {
-            self.entries
-                .drain(..TRANSCRIPT_WINDOW_TARGET_ENTRIES.min(self.entries.len()));
-            self.older_cursor = None;
-            self.tail_refresh_required = true;
-        }
-        let run_id = transcript_entry_run_id(&entry);
-        if matches!(entry, TranscriptEntry::AssistantMessage { .. })
-            && self
-                .transient
-                .as_ref()
-                .is_some_and(|transient| Some(transient.run_id) == run_id)
-        {
-            self.transient = None;
-        }
-        if let TranscriptEntry::LocalCommand { command_id, .. } = &entry
-            && self.active_command_id == Some(*command_id)
-        {
-            self.active_command_id = None;
-        }
-        self.entries.push(PresentedTranscriptEntry::new(entry));
-        Ok(true)
-    }
-
-    fn apply_run(&mut self, run: RunSummary) -> Result<(), UiStateError> {
-        if run.session_id != self.summary.id {
-            return Err(UiStateError::ResourceScopeMismatch);
-        }
-        if let Some(existing) = self.runs.iter_mut().find(|existing| existing.id == run.id) {
-            if !valid_run_transition(existing.state, run.state) {
-                return Err(UiStateError::InvalidRunTransition);
-            }
-            *existing = run.clone();
-        } else {
-            if self.runs.len() >= MAX_CLIENT_RUNS {
-                return Err(UiStateError::ResourceLimitExceeded);
-            }
-            self.runs.push(run.clone());
-        }
-        if run.state.is_terminal() {
-            if self.active_run_id == Some(run.id) {
-                self.active_run_id = None;
-            }
-            if self
-                .transient
-                .as_ref()
-                .is_some_and(|transient| transient.run_id == run.id)
-            {
-                self.transient = None;
-            }
-            if self.is_historical_window()
-                && !self
-                    .entries
-                    .iter()
-                    .any(|entry| entry.run_id == Some(run.id))
-            {
-                self.runs.retain(|existing| existing.id != run.id);
-            }
-        } else {
-            if self
-                .active_run_id
-                .is_some_and(|active_run| active_run != run.id)
-            {
-                return Err(UiStateError::InvalidRunTransition);
-            }
-            self.active_run_id = Some(run.id);
-        }
-        Ok(())
-    }
-
-    fn install_context_status(
-        &mut self,
-        context: SessionContextStatus,
-    ) -> Result<(), UiStateError> {
-        if context.session_id != self.summary.id {
-            return Err(UiStateError::ResourceScopeMismatch);
-        }
-        self.context_status = Some(context);
-        Ok(())
-    }
-
-    fn append_delta(
-        &mut self,
-        run_id: RunId,
-        delta: &str,
-        refusal: bool,
-    ) -> Result<(), UiStateError> {
-        if self.active_run_id != Some(run_id) {
-            return Err(UiStateError::InvalidRunTransition);
-        }
-        let transient = self
-            .transient
-            .get_or_insert_with(|| TransientAssistant::new(run_id, refusal));
-        if transient.run_id != run_id || transient.refusal != refusal {
-            return Err(UiStateError::InvalidRunTransition);
-        }
-        let Some(next_length) = transient.text.len().checked_add(delta.len()) else {
-            transient.truncated = true;
-            return Ok(());
-        };
-        if next_length > MAX_TRANSIENT_DELTA_BYTES {
-            transient.truncated = true;
-            return Ok(());
-        }
-        transient.text.push_str(delta);
-        transient.presented = SafeText::from_untrusted(&transient.text);
-        Ok(())
-    }
-}
-
-pub(super) struct PresentedTranscriptEntry {
-    pub(super) id: MessageId,
-    pub(super) run_id: Option<RunId>,
-    command_id: Option<LocalCommandId>,
-    pub(super) role: &'static str,
-    pub(super) text: SafeText,
-    pub(super) refusal: bool,
-}
-
-impl PresentedTranscriptEntry {
-    fn new(entry: TranscriptEntry) -> Self {
-        match entry {
-            TranscriptEntry::UserMessage {
-                id, run_id, text, ..
-            } => Self {
-                id,
-                run_id: Some(run_id),
-                command_id: None,
-                role: "You",
-                text: SafeText::from_untrusted(&text),
-                refusal: false,
-            },
-            TranscriptEntry::AssistantMessage {
-                id,
-                run_id,
-                text,
-                refusal,
-                ..
-            } => Self {
-                id,
-                run_id: Some(run_id),
-                command_id: None,
-                role: "Assistant",
-                text: SafeText::from_untrusted(&text),
-                refusal,
-            },
-            TranscriptEntry::ToolCall {
-                id,
-                run_id,
-                tool,
-                path,
-                ..
-            } => Self {
-                id,
-                run_id: Some(run_id),
-                command_id: None,
-                role: "Tool call",
-                text: SafeText::from_untrusted(&format!("{} · {path}", tool_label(tool))),
-                refusal: false,
-            },
-            TranscriptEntry::ToolResult {
-                id,
-                run_id,
-                tool,
-                status,
-                summary,
-                ..
-            } => Self {
-                id,
-                run_id: Some(run_id),
-                command_id: None,
-                role: "Tool result",
-                text: SafeText::from_untrusted(&format!(
-                    "{} · {status:?} · {summary}",
-                    tool_label(tool)
-                )),
-                refusal: false,
-            },
-            TranscriptEntry::LocalCommand {
-                id,
-                command_id,
-                command,
-                context_visible,
-                status,
-                exit_code,
-                signal,
-                stdout,
-                stderr,
-                ..
-            } => Self {
-                id,
-                run_id: None,
-                command_id: Some(command_id),
-                role: if context_visible {
-                    "Command !"
-                } else {
-                    "Command !!"
-                },
-                text: SafeText::from_untrusted(&format!(
-                    "{status:?} · exit {exit_code:?} · signal {signal:?}\n$ {command}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-                )),
-                refusal: false,
-            },
-        }
-    }
-}
-
-pub(super) struct TransientAssistant {
-    pub(super) run_id: RunId,
-    text: String,
-    pub(super) presented: SafeText,
-    pub(super) refusal: bool,
-    pub(super) truncated: bool,
-}
-
-impl TransientAssistant {
-    fn new(run_id: RunId, refusal: bool) -> Self {
-        Self {
-            run_id,
-            text: String::new(),
-            presented: SafeText::default(),
-            refusal,
-            truncated: false,
-        }
-    }
-}
-
-impl fmt::Debug for TransientAssistant {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("TransientAssistant")
-            .field("run_id", &self.run_id)
-            .field("text_bytes", &self.text.len())
-            .field("refusal", &self.refusal)
-            .field("truncated", &self.truncated)
-            .finish()
-    }
-}
-
 fn mark_shared_directories(sessions: &mut [PresentedSession]) {
     for index in 0..sessions.len() {
         sessions[index].shared_directory = sessions[index]
@@ -1933,15 +1599,7 @@ const fn valid_run_transition(previous: RunState, next: RunState) -> bool {
     }
 }
 
-fn transcript_entry_id(entry: &TranscriptEntry) -> MessageId {
-    match entry {
-        TranscriptEntry::UserMessage { id, .. }
-        | TranscriptEntry::AssistantMessage { id, .. }
-        | TranscriptEntry::ToolCall { id, .. }
-        | TranscriptEntry::ToolResult { id, .. }
-        | TranscriptEntry::LocalCommand { id, .. } => *id,
-    }
-}
+use crate::transcript_budget::entry_id as transcript_entry_id;
 
 fn transcript_entry_run_id(entry: &TranscriptEntry) -> Option<RunId> {
     match entry {

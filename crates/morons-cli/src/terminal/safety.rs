@@ -25,26 +25,7 @@ impl SafeText {
         let mut lines = 1_usize;
         let mut truncated = false;
 
-        let mut characters = input.chars().peekable();
-        while let Some(character) = characters.next() {
-            match character {
-                '\u{001b}' => {
-                    consume_escape_sequence(&mut characters);
-                    continue;
-                }
-                '\u{009b}' => {
-                    consume_csi_sequence(&mut characters);
-                    continue;
-                }
-                '\u{0090}' | '\u{0098}' | '\u{009d}' | '\u{009e}' | '\u{009f}' => {
-                    consume_control_string(&mut characters);
-                    continue;
-                }
-                _ => {}
-            }
-            if is_bidirectional_control(character) {
-                continue;
-            }
+        for character in visible_characters(input) {
             if character == '\n' {
                 if lines >= MAX_PRESENTED_LINES || !push_bounded(&mut text, character, &mut scalars)
                 {
@@ -53,24 +34,6 @@ impl SafeText {
                 }
                 lines += 1;
                 line_scalars = 0;
-                continue;
-            }
-            if character == '\t' {
-                for _ in 0..TAB_WIDTH {
-                    if line_scalars >= MAX_PRESENTED_LINE_SCALARS
-                        || !push_bounded(&mut text, ' ', &mut scalars)
-                    {
-                        truncated = true;
-                        break;
-                    }
-                    line_scalars += 1;
-                }
-                if truncated {
-                    break;
-                }
-                continue;
-            }
-            if character.is_control() {
                 continue;
             }
             if line_scalars >= MAX_PRESENTED_LINE_SCALARS
@@ -108,7 +71,7 @@ impl fmt::Debug for SafeText {
         formatter
             .debug_struct("SafeText")
             .field("text_bytes", &self.text.len())
-            .field("truncated", &self.truncated)
+            .field("truncated", &self.was_truncated())
             .finish()
     }
 }
@@ -315,6 +278,34 @@ impl fmt::Debug for CredentialBuffer {
             .field("secret_bytes", &"[REDACTED]")
             .finish()
     }
+}
+
+pub(super) fn visible_characters(input: &str) -> impl Iterator<Item = char> + '_ {
+    let mut characters = input.chars().peekable();
+    let mut spaces = 0;
+    std::iter::from_fn(move || {
+        if spaces > 0 {
+            spaces -= 1;
+            return Some(' ');
+        }
+        loop {
+            let character = characters.next()?;
+            match character {
+                '\u{001b}' => consume_escape_sequence(&mut characters),
+                '\u{009b}' => consume_csi_sequence(&mut characters),
+                '\u{0090}' | '\u{0098}' | '\u{009d}' | '\u{009e}' | '\u{009f}' => {
+                    consume_control_string(&mut characters);
+                }
+                '\t' => {
+                    spaces = TAB_WIDTH - 1;
+                    return Some(' ');
+                }
+                '\n' => return Some(character),
+                _ if character.is_control() || is_bidirectional_control(character) => {}
+                _ => return Some(character),
+            }
+        }
+    })
 }
 
 fn consume_escape_sequence(characters: &mut std::iter::Peekable<std::str::Chars<'_>>) {

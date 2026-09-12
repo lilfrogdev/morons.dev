@@ -918,10 +918,10 @@ impl RuntimeState {
             SubscriptionEvent::SessionConnectionLost { generation }
                 if generation == self.session_generation =>
             {
-                self.app.clear_transient_assistant();
+                self.app.pause_transcript_preview();
                 self.app.clear_credential_interaction();
                 self.app.set_status(
-                    "Session connection lost; transient output and credential input were discarded",
+                    "Session connection lost; preview paused and credential input discarded",
                 );
             }
             SubscriptionEvent::SessionConnectionLost { .. } => {}
