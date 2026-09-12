@@ -126,6 +126,7 @@ async fn delete_history(task: bool, migrate: bool) {
             store.task_model_binding(run, call.call_id).await.unwrap()
         );
         drop(store);
+        crate::persistence::data_use::tests::restore_schema_32(&db);
         db.execute_batch(
             "PRAGMA foreign_keys=OFF; DROP TABLE web_model_bindings; DROP TABLE web_binding_epoch;",
         )

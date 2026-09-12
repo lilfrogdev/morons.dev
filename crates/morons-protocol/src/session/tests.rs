@@ -219,7 +219,11 @@ fn context_status_contract_has_stable_json_shapes() {
         })
     );
     let response = ApplicationResponse::SessionContextFound {
-        context: crate::SessionContextStatus {
+        context: Box::new(crate::SessionContextStatus {
+            usage_admission: false,
+            admission_input_tokens: 40_000,
+            source_bytes: 30_000,
+            maximum_source_bytes: None,
             background_compaction: crate::BackgroundCompactionStatus {
                 enabled: false,
                 latest: None,
@@ -246,13 +250,17 @@ fn context_status_contract_has_stable_json_shapes() {
             compaction_threshold_tokens: 67_200,
             checkpoint_source_entry_high_water: Some(42),
             checkpoint_estimated_summary_tokens: Some(2_000),
-        },
+        }),
     };
     assert_eq!(
         serde_json::to_value(response).expect("context response should encode"),
         json!({
             "result": "session_context_found",
             "context": {
+                "usage_admission": false,
+                "admission_input_tokens": 40000,
+                "source_bytes": 30000,
+                "maximum_source_bytes": null,
                 "background_compaction": {"enabled": false, "latest": null},
                 "session_id": "ses_19191919191919191919191919191919",
                 "service": "zen",

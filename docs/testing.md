@@ -28,6 +28,24 @@ Two test threads match CI and reduce SQLite-heavy fixture contention. Timing pro
 
 Ignored live provider tests intentionally require non-echoing credential input and billable inference; Python gates require an installed or downloaded Jupyter runtime. Never run every ignored test indiscriminately. Follow `docs/release-candidate-qa.md` and obtain authorization before billable requests or credential-state changes.
 
+## Current state and upgrades
+
+Current source pairs **IPC45 with SQLite33** ([ADR 0052](adr/0052-context-accounting-policy.md)). Stop the old server through its old matching authenticated client before launching the new complete binary pair. Protocol mismatch fails closed; it does not replace a running server. Test upgrades in an owned disposable profile first. Retained profiles require a separately reviewed migration scope; never open their SQLite while the server is running.
+
+The normal schema32→33 migration creates `backups/sessions-before-schema-v32.sqlite3` and records the first logical sequence of the new accounting policy. Verify old canonical rows/checkpoints remain unchanged and old accepted native runs remain legacy, while eligible newly accepted native runs select policy1. The backup is database-only: it excludes provider credentials, IPC keys, attachment bytes and selected working directories. Do not copy a live database file, claim a complete session backup, edit canonical rows to make an upgrade pass, or launch old binaries against migrated state. Forward migration has no supported downgrade.
+
+## Native context admission
+
+```sh
+cargo test -p morons-server --lib --locked context_execution -- --test-threads 2
+cargo test -p morons-server --lib --locked context_continuation -- --test-threads 2
+cargo test -p morons-server --lib --locked observations -- --test-threads 2
+```
+
+Owned storage fixtures exercise native epoch selection and receipt provenance without provider or tool execution; their synthetic ledger transitions and usage are not network traffic or token measurements. Eligible native pre/post-migration runs must differ only in epoch-selected execution policy. Byte-heavy fixtures distinguish successful same-run usage admission from missing/zero/wrong-generation/prior-run/latest-noncompleted evidence. Verify metadata fallback and actual context admission or required compaction, not just a policy label. Keep the older Zen advisory reuse tests: they intentionally exercise a different policy.
+
+Native loopback tests retain exact original user intent and complete tool pairs through advancing within-run compaction, reset opaque continuation after checkpoint commit, bound foreground compaction to four attempts including initial/manual, and stop failed/uncertain summaries without retry. These summaries are extra provider requests outside the32completedcoding-turn counter. Source1MiB, item/image/schema/continuation/encoding limits remain independent; low usage cannot waive them. `/context` separates admission, source and legacy estimates. Missing receipts are unknown, not zero; estimates are predictive, not a billing or exact-tokenizer attestation. No live request budget follows from these tests.
+
 ## Opt-in provider debugging
 
 ```sh
@@ -52,7 +70,7 @@ cargo test -p morons-server --lib --locked openai_auth -- --test-threads 2
 
 These tests use ephemeral loopback ports, disposable storage and synthetic tokens. They do not bind the production callback port, contact OpenAI, read real credential files or migrate retained state. They cover fixed PKCE/form fields, hostile callbacks, cancellation/drop/deadlines, token envelopes/claims, redaction, bounded HTTP and no retry/redirect following. Custody tests cover provider-scoped identity/idempotency, private files/checksums, poisoning after failed writes, same-account single-flight refresh, cancellation/abandonment, restart without replay, secret exclusion from SQLite and schema-27 migration preserving OpenCode bytes. They do not establish JWT-signature verification, real token rotation, live login/inference or native-release qualification.
 
-Native protocol diagnostics originated at IPC44/SQLite30. OpenAI-only web execution uses unchanged IPC44 with SQLite32, following the independent SQLite31 task-deletion repair (token-failure diagnostics originated at IPC 43) (native provider binding originated at IPC 42/SQLite 30; policy controls at IPC 41/SQLite 29; login at IPC 40/SQLite 28). Stop the old server with its matching client before upgrading; a protocol mismatch cannot silently fall back. Do not launch its binaries against retained QA state without a separately approved migration plan; deterministic fixtures do not authorize changing existing diagnostics. [ADR 0030](adr/0030-native-provider-and-task-bindings.md) supplies the reviewed coding/provider/policy binding; owner browser sign-in and a separately approved request budget remain necessary for live qualification.
+Historical boundaries remain documented at their original versions: native diagnostics originated at IPC44/SQLite30, OpenAI-only web at IPC44/SQLite32 after the SQLite31 task-deletion repair, token-failure diagnostics at IPC43, native binding at IPC42/SQLite30, policy controls at IPC41/SQLite29, and login at IPC40/SQLite28. These are not current executable-pair instructions; use [the IPC45/SQLite33 upgrade procedure](#current-state-and-upgrades). [ADR 0030](adr/0030-native-provider-and-task-bindings.md) supplies the reviewed coding/provider/policy binding; owner browser sign-in and a separately approved request budget remain necessary for live qualification.
 
 Synthetic login-control tests additionally cover connection-scoped cancellation, disconnects, slow consumers, abandoned drains, shutdown during admission, committed installation/cancellation races, status and provider-local removal, closed/redacted framing diagnostics, client outcome scope/generation validation with no reconnect/replay, and terminal-safe scrollable URL dialogs that reject paste/image input and clear URLs on cancellation. The old OpenCode hidden-input/removal tests now choose OpenCode in the provider menu; their secrecy and generation assertions remain. No test opens a browser or the production callback port.
 

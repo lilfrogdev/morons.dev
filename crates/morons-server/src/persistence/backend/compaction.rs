@@ -70,8 +70,11 @@ impl Backend {
             .connection
             .query_row(
                 "SELECT operation_id, parent_checkpoint_id, source_entry_high_water, source_digest
-                 FROM compaction_operations WHERE run_id = ?1",
-                [&run_id.as_bytes()[..]],
+                 FROM compaction_operations WHERE run_id = ?1 AND source_entry_high_water = ?2",
+                params![
+                    &run_id.as_bytes()[..],
+                    sequence_to_sql(plan.source_entry_high_water)?
+                ],
                 |row| {
                     Ok((
                         row.get::<_, [u8; 16]>(0)?,
@@ -94,7 +97,20 @@ impl Backend {
             return Ok(CompactionOperationId::from_bytes(existing.0));
         }
         let run = load_required_run(&self.connection, run_id)?;
-        if plan.source_entry_high_water >= run.source_entry_high_water
+        if !super::context_execution::can_compact(&self.connection, run_id)?
+            || !super::context_compaction::within_run::source_allowed(
+                &self.connection,
+                run_id,
+                plan.source_entry_high_water,
+                None,
+            )?
+            || super::run_queries::load_latest_checkpoint(
+                &self.connection,
+                run.session_id,
+                i64::MAX as u64,
+            )?
+            .map(|value| value.id)
+                != plan.parent_checkpoint_id
             || self.context_digest_through(run.session_id, plan.source_entry_high_water)?
                 != plan.source_digest
         {

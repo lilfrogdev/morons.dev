@@ -326,7 +326,11 @@ impl RunSupervisor {
                     .execute_compaction(run_id, &context, plan, &mut cancellation)
                     .await?
                 {
-                    Ok(()) => continue,
+                    Ok(()) => {
+                        provider_continuation = None;
+                        provider_turn = None;
+                        continue;
+                    }
                     Err(ProviderError::Cancelled) => {
                         self.sessions.finish_run_stopped(run_id, None).await?;
                         return Ok(());

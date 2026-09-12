@@ -989,6 +989,13 @@ where
             && context.service == service
             && context.model_id == model_id
             && context.context_policy_version > 0
+            && context.admission_input_tokens > 0
+            && match (context.usage_admission, context.maximum_source_bytes) {
+                (true, Some(limit)) => limit > 0,
+                (false, None) => true,
+                _ => false,
+            }
+            && (!context.usage_admission || context.service == ModelService::OpenAiChatGpt)
             && context.estimated_input_tokens > 0
             && context.maximum_input_tokens > 0
             && context.maximum_output_tokens > 0
@@ -1002,7 +1009,7 @@ where
             self.usable = false;
             return Err(ApplicationClientError::EventScopeMismatch);
         }
-        Ok(context)
+        Ok(*context)
     }
 
     pub async fn open_code_credential_status(

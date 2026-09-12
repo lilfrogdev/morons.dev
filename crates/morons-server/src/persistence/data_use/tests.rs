@@ -3,7 +3,22 @@ mod policy;
 
 use rusqlite::Connection;
 
+/// Reconstruct the old schema, not just its user_version, in owned test fixtures.
+pub(crate) fn restore_schema_32(connection: &Connection) {
+    let reference = super::super::database::schema_29_fixture();
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE; DROP TABLE context_accounting_epoch;",
+        )
+        .unwrap();
+    restore_tables(connection, &reference, &["compaction_operations"]);
+    connection
+        .execute_batch("PRAGMA user_version = 32; COMMIT; PRAGMA foreign_keys = ON;")
+        .unwrap();
+}
+
 pub(crate) fn restore_schema_29(connection: &Connection) {
+    restore_schema_32(connection);
     assert_eq!(
         connection
             .query_row("SELECT COUNT(*) FROM task_model_bindings", [], |row| row

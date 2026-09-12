@@ -311,6 +311,7 @@ async fn schema_31_web_migration_preserves_canonical_input_and_credentials_witho
             |r| r.get(0),
         )
         .unwrap();
+    crate::persistence::data_use::tests::restore_schema_32(&db);
     db.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE; DROP TABLE web_model_bindings; DROP TABLE web_binding_epoch; PRAGMA user_version=31; COMMIT;").unwrap();
     drop(db);
     let store = SessionStore::open_for_test(root.path()).unwrap();
@@ -330,7 +331,7 @@ async fn schema_31_web_migration_preserves_canonical_input_and_credentials_witho
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        32
+        crate::persistence::database::SCHEMA_VERSION
     );
     assert_eq!(
         db.query_row(

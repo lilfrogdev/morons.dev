@@ -22,6 +22,14 @@ pub(super) struct ContextBudget {
 }
 
 impl ContextBudget {
+    pub(super) fn include(&mut self, other: &Self) {
+        self.entries = self.entries.saturating_add(other.entries);
+        self.bytes = self.bytes.saturating_add(other.bytes);
+        self.images = self.images.saturating_add(other.images);
+        self.image_bytes = self.image_bytes.saturating_add(other.image_bytes);
+        self.observed_input_tokens = None;
+    }
+
     pub(super) fn tokens(&self, extra_bytes: usize) -> u64 {
         self.bytes
             .saturating_add(extra_bytes as u64)

@@ -135,7 +135,7 @@ async fn context(
     else {
         panic!("context response required")
     };
-    context
+    *context
 }
 
 async fn submit(

@@ -1,3 +1,5 @@
+pub(in crate::persistence) mod within_run;
+
 use std::collections::VecDeque;
 
 use rusqlite::params;
@@ -22,13 +24,8 @@ impl Backend {
         instruction_bytes: usize,
         budget: &super::context_budget::ContextBudget,
     ) -> Result<Option<CompactionPlan>, PersistenceError> {
-        // Never repeat a completed or uncertain compaction in the same run.
-        let already_compacted: bool = self.connection.query_row(
-            "SELECT EXISTS (SELECT 1 FROM compaction_operations WHERE run_id = ?1)",
-            [&run.id.as_bytes()[..]],
-            |row| row.get(0),
-        )?;
-        if already_compacted {
+        let execution = super::context_execution::policy(&self.connection, run.id)?;
+        if !super::context_execution::can_compact(&self.connection, run.id)? {
             return Ok(None);
         }
         let prompt: String = self.connection.query_row(
@@ -39,23 +36,28 @@ impl Backend {
         let manual = prompt == "/compact" || prompt.starts_with("/compact ");
         let covered = checkpoint.map_or(0, |checkpoint| checkpoint.source_entry_high_water);
         if !manual
-            && !budget.pressure(
+            && !execution.pressure(
+                budget,
                 run.maximum_input_tokens,
                 instruction_bytes + checkpoint.map_or(0, |checkpoint| checkpoint.summary.len()),
             )
         {
             return Ok(None);
         }
-        let Some(source_entry_high_water) = self.select_compaction_prefix(
+        let whole_turn = self.select_compaction_prefix(
             run.session_id,
             covered,
             run.source_entry_high_water,
             through,
             run.maximum_input_tokens,
             instruction_bytes,
-        )?
-        else {
-            return Ok(None);
+        )?;
+        let source_entry_high_water = match whole_turn {
+            Some(cut) => cut,
+            None => match self.select_within_run_cut(run, covered, through, instruction_bytes)? {
+                Some(cut) => cut,
+                None => return Ok(None),
+            },
         };
         if !manual
             && self.compaction_prefix_was_attempted(run.session_id, source_entry_high_water)?

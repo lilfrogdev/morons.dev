@@ -618,7 +618,7 @@ pub enum ApplicationResponse {
         warnings: Vec<String>,
     },
     SessionContextFound {
-        context: SessionContextStatus,
+        context: Box<SessionContextStatus>,
     },
     OpenAiCredentialStatus {
         credential: crate::OpenAiCredentialStatus,
@@ -833,6 +833,10 @@ pub struct RecentProviderUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionContextStatus {
+    pub usage_admission: bool,
+    pub admission_input_tokens: u32,
+    pub source_bytes: u64,
+    pub maximum_source_bytes: Option<u64>,
     pub background_compaction: BackgroundCompactionStatus,
     pub project_context: Option<ProjectContextSummary>,
     pub session_id: SessionId,

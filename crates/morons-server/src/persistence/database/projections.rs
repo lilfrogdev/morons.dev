@@ -1629,6 +1629,7 @@ fn validate_run_skill_snapshots(connection: &Connection) -> Result<(), Persisten
 }
 
 fn validate_compaction_facts(connection: &Connection) -> Result<(), PersistenceError> {
+    super::super::backend::context_execution::validate_operations(connection)?;
     let invalid: bool = connection.query_row(
         "SELECT EXISTS (
             SELECT 1 FROM context_checkpoints AS checkpoint
@@ -1655,7 +1656,6 @@ fn validate_compaction_facts(connection: &Connection) -> Result<(), PersistenceE
             LEFT JOIN context_checkpoints AS checkpoint
               ON checkpoint.checkpoint_id = operation.checkpoint_id
             WHERE operation.session_id IS NOT run.session_id
-               OR operation.source_entry_high_water >= run.source_entry_high_water
                OR (operation.state = 3 AND (
                     checkpoint.session_id IS NOT operation.session_id
                     OR checkpoint.parent_checkpoint_id IS NOT operation.parent_checkpoint_id

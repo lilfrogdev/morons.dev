@@ -563,7 +563,11 @@ impl ServerApplication {
                     .map_err(to_application_error)?;
                 Ok(ApplicationOutcome::Response(
                     ApplicationResponse::SessionContextFound {
-                        context: morons_protocol::SessionContextStatus {
+                        context: Box::new(morons_protocol::SessionContextStatus {
+                            usage_admission: status.usage_admission,
+                            admission_input_tokens: status.admission_input_tokens,
+                            source_bytes: status.source_bytes,
+                            maximum_source_bytes: status.maximum_source_bytes,
                             background_compaction: to_background_status(
                                 status.background_compaction,
                             ),
@@ -599,7 +603,7 @@ impl ServerApplication {
                                 .checkpoint_source_entry_high_water,
                             checkpoint_estimated_summary_tokens: status
                                 .checkpoint_estimated_summary_tokens,
-                        },
+                        }),
                     },
                 ))
             }

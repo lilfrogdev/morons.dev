@@ -803,6 +803,10 @@ pub(crate) struct RecentProviderUsage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SessionContextStatus {
+    pub usage_admission: bool,
+    pub admission_input_tokens: u32,
+    pub source_bytes: u64,
+    pub maximum_source_bytes: Option<u64>,
     pub background_compaction: super::maintenance::MaintenanceObservation,
     pub project_context: Option<crate::project_context::ProjectContextSummary>,
     pub estimated_input_tokens: u32,

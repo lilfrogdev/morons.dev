@@ -16,13 +16,46 @@ pub(super) struct ContextModel<'a> {
 }
 
 pub(super) struct ContextObservation {
+    pub run_id: RunId,
+    pub prepared_sequence: u64,
+    pub credential_generation: u64,
     pub estimated_tokens: u64,
     pub usage: RecentProviderUsage,
 }
 
 impl Backend {
-    /// Reuse only a committed request for the same immutable prompt prefix.
-    /// Unlike a tokenizer, this is advisory and never changes dispatch limits.
+    pub(super) fn observe_run_usage(
+        &self,
+        run: &crate::persistence::Run,
+        checkpoint: Option<&ContextCheckpoint>,
+        through: u64,
+        skills: &RunSkillContext,
+        project: Option<&crate::project_context::RunProjectContext>,
+    ) -> Result<Option<ContextObservation>, PersistenceError> {
+        let observation = self.observe_context_usage(
+            run.session_id,
+            ContextModel {
+                service: run.service,
+                model_id: &run.model_id,
+                protocol_revision: run.protocol_revision,
+            },
+            checkpoint,
+            through,
+            skills,
+            project,
+        )?;
+        let latest: Option<i64> = self.connection.query_row(
+            "SELECT MAX(fact_sequence) FROM provider_operation_facts WHERE run_id = ?1 AND fact_kind = 1",
+            [&run.id.as_bytes()[..]], |r| r.get(0))?;
+        Ok(observation.filter(|value| {
+            value.run_id == run.id
+                && value.credential_generation == run.credential_generation
+                && latest.and_then(|n| u64::try_from(n).ok()) == Some(value.prepared_sequence)
+        }))
+    }
+
+    /// Collect predictive usage; native admission adds scope checks in observe_run_usage.
+    /// Legacy use stays advisory; neither use changes model capacities or resource bounds.
     pub(super) fn observe_context_usage(
         &self,
         session_id: SessionId,
@@ -43,7 +76,7 @@ impl Backend {
                     completed.input_tokens, completed.cached_input_tokens,
                     completed.cache_write_input_tokens, completed.output_tokens,
                     completed.total_tokens, prepared.created_at_milliseconds,
-                    completed.created_at_milliseconds
+                    completed.created_at_milliseconds, prepared.fact_sequence, prepared.credential_generation
              FROM recent_runs AS accepted
              CROSS JOIN provider_operation_facts AS prepared ON prepared.run_id = accepted.run_id AND prepared.fact_kind = 1
              CROSS JOIN provider_operation_facts AS completed ON completed.run_id = prepared.run_id
@@ -60,9 +93,21 @@ impl Backend {
                 sequence_to_sql(through)?, checkpoint.map(|checkpoint| &checkpoint.id.as_bytes()[..])],
             |row| Ok((RunId::from_bytes(row.get(0)?), row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
                 row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?,
-                row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?)),
+                row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?, row.get::<_, i64>(9)?, row.get::<_, i64>(10)?)),
         ).optional()?;
-        let Some((run_id, high_water, input, cached, written, output, total, start, end)) = sample
+        let Some((
+            run_id,
+            high_water,
+            input,
+            cached,
+            written,
+            output,
+            total,
+            start,
+            end,
+            prepared,
+            generation,
+        )) = sample
         else {
             return Ok(None);
         };
@@ -96,6 +141,9 @@ impl Backend {
         // overcount visible output deliberately; cached input is already in input.
         let estimated_tokens = input.saturating_add(output).saturating_add(tail.tokens(0));
         Ok(Some(ContextObservation {
+            run_id,
+            prepared_sequence: count(prepared)?,
+            credential_generation: count(generation)?,
             estimated_tokens,
             usage: RecentProviderUsage {
                 input_tokens: input,

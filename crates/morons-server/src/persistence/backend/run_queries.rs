@@ -324,6 +324,8 @@ impl Backend {
     pub(crate) fn load_run_context(&self, run_id: RunId) -> Result<RunContext, PersistenceError> {
         self.ensure_context_integrity()?;
         let run = load_required_run(&self.connection, run_id)?;
+        let execution = super::context_execution::policy(&self.connection, run_id)?;
+        let native_usage = execution == super::context_execution::ExecutionPolicy::NativeUsage;
         if !matches!(
             run.context_policy_version,
             CONTEXT_POLICY_VERSION
@@ -353,7 +355,11 @@ impl Backend {
         let checkpoint = load_latest_checkpoint(
             &self.connection,
             run.session_id,
-            run.source_entry_high_water.saturating_sub(1),
+            if native_usage {
+                current_entry_high_water
+            } else {
+                run.source_entry_high_water.saturating_sub(1)
+            },
         )?;
         if run.context_policy_version != CONTEXT_POLICY_VERSION && checkpoint.is_some() {
             return Err(PersistenceError::InvalidState {
@@ -381,7 +387,25 @@ impl Backend {
         )?;
         let mut budget =
             self.context_budget(run.session_id, covered_high_water, current_entry_high_water)?;
-        if run.context_policy_version == CONTEXT_POLICY_VERSION
+        let retain_user = native_usage && covered_high_water >= run.source_entry_high_water;
+        if retain_user {
+            budget.include(&self.context_budget(
+                run.session_id,
+                run.source_entry_high_water - 1,
+                run.source_entry_high_water,
+            )?);
+        }
+        if native_usage {
+            budget.observed_input_tokens = self
+                .observe_run_usage(
+                    &run,
+                    checkpoint.as_ref(),
+                    current_entry_high_water,
+                    &skills,
+                    project.as_ref(),
+                )?
+                .map(|value| value.estimated_tokens);
+        } else if run.context_policy_version == CONTEXT_POLICY_VERSION
             && run.tool_catalog_version == crate::tools::TOOL_CATALOG_VERSION
             && run.tool_limits_version == crate::tools::TOOL_LIMITS_VERSION
         {
@@ -412,7 +436,8 @@ impl Backend {
         {
             return Ok(RunContext {
                 estimated_input_tokens: u32::try_from(
-                    budget.tokens(
+                    execution.estimate(
+                        &budget,
                         instruction_bytes
                             + checkpoint
                                 .as_ref()
@@ -431,7 +456,8 @@ impl Backend {
                 working_directory,
             });
         }
-        if !budget.fits(
+        if !execution.fits(
+            &budget,
             run.maximum_input_tokens,
             instruction_bytes
                 + checkpoint
@@ -443,6 +469,15 @@ impl Backend {
             });
         }
         let mut entries = Vec::new();
+        if retain_user {
+            self.visit_context_entries(run.session_id, run.source_entry_high_water - 1, run.source_entry_high_water, |entry| {
+                if !matches!(&entry, TranscriptEntry::UserMessage { run_id: id, .. } if *id == run.id) {
+                    return Err(PersistenceError::InvalidState { reason: "retained current user intent is missing" });
+                }
+                entries.push(entry);
+                Ok(true)
+            })?;
+        }
         self.visit_context_entries(
             run.session_id,
             covered_high_water,
@@ -625,6 +660,19 @@ impl Backend {
             .ok_or(PersistenceError::ResourceLimit {
                 resource: crate::persistence::PersistenceResourceLimit::Context,
             })?;
+        let estimated_input_tokens = if native_usage {
+            if context_bytes > super::context_execution::MAX_SOURCE_BYTES {
+                return Err(PersistenceError::ResourceLimit {
+                    resource: crate::persistence::PersistenceResourceLimit::Context,
+                });
+            }
+            u32::try_from(execution.estimate(&budget, instruction_bytes + checkpoint_bytes))
+                .map_err(|_| PersistenceError::ResourceLimit {
+                    resource: crate::persistence::PersistenceResourceLimit::Context,
+                })?
+        } else {
+            estimated_input_tokens
+        };
         let compaction_plan = None;
         if estimated_input_tokens > run.maximum_input_tokens {
             return Err(PersistenceError::ResourceLimit {
