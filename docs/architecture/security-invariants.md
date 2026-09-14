@@ -9,7 +9,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - No prompt, tool description, path check, model annotation, command prefix, or attachment marker is a security boundary.
 - Morons provides no rollback, containment, filesystem isolation, network isolation, credential isolation from same-user processes, or guarantee that cancellation reverses an effect that already occurred.
 - Users requiring containment must run the complete Morons application in an externally managed container, virtual machine, or restricted operating-system account.
-- The application must disclose this posture during onboarding and in help. It must not describe lifecycle supervision, process separation, or bounded output as sandboxing.
+- The application discloses this posture in documentation and help, without a startup acknowledgement dialog; using Morons implies accepting its trusted-local risks. It must not describe lifecycle supervision, process separation, or bounded output as sandboxing.
 - Approval prompts are not required by default and must not be represented as a security boundary if later introduced.
 
 ## Direct working directories and sessions

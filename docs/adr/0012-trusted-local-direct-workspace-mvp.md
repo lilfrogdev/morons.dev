@@ -24,7 +24,7 @@ Morons is a trusted-local coding-agent harness, not a security sandbox, IDE, ter
 
 Repository content, model output, skills, web content, images, and process output remain untrusted data. However, once the model selects a filesystem mutation, Python cell, or shell command, that operation runs with the authority of the local user. Morons does not attempt to confine that authority, emulate a permission boundary with path validation, or imply that cancellation can roll back completed effects.
 
-The application displays this posture during onboarding and makes it available in help. There are no per-command approval prompts by default. Optional containment is entirely external to Morons and must wrap the client, companion server, child processes, kernels, data directories, credentials, and selected working directory together.
+The application documents this posture and makes it available in help; using Morons implies accepting its trusted-local risks without a startup acknowledgement dialog. There are no per-command approval prompts by default. Optional containment is entirely external to Morons and must wrap the client, companion server, child processes, kernels, data directories, credentials, and selected working directory together.
 
 Morons does not add a user-facing PTY, interactive subprocess terminal, SSH server, raw server console, editor, marketplace runtime, arbitrary privileged proxy, or plugin execution framework. Shell commands are noninteractive operations with closed standard input and bounded captured output.
 

@@ -42,16 +42,6 @@ impl AppState {
                     self.information_scroll = u16::MAX;
                     AppAction::None
                 }
-                (InformationDialog::TrustNotice, KeyCode::Enter) => {
-                    self.information_dialog = None;
-                    self.set_status(
-                        "Trusted-local mode acknowledged · use /help in a session or ? in the session browser",
-                    );
-                    AppAction::None
-                }
-                (InformationDialog::TrustNotice, KeyCode::Char('q') | KeyCode::Esc) => {
-                    AppAction::Quit
-                }
                 (
                     InformationDialog::Help | InformationDialog::Context,
                     KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?'),

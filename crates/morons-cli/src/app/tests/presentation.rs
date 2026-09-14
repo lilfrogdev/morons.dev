@@ -1,14 +1,19 @@
 use super::*;
 
 #[test]
-fn trusted_local_onboarding_and_help_are_explicit_and_modal() {
+fn startup_is_unblocked_and_safety_help_remains_available() {
     let mut app = AppState::new("test-server");
-    app.information_dialog = Some(InformationDialog::TrustNotice);
+    assert!(app.information_dialog.is_none());
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)),
+        AppAction::None
+    );
+    assert_eq!(app.information_dialog, Some(InformationDialog::Help));
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
     terminal
         .draw(|frame| app.render(frame))
-        .expect("trust notice should render");
+        .expect("help should render");
     let rendered = terminal
         .backend()
         .buffer()
@@ -16,9 +21,10 @@ fn trusted_local_onboarding_and_help_are_explicit_and_modal() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains("not a sandbox"));
-    assert!(rendered.contains("container, VM"));
-    assert!(rendered.contains("restricted OS account"));
+    assert!(rendered.contains("normal user authority"));
+    assert!(rendered.contains("approval"));
+    assert!(rendered.contains("rollback"));
+    assert!(rendered.contains("containment is required"));
     assert_eq!(
         app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         AppAction::None
