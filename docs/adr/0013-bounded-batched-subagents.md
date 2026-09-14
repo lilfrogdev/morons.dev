@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted. Cumulative quotas and whole-batch deadlines are superseded by [ADR 0053](0053-uncapped-agent-loops.md); per-operation, context, concurrency and report bounds remain.
 
 This decision amends ADR 0012 by including deliberately bounded subagents in the MVP. ADR 0012's trusted-local authority, direct-working-directory, provider-custody, durability, cancellation, and no-managed-worktree decisions continue to apply.
 
@@ -23,7 +23,7 @@ The fixed tool catalog adds `task`. One call has this closed shape:
 - `context`: required bounded shared background supplied once to all children; and
 - `tasks`: one to three items, each containing an optional bounded ASCII name and one required bounded self-contained assignment.
 
-The parent should use a batch for independent work and assign disjoint mutations. The server rejects empty assignments, duplicate names, unknown fields, excessive bytes, excessive children, and more than two `task` calls in one top-level run.
+The parent should use a batch for independent work and assign disjoint mutations. The server rejects empty assignments, duplicate names, unknown fields, excessive bytes, and excessive children.
 
 The tool blocks the parent tool loop until every admitted child reaches a terminal result. Children run concurrently under one global four-child semaphore. Results are returned in input order regardless of completion order. Each result contains its index, optional name, terminal status, pinned model disclosure, bounded final report, provider-turn count, tool-call and mutation counts, and bounded provider usage. The complete `task` call and result are canonical parent transcript entries and enter later parent context.
 
@@ -40,7 +40,7 @@ A child receives only:
 
 It does not inherit the parent transcript, compaction checkpoint, images, reasoning continuation, active skill body, IPython memory, or sibling context. The parent must place necessary constraints and findings in `context` or the assignment. This explicit narrow handoff avoids retransmitting a potentially large parent conversation for every child.
 
-ADR 0018 amends the model-routing part of this decision. Children inherit the parent's exact reviewed service, model, and model limits by default. A typed global setting may instead select one exact reviewed child service/model pair; the executor resolves and pins that pair once per `task` call and never silently substitutes another. Children continue to use the parent's accepted credential generation. Each child has at most eight provider turns, twenty-four tool calls, eight mutating calls, 32 KiB of final report text, an 8,192-token output request, and ten minutes within the outer tool operation. Child context is conservatively estimated before every dispatch and is not compacted; a child that no longer fits returns a resource-limit result.
+ADR 0018 amends the model-routing part of this decision. Children inherit the parent's exact reviewed service, model, and model limits by default. A typed global setting may instead select one exact reviewed child service/model pair; the executor resolves and pins that pair once per `task` call and never silently substitutes another. Children continue to use the parent's accepted credential generation. Each child has at most 32 KiB of final report text and an 8,192-token output request, with no cumulative turn/tool/mutation quota or whole-batch deadline. Child context is conservatively estimated before every dispatch and is not compacted; a child that no longer fits returns a resource-limit result.
 
 ### Child capabilities and authority
 
@@ -60,7 +60,7 @@ Every child turn checks the parent's accepted credential generation immediately 
 
 A crash or task-executor failure after outer dispatch never restarts a child or repeats an inference, command, web request, or filesystem effect. Startup terminates the incomplete mutating `task` operation as uncertain using the existing tool recovery path. This accurately covers unknown nested provider usage and local effects without inventing child completion.
 
-Parent cancellation fans out to all running and semaphore-waiting children. The executor drains every child after cancellation or timeout before returning. Child shell and web operations use their existing cancellation contracts and process-tree controls. Cancellation and timeout do not roll back effects that already completed, and upstream provider billing may remain uncertain.
+Parent cancellation fans out to all running and semaphore-waiting children. The executor drains every child after cancellation before returning. Child shell and web operations use their existing cancellation contracts and process-tree controls. Cancellation and timeout do not roll back effects that already completed, and upstream provider billing may remain uncertain.
 
 Child provider failures, malformed output, context exhaustion, and ordinary tool failures become bounded per-child results when the outer operation itself completed and can report them. A panic or lost executor outcome makes the outer operation uncertain rather than fabricating child results.
 

@@ -1714,7 +1714,8 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                  ))
                 OR
                 (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
-                 AND accepted.tool_limits_version = accepted.tool_catalog_version
+                 AND (accepted.tool_limits_version = accepted.tool_catalog_version
+                      OR (accepted.tool_catalog_version = 13 AND accepted.tool_limits_version = 14))
                  AND accepted.execution_image_generation IS NULL
                  AND EXISTS (
                      SELECT 1 FROM session_created_facts AS session

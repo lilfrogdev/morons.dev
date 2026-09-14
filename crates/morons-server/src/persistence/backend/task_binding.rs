@@ -111,7 +111,7 @@ impl Backend {
                 .query_row("SELECT COUNT(*) FROM task_model_bindings", [], |row| {
                     row.get(0)
                 })?;
-        if missing || count > 100_000 * i64::from(crate::tools::MAX_TASK_CALLS_PER_RUN) {
+        if missing || count < 0 || count >= next {
             return Err(invalid());
         }
         let mut after = 0_i64;

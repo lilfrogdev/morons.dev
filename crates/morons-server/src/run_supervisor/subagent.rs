@@ -1,7 +1,7 @@
-use std::{collections::BTreeSet, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use sha2::{Digest as _, Sha256};
-use tokio::{sync::Semaphore, task::JoinSet, time};
+use tokio::{sync::Semaphore, task::JoinSet};
 
 use super::{NormalizedTurn, normalize_subagent_provider_turn};
 use crate::{
@@ -11,8 +11,7 @@ use crate::{
         ProviderMessageRole, ProviderUsage, provider_cancellation,
     },
     tools::{
-        BashToolExecutor, DirectToolExecutor, MAX_SUBAGENT_MUTATIONS, MAX_SUBAGENT_OUTPUT_BYTES,
-        MAX_SUBAGENT_PROVIDER_TURNS, MAX_SUBAGENT_TOOL_CALLS, SubagentModelDisclosure,
+        BashToolExecutor, DirectToolExecutor, MAX_SUBAGENT_OUTPUT_BYTES, SubagentModelDisclosure,
         SubagentResult, SubagentStatus, SubagentTask, SubagentUsage, ToolErrorKind, ToolInput,
         ToolKind, ToolOutput, ToolResult, WebSearchToolExecutor, subagent_provider_tools,
     },
@@ -22,7 +21,6 @@ use crate::{
 use crate::persistence::SubagentModelSetting;
 
 const MAX_CONCURRENT_SUBAGENTS: usize = 4;
-const MAX_SUBAGENT_DURATION: Duration = Duration::from_secs(10 * 60);
 const MAX_SUBAGENT_OUTPUT_TOKENS: u32 = 8_192;
 const SUBAGENT_CONVERSATION_CONTEXT: &[u8] = b"morons.dev/subagent-conversation/v1\0";
 
@@ -71,9 +69,9 @@ fn record_child_stop(current: &mut Option<ToolErrorKind>, observed: ToolErrorKin
 
 #[derive(Clone, Copy)]
 struct SubagentMetrics {
-    provider_turns: u16,
-    tool_calls: u16,
-    tool_mutations: u16,
+    provider_turns: u64,
+    tool_calls: u64,
+    tool_mutations: u64,
     usage: SubagentUsage,
 }
 
@@ -135,8 +133,6 @@ impl SubagentExecutor {
         }
 
         let mut parent_cancellation = cancellation.clone();
-        let deadline = time::sleep(MAX_SUBAGENT_DURATION);
-        tokio::pin!(deadline);
         let mut results = Vec::with_capacity(tasks.len());
         let mut stop_error = None;
         let mut persistence_error = None;
@@ -144,10 +140,6 @@ impl SubagentExecutor {
             tokio::select! {
                 _ = parent_cancellation.cancelled(), if stop_error.is_none() => {
                     stop_error = Some(ToolErrorKind::Cancelled);
-                    batch_handle.cancel();
-                }
-                () = &mut deadline, if stop_error.is_none() => {
-                    stop_error = Some(ToolErrorKind::TimedOut);
                     batch_handle.cancel();
                 }
                 joined = children.join_next() => {
@@ -247,9 +239,9 @@ impl SubagentExecutor {
             child_index: index,
         };
         let mut usage = SubagentUsage::default();
-        let mut provider_turns = 0_u16;
-        let mut tool_calls = 0_u16;
-        let mut tool_mutations = 0_u16;
+        let mut provider_turns = 0_u64;
+        let mut tool_calls = 0_u64;
+        let mut tool_mutations = 0_u64;
         let mut provider_call_ids = BTreeSet::new();
         let mut turn = match self.provider.turn(
             config.service.model_service(),
@@ -273,16 +265,16 @@ impl SubagentExecutor {
             if cancellation.is_cancelled() {
                 return Err(ChildStop::Cancelled);
             }
-            if provider_turns >= MAX_SUBAGENT_PROVIDER_TURNS {
+            let Some(next_provider_turn) = provider_turns.checked_add(1) else {
                 crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildProviderTurn });
                 return Ok(subagent_result(
                     index,
                     task.name,
                     SubagentStatus::ResourceLimit,
-                    "subagent provider-turn limit reached",
+                    "subagent provider-turn accounting overflow",
                     subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                 ));
-            }
+            };
             let Some(estimated_input_tokens) = estimate_provider_input(&input) else {
                 crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildContextEstimate });
                 return Ok(subagent_result(
@@ -369,7 +361,7 @@ impl SubagentExecutor {
                 Err(error) => return Err(ChildStop::Persistence(error)),
             };
             let provider_attempt_id = dispatch.diagnostic_attempt_id();
-            provider_turns = provider_turns.saturating_add(1);
+            provider_turns = next_provider_turn;
             let result = dispatch.execute(policy, &mut cancellation, |_| {}).await;
             crate::debug_log::emit(crate::debug_log::DebugEvent::Child {
                 session_id: config.session_id,
@@ -424,27 +416,27 @@ impl SubagentExecutor {
                     ));
                 }
                 Ok(NormalizedTurn::Tools { turn, reasoning }) => {
-                    let additional_calls = u16::try_from(turn.calls.len()).unwrap_or(u16::MAX);
-                    let additional_mutations = u16::try_from(
+                    let additional_calls = u64::try_from(turn.calls.len()).expect("bounded tool batch");
+                    let additional_mutations = u64::try_from(
                         turn.calls
                             .iter()
                             .filter(|call| call.input.kind().is_mutation())
                             .count(),
                     )
-                    .unwrap_or(u16::MAX);
+                    .expect("bounded tool batch");
                     if tool_calls
                         .checked_add(additional_calls)
-                        .is_none_or(|count| count > MAX_SUBAGENT_TOOL_CALLS)
+                        .is_none()
                         || tool_mutations
                             .checked_add(additional_mutations)
-                            .is_none_or(|count| count > MAX_SUBAGENT_MUTATIONS)
+                            .is_none()
                     {
                         crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildToolBudget });
                         return Ok(subagent_result(
                             index,
                             task.name,
                             SubagentStatus::ResourceLimit,
-                            "subagent tool-call limit reached",
+                            "subagent tool accounting overflow",
                             subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                         ));
                     }
@@ -470,6 +462,11 @@ impl SubagentExecutor {
                                 subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                             ));
                         }
+                        let ordinal = u64::try_from(provider_call_ids.len()).map_err(|_| {
+                            ChildStop::Persistence(crate::persistence::PersistenceError::InvalidState {
+                                reason: "child tool ordinal overflow",
+                            })
+                        })?;
                         let arguments = match call.input.provider_arguments() {
                             Ok(arguments) => arguments,
                             Err(_) => {
@@ -499,7 +496,7 @@ impl SubagentExecutor {
                             .execute_child_tool(
                                 working_directory.clone(),
                                 call.input,
-                                (&config, index, u16::try_from(provider_call_ids.len()).unwrap_or(u16::MAX)),
+                                (&config, index, ordinal),
                                 &cancellation,
                             )
                             .await.map_err(ChildStop::Persistence)?;
@@ -547,7 +544,7 @@ impl SubagentExecutor {
                         crate::debug_log::emit(crate::debug_log::DebugEvent::ChildTool {
                             location,
                             child_attempt: provider_turns,
-                            tool_ordinal: u16::try_from(provider_call_ids.len()).unwrap_or(u16::MAX),
+                            tool_ordinal: ordinal,
                             tool,
                             error,
                             exit_code,
@@ -625,7 +622,7 @@ impl SubagentExecutor {
         &self,
         working_directory: PathBuf,
         input: ToolInput,
-        scope: (&SubagentRunConfig, u16, u16),
+        scope: (&SubagentRunConfig, u16, u64),
         cancellation: &ProviderCancellation,
     ) -> Result<ToolResult, crate::persistence::PersistenceError> {
         let tool = input.kind();
@@ -875,9 +872,9 @@ fn failed_provider_result(
 }
 
 const fn subagent_metrics(
-    provider_turns: u16,
-    tool_calls: u16,
-    tool_mutations: u16,
+    provider_turns: u64,
+    tool_calls: u64,
+    tool_mutations: u64,
     usage: SubagentUsage,
 ) -> SubagentMetrics {
     SubagentMetrics {

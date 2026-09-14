@@ -24,16 +24,14 @@ use crate::{
         },
     },
     tools::{
-        MAX_TASK_CALLS_PER_RUN, MAX_TOOL_CALLS_PER_RUN, MAX_TOOL_MUTATIONS_PER_RUN,
-        MAX_TOOL_PAYLOAD_BYTES, MAX_TOOL_RESULT_BYTES_PER_RUN, ToolErrorKind, ToolInput, ToolKind,
-        ToolOutput, ToolResult, tool_path_digest,
+        MAX_TOOL_PAYLOAD_BYTES, ToolErrorKind, ToolInput, ToolKind, ToolOutput, ToolResult,
+        tool_path_digest,
     },
 };
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use sha2::Digest as _;
 
 const TOOL_PAYLOAD_VERSION: i64 = 1;
-const TOOL_TERMINAL_RESULT_RESERVE_BYTES: u64 = 16 * 1024;
 const TOOL_FACT_PREPARED: i64 = 1;
 const TOOL_FACT_DISPATCHED: i64 = 2;
 const TOOL_FACT_COMPLETED: i64 = 3;
@@ -90,27 +88,8 @@ impl Backend {
         }
         let new_call_count = run
             .tool_calls
-            .checked_add(u32::try_from(turn.calls.len()).map_err(|_| limit())?)
-            .filter(|count| *count <= MAX_TOOL_CALLS_PER_RUN)
+            .checked_add(u64::try_from(turn.calls.len()).map_err(|_| limit())?)
             .ok_or_else(limit)?;
-        let existing_task_calls: u32 = transaction.query_row(
-            "SELECT COUNT(*) FROM tool_calls WHERE run_id = ?1 AND tool_kind = ?2",
-            params![&run.id.as_bytes()[..], ToolKind::Task.to_record()],
-            |row| row.get(0),
-        )?;
-        let incoming_task_calls = u32::try_from(
-            turn.calls
-                .iter()
-                .filter(|call| call.input.kind() == ToolKind::Task)
-                .count(),
-        )
-        .map_err(|_| limit())?;
-        if existing_task_calls
-            .checked_add(incoming_task_calls)
-            .is_none_or(|count| count > MAX_TASK_CALLS_PER_RUN)
-        {
-            return Err(limit());
-        }
         let mutations = turn
             .calls
             .iter()
@@ -118,8 +97,7 @@ impl Backend {
             .count();
         let new_mutation_count = run
             .tool_mutations
-            .checked_add(u32::try_from(mutations).map_err(|_| limit())?)
-            .filter(|count| *count <= MAX_TOOL_MUTATIONS_PER_RUN)
+            .checked_add(u64::try_from(mutations).map_err(|_| limit())?)
             .ok_or_else(limit)?;
         let additional_entries = turn.calls.len() + usize::from(turn.commentary.is_some());
         let final_entry_high_water = entry_high_water
@@ -250,18 +228,19 @@ impl Backend {
         }
         transaction.execute(
             "UPDATE runs
-             SET provider_turns = provider_turns + 1,
+             SET provider_turns = ?6,
                  tool_calls = ?1,
                  tool_mutations = ?2,
                  updated_sequence = ?3,
                  updated_at_milliseconds = ?4
              WHERE run_id = ?5",
             params![
-                i64::from(new_call_count),
-                i64::from(new_mutation_count),
+                sequence_to_sql(new_call_count)?,
+                sequence_to_sql(new_mutation_count)?,
                 sequence_to_sql(latest_sequence)?,
                 time_to_sql(now)?,
                 &run.id.as_bytes()[..],
+                sequence_to_sql(run.provider_turns.checked_add(1).ok_or_else(limit)?)?,
             ],
         )?;
         update_entry_high_water(&transaction, &run, final_entry_high_water, latest_sequence)?;
@@ -440,8 +419,8 @@ impl Backend {
             .flatten();
         let mut image_staging =
             stage_tool_result_image(attachment_paths, attachment_session_id, &mut result)?;
-        let mut result_payload = encode_payload(&result)?;
-        let mut result_bytes = u64::try_from(result_payload.len()).map_err(|_| limit())?;
+        let result_payload = encode_payload(&result)?;
+        let result_bytes = u64::try_from(result_payload.len()).map_err(|_| limit())?;
         let fact_id = random_identifier()?;
         let entry_fact_id = random_identifier()?;
         let entry_id = MessageId::from_bytes(random_identifier()?);
@@ -457,25 +436,12 @@ impl Backend {
         require_tool_fact(&transaction, call_id, TOOL_FACT_PREPARED)?;
         ensure_tool_not_terminal(&transaction, call_id)?;
         let dispatched = tool_has_fact(&transaction, call_id, TOOL_FACT_DISPATCHED)?;
-        let ordinary_result_limit = MAX_TOOL_RESULT_BYTES_PER_RUN
-            .checked_sub(TOOL_TERMINAL_RESULT_RESERVE_BYTES)
-            .ok_or_else(limit)?;
-        if run
-            .tool_result_bytes
-            .checked_add(result_bytes)
-            .is_none_or(|bytes| bytes > ordinary_result_limit)
-        {
-            result = ToolResult::error(ToolErrorKind::ResourceLimit);
-            result_payload = encode_payload(&result)?;
-            result_bytes = u64::try_from(result_payload.len()).map_err(|_| limit())?;
-        }
         super::web_binding::validate_result(&transaction, call_id, &result)?;
         let (fact_kind, result_status) = classify_result(&result, dispatched)?;
         let workspace_event_id = result.is_uncertain().then(random_identifier).transpose()?;
         let new_result_bytes = run
             .tool_result_bytes
             .checked_add(result_bytes)
-            .filter(|bytes| *bytes <= MAX_TOOL_RESULT_BYTES_PER_RUN)
             .ok_or_else(limit)?;
         let entry_high_water = load_entry_high_water(&transaction, run.session_id)?;
         let entry_sequence = entry_high_water

@@ -153,11 +153,6 @@ impl Backend {
                 .ok_or(PersistenceError::ResourceLimit {
                     resource: PersistenceResourceLimit::Context,
                 })?;
-        if turn_index > crate::tools::MAX_PROVIDER_TURNS_PER_RUN {
-            return Err(PersistenceError::ResourceLimit {
-                resource: PersistenceResourceLimit::Context,
-            });
-        }
         if operation_pending {
             return Err(PersistenceError::InvalidState {
                 reason: "a run cannot prepare another provider operation",
@@ -327,8 +322,15 @@ impl Backend {
 
         // A committed complete response counts even if cancellation discards its text.
         transaction.execute(
-            "UPDATE runs SET provider_turns = provider_turns + 1 WHERE run_id = ?1",
-            [&run.id.as_bytes()[..]],
+            "UPDATE runs SET provider_turns = ?2 WHERE run_id = ?1",
+            params![
+                &run.id.as_bytes()[..],
+                sequence_to_sql(run.provider_turns.checked_add(1).ok_or(
+                    PersistenceError::ResourceLimit {
+                        resource: PersistenceResourceLimit::Context
+                    }
+                )?)?
+            ],
         )?;
         if run.cancellation_requested {
             append_run_transition(

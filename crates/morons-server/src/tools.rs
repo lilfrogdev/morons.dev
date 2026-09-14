@@ -25,7 +25,7 @@ pub(crate) use worktree::recovery_plan_is_valid;
 
 mod hosted_web;
 pub(crate) use hosted_web::{HostedWebResult, WebCitation, WebReceipt};
-pub(crate) const TOOL_LIMITS_VERSION: u16 = 13;
+pub(crate) const TOOL_LIMITS_VERSION: u16 = 14;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
 pub(crate) const LEGACY_SANDBOX_TOOL_LIMITS_VERSION: u16 = 2;
@@ -38,10 +38,6 @@ pub(crate) const MAX_COMMAND_ARGUMENT_BYTES: usize = 4096;
 pub(crate) const MAX_COMMAND_ARGUMENT_TOTAL_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_COMMAND_OUTPUT_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_TOOL_CALLS_PER_TURN: usize = 8;
-pub(crate) const MAX_TOOL_CALLS_PER_RUN: u32 = 64;
-pub(crate) const MAX_TOOL_MUTATIONS_PER_RUN: u32 = 16;
-pub(crate) const MAX_PROVIDER_TURNS_PER_RUN: u16 = 32;
-pub(crate) const MAX_TOOL_RESULT_BYTES_PER_RUN: u64 = 2 * 1024 * 1024;
 pub(crate) const MAX_TOOL_PAYLOAD_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const MAX_READ_OUTPUT_BYTES: usize = 64 * 1024;
@@ -62,10 +58,6 @@ pub(crate) const MAX_SUBAGENT_CONTEXT_BYTES: usize = 32 * 1024;
 pub(crate) const MAX_SUBAGENT_ASSIGNMENT_BYTES: usize = 16 * 1024;
 pub(crate) const MAX_SUBAGENT_NAME_BYTES: usize = 64;
 pub(crate) const MAX_SUBAGENT_OUTPUT_BYTES: usize = 32 * 1024;
-pub(crate) const MAX_SUBAGENT_PROVIDER_TURNS: u16 = 8;
-pub(crate) const MAX_SUBAGENT_TOOL_CALLS: u16 = 24;
-pub(crate) const MAX_SUBAGENT_MUTATIONS: u16 = 8;
-pub(crate) const MAX_TASK_CALLS_PER_RUN: u32 = 2;
 const TOOL_PATH_DIGEST_CONTEXT: &[u8] = b"morons.dev/tool-path/v1\0";
 
 pub(crate) fn tool_path_digest(path: &str) -> [u8; 32] {
@@ -464,9 +456,9 @@ pub(crate) struct SubagentResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<SubagentModelDisclosure>,
     pub output: String,
-    pub provider_turns: u16,
-    pub tool_calls: u16,
-    pub tool_mutations: u16,
+    pub provider_turns: u64,
+    pub tool_calls: u64,
+    pub tool_mutations: u64,
     pub usage: SubagentUsage,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web_searches: Vec<WebReceipt>,
@@ -1160,10 +1152,9 @@ fn validate_subagent_results(results: &[SubagentResult]) -> bool {
                         && model.protocol_revision > 0
                 })
                 && result.output.len() <= MAX_SUBAGENT_OUTPUT_BYTES
-                && result.provider_turns <= MAX_SUBAGENT_PROVIDER_TURNS
-                && result.tool_calls <= MAX_SUBAGENT_TOOL_CALLS
-                && result.tool_mutations <= MAX_SUBAGENT_MUTATIONS
-                && result.web_searches.len() <= usize::from(result.tool_calls)
+                && result.tool_mutations <= result.tool_calls
+                && u64::try_from(result.web_searches.len())
+                    .is_ok_and(|count| count <= result.tool_calls)
                 && result.web_searches.iter().all(WebReceipt::is_valid)
         })
 }

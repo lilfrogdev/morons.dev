@@ -4,6 +4,15 @@ mod native;
 
 #[tokio::test(flavor = "current_thread")]
 async fn schema32_migration_preserves_compactions_and_legacy_execution() {
+    migration_preserves_compactions(32).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn schema33_migration_preserves_compactions_and_accounting_epoch() {
+    migration_preserves_compactions(33).await;
+}
+
+async fn migration_preserves_compactions(version: u32) {
     use super::super::context_compaction::tests::{append_stopped, fixture};
     use crate::persistence::{MutationRequestId, RunModelSelection, RunService, SessionStore};
     let (root, _selected, store, session) = fixture("context-policy-migration").await;
@@ -54,7 +63,7 @@ async fn schema32_migration_preserves_compactions_and_legacy_execution() {
         .unwrap();
     drop(store);
     let db = Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
-    let tables = [
+    let mut tables = vec![
         "run_accepted_facts",
         "run_state_facts",
         "session_entries",
@@ -62,12 +71,23 @@ async fn schema32_migration_preserves_compactions_and_legacy_execution() {
         "context_checkpoints",
         "credential_audit_facts",
     ];
+    if version == 33 {
+        tables.extend([
+            "context_accounting_epoch",
+            "provider_operation_facts",
+            "logical_sequences",
+        ]);
+    }
     let before: Vec<_> = tables.iter().map(|table| rows(&db, table)).collect();
-    crate::persistence::data_use::tests::restore_schema_32(&db);
+    if version == 33 {
+        crate::persistence::data_use::tests::restore_schema_33(&db);
+    } else {
+        crate::persistence::data_use::tests::restore_schema_32(&db);
+    }
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        32
+        version
     );
     drop(db);
     let migrated = SessionStore::open_for_test(root.path()).unwrap();
@@ -76,7 +96,7 @@ async fn schema32_migration_preserves_compactions_and_legacy_execution() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        33
+        crate::persistence::database::SCHEMA_VERSION as u32
     );
     assert_eq!(
         before,
@@ -91,14 +111,14 @@ async fn schema32_migration_preserves_compactions_and_legacy_execution() {
     );
     let backup = Connection::open(
         root.path()
-            .join("backups/sessions-before-schema-v32.sqlite3"),
+            .join(format!("backups/sessions-before-schema-v{version}.sqlite3")),
     )
     .unwrap();
     assert_eq!(
         backup
             .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        32
+        version
     );
     assert_eq!(
         before,

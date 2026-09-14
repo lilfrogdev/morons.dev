@@ -107,7 +107,7 @@ fn debug_exact_schema_and_maximum_locators() {
                 session_id: [255; 16],
                 task_call_id: [255; 16],
                 child_index: u16::MAX,
-                child_attempt: u16::MAX,
+                child_attempt: u64::MAX,
                 provider_attempt_id: Some(u64::MAX),
                 receipt_accepted: false,
                 error,
@@ -115,7 +115,7 @@ fn debug_exact_schema_and_maximum_locators() {
             json!({
                 "format_version":1,"sequence":u64::MAX,"kind":"child",
                 "session_id":vec![255;16],"task_call_id":vec![255;16],"child_index":u16::MAX,
-                "child_attempt":u16::MAX,"provider_attempt_id":u64::MAX,
+                "child_attempt":u64::MAX,"provider_attempt_id":u64::MAX,
                 "receipt_accepted":false,"error":error
             })
         );
@@ -420,8 +420,8 @@ fn debug_runtime_maximum_records_are_bounded_and_located() {
         },
         DebugEvent::ChildTool {
             location,
-            child_attempt: u16::MAX,
-            tool_ordinal: u16::MAX,
+            child_attempt: u64::MAX,
+            tool_ordinal: u64::MAX,
             tool: DebugToolKind::Bash,
             error: None,
             exit_code: Some(i32::MIN),
