@@ -55,7 +55,6 @@ pub(super) enum PendingOperation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum InformationDialog {
     Context,
-    TrustNotice,
     Help,
 }
 
@@ -491,7 +490,7 @@ impl AppState {
             auth_dialog: None,
             auth_scroll: 0,
             auth_link_buttons: None,
-            information_dialog: initial_information_dialog(),
+            information_dialog: None,
             information_scroll: 0,
             rename_dialog: None,
             view: View::Sessions,
@@ -1573,17 +1572,6 @@ fn mark_shared_directories(sessions: &mut [PresentedSession]) {
                         && other.summary.working_directory.as_deref() == Some(directory)
                 })
             });
-    }
-}
-
-const fn initial_information_dialog() -> Option<InformationDialog> {
-    #[cfg(test)]
-    {
-        None
-    }
-    #[cfg(not(test))]
-    {
-        Some(InformationDialog::TrustNotice)
     }
 }
 
