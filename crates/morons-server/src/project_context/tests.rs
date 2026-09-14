@@ -137,7 +137,7 @@ fn automatic_discovery_skips_symlinks_and_special_files() {
     );
     fs::remove_file(root.0.join("AGENTS.md")).unwrap();
     assert!(
-        std::process::Command::new("/usr/bin/mkfifo")
+        std::process::Command::new("mkfifo")
             .arg(root.0.join("AGENTS.md"))
             .status()
             .unwrap()
