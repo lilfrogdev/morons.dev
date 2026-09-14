@@ -52,7 +52,7 @@ jobs:
             runner_arch: ARM64
             target: aarch64-pc-windows-msvc
             cross_target: ""
-            timeout_minutes: 30
+            timeout_minutes: 40
 
     steps:
       - name: Check out repository

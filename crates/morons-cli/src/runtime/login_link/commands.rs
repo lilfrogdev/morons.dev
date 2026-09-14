@@ -21,11 +21,7 @@ fn launcher(
             command.current_dir("/");
             command
         }
-        "linux" => {
-            let mut command = Command::new("/usr/bin/xdg-open");
-            command.current_dir("/").env_remove("BROWSER");
-            command
-        }
+        "linux" => linux_command(Path::new("/usr/bin/xdg-open").exists()),
         "windows" => {
             let root = Path::new(system_root.ok_or(())?);
             if !root.is_absolute() {
@@ -44,6 +40,16 @@ fn launcher(
     // Never format it into shell source or emit command/error Debug output.
     command.arg(url.as_str());
     Ok(command)
+}
+fn linux_command(xdg_open_exists: bool) -> Command {
+    // Fall back to a bare name so tokio resolves xdg-open via PATH (e.g. NixOS).
+    let mut command = Command::new(if xdg_open_exists {
+        "/usr/bin/xdg-open"
+    } else {
+        "xdg-open"
+    });
+    command.current_dir("/").env_remove("BROWSER");
+    command
 }
 pub(super) fn clipboard() -> Result<Command, ()> {
     let executable = std::env::current_exe().map_err(|_| ())?;
@@ -73,15 +79,8 @@ mod tests {
                     command.get_program(),
                     root.join("System32").join("rundll32.exe").as_os_str()
                 );
-            } else {
-                assert_eq!(
-                    command.get_program(),
-                    if os == "macos" {
-                        "/usr/bin/open"
-                    } else {
-                        "/usr/bin/xdg-open"
-                    }
-                );
+            } else if os == "macos" {
+                assert_eq!(command.get_program(), OsStr::new("/usr/bin/open"));
             }
             if os == "linux" {
                 assert!(
@@ -94,6 +93,18 @@ mod tests {
         assert!(launcher("windows", Some(OsStr::new("relative")), &url).is_err());
         assert!(launcher("windows", None, &url).is_err());
         assert!(launcher("other", None, &url).is_err());
+        for (xdg_open_exists, expected) in [(true, "/usr/bin/xdg-open"), (false, "xdg-open")] {
+            let command = linux_command(xdg_open_exists);
+            let command = command.as_std();
+            assert_eq!(command.get_program(), OsStr::new(expected));
+            assert_eq!(command.get_args().collect::<Vec<_>>(), Vec::<&OsStr>::new());
+            assert!(
+                command
+                    .get_envs()
+                    .any(|(key, value)| key == "BROWSER" && value.is_none())
+            );
+            assert_eq!(command.get_current_dir(), Some(Path::new("/")));
+        }
         let copy = clipboard().unwrap();
         assert_eq!(
             copy.as_std().get_args().collect::<Vec<_>>(),
