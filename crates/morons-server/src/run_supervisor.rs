@@ -45,7 +45,6 @@ use crate::{
 
 const MAX_CONCURRENT_RUNS: usize = 4;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_RUN_DURATION: Duration = Duration::from_secs(30 * 60);
 
 struct ProviderTurnContinuation {
     reasoning: Option<([u8; 16], Vec<ProviderInputItem>)>,
@@ -291,25 +290,7 @@ impl RunSupervisor {
         let mut delta_sequence = 0_u64;
         let mut provider_continuation = None;
         let mut provider_turn = None;
-        let run_deadline = time::Instant::now() + MAX_RUN_DURATION;
         loop {
-            if time::Instant::now() >= run_deadline {
-                self.sessions
-                    .finish_run_failure(
-                        run_id,
-                        None,
-                        RunFailureKind::ResourceLimit,
-                        ProviderOperationFailureState::Failed,
-                    )
-                    .await?;
-                crate::debug_log::emit(crate::debug_log::DebugEvent::Resource {
-                    location: crate::debug_log::DebugLocation::Root {
-                        run_id: *run_id.as_bytes(),
-                    },
-                    resource: crate::debug_log::DebugResource::RootDeadline,
-                });
-                return Ok(());
-            }
             if cancellation.is_cancelled() {
                 self.sessions.finish_run_stopped(run_id, None).await?;
                 return Ok(());
@@ -458,9 +439,8 @@ impl RunSupervisor {
             }
 
             let session_id = context.run.session_id;
-            let outcome = time::timeout_at(
-                run_deadline,
-                dispatch.execute(policy, &mut cancellation, |event| {
+            let outcome = dispatch
+                .execute(policy, &mut cancellation, |event| {
                     let ProviderStreamEvent::TextDelta { delta, refusal, .. } = event;
                     if delta.is_empty() {
                         return;
@@ -476,29 +456,8 @@ impl RunSupervisor {
                         delta,
                         refusal,
                     });
-                }),
-            )
-            .await;
-            let outcome = match outcome {
-                Err(_) => {
-                    self.sessions
-                        .finish_run_failure(
-                            run_id,
-                            Some(operation_id),
-                            RunFailureKind::ResourceLimit,
-                            ProviderOperationFailureState::Uncertain,
-                        )
-                        .await?;
-                    crate::debug_log::emit(crate::debug_log::DebugEvent::Resource {
-                        location: crate::debug_log::DebugLocation::Root {
-                            run_id: *run_id.as_bytes(),
-                        },
-                        resource: crate::debug_log::DebugResource::RootDeadline,
-                    });
-                    return Ok(());
-                }
-                Ok(outcome) => outcome,
-            };
+                })
+                .await;
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(ProviderError::Cancelled) => {

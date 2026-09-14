@@ -389,9 +389,9 @@ pub struct Run {
     pub(crate) estimated_input_tokens: u32,
     pub(crate) maximum_input_tokens: u32,
     pub(crate) maximum_output_tokens: u32,
-    pub(crate) provider_turns: u16,
-    pub(crate) tool_calls: u32,
-    pub(crate) tool_mutations: u32,
+    pub(crate) provider_turns: u64,
+    pub(crate) tool_calls: u64,
+    pub(crate) tool_mutations: u64,
     pub(crate) tool_result_bytes: u64,
 }
 

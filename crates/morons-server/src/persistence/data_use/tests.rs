@@ -4,7 +4,31 @@ mod policy;
 use rusqlite::Connection;
 
 /// Reconstruct the old schema, not just its user_version, in owned test fixtures.
+pub(crate) fn restore_schema_33(connection: &Connection) {
+    let reference = super::super::database::schema_29_fixture();
+    for schema in [
+        include_str!("../schema_v30.sql"),
+        include_str!("../schema_v31.sql"),
+        include_str!("../schema_v32.sql"),
+        include_str!("../schema_v33.sql"),
+    ] {
+        reference.execute_batch(schema).unwrap();
+    }
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")
+        .unwrap();
+    restore_tables(
+        connection,
+        &reference,
+        &["runs", "provider_operation_facts"],
+    );
+    connection
+        .execute_batch("PRAGMA user_version = 33; COMMIT; PRAGMA foreign_keys = ON;")
+        .unwrap();
+}
+
 pub(crate) fn restore_schema_32(connection: &Connection) {
+    restore_schema_33(connection);
     let reference = super::super::database::schema_29_fixture();
     connection
         .execute_batch(

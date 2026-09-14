@@ -66,7 +66,15 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
         .await
         .expect("subagent provider fixture should finish");
     let requests = requests.await.expect("requests should be captured");
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 14);
+    assert_eq!(
+        fs::read_to_string(selected.path().join("child-progress.txt")).unwrap(),
+        "8:2"
+    );
+    let parent_final = requests.last().unwrap();
+    assert!(parent_final.contains("\\\"provider_turns\\\":11"));
+    assert!(parent_final.contains("\\\"tool_calls\\\":28"));
+    assert!(parent_final.contains("\\\"tool_mutations\\\":27"));
     assert!(
         requests
             .iter()
@@ -75,10 +83,10 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
     );
     assert!(requests[0].contains("use task before implementation"));
     assert!(
-        requests[1..4]
+        requests[1..13]
             .iter()
             .all(|request| request.contains("focused execution subagent")
-                && request.contains("Child budget:")
+                && request.contains("Child execution:")
                 && !request.contains("use task before implementation"))
     );
     assert!(requests[0].contains("\"name\":\"task\""));
@@ -104,20 +112,20 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
     );
     assert!(requests[3].contains("\"role\":\"tool\""));
     assert!(requests[3].contains("alpha source"));
-    assert!(requests[4].contains("alpha report"));
-    assert!(requests[4].contains("beta report"));
-    assert!(requests[4].contains("OpenCode Go"));
-    assert!(requests[4].contains("glm-5.3-flash"));
+    assert!(parent_final.contains("alpha report"));
+    assert!(parent_final.contains("beta report"));
+    assert!(parent_final.contains("OpenCode Go"));
+    assert!(parent_final.contains("glm-5.3-flash"));
     assert!(requests[0].starts_with("POST /zen/v1/responses"));
     assert!(
-        requests[1..4]
+        requests[1..13]
             .iter()
             .all(|request| request.starts_with("POST /zen/go/v1/chat/completions"))
     );
     assert!(
-        requests[4]
+        parent_final
             .find("alpha report")
-            .zip(requests[4].find("beta report"))
+            .zip(parent_final.find("beta report"))
             .is_some_and(|(alpha, beta)| alpha < beta)
     );
     let headers = requests
@@ -130,7 +138,7 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
         2
     };
     let beta_index = if alpha_index == 1 { 2 } else { 1 };
-    assert_eq!(headers[0], headers[4]);
+    assert_eq!(headers[0], headers[13]);
     assert_eq!(headers[alpha_index], headers[3]);
     assert_ne!(headers[0], headers[alpha_index]);
     assert_ne!(headers[0], headers[beta_index]);

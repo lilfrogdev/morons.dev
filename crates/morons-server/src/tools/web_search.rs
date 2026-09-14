@@ -40,7 +40,7 @@ impl WebSearchToolExecutor {
         input: &ToolInput,
         binding: &WebBinding,
         child: u16,
-        ordinal: u16,
+        ordinal: u64,
         cancellation: &ProviderCancellation,
     ) -> Result<ToolResult, PersistenceError> {
         let ToolInput::WebSearch { query } = input else {
@@ -50,10 +50,7 @@ impl WebSearchToolExecutor {
         let scope_valid = if child == 0 {
             ordinal == 0 && binding.query_digest == Some(digest) && binding.children == 0
         } else {
-            binding.query_digest.is_none()
-                && child <= binding.children
-                && ordinal > 0
-                && ordinal <= super::MAX_SUBAGENT_TOOL_CALLS
+            binding.query_digest.is_none() && child <= binding.children && ordinal > 0
         };
         if !scope_valid {
             return Err(PersistenceError::InvalidState {
@@ -68,14 +65,7 @@ impl WebSearchToolExecutor {
             Ok(p) => p.restrictions,
             Err(error) => return admission_error(error),
         };
-        let bytes = Sha256::new()
-            .chain_update(b"morons.dev/owned-web-invocation/v1\0")
-            .chain_update(binding.operation_id)
-            .chain_update(child.to_be_bytes())
-            .chain_update(ordinal.to_be_bytes())
-            .finalize();
-        let mut operation = [0; 16];
-        operation.copy_from_slice(&bytes[..16]);
+        let operation = invocation_id(binding.operation_id, child, ordinal);
         let mut attempt =
             match self
                 .provider
@@ -140,6 +130,18 @@ impl WebSearchToolExecutor {
         })
     }
 }
+fn invocation_id(owner: [u8; 16], child: u16, ordinal: u64) -> [u8; 16] {
+    let bytes = Sha256::new()
+        .chain_update(b"morons.dev/owned-web-invocation/v2\0")
+        .chain_update(owner)
+        .chain_update(child.to_be_bytes())
+        .chain_update(ordinal.to_be_bytes())
+        .finalize();
+    let mut operation = [0; 16];
+    operation.copy_from_slice(&bytes[..16]);
+    operation
+}
+
 fn admission_error(error: PersistenceError) -> Result<ToolResult, PersistenceError> {
     match error {
         PersistenceError::OpenAiCredentialNotConfigured => {
@@ -166,4 +168,27 @@ fn preflight_error(error: ProviderError) -> Result<ToolResult, PersistenceError>
         _ => ToolErrorKind::WebSearchUnavailable,
     };
     Ok(ToolResult::error(kind))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::invocation_id;
+
+    #[test]
+    fn invocation_identity_preserves_wide_ordinals_and_owner_scope() {
+        let owner = [1; 16];
+        let ordinal = u64::from(u16::MAX) + 1;
+        let id = invocation_id(owner, 1, ordinal);
+        assert_eq!(id, invocation_id(owner, 1, ordinal));
+        for other in [
+            invocation_id(owner, 1, 0),
+            invocation_id(owner, 1, ordinal - 1),
+            invocation_id(owner, 1, ordinal + 1),
+            invocation_id(owner, 2, ordinal),
+            invocation_id([2; 16], 1, ordinal),
+            invocation_id(owner, 1, u64::MAX),
+        ] {
+            assert_ne!(id, other);
+        }
+    }
 }

@@ -27,7 +27,6 @@ pub enum DebugResource {
     CredentialMutations,
     ModelSelections,
     DataUsePolicies,
-    RootDeadline,
     ChildProviderTurn,
     ChildContextEstimate,
     ChildContextBudget,

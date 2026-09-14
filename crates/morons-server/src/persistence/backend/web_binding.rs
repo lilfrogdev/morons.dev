@@ -307,7 +307,8 @@ pub(super) fn validate_result(
         } if results.iter().any(|r| {
             !r.web_searches.is_empty()
                 && (binding.generation == 0
-                    || r.web_searches.len() > usize::from(r.tool_calls)
+                    || !u64::try_from(r.web_searches.len())
+                        .is_ok_and(|count| count <= r.tool_calls)
                     || r.web_searches.iter().any(|w| !w.is_valid()))
         }) =>
         {
@@ -331,7 +332,7 @@ fn diagnostic_allowed(
         [binding.run_id.as_bytes()],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    Ok(catalog == limits && failure.valid_for_catalog(catalog))
+    Ok((catalog == limits || (catalog, limits) == (13, 14)) && failure.valid_for_catalog(catalog))
 }
 fn invalid() -> PersistenceError {
     PersistenceError::InvalidState {

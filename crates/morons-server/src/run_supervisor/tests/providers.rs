@@ -309,6 +309,40 @@ pub(super) async fn spawn_subagent_provider() -> (
                 .expect("child provider response should close");
         }
 
+        for turn in 0..9 {
+            let (mut child, _) = listener
+                .accept()
+                .await
+                .expect("child should continue beyond quotas");
+            captured.push(String::from_utf8(read_http_request(&mut child).await).unwrap());
+            let calls = (0..3)
+                .map(|index| {
+                    serde_json::json!({
+                        "index": index,
+                        "id": format!("child_write_{turn}_{index}"),
+                        "type": "function",
+                        "function": {
+                            "name": "write",
+                            "arguments": serde_json::json!({
+                                "path": "child-progress.txt",
+                                "content": format!("{turn}:{index}")
+                            }).to_string()
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            let chunk = serde_json::json!({
+                "id": format!("chat_child_write_{turn}"), "created": 1, "model": "glm-5.3-flash",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": calls},
+                    "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11}
+            });
+            let body = format!("data: {chunk}\n\ndata: [DONE]\n\n");
+            write_provider_headers(&mut child, body.len()).await;
+            child.write_all(body.as_bytes()).await.unwrap();
+            child.shutdown().await.unwrap();
+        }
+
         let (mut child_final, _) = listener
             .accept()
             .await

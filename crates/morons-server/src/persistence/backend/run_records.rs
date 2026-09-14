@@ -245,9 +245,9 @@ pub(super) fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         estimated_input_tokens,
         maximum_input_tokens,
         maximum_output_tokens,
-        provider_turns: nonnegative_u16_from_row(row, 14)?,
-        tool_calls: nonnegative_u32_from_row(row, 15)?,
-        tool_mutations: nonnegative_u32_from_row(row, 16)?,
+        provider_turns: nonnegative_integer_from_row(row, 14)?,
+        tool_calls: nonnegative_integer_from_row(row, 15)?,
+        tool_mutations: nonnegative_integer_from_row(row, 16)?,
         tool_result_bytes: nonnegative_integer_from_row(row, 17)?,
         state,
         cancellation_requested: row.get(19)?,
@@ -372,16 +372,6 @@ pub(super) fn nonnegative_u16_from_row(
 ) -> rusqlite::Result<u16> {
     let value = nonnegative_integer_from_row(row, index)?;
     u16::try_from(value).map_err(|_| {
-        rusqlite::Error::IntegralValueOutOfRange(index, i64::try_from(value).unwrap_or(i64::MAX))
-    })
-}
-
-pub(super) fn nonnegative_u32_from_row(
-    row: &rusqlite::Row<'_>,
-    index: usize,
-) -> rusqlite::Result<u32> {
-    let value = nonnegative_integer_from_row(row, index)?;
-    u32::try_from(value).map_err(|_| {
         rusqlite::Error::IntegralValueOutOfRange(index, i64::try_from(value).unwrap_or(i64::MAX))
     })
 }
