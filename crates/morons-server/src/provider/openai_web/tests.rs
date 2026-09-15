@@ -149,6 +149,77 @@ fn hosted_actions_and_unicode_citations_are_bounded_metadata_not_local_navigatio
 }
 
 #[test]
+fn hosted_citation_offsets_address_the_complete_message() {
+    let mut data = events();
+    let content = &mut data[2]["item"]["content"];
+    *content = json!([
+        {"type":"output_text", "text":"First paragraph. ", "annotations":[]},
+        {"type":"output_text", "text":"Source.", "annotations":[{
+            "type":"url_citation", "url":"https://example.com/source",
+            "title":"Source", "start_index":17, "end_index":24
+        }]}
+    ]);
+    let result = decode_response(&wire(&data)).unwrap();
+    assert_eq!(result.answer, "First paragraph. Source.");
+    assert_eq!(result.citations.len(), 1);
+    let mut full = data.clone();
+    full[3]["response"]["output"] = json!([item_call(), data[2]["item"].clone()]);
+    assert_eq!(decode_response(&wire(&full)).unwrap(), result);
+    full.remove(2);
+    full.remove(1);
+    assert_eq!(decode_response(&wire(&full)).unwrap(), result);
+
+    let mut streamed = data.clone();
+    streamed[3]["response"]["output"] = json!([item_call(), data[2]["item"].clone()]);
+    streamed.insert(
+        2,
+        json!({
+            "type":"response.output_text.annotation.added", "output_index":1,
+            "content_index":1, "annotation_index":0, "item_id":"msg_fixture",
+            "annotation":data[2]["item"]["content"][1]["annotations"][0].clone()
+        }),
+    );
+    assert_eq!(decode_response(&wire(&streamed)).unwrap(), result);
+    streamed[2]["annotation"]["end_index"] = json!(23);
+    let mut stage = crate::web_diagnostic::WebStage::Citation;
+    assert_eq!(
+        super::decode::decode_response_at(&wire(&streamed), &mut stage),
+        Err(ProviderError::MalformedResponse)
+    );
+    assert_eq!(stage, crate::web_diagnostic::WebStage::Citation);
+
+    for (start, end) in [(17, 25), (24, 17), (0, u64::MAX)] {
+        let mut bad = data.clone();
+        let annotation = &mut bad[2]["item"]["content"][1]["annotations"][0];
+        annotation["start_index"] = json!(start);
+        annotation["end_index"] = json!(end);
+        assert_eq!(
+            decode_response(&wire(&bad)),
+            Err(ProviderError::MalformedResponse)
+        );
+    }
+}
+
+#[test]
+fn hosted_citation_bounds_do_not_include_other_messages() {
+    let mut data = events();
+    let mut commentary = item_message();
+    commentary["id"] = json!("msg_commentary");
+    commentary["phase"] = json!("commentary");
+    commentary["content"][0]["text"] = json!("Long commentary is not part of the final answer.");
+    data.insert(
+        2,
+        json!({"type":"response.output_item.done", "output_index":2, "item":commentary}),
+    );
+    assert!(decode_response(&wire(&data)).is_ok());
+    data[3]["item"]["content"][0]["annotations"][0]["end_index"] = json!(16);
+    assert_eq!(
+        decode_response(&wire(&data)),
+        Err(ProviderError::MalformedResponse)
+    );
+}
+
+#[test]
 fn hosted_output_rejects_missing_search_citations_and_contradictions() {
     let mutations: [fn(&mut Vec<Value>); 16] = [
         |v| {
