@@ -466,7 +466,22 @@ async fn ipython_tool_reuses_one_session_kernel_and_commits_bounded_results() {
         .expect("provider requests should be captured");
     assert_eq!(provider_requests.len(), 3);
     assert!(provider_requests[0].contains("\"name\":\"ipython\""));
-    assert!(provider_requests[1].contains("\\\"execution_count\\\":1"));
+    let (_, first_request_body) = provider_requests[1]
+        .split_once("\r\n\r\n")
+        .expect("captured HTTP request should contain a body");
+    let first_request: serde_json::Value = serde_json::from_str(first_request_body).unwrap();
+    let first_python_result = first_request["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["type"] == "function_call_output")
+        .expect("first Python tool result should reach the provider");
+    let first_python_output: serde_json::Value =
+        serde_json::from_str(first_python_result["output"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        first_python_output["output"]["execution_count"], 1,
+        "first Python execution failed: {first_python_output}; requires MORONS_PYTHON or python3 with jupyter_client and ipykernel"
+    );
     assert!(provider_requests[2].contains("\\\"display\\\":\\\"42\\\""));
 
     let mut cursor = None;
