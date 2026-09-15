@@ -9,7 +9,7 @@ use crate::provider::{
 };
 use bytes::Bytes;
 use serde::Serialize;
-use std::{fmt, sync::Arc};
+use std::{collections::BTreeSet, fmt, sync::Arc};
 
 /// Local validation only; maximum_output_tokens is not sent or enforced as a spending cap.
 #[derive(Clone, Copy, Debug)]
@@ -21,6 +21,7 @@ pub struct CodexRequest {
     pub(super) identity: Arc<Identity>,
     pub(super) sequence: u64,
     pub(super) body: Bytes,
+    pub(super) reasoning: BTreeSet<[u8; 32]>,
     pub(super) limits: CodexRequestLimits,
 }
 impl fmt::Debug for CodexRequest {
@@ -72,19 +73,20 @@ impl CodexRequest {
             return Err(ProviderError::InvalidRequest);
         }
         let input_bytes = validate_input(input, ProviderProtocol::Responses, model.capabilities)?;
+        let mut reasoning = BTreeSet::new();
         for item in input {
             if let ProviderInputItem::Reasoning {
                 id,
                 summaries,
                 encrypted_content,
             } = item
-                && !turn.reasoning.contains(&super::turn::reasoning_fingerprint(
-                    id,
-                    summaries,
-                    encrypted_content.as_deref(),
-                ))
             {
-                return Err(ProviderError::InvalidRequest);
+                let fingerprint =
+                    super::turn::reasoning_fingerprint(id, summaries, encrypted_content.as_deref());
+                if !turn.reasoning.contains(&fingerprint) {
+                    return Err(ProviderError::InvalidRequest);
+                }
+                reasoning.insert(fingerprint);
             }
         }
         if input_bytes
@@ -115,6 +117,7 @@ impl CodexRequest {
             identity: turn.identity.clone(),
             sequence: turn.sequence,
             body: Bytes::from(body),
+            reasoning,
             limits,
         })
     }
