@@ -239,6 +239,7 @@ async fn reasoning_continuation_is_receipt_bound_and_cannot_cross_turns() {
         let (mut socket, _) = listener.accept().await.unwrap();
         let _ = mock_request(&mut socket).await;
         respond(&mut socket, "200 OK", "", &sse(5)).await;
+        listener
     });
     let outcome = provider
         .prepare_dispatch(
@@ -252,7 +253,7 @@ async fn reasoning_continuation_is_receipt_bound_and_cannot_cross_turns() {
         .execute(DataUseRestrictions::default(), &mut cancel, |_| {})
         .await
         .unwrap();
-    peer.await.unwrap();
+    let listener = peer.await.unwrap();
     let reasoning = outcome
         .output
         .into_iter()
@@ -282,6 +283,35 @@ async fn reasoning_continuation_is_receipt_bound_and_cannot_cross_turns() {
         )
     };
     assert!(build(&turn, continuation.clone()).is_ok());
+    let second = build(&turn, continuation.clone()).unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let _ = mock_request(&mut socket).await;
+        let body = String::from_utf8(sse(5))
+            .unwrap()
+            .replace("rs_fixture", "rs_second")
+            .replace("opaque-response-fixture", "opaque-second");
+        respond(&mut socket, "200 OK", "", body.as_bytes()).await;
+        listener
+    });
+    provider
+        .prepare_dispatch(
+            &mut turn,
+            &second,
+            DataUseRestrictions::default(),
+            &mut cancel,
+        )
+        .await
+        .unwrap()
+        .execute(DataUseRestrictions::default(), &mut cancel, |_| {})
+        .await
+        .unwrap();
+    let listener = peer.await.unwrap();
+    assert!(
+        build(&turn, continuation.clone()).is_ok(),
+        "third request must accept retained first-response reasoning"
+    );
+    let retained = continuation.clone();
     let other = provider.new_turn([1; 16], [2; 16], 1, "gpt-5.5").unwrap();
     assert!(build(&other, continuation.clone()).is_err());
     let ProviderInputItem::Reasoning {
@@ -299,9 +329,82 @@ async fn reasoning_continuation_is_receipt_bound_and_cannot_cross_turns() {
             ProviderInputItem::Reasoning {
                 id,
                 summaries,
-                encrypted_content
+                encrypted_content,
             }
         )
         .is_err()
+    );
+    let mut third_input = input();
+    third_input.push(retained.clone());
+    third_input.push(ProviderInputItem::Reasoning {
+        id: "rs_second".into(),
+        summaries: Vec::new(),
+        encrypted_content: Some("opaque-second".into()),
+    });
+    let third = CodexRequest::new(
+        &turn,
+        "core",
+        third_input,
+        Vec::new(),
+        request.limits,
+        DataUseRestrictions::default(),
+    )
+    .unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let wire = mock_request(&mut socket).await;
+        assert!(wire.contains("opaque-response-fixture"));
+        assert!(wire.contains("opaque-second"));
+        respond(&mut socket, "200 OK", "", &sse(5)).await;
+        listener
+    });
+    provider
+        .prepare_dispatch(
+            &mut turn,
+            &third,
+            DataUseRestrictions::default(),
+            &mut cancel,
+        )
+        .await
+        .unwrap()
+        .execute(DataUseRestrictions::default(), &mut cancel, |_| {})
+        .await
+        .unwrap();
+    let listener = peer.await.unwrap();
+    assert!(build(&turn, retained.clone()).is_ok());
+    let omitted = CodexRequest::new(
+        &turn,
+        "core",
+        input(),
+        Vec::new(),
+        request.limits,
+        DataUseRestrictions::default(),
+    )
+    .unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let _ = mock_request(&mut socket).await;
+        let body = String::from_utf8(sse(5))
+            .unwrap()
+            .replace("rs_fixture", "rs_latest")
+            .replace("opaque-response-fixture", "opaque-latest");
+        respond(&mut socket, "200 OK", "", body.as_bytes()).await;
+    });
+    provider
+        .prepare_dispatch(
+            &mut turn,
+            &omitted,
+            DataUseRestrictions::default(),
+            &mut cancel,
+        )
+        .await
+        .unwrap()
+        .execute(DataUseRestrictions::default(), &mut cancel, |_| {})
+        .await
+        .unwrap();
+    peer.await.unwrap();
+    assert!(
+        build(&turn, retained).is_err(),
+        "omitted reasoning must be forgotten"
     );
 }

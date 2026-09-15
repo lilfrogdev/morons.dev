@@ -262,10 +262,10 @@ impl PreparedCodexDispatch<'_> {
         if Instant::now() >= deadline {
             return Err(ProviderError::TotalTimeout);
         }
-        self.turn.reasoning = outcome
-            .output
-            .iter()
-            .filter_map(|item| match item {
+        self.turn.reasoning = self.request.reasoning.clone();
+        self.turn
+            .reasoning
+            .extend(outcome.output.iter().filter_map(|item| match item {
                 crate::provider::ProviderOutputItem::Reasoning(reasoning) => {
                     Some(super::turn::reasoning_fingerprint(
                         &reasoning.provider_item_id,
@@ -274,8 +274,7 @@ impl PreparedCodexDispatch<'_> {
                     ))
                 }
                 _ => None,
-            })
-            .collect();
+            }));
         self.turn.failure = None;
         self.turn.usable = true;
         Ok(outcome)
