@@ -158,6 +158,7 @@ pub(super) fn parse(
                 }
                 let mut answer = String::new();
                 let mut citations = Vec::new();
+                let mut citation_end = 0;
                 for part in content {
                     *stage = WebStage::AssistantMessage;
                     if string(part, "type")? != "output_text"
@@ -185,16 +186,20 @@ pub(super) fn parse(
                         let title = string(annotation, "title")?;
                         let start = number(annotation, "start_index")?;
                         let end = number(annotation, "end_index")?;
-                        // Offsets remain provider metadata. No UTF-8 slicing or unit conversion.
-                        if title.len() > 512 || start > end || end > text.len() as u64 {
+                        // Offsets address the whole message, not an individual text part.
+                        if title.len() > 512 || start > end {
                             return Err(ProviderError::MalformedResponse);
                         }
+                        citation_end = citation_end.max(end);
                         citations.push(Citation {
                             url: source.into(),
                             title: title.into(),
                         });
                     }
                     answer.push_str(text);
+                }
+                if citation_end > answer.len() as u64 {
+                    return Err(ProviderError::MalformedResponse);
                 }
                 if phase != Some("commentary") {
                     final_messages += 1;

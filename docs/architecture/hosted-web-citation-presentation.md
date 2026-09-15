@@ -1,0 +1,3 @@
+# Hosted-web citation validation
+
+The OpenAI SDK defines URL-citation offsets relative to the message, not each output-text part ([schema](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_output_text.py)). Validate their ordering while parsing and their upper bound against the complete bounded message. Offsets remain discarded metadata, never Rust slicing authority. Keep existing citation counts, URL/title bounds, completed-search requirement, usage and stream-integrity checks. This fixes multipart compatibility; it does not establish the cause of a historical citation-stage rejection without its payload.
