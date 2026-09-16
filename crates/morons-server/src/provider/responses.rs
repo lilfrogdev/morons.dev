@@ -724,12 +724,15 @@ use validation::{
 };
 pub(super) use validation::{validate_event_value, validate_response_identifier};
 
-pub(super) fn decode_usage(
-    value: Value,
+pub(super) fn decode_usage_detailed(
+    value: Option<Value>,
     input_limit: u32,
     output_limit: u32,
-) -> Result<ProviderUsage, ProviderError> {
-    let usage = serde_json::from_value(value).map_err(|_| ProviderError::MalformedResponse)?;
-    validate_usage(usage, input_limit, output_limit)
+) -> Result<ProviderUsage, crate::debug_log::DebugUsageRejection> {
+    use crate::debug_log::DebugUsageRejection as Reason;
+    let usage =
+        serde_json::from_value(value.ok_or(Reason::Missing)?).map_err(|_| Reason::Schema)?;
+    validation::validate_usage_detailed(usage, input_limit, output_limit)
 }
+
 use wire::*;

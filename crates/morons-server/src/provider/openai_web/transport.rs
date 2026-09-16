@@ -217,7 +217,16 @@ impl PreparedSearch<'_> {
         if cancellation.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
-        super::decode::decode_response_at(&body, &mut self.attempt.stage)
+        let mut usage_rejection = None;
+        let result = super::decode::decode_response_detailed(
+            &body,
+            &mut self.attempt.stage,
+            &mut usage_rejection,
+        );
+        if let Some(reason) = usage_rejection {
+            crate::debug_log::emit(crate::debug_log::DebugEvent::WebUsage { reason });
+        }
+        result
     }
 }
 fn identifier(domain: &[u8], operation: [u8; 16], generation: u64) -> String {

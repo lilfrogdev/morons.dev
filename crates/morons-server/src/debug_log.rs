@@ -69,6 +69,20 @@ pub enum DebugFinish {
     Other,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugUsageRejection {
+    Missing,
+    Schema,
+    InputLimit,
+    OutputLimit,
+    TotalLimit,
+    CachedInput,
+    CacheWriteInput,
+    ReasoningOutput,
+    TotalMismatch,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DebugEvent {
@@ -89,6 +103,9 @@ pub enum DebugEvent {
         error: Option<DebugToolError>,
         exit_code: Option<i32>,
         signal: Option<u16>,
+    },
+    WebUsage {
+        reason: DebugUsageRejection,
     },
     Started,
     Provider {
