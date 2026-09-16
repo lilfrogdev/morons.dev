@@ -1,7 +1,5 @@
 use super::super::{
-    Backend,
-    context_budget::MAX_COMPACTION_SUMMARY_BYTES,
-    context_execution::{self, ExecutionPolicy},
+    Backend, context_budget::MAX_COMPACTION_SUMMARY_BYTES, context_execution,
     records::sequence_to_sql,
 };
 use crate::persistence::{PersistenceError, Run};
@@ -15,7 +13,8 @@ impl Backend {
         through: u64,
         instructions: usize,
     ) -> Result<Option<u64>, PersistenceError> {
-        if context_execution::policy(&self.connection, run.id)? != ExecutionPolicy::NativeUsage {
+        let execution = context_execution::policy(&self.connection, run.id)?;
+        if !execution.allows_within_run_compaction() {
             return Ok(None);
         }
         let user = self.context_budget(
@@ -40,6 +39,17 @@ impl Backend {
                 || !context_execution::complete_cut(&self.connection, run.id, cut)?
             {
                 continue;
+            }
+            if execution == context_execution::ExecutionPolicy::ConservativeRepeated {
+                let removed = self.context_budget(run.session_id, covered, cut)?;
+                let restored_user_bytes = if covered < run.source_entry_high_water {
+                    user.bytes
+                } else {
+                    0
+                };
+                if removed.bytes <= restored_user_bytes + MAX_COMPACTION_SUMMARY_BYTES as u64 {
+                    continue;
+                }
             }
             let mut tail = self.context_budget(run.session_id, cut, through)?;
             // At least the most recent completed call/result batch stays canonical.
@@ -69,7 +79,7 @@ pub(in crate::persistence) fn source_allowed(
     if cut < u64::try_from(initial).map_err(|_| invalid())? {
         return Ok(true);
     }
-    if context_execution::policy(connection, run)? != ExecutionPolicy::NativeUsage {
+    if !context_execution::policy(connection, run)?.allows_within_run_compaction() {
         return Ok(false);
     }
     let metadata_valid: bool = connection.query_row(

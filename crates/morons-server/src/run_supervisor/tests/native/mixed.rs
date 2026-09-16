@@ -176,7 +176,19 @@ async fn mixed_child_flow(parent_native: Option<&'static str>, child_native: Opt
         )
         .unwrap();
     } else {
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+        let error = db
+            .execute("DELETE FROM task_model_bindings", [])
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            rusqlite::Error::SqliteFailure(code, _)
+                if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY
+        ));
+        // Inject missing-binding corruption without removing the dependent child evidence.
+        db.pragma_update(None, "foreign_keys", false).unwrap();
         db.execute("DELETE FROM task_model_bindings", []).unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
     }
     assert!(
         store

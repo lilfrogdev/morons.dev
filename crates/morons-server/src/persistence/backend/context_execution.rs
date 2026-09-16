@@ -11,6 +11,7 @@ pub(super) const MAX_COMPACTIONS: u32 = 4;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::persistence) enum ExecutionPolicy {
     Legacy,
+    ConservativeRepeated,
     NativeUsage,
 }
 
@@ -30,14 +31,31 @@ pub(in crate::persistence) fn policy(
          FROM run_accepted_facts AS accepted CROSS JOIN context_accounting_epoch AS epoch
          WHERE accepted.run_id = ?1 AND epoch.singleton = 1",
         [&run.as_bytes()[..]], |r| r.get(0))?;
+    let repeated: bool = connection.query_row(
+        "SELECT accepted.fact_sequence >= epoch.repeated_first_sequence
+          AND accepted.open_code_service IN (1, 2) AND accepted.protocol_revision BETWEEN 1 AND 4
+          AND accepted.context_policy_version = 4
+          AND accepted.tool_catalog_version = 14 AND accepted.tool_limits_version = 14
+          AND accepted.maximum_input_tokens = 96000 AND accepted.maximum_output_tokens = 32000
+         FROM run_accepted_facts AS accepted CROSS JOIN context_accounting_epoch AS epoch
+         WHERE accepted.run_id = ?1 AND epoch.singleton = 1",
+        [&run.as_bytes()[..]],
+        |r| r.get(0),
+    )?;
     Ok(if enabled {
         ExecutionPolicy::NativeUsage
+    } else if repeated {
+        ExecutionPolicy::ConservativeRepeated
     } else {
         ExecutionPolicy::Legacy
     })
 }
 
 impl ExecutionPolicy {
+    pub(super) fn allows_within_run_compaction(self) -> bool {
+        self != Self::Legacy
+    }
+
     pub(super) fn estimate(self, budget: &ContextBudget, extra: usize) -> u64 {
         if self == Self::NativeUsage && budget.images == 0 {
             budget.estimated_tokens(extra)
@@ -47,7 +65,7 @@ impl ExecutionPolicy {
     }
 
     pub(super) fn fits(self, budget: &ContextBudget, maximum: u32, extra: usize) -> bool {
-        if self == Self::Legacy {
+        if self != Self::NativeUsage {
             return budget.fits(maximum, extra);
         }
         self.estimate(budget, extra) <= u64::from(maximum)
@@ -62,7 +80,7 @@ impl ExecutionPolicy {
     }
 
     pub(super) fn pressure(self, budget: &ContextBudget, maximum: u32, extra: usize) -> bool {
-        if self == Self::Legacy {
+        if self != Self::NativeUsage {
             return budget.pressure(maximum, extra);
         }
         !self.fits(budget, maximum, extra)
@@ -102,7 +120,7 @@ pub(super) fn can_compact(connection: &Connection, run: RunId) -> Result<bool, P
         "SELECT COUNT(*), COALESCE(MAX(state != 3),0), COALESCE(MAX(updated_sequence),0) FROM compaction_operations WHERE run_id = ?1",
         [&run.as_bytes()[..]], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
     let execution = policy(connection, run)?;
-    if execution == ExecutionPolicy::NativeUsage {
+    if execution.allows_within_run_compaction() {
         let pending: bool = connection.query_row("SELECT EXISTS (SELECT 1 FROM provider_operation_facts AS prepared WHERE prepared.run_id = ?1 AND prepared.fact_kind = 1 AND NOT EXISTS (SELECT 1 FROM provider_operation_facts AS terminal WHERE terminal.operation_id = prepared.operation_id AND terminal.fact_kind BETWEEN 3 AND 6)) OR EXISTS (SELECT 1 FROM tool_calls AS call WHERE call.run_id = ?1 AND NOT EXISTS (SELECT 1 FROM session_entries AS result WHERE result.tool_call_id = call.call_id AND result.entry_kind = 4))", [&run.as_bytes()[..]], |r| r.get(0))?;
         if pending {
             return Ok(false);
@@ -179,7 +197,7 @@ fn invalid() -> PersistenceError {
 pub(in crate::persistence) fn validate_epoch(
     connection: &Connection,
 ) -> Result<(), PersistenceError> {
-    let valid: bool = connection.query_row("SELECT COUNT(*) = 1 AND COALESCE(MAX(first_sequence),0) BETWEEN 1 AND (SELECT next_value FROM logical_sequences WHERE singleton = 1) FROM context_accounting_epoch", [], |r| r.get(0))?;
+    let valid: bool = connection.query_row("SELECT COUNT(*) = 1 AND COALESCE(MAX(first_sequence),0) BETWEEN 1 AND (SELECT next_value FROM logical_sequences WHERE singleton = 1) AND COALESCE(MAX(repeated_first_sequence),0) BETWEEN MAX(first_sequence) AND (SELECT next_value FROM logical_sequences WHERE singleton = 1) FROM context_accounting_epoch", [], |r| r.get(0))?;
     if !valid {
         return Err(PersistenceError::InvalidState {
             reason: "context accounting epoch is invalid",

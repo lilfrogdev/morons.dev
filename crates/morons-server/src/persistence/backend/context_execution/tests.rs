@@ -98,12 +98,20 @@ async fn migration_preserves_compactions(version: u32) {
             .unwrap(),
         crate::persistence::database::SCHEMA_VERSION as u32
     );
+    for (table, expected) in tables.iter().zip(&before) {
+        assert_eq!(expected, &rows(&db, table), "migrated table {table}");
+    }
     assert_eq!(
-        before,
-        tables
-            .iter()
-            .map(|table| rows(&db, table))
-            .collect::<Vec<_>>()
+        db.query_row(
+            "SELECT repeated_first_sequence FROM context_accounting_epoch",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        db.query_row("SELECT next_value FROM logical_sequences", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap()
     );
     assert_eq!(
         policy(&db, accepted.run.id).unwrap(),
@@ -120,18 +128,20 @@ async fn migration_preserves_compactions(version: u32) {
             .unwrap(),
         version
     );
-    assert_eq!(
-        before,
-        tables
-            .iter()
-            .map(|table| rows(&backup, table))
-            .collect::<Vec<_>>()
-    );
+    for (table, expected) in tables.iter().zip(&before) {
+        assert_eq!(expected, &rows(&backup, table), "backup table {table}");
+    }
 }
 
 fn rows(db: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    // Schema 40 adds a migration-time boundary, not part of schema 33's evidence.
+    let columns = if table == "context_accounting_epoch" {
+        "singleton, first_sequence"
+    } else {
+        "*"
+    };
     let mut stmt = db
-        .prepare(&format!("SELECT * FROM {table} ORDER BY 1,2"))
+        .prepare(&format!("SELECT {columns} FROM {table} ORDER BY 1,2"))
         .unwrap();
     let columns = stmt.column_count();
     stmt.query_map([], |row| {
@@ -153,6 +163,7 @@ fn usage_admission_keeps_independent_resources_and_legacy_fallback() {
         ..ContextBudget::default()
     };
     assert!(!ExecutionPolicy::Legacy.fits(&budget, 96_000, 0));
+    assert!(!ExecutionPolicy::ConservativeRepeated.fits(&budget, 96_000, 0));
     assert!(ExecutionPolicy::NativeUsage.fits(&budget, 96_000, 0));
     for budget in [
         ContextBudget {
@@ -192,6 +203,7 @@ fn usage_admission_keeps_independent_resources_and_legacy_fallback() {
         },
     ] {
         assert!(!ExecutionPolicy::NativeUsage.fits(&budget, 96_000, 0));
+        assert!(!ExecutionPolicy::ConservativeRepeated.fits(&budget, 96_000, 0));
     }
     let exact = ContextBudget {
         bytes: MAX_SOURCE_BYTES,

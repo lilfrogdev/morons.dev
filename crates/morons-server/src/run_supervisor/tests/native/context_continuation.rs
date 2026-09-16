@@ -2,20 +2,51 @@ use super::*;
 
 #[tokio::test(flavor = "current_thread")]
 async fn native_long_first_run_compacts_batches_preserves_intent_and_reopens() {
-    run_case(6, 12_000, 4, false).await;
+    run_case(6, 12_000, 4, false, true).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn native_same_run_usage_allows_two_large_reads_without_compaction() {
-    run_case(2, 1_000, 0, false).await;
+    run_case(2, 1_000, 0, false, true).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn native_uncertain_within_run_compaction_stops_without_retry_and_reopens() {
-    run_case(6, 12_000, 0, true).await;
+    run_case(6, 12_000, 0, true, true).await;
 }
 
-async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_summary: bool) {
+#[tokio::test(flavor = "current_thread")]
+async fn conservative_parent_supervisor_compacts_and_resumes_without_replay() {
+    run_case(5, 12_000, 4, false, false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn conservative_parent_supervisor_stops_after_compaction_allowance_exhaustion() {
+    run_case(6, 12_000, 4, false, false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn conservative_parent_supervisor_uncertain_summary_never_retries() {
+    run_case(6, 12_000, 0, true, false).await;
+}
+
+async fn run_case(
+    read_count: u32,
+    input_tokens: u64,
+    compactions: u32,
+    fail_summary: bool,
+    native: bool,
+) {
+    let model = if native {
+        "gpt-6-astra"
+    } else {
+        "muse-spark-1.2"
+    };
+    let service = if native {
+        ModelService::OpenAiChatGpt
+    } else {
+        ModelService::Zen
+    };
     const PROMPT: &str = "ORIGINAL-INTENT-ONLY: read the owned fixture as instructed, then finish.";
     let root = TestRoot::new("context-continuation");
     let selected = TestRoot::new("context-continuation-selected");
@@ -29,6 +60,16 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
         )
         .await
         .unwrap();
+    if !native {
+        store
+            .set_open_code_credential(
+                PersistenceMutationRequestId::from_bytes([0xe0; 16]),
+                0,
+                b"synthetic-context-key".to_vec(),
+            )
+            .await
+            .unwrap();
+    }
     let session = store
         .create_session_at(
             PersistenceMutationRequestId::from_bytes([0xe2; 16]),
@@ -49,7 +90,7 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
             let request = String::from_utf8(read_http_request(&mut stream).await).unwrap();
             let body: serde_json::Value =
                 serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
-            assert_eq!(body["model"], "gpt-6-astra");
+            assert_eq!(body["model"], model);
             let coding = body["tools"]
                 .as_array()
                 .is_some_and(|tools| !tools.is_empty());
@@ -70,15 +111,20 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
                     .collect();
                 assert_eq!(calls, results);
                 let reasoning = input.iter().any(|item| item["type"] == "reasoning");
-                assert_eq!(reasoning, roots > 0 && !just_compacted);
+                assert_eq!(reasoning, native && roots > 0 && !just_compacted);
                 just_compacted = false;
                 roots += 1;
                 if roots <= read_count {
-                    format!(
-                        "{},{}",
-                        serde_json::json!({"id":format!("rs_{roots}"),"type":"reasoning","summary":[{"type":"summary_text","text":"synthetic summary"}],"encrypted_content":"synthetic-context-cipher"}),
-                        serde_json::json!({"id":format!("fc_{roots}"),"type":"function_call","status":"completed","call_id":format!("call_{roots}"),"name":"read","arguments":serde_json::json!({"path":"step.txt","offset":1,"limit":2}).to_string()})
-                    )
+                    let call = serde_json::json!({"id":format!("fc_{roots}"),"type":"function_call","status":"completed","call_id":format!("call_{roots}"),"name":"read","arguments":serde_json::json!({"path":"step.txt","offset":1,"limit":2}).to_string()});
+                    if native {
+                        format!(
+                            "{},{}",
+                            serde_json::json!({"id":format!("rs_{roots}"),"type":"reasoning","summary":[{"type":"summary_text","text":"synthetic summary"}],"encrypted_content":"synthetic-context-cipher"}),
+                            call
+                        )
+                    } else {
+                        call.to_string()
+                    }
                 } else {
                     message("FINISHED")
                 }
@@ -99,7 +145,7 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
                 )
             };
             let response = provider_output_body(&format!("resp_{request_index}"), &output)
-                .replace("muse-spark-1.2", "gpt-6-astra")
+                .replace("muse-spark-1.2", model)
                 .replace(
                     "\"input_tokens\":8",
                     &format!("\"input_tokens\":{input_tokens}"),
@@ -118,7 +164,11 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
         }
         (roots, summaries)
     });
-    let app = ServerApplication::from_native_store_for_test(store, &base);
+    let app = if native {
+        ServerApplication::from_native_store_for_test(store, &base)
+    } else {
+        ServerApplication::from_session_store_for_test(store, &base)
+    };
     let session_id = SessionId::from_bytes(*session.id.as_bytes());
     let accepted = app
         .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
@@ -126,8 +176,8 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
             session_id,
             text: PROMPT.into(),
             attachments: Vec::new(),
-            service: ModelService::OpenAiChatGpt,
-            model_id: "gpt-6-astra".into(),
+            service,
+            model_id: model.into(),
         })
         .await
         .unwrap();
@@ -140,8 +190,8 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
     let status = app
         .execute_for_local_owner(ApplicationRequest::GetSessionContext {
             session_id,
-            service: ModelService::OpenAiChatGpt,
-            model_id: "gpt-6-astra".into(),
+            service,
+            model_id: model.into(),
         })
         .await
         .unwrap();
@@ -153,11 +203,18 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
     drop(app);
     let _ = done.send(());
     let (roots, summaries) = peer.await.unwrap();
-    let expected_roots = if fail_summary { 2 } else { read_count + 1 };
+    let exhausted = !native && !fail_summary && read_count == 6;
+    let expected_roots = if fail_summary {
+        2
+    } else if exhausted {
+        read_count
+    } else {
+        read_count + 1
+    };
     let expected_reads = if fail_summary { 2 } else { read_count };
     assert_eq!(
         state,
-        if fail_summary {
+        if fail_summary || exhausted {
             RunState::Failed
         } else {
             RunState::Succeeded
@@ -167,8 +224,10 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
         (roots, summaries),
         (expected_roots, if fail_summary { 1 } else { compactions })
     );
-    assert!(context.usage_admission);
-    assert_eq!(context.maximum_source_bytes, Some(1024 * 1024));
+    assert_eq!(context.usage_admission, native);
+    if native {
+        assert_eq!(context.maximum_source_bytes, Some(1024 * 1024));
+    }
     assert_eq!(context.completed_compactions, u64::from(compactions));
     // Fresh store only, after shutdown. Reopen validates all source/checkpoint,
     // operation and execution-policy facts without replaying any request.
@@ -182,6 +241,18 @@ async fn run_case(read_count: u32, input_tokens: u64, compactions: u32, fail_sum
             |r| r.get(0),
         )
         .unwrap();
+    if exhausted {
+        // Both the durable terminal fact and its projection must record ResourceLimit (9).
+        for query in [
+            "SELECT failure_kind FROM run_state_facts WHERE run_id = ?1 AND state = 4",
+            "SELECT failure_kind FROM runs WHERE run_id = ?1 AND state = 4",
+        ] {
+            let failure: i64 = db
+                .query_row(query, [run.id.as_bytes().as_slice()], |r| r.get(0))
+                .unwrap();
+            assert_eq!(failure, 9);
+        }
+    }
     assert_eq!(original, PROMPT);
     let reads: u32 = db
         .query_row("SELECT COUNT(*) FROM tool_calls", [], |r| r.get(0))
