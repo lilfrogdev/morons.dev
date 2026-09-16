@@ -2,6 +2,7 @@ use std::{error::Error, sync::Arc, time::Duration};
 
 use interprocess::local_socket::tokio::Stream;
 use morons_protocol::{ServerEndpoint, authenticate_server, authorize_accepted_peer};
+use morons_server::debug_log::{DebugStartupStage, startup_stage};
 use morons_server::{
     HandshakeOutcome, ServerApplication, handle_handshake, handle_local_owner_requests,
 };
@@ -49,10 +50,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     } else {
         None
     };
-    let mut server = ServerEndpoint::prepare()?;
-    let application = Arc::new(ServerApplication::open(&server)?);
-    server.publish()?;
-    let server = Arc::new(server);
+    let (server, application) = startup_stage(DebugStartupStage::Total, || {
+        let mut server =
+            startup_stage(DebugStartupStage::EndpointPrepare, ServerEndpoint::prepare)?;
+        let application = startup_stage(DebugStartupStage::ApplicationOpen, || {
+            ServerApplication::open(&server)
+        })?;
+        startup_stage(DebugStartupStage::EndpointPublish, || server.publish())?;
+        Ok::<_, Box<dyn Error>>((Arc::new(server), Arc::new(application)))
+    })?;
     let connection_permits = Arc::new(Semaphore::new(MAX_CLIENT_CONNECTIONS));
     let mut shutdown_requests = application.subscribe_shutdown_requests();
     let mut connections = JoinSet::new();

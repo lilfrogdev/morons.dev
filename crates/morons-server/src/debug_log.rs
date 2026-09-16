@@ -83,6 +83,58 @@ pub enum DebugUsageRejection {
     TotalMismatch,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugStartupStage {
+    Total,
+    EndpointPrepare,
+    ApplicationOpen,
+    EndpointPublish,
+    DatabaseInitialize,
+    DatabaseFileValidation,
+    DatabaseConnectionOpen,
+    DatabaseConfiguration,
+    DatabaseMigration,
+    DatabaseSchemaValidation,
+    DatabaseQuickValidation,
+    FactValidation,
+    ProjectionRebuild,
+    IntegrityValidation,
+    BackendRecovery,
+}
+
+pub fn startup_stage<T, E>(
+    stage: DebugStartupStage,
+    operation: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    startup_stage_with_sink(GLOBAL.sink.get().map(Arc::as_ref), stage, operation)
+}
+
+fn startup_stage_with_sink<T, E>(
+    sink: Option<&Sink>,
+    stage: DebugStartupStage,
+    operation: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let Some(sink) = sink.filter(|sink| sink.enabled()) else {
+        return operation();
+    };
+    sink.emit(DebugEvent::Startup {
+        stage,
+        began: true,
+        success: None,
+        elapsed_us: None,
+    });
+    let started = Instant::now();
+    let result = operation();
+    sink.emit(DebugEvent::Startup {
+        stage,
+        began: false,
+        success: Some(result.is_ok()),
+        elapsed_us: Some(started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64),
+    });
+    result
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DebugEvent {
@@ -108,6 +160,12 @@ pub enum DebugEvent {
         reason: DebugUsageRejection,
     },
     Started,
+    Startup {
+        stage: DebugStartupStage,
+        began: bool,
+        success: Option<bool>,
+        elapsed_us: Option<u64>,
+    },
     Provider {
         attempt_id: u64,
         service: DebugService,
