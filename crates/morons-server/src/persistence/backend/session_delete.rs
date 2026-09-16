@@ -210,6 +210,8 @@ impl Backend {
             "DELETE FROM web_binding_provenance WHERE call_id IN (SELECT call_id FROM web_model_bindings WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1))",
             "DELETE FROM web_search_attempts WHERE call_id IN (SELECT call_id FROM web_model_bindings WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1))",
             "DELETE FROM web_model_bindings WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1)",
+            "DELETE FROM child_journal WHERE call_id IN (SELECT call_id FROM task_model_bindings WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1))",
+            "DELETE FROM child_runs WHERE call_id IN (SELECT call_id FROM task_model_bindings WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1))",
             "DELETE FROM task_model_bindings WHERE run_id IN (SELECT run_id FROM run_accepted_facts WHERE session_id = ?1)",
             "DELETE FROM tool_calls WHERE session_id = ?1",
             "DELETE FROM image_attachments WHERE session_id = ?1",

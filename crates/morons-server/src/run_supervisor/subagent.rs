@@ -13,13 +13,19 @@ use crate::{
     tools::{
         BashToolExecutor, DirectToolExecutor, MAX_SUBAGENT_OUTPUT_BYTES, SubagentModelDisclosure,
         SubagentResult, SubagentStatus, SubagentTask, SubagentUsage, ToolErrorKind, ToolInput,
-        ToolKind, ToolOutput, ToolResult, WebSearchToolExecutor, WebSuccess,
-        subagent_provider_tools,
+        ToolKind, ToolOutput, ToolResult, WebSearchToolExecutor, subagent_provider_tools,
     },
 };
 
 #[cfg(test)]
 use crate::persistence::SubagentModelSetting;
+
+mod context;
+mod journal;
+mod recovery;
+use crate::persistence::ChildEntryKind;
+use recovery::ChildRecovery;
+use serde_json::json;
 
 const MAX_CONCURRENT_SUBAGENTS: usize = 4;
 const MAX_SUBAGENT_OUTPUT_TOKENS: u32 = 8_192;
@@ -199,6 +205,8 @@ impl SubagentExecutor {
         working_directory: PathBuf,
         mut cancellation: ProviderCancellation,
     ) -> Result<SubagentResult, ChildStop> {
+        let mut journal = journal::Journal::new(config.call_id, index);
+        let mut journal_started = false;
         let mut web_successes = Vec::new();
         let mut web_searches = Vec::new();
         let mut exa_searches = 0_u64;
@@ -241,6 +249,9 @@ impl SubagentExecutor {
                 },
             );
         }
+        journal.append(&self.sessions, ChildEntryKind::Start, json!({"input":journal::items(&input),"model":config.model_id,"service":config.service.model_service().label(),"credential_generation":config.credential_generation})).await.map_err(ChildStop::Persistence)?;
+        journal_started = true;
+        let mut child_context = context::Context::new(input.len());
         let location = crate::debug_log::DebugLocation::Child {
             session_id: config.session_id,
             task_call_id: config.call_id,
@@ -251,6 +262,7 @@ impl SubagentExecutor {
         let mut tool_calls = 0_u64;
         let mut tool_mutations = 0_u64;
         let mut provider_call_ids = BTreeSet::new();
+        let mut recovery = ChildRecovery::default();
         let mut turn = match self.provider.turn(
             config.service.model_service(),
             &config.model_id,
@@ -273,6 +285,16 @@ impl SubagentExecutor {
             if cancellation.is_cancelled() {
                 return Err(ChildStop::Cancelled);
             }
+            let plan = child_context.plan(&input, config.maximum_input_tokens);
+            let compaction = match plan {
+                Ok(Some(plan)) => self.compact_child(&config, conversation_id, &mut child_context, &mut input, plan, &mut journal, &mut provider_turns, &mut usage, &mut cancellation).await?,
+                Ok(None) => Ok(()),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = compaction {
+                if error == ProviderError::Cancelled { return Err(ChildStop::Cancelled); }
+                return Ok(failed_provider_result(index, task.name, error, subagent_metrics(provider_turns,tool_calls,tool_mutations,usage)));
+            }
             let Some(next_provider_turn) = provider_turns.checked_add(1) else {
                 crate::debug_log::emit(crate::debug_log::DebugEvent::Resource { location, resource: crate::debug_log::DebugResource::ChildProviderTurn });
                 return Ok(subagent_result(
@@ -289,7 +311,7 @@ impl SubagentExecutor {
                     index,
                     task.name,
                     SubagentStatus::ResourceLimit,
-                    "subagent context limit reached",
+                    "subagent context estimate exceeded representable limits",
                     subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                 ));
             };
@@ -299,7 +321,7 @@ impl SubagentExecutor {
                     index,
                     task.name,
                     SubagentStatus::ResourceLimit,
-                    "subagent context limit reached",
+                    &format!("subagent conservative context admission limit reached: local estimate {estimated_input_tokens} exceeds {}; this is not measured model token usage", config.maximum_input_tokens),
                     subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                 ));
             }
@@ -368,6 +390,7 @@ impl SubagentExecutor {
                 }
                 Err(error) => return Err(ChildStop::Persistence(error)),
             };
+            journal.append(&self.sessions, ChildEntryKind::ProviderDispatch, json!({"purpose":"execution","input":journal::items(&input)})).await.map_err(ChildStop::Persistence)?;
             let provider_attempt_id = dispatch.diagnostic_attempt_id();
             provider_turns = next_provider_turn;
             let result = dispatch.execute(policy, &mut cancellation, |_| {}).await;
@@ -380,6 +403,8 @@ impl SubagentExecutor {
                 receipt_accepted: result.is_ok(),
                 error: result.as_ref().err().copied(),
             });
+            let payload = match &result { Ok(outcome)=>journal::outcome(outcome), Err(error)=>json!({"error":format!("{error:?}"),"nothing_retried":true}) };
+            journal.append(&self.sessions, ChildEntryKind::ProviderResult, payload).await.map_err(ChildStop::Persistence)?;
             let outcome = match result {
                 Ok(outcome) => outcome,
                 Err(ProviderError::Cancelled) => return Err(ChildStop::Cancelled),
@@ -448,8 +473,18 @@ impl SubagentExecutor {
                             subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                         ));
                     }
+                    if turn.calls.iter().any(|call| provider_call_ids.contains(&call.provider_call_id)) {
+                        return Ok(subagent_result(
+                            index,
+                            task.name,
+                            SubagentStatus::Failed,
+                            "subagent reused a provider tool-call identifier",
+                            subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
+                        ));
+                    }
                     tool_calls += additional_calls;
                     tool_mutations += additional_mutations;
+                    let batch_start = input.len();
                     input.extend(reasoning);
                     if let Some((text, _refusal)) = turn.commentary {
                         input.push(ProviderInputItem::Message {
@@ -461,15 +496,7 @@ impl SubagentExecutor {
                     for call in turn.calls {
                         let provider_call_id = call.provider_call_id;
                         let opaque_continuation = call.opaque_continuation;
-                        if !provider_call_ids.insert(provider_call_id.clone()) {
-                            return Ok(subagent_result(
-                                index,
-                                task.name,
-                                SubagentStatus::Failed,
-                                "subagent reused a provider tool-call identifier",
-                                subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
-                            ));
-                        }
+                        provider_call_ids.insert(provider_call_id.clone());
                         let ordinal = u64::try_from(provider_call_ids.len()).map_err(|_| {
                             ChildStop::Persistence(crate::persistence::PersistenceError::InvalidState {
                                 reason: "child tool ordinal overflow",
@@ -500,6 +527,7 @@ impl SubagentExecutor {
                         });
                         let tool = crate::debug_log::DebugToolKind::from(call.input.kind());
                         let hosted_web = call.input.kind() == ToolKind::WebSearch;
+                        journal.append(&self.sessions, ChildEntryKind::ToolDispatch, json!({"ordinal":ordinal,"call":journal::items(&input[input.len()-1..])})).await.map_err(ChildStop::Persistence)?;
                         let result = self
                             .execute_child_tool(
                                 working_directory.clone(),
@@ -508,6 +536,7 @@ impl SubagentExecutor {
                                 &cancellation,
                             )
                             .await.map_err(ChildStop::Persistence)?;
+                        journal.append(&self.sessions, ChildEntryKind::ToolResult, json!({"ordinal":ordinal,"result":result})).await.map_err(ChildStop::Persistence)?;
                         let error = result.error_kind().map(|error| {
                             use crate::debug_log::DebugToolError as D;
                             match error {
@@ -530,9 +559,8 @@ impl SubagentExecutor {
                                 ToolErrorKind::Cancelled => D::Cancelled,
                                 ToolErrorKind::Interrupted => D::Interrupted,
                                 ToolErrorKind::NotDispatched => D::NotDispatched,
-                                ToolErrorKind::Uncertain | ToolErrorKind::ExaSearchUncertain => {
-                                    D::Uncertain
-                                }
+                                ToolErrorKind::Uncertain => D::Uncertain,
+                                ToolErrorKind::ExaSearchUncertain => D::Uncertain,
                                 ToolErrorKind::WebSearchUncertain(_) => D::WebSearchUncertain,
                                 ToolErrorKind::Filesystem => D::Filesystem,
                                 ToolErrorKind::Network => D::Network,
@@ -561,22 +589,14 @@ impl SubagentExecutor {
                             signal,
                         });
                         if let Some(binding) = &config.web_binding
-                            && let Some(success) =
-                                WebSuccess::new(binding.operation_id, index, ordinal, &result)
-                        {
+                            && let Some(success) = crate::tools::WebSuccess::new(binding.operation_id, index, ordinal, &result) {
                             web_successes.push(success);
                         }
                         if let ToolResult::Ok { output: ToolOutput::OpenAiWeb { result } } = &result {
                             web_searches.push(result.receipt.clone());
                         }
                         if matches!(&result, ToolResult::Ok { output: ToolOutput::ExaWeb { .. } }) {
-                            exa_searches = exa_searches.checked_add(1).ok_or(
-                                ChildStop::Persistence(
-                                    crate::persistence::PersistenceError::InvalidState {
-                                        reason: "child search counter overflow",
-                                    },
-                                ),
-                            )?;
+                            exa_searches = exa_searches.checked_add(1).ok_or(ChildStop::Persistence(crate::persistence::PersistenceError::InvalidState { reason: "child search counter overflow" }))?;
                         }
                         if result.error_kind() == Some(ToolErrorKind::Cancelled) {
                             return Err(ChildStop::Cancelled);
@@ -615,6 +635,8 @@ impl SubagentExecutor {
                             output,
                         });
                     }
+                    journal.append(&self.sessions, ChildEntryKind::Batch, journal::items(&input[batch_start..])).await.map_err(ChildStop::Persistence)?;
+                    child_context.completed_batch(batch_start);
                 }
                 Err(failure) => {
                     crate::debug_log::emit(crate::debug_log::DebugEvent::Normalization {
@@ -622,6 +644,11 @@ impl SubagentExecutor {
                         stage,
                         resource_limit: failure == RunFailureKind::ResourceLimit,
                     });
+                    let diagnostic = recovery::normalization_diagnostic(failure, stage);
+                    if recovery.correct(failure, stage) {
+                        input.push(recovery::feedback(&format!("{diagnostic} Correct the rejected response using the tool schema, or return one nonempty final report. Do not repeat earlier completed actions.")));
+                        continue;
+                    }
                     return Ok(subagent_result(
                         index,
                         task.name,
@@ -630,13 +657,31 @@ impl SubagentExecutor {
                         } else {
                             SubagentStatus::Failed
                         },
-                        run_failure_label(failure),
+                        &diagnostic,
                         subagent_metrics(provider_turns, tool_calls, tool_mutations, usage),
                     ));
                 }
             }
         }
         }.await;
+        if journal_started && !matches!(&result, Err(ChildStop::Persistence(_))) {
+            let terminal = match &result {
+                Ok(result) => {
+                    json!({"result":result,"web_successes":web_successes,"web_searches":web_searches,"exa_searches":exa_searches})
+                }
+                Err(ChildStop::Cancelled) => {
+                    json!({"status":"cancelled","effects_may_remain":true})
+                }
+                Err(ChildStop::WebUncertain(_)) => {
+                    json!({"status":"web_uncertain","nothing_retried":true})
+                }
+                Err(ChildStop::Persistence(_)) => unreachable!(),
+            };
+            journal
+                .append(&self.sessions, ChildEntryKind::Terminal, terminal)
+                .await
+                .map_err(ChildStop::Persistence)?;
+        }
         result.map(|mut result: SubagentResult| {
             result.web_successes = web_successes;
             result.web_searches = web_searches;
@@ -927,11 +972,13 @@ const fn provider_failure_label(error: ProviderError) -> &'static str {
             "subagent provider authentication or entitlement failed"
         }
         ProviderError::RateLimited => "subagent provider rate limit reached",
-        ProviderError::Unavailable
-        | ProviderError::Transport
-        | ProviderError::ResponseHeaderTimeout
-        | ProviderError::StreamInactivityTimeout
-        | ProviderError::TotalTimeout => "subagent provider is unavailable",
+        ProviderError::Unavailable => "subagent provider is unavailable",
+        ProviderError::Transport => "subagent provider transport failed",
+        ProviderError::ResponseHeaderTimeout => "subagent provider response headers timed out",
+        ProviderError::StreamInactivityTimeout => {
+            "subagent provider response stream became inactive"
+        }
+        ProviderError::TotalTimeout => "subagent provider operation timed out",
         ProviderError::RequestRejected | ProviderError::ProviderExecutionFailed => {
             "subagent provider rejected the request"
         }
@@ -948,17 +995,37 @@ const fn provider_failure_label(error: ProviderError) -> &'static str {
     }
 }
 
-const fn run_failure_label(failure: RunFailureKind) -> &'static str {
-    match failure {
-        RunFailureKind::InvalidProviderOutput => "subagent returned invalid tool output",
-        RunFailureKind::ResourceLimit => "subagent response exceeded limits",
-        _ => "subagent execution failed",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_failure_labels_distinguish_transport_and_timeout_categories() {
+        for (error, expected) in [
+            (
+                ProviderError::Unavailable,
+                "subagent provider is unavailable",
+            ),
+            (
+                ProviderError::Transport,
+                "subagent provider transport failed",
+            ),
+            (
+                ProviderError::ResponseHeaderTimeout,
+                "subagent provider response headers timed out",
+            ),
+            (
+                ProviderError::StreamInactivityTimeout,
+                "subagent provider response stream became inactive",
+            ),
+            (
+                ProviderError::TotalTimeout,
+                "subagent provider operation timed out",
+            ),
+        ] {
+            assert_eq!(provider_failure_label(error), expected);
+        }
+    }
 
     #[test]
     fn web_diagnostic_survives_sibling_drain_without_downgrading_uncertainty() {
@@ -979,6 +1046,24 @@ mod tests {
         for error in [ToolErrorKind::Cancelled, ToolErrorKind::Uncertain, later] {
             record_child_stop(&mut current, error);
             assert_eq!(current, Some(first));
+        }
+    }
+
+    #[test]
+    fn exa_uncertainty_survives_sibling_cancellation_and_hosted_failure() {
+        use crate::web_diagnostic::{WebCategory, WebFailure, WebStage};
+        let mut current = Some(ToolErrorKind::Cancelled);
+        record_child_stop(&mut current, ToolErrorKind::ExaSearchUncertain);
+        for error in [
+            ToolErrorKind::Cancelled,
+            ToolErrorKind::Uncertain,
+            ToolErrorKind::WebSearchUncertain(WebFailure {
+                stage: WebStage::HttpStatus,
+                category: WebCategory::RequestRejected,
+            }),
+        ] {
+            record_child_stop(&mut current, error);
+            assert_eq!(current, Some(ToolErrorKind::ExaSearchUncertain));
         }
     }
 

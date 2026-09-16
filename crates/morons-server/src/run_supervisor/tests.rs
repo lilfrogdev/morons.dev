@@ -35,6 +35,7 @@ use crate::{
     },
 };
 
+mod child_recovery;
 mod data_use;
 mod hardening;
 pub(crate) mod maintenance;

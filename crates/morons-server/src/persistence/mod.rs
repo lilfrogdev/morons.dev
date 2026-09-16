@@ -1,3 +1,5 @@
+mod child_journal;
+pub(crate) use child_journal::ChildEntryKind;
 mod backend;
 mod compactions;
 mod credential_types;
@@ -686,6 +688,7 @@ impl Drop for SessionStore {
 }
 
 enum WorkerRequest {
+    ChildJournal(child_journal::Request),
     TaskModelBinding {
         run_id: RunId,
         call_id: ToolCallId,
@@ -895,6 +898,7 @@ fn run_worker(
                 force_event_notification = result.is_ok();
                 let _ = response.send(result);
             }
+            WorkerRequest::ChildJournal(request) => request.execute(&mut backend),
             WorkerRequest::Run(request) => request.execute(&mut backend),
             WorkerRequest::StopServer {
                 request_id,
