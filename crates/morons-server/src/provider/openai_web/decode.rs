@@ -6,7 +6,8 @@ use crate::provider::{
     ProviderError,
     json::parse_strict_value,
     responses::{
-        decode_usage, validate_event_value, validate_ping_record, validate_response_identifier,
+        decode_usage_detailed, validate_event_value, validate_ping_record,
+        validate_response_identifier,
     },
     sse::SseDecoder,
 };
@@ -23,6 +24,15 @@ pub(super) fn decode_response_at(
     body: &[u8],
     stage: &mut WebStage,
 ) -> Result<SearchResult, ProviderError> {
+    decode_response_detailed(body, stage, &mut None)
+}
+
+pub(super) fn decode_response_detailed(
+    body: &[u8],
+    stage: &mut WebStage,
+    usage_rejection: &mut Option<crate::debug_log::DebugUsageRejection>,
+) -> Result<SearchResult, ProviderError> {
+    *usage_rejection = None;
     *stage = WebStage::BodyBounds;
     if body.len() > MAX_RESPONSE_BYTES {
         return Err(ProviderError::ResponseLimitExceeded);
@@ -168,14 +178,15 @@ pub(super) fn decode_response_at(
                     }
                 }
                 *stage = WebStage::Usage;
-                let usage = decode_usage(
-                    response
-                        .get("usage")
-                        .cloned()
-                        .ok_or(ProviderError::MalformedResponse)?,
-                    96_000,
-                    32_000,
-                )?;
+                let usage = decode_usage_detailed(
+                    response.get("usage").cloned(),
+                    crate::provider::MAXIMUM_INPUT_TOKENS,
+                    crate::provider::MAXIMUM_OUTPUT_TOKENS,
+                )
+                .map_err(|reason| {
+                    *usage_rejection = Some(reason);
+                    ProviderError::MalformedResponse
+                })?;
                 terminal = Some(output::parse(output, usage, stage)?);
                 items = BTreeMap::new();
             }

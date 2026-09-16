@@ -50,18 +50,38 @@ pub(super) fn validate_usage(
     maximum_input_tokens: u32,
     maximum_output_tokens: u32,
 ) -> Result<ProviderUsage, ProviderError> {
+    validate_usage_detailed(usage, maximum_input_tokens, maximum_output_tokens)
+        .map_err(|_| ProviderError::MalformedResponse)
+}
+
+pub(super) fn validate_usage_detailed(
+    usage: WireUsage,
+    maximum_input_tokens: u32,
+    maximum_output_tokens: u32,
+) -> Result<ProviderUsage, crate::debug_log::DebugUsageRejection> {
+    use crate::debug_log::DebugUsageRejection as Reason;
     let cached = usage.input_tokens_details.cached_tokens;
     let cache_write = usage.input_tokens_details.cache_write_tokens;
     let reasoning = usage.output_tokens_details.reasoning_tokens;
-    if usage.input_tokens > u64::from(maximum_input_tokens)
-        || usage.output_tokens > u64::from(maximum_output_tokens)
-        || usage.total_tokens > MAX_USAGE_TOKENS
-        || cached > usage.input_tokens
-        || cache_write > usage.input_tokens
-        || reasoning > usage.output_tokens
-        || usage.input_tokens.checked_add(usage.output_tokens) != Some(usage.total_tokens)
-    {
-        return Err(ProviderError::MalformedResponse);
+    let rejection = if usage.input_tokens > u64::from(maximum_input_tokens) {
+        Some(Reason::InputLimit)
+    } else if usage.output_tokens > u64::from(maximum_output_tokens) {
+        Some(Reason::OutputLimit)
+    } else if usage.total_tokens > MAX_USAGE_TOKENS {
+        Some(Reason::TotalLimit)
+    } else if cached > usage.input_tokens {
+        Some(Reason::CachedInput)
+    } else if cache_write > usage.input_tokens {
+        Some(Reason::CacheWriteInput)
+    } else if reasoning > usage.output_tokens {
+        Some(Reason::ReasoningOutput)
+    } else if usage.input_tokens.checked_add(usage.output_tokens) != Some(usage.total_tokens) {
+        Some(Reason::TotalMismatch)
+    } else {
+        None
+    };
+    if let Some(reason) = rejection {
+        return Err(reason);
     }
     Ok(ProviderUsage {
         input_tokens: usage.input_tokens,

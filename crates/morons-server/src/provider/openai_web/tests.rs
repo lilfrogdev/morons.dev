@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 
 mod diagnostic;
 mod sources;
+mod usage;
 
 fn item_call() -> Value {
     json!({"id":"ws_fixture","type":"web_search_call","status":"completed","action":{"type":"search","queries":["fixture"],"sources":[{"type":"url","url":"https://example.com/source"}]}})

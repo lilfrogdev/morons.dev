@@ -36,6 +36,34 @@ fn decoded(event: DebugEvent) -> Value {
 }
 
 #[test]
+fn debug_web_usage_reasons_are_closed_bounded_and_default_off() {
+    use DebugUsageRejection::*;
+    for (reason, label) in [
+        (Missing, "missing"),
+        (Schema, "schema"),
+        (InputLimit, "input_limit"),
+        (OutputLimit, "output_limit"),
+        (TotalLimit, "total_limit"),
+        (CachedInput, "cached_input"),
+        (CacheWriteInput, "cache_write_input"),
+        (ReasoningOutput, "reasoning_output"),
+        (TotalMismatch, "total_mismatch"),
+    ] {
+        let event = DebugEvent::WebUsage { reason };
+        assert!(!enabled());
+        emit(event.clone());
+        assert!(GLOBAL.sink.get().is_none());
+        assert_eq!(
+            decoded(event),
+            json!({
+                "format_version": 1, "sequence": u64::MAX,
+                "kind": "web_usage", "reason": label
+            })
+        );
+    }
+}
+
+#[test]
 fn debug_default_silence_and_one_shot_startup() {
     assert!(!enabled());
     assert_eq!(next_attempt_id(), None);
