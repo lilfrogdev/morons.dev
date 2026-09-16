@@ -64,6 +64,102 @@ fn debug_web_usage_reasons_are_closed_bounded_and_default_off() {
 }
 
 #[test]
+fn startup_timings_preserve_results_and_redact_errors() {
+    let (sender, receiver) = sync_channel(QUEUE_CAPACITY);
+    let sink = Sink {
+        sender,
+        state: Arc::new(State {
+            enabled: AtomicBool::new(true),
+            record_attempts: AtomicU64::new(0),
+            attempt_ids: AtomicU64::new(0),
+        }),
+    };
+    const PRIVATE: &str = "private path/SQL/credential\u{1b}\n";
+    for result in [Ok(17), Err(PRIVATE)] {
+        let mut calls = 0;
+        assert_eq!(
+            startup_stage_with_sink(Some(&sink), DebugStartupStage::Total, || {
+                calls += 1;
+                result
+            }),
+            result
+        );
+        assert_eq!(calls, 1);
+        let begin = decoded(receiver.try_recv().unwrap());
+        assert_eq!(
+            begin,
+            json!({
+                "format_version": 1, "sequence": u64::MAX, "kind": "startup",
+                "stage": "total", "began": true, "success": null, "elapsed_us": null
+            })
+        );
+        let end = decoded(receiver.try_recv().unwrap());
+        assert_eq!(end.as_object().unwrap().len(), 7);
+        assert_eq!(end["kind"], "startup");
+        assert_eq!(end["stage"], "total");
+        assert_eq!(end["began"], false);
+        assert_eq!(end["success"], result.is_ok());
+        assert!(end["elapsed_us"].as_u64().is_some());
+        assert!(!end.to_string().contains("private"));
+        assert!(receiver.try_recv().is_err());
+    }
+    sink.state.enabled.store(false, Ordering::Release);
+    assert_eq!(
+        startup_stage_with_sink(Some(&sink), DebugStartupStage::Total, || Err::<(), _>(
+            PRIVATE
+        )),
+        Err(PRIVATE)
+    );
+    assert!(receiver.try_recv().is_err());
+    assert_eq!(
+        startup_stage(DebugStartupStage::Total, || Ok::<_, ()>(17)),
+        Ok(17)
+    );
+    assert!(GLOBAL.sink.get().is_none());
+}
+
+#[test]
+fn startup_stage_schema_is_closed_and_fits_queue_without_drain() {
+    use DebugStartupStage::*;
+    let stages = [
+        Total,
+        EndpointPrepare,
+        ApplicationOpen,
+        EndpointPublish,
+        DatabaseInitialize,
+        DatabaseFileValidation,
+        DatabaseConnectionOpen,
+        DatabaseConfiguration,
+        DatabaseMigration,
+        DatabaseSchemaValidation,
+        DatabaseQuickValidation,
+        FactValidation,
+        ProjectionRebuild,
+        IntegrityValidation,
+        BackendRecovery,
+    ];
+    assert!(2 * stages.len() < QUEUE_CAPACITY);
+    for stage in stages {
+        for began in [true, false] {
+            let value = decoded(DebugEvent::Startup {
+                stage,
+                began,
+                success: (!began).then_some(false),
+                elapsed_us: (!began).then_some(u64::MAX),
+            });
+            assert_eq!(value["kind"], "startup");
+            assert!(
+                value["stage"]
+                    .as_str()
+                    .unwrap()
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'_')
+            );
+        }
+    }
+}
+
+#[test]
 fn debug_default_silence_and_one_shot_startup() {
     assert!(!enabled());
     assert_eq!(next_attempt_id(), None);

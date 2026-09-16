@@ -17,6 +17,28 @@ const AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DISCOVERY_RETRY_DELAY: Duration = Duration::from_millis(50);
 const INCOMPLETE_CONTROL_GRACE: Duration = Duration::from_secs(2);
+const STARTING_FEEDBACK: &str = "Waiting for local server initialization...";
+
+#[derive(Default)]
+struct StartupInitializationProgress {
+    feedback_reported: bool,
+    latest_discovery_was_starting: bool,
+}
+
+impl StartupInitializationProgress {
+    fn observe(&mut self, discovery_was_starting: bool) -> bool {
+        self.latest_discovery_was_starting = discovery_was_starting;
+        discovery_was_starting && !std::mem::replace(&mut self.feedback_reported, true)
+    }
+
+    const fn timeout_error(&self) -> ConnectOrStartError {
+        if self.latest_discovery_was_starting {
+            ConnectOrStartError::StartupInitializationTimedOut
+        } else {
+            ConnectOrStartError::StartupTimedOut
+        }
+    }
+}
 
 pub struct ConnectedServer {
     connection: Stream,
@@ -53,6 +75,7 @@ pub enum ConnectOrStartError {
     Handshake(HandshakeError),
     HandshakeTimedOut,
     StartupTimedOut,
+    StartupInitializationTimedOut,
 }
 
 impl ConnectOrStartError {
@@ -88,6 +111,9 @@ impl ConnectOrStartError {
             Self::StartupTimedOut => {
                 "server companion did not become available before the startup timeout"
             }
+            Self::StartupInitializationTimedOut => {
+                "local server was still initializing when the startup timeout elapsed"
+            }
         }
     }
 }
@@ -105,6 +131,9 @@ impl fmt::Debug for ConnectOrStartError {
             Self::Handshake(_) => "ConnectOrStartError::Handshake",
             Self::HandshakeTimedOut => "ConnectOrStartError::HandshakeTimedOut",
             Self::StartupTimedOut => "ConnectOrStartError::StartupTimedOut",
+            Self::StartupInitializationTimedOut => {
+                "ConnectOrStartError::StartupInitializationTimedOut"
+            }
         })
     }
 }
@@ -127,7 +156,8 @@ impl Error for ConnectOrStartError {
             Self::CompanionInvalid { .. }
             | Self::AuthenticationTimedOut
             | Self::HandshakeTimedOut
-            | Self::StartupTimedOut => None,
+            | Self::StartupTimedOut
+            | Self::StartupInitializationTimedOut => None,
         }
     }
 }
@@ -139,28 +169,39 @@ impl From<ControlError> for ConnectOrStartError {
 }
 
 pub async fn connect_or_start() -> Result<ConnectedServer, ConnectOrStartError> {
-    connect_or_start_until(None, Instant::now() + STARTUP_TIMEOUT).await
+    connect_or_start_until(
+        None,
+        Instant::now() + STARTUP_TIMEOUT,
+        ClientEndpoint::discover,
+        || eprintln!("{STARTING_FEEDBACK}"),
+    )
+    .await
 }
 
 async fn connect_or_start_until(
     mut companion: Option<PathBuf>,
     deadline: Instant,
+    mut discover: impl FnMut() -> Result<ClientEndpointDiscovery, ControlError>,
+    mut report_starting: impl FnMut(),
 ) -> Result<ConnectedServer, ConnectOrStartError> {
     let mut launched_companion = false;
     let mut incomplete_control_since = None;
+    let mut initialization_progress = StartupInitializationProgress::default();
     let mut child: Option<Child> = None;
     loop {
         if Instant::now() >= deadline {
-            return Err(ConnectOrStartError::StartupTimedOut);
+            return Err(initialization_progress.timeout_error());
         }
 
         let mut startup_allowed = false;
-        match ClientEndpoint::discover()? {
+        match discover()? {
             ClientEndpointDiscovery::Absent => {
+                initialization_progress.observe(false);
                 incomplete_control_since = None;
                 startup_allowed = true;
             }
             ClientEndpointDiscovery::Incomplete => {
+                initialization_progress.observe(false);
                 let since = incomplete_control_since.get_or_insert_with(Instant::now);
                 if Instant::now().duration_since(*since) >= INCOMPLETE_CONTROL_GRACE {
                     return Err(ConnectOrStartError::Control(ControlError::InvalidState {
@@ -168,8 +209,14 @@ async fn connect_or_start_until(
                     }));
                 }
             }
-            ClientEndpointDiscovery::Starting => incomplete_control_since = None,
+            ClientEndpointDiscovery::Starting => {
+                if initialization_progress.observe(true) {
+                    report_starting();
+                }
+                incomplete_control_since = None;
+            }
             ClientEndpointDiscovery::Registered(endpoint) => {
+                initialization_progress.observe(false);
                 incomplete_control_since = None;
                 if let Some(connection) =
                     connect_registered_server(endpoint, deadline, launched_companion).await?
@@ -254,6 +301,9 @@ fn server_is_unavailable(error: &io::Error) -> bool {
             | io::ErrorKind::AddrNotAvailable
     )
 }
+
+#[cfg(all(test, unix))]
+mod readiness_tests;
 
 #[cfg(test)]
 mod tests {
@@ -346,6 +396,11 @@ mod tests {
                 "ConnectOrStartError::StartupTimedOut",
                 "server companion did not become available before the startup timeout",
             ),
+            (
+                ConnectOrStartError::StartupInitializationTimedOut,
+                "ConnectOrStartError::StartupInitializationTimedOut",
+                "local server was still initializing when the startup timeout elapsed",
+            ),
         ];
 
         for (error, debug, description) in cases {
@@ -354,6 +409,99 @@ mod tests {
             assert!(!error.to_string().contains(SENSITIVE));
             assert!(!format!("{error:?}").contains(SENSITIVE));
         }
+    }
+
+    #[test]
+    fn initialization_feedback_is_reported_once_across_state_changes() {
+        let mut progress = StartupInitializationProgress::default();
+
+        assert!(progress.observe(true));
+        assert!(!progress.observe(true));
+        assert!(!progress.observe(false));
+        assert!(!progress.observe(true));
+        assert!(!progress.observe(false));
+        assert!(matches!(
+            progress.timeout_error(),
+            ConnectOrStartError::StartupTimedOut
+        ));
+    }
+
+    #[test]
+    fn initialization_timeout_has_safe_description() {
+        let mut progress = StartupInitializationProgress::default();
+
+        assert!(progress.observe(true));
+        let error = progress.timeout_error();
+
+        assert_eq!(
+            error.to_string(),
+            "local server was still initializing when the startup timeout elapsed"
+        );
+        assert_eq!(
+            format!("{error:?}"),
+            "ConnectOrStartError::StartupInitializationTimedOut"
+        );
+    }
+
+    #[test]
+    fn stale_starting_state_does_not_change_later_timeout_wording() {
+        let mut progress = StartupInitializationProgress::default();
+
+        assert!(progress.observe(true));
+        assert!(!progress.observe(false));
+        let error = progress.timeout_error();
+
+        assert_eq!(
+            error.to_string(),
+            "server companion did not become available before the startup timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn starting_waits_until_timeout_without_launching_companion() {
+        let mut discoveries = 0;
+        let mut reports = 0;
+        let result = connect_or_start_until(
+            Some(PathBuf::new()),
+            Instant::now() + Duration::from_millis(120),
+            || {
+                discoveries += 1;
+                Ok(ClientEndpointDiscovery::Starting)
+            },
+            || reports += 1,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ConnectOrStartError::StartupInitializationTimedOut)
+        ));
+        assert!(discoveries >= 1);
+        assert_eq!(reports, 1);
+    }
+
+    #[tokio::test]
+    async fn starting_then_incomplete_uses_latest_state_at_timeout() {
+        let mut discoveries = 0;
+        let mut reports = 0;
+        let result = connect_or_start_until(
+            Some(PathBuf::new()),
+            Instant::now() + Duration::from_millis(300),
+            || {
+                discoveries += 1;
+                Ok(if discoveries == 1 {
+                    ClientEndpointDiscovery::Starting
+                } else {
+                    ClientEndpointDiscovery::Incomplete
+                })
+            },
+            || reports += 1,
+        )
+        .await;
+
+        assert!(matches!(result, Err(ConnectOrStartError::StartupTimedOut)));
+        assert!(discoveries >= 2);
+        assert_eq!(reports, 1);
     }
 
     #[test]
