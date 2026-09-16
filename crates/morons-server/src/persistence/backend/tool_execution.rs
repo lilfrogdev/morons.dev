@@ -1069,7 +1069,10 @@ fn classify_result(result: &ToolResult, dispatched: bool) -> Result<(i64, i64), 
     match result {
         ToolResult::Ok { .. } if dispatched => Ok((TOOL_FACT_COMPLETED, TOOL_RESULT_SUCCEEDED)),
         ToolResult::Error {
-            error: ToolErrorKind::Uncertain | ToolErrorKind::WebSearchUncertain(_),
+            error:
+                ToolErrorKind::Uncertain
+                | ToolErrorKind::WebSearchUncertain(_)
+                | ToolErrorKind::ExaSearchUncertain,
             ..
         } if dispatched => Ok((TOOL_FACT_UNCERTAIN, TOOL_RESULT_UNCERTAIN)),
         ToolResult::Error {
