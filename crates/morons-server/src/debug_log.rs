@@ -159,6 +159,10 @@ pub enum DebugEvent {
     WebUsage {
         reason: DebugUsageRejection,
     },
+    WebSearch {
+        stage: crate::web_diagnostic::WebStage,
+        category: crate::web_diagnostic::WebCategory,
+    },
     Started,
     Startup {
         stage: DebugStartupStage,

@@ -36,34 +36,6 @@ fn decoded(event: DebugEvent) -> Value {
 }
 
 #[test]
-fn debug_web_usage_reasons_are_closed_bounded_and_default_off() {
-    use DebugUsageRejection::*;
-    for (reason, label) in [
-        (Missing, "missing"),
-        (Schema, "schema"),
-        (InputLimit, "input_limit"),
-        (OutputLimit, "output_limit"),
-        (TotalLimit, "total_limit"),
-        (CachedInput, "cached_input"),
-        (CacheWriteInput, "cache_write_input"),
-        (ReasoningOutput, "reasoning_output"),
-        (TotalMismatch, "total_mismatch"),
-    ] {
-        let event = DebugEvent::WebUsage { reason };
-        assert!(!enabled());
-        emit(event.clone());
-        assert!(GLOBAL.sink.get().is_none());
-        assert_eq!(
-            decoded(event),
-            json!({
-                "format_version": 1, "sequence": u64::MAX,
-                "kind": "web_usage", "reason": label
-            })
-        );
-    }
-}
-
-#[test]
 fn startup_timings_preserve_results_and_redact_errors() {
     let (sender, receiver) = sync_channel(QUEUE_CAPACITY);
     let sink = Sink {
@@ -156,6 +128,52 @@ fn startup_stage_schema_is_closed_and_fits_queue_without_drain() {
                     .all(|b| b.is_ascii_lowercase() || b == b'_')
             );
         }
+    }
+}
+
+#[test]
+fn debug_web_failure_is_closed_bounded_and_default_off() {
+    let event = DebugEvent::WebSearch {
+        stage: crate::web_diagnostic::WebStage::Citation,
+        category: crate::web_diagnostic::WebCategory::MalformedResponse,
+    };
+    assert!(!enabled());
+    emit(event.clone());
+    assert!(GLOBAL.sink.get().is_none());
+    assert_eq!(
+        decoded(event),
+        json!({
+            "format_version": 1, "sequence": u64::MAX,
+            "kind": "web_search", "stage": "citation", "category": "malformed_response"
+        })
+    );
+}
+
+#[test]
+fn debug_web_usage_reasons_are_closed_bounded_and_default_off() {
+    use DebugUsageRejection::*;
+    for (reason, label) in [
+        (Missing, "missing"),
+        (Schema, "schema"),
+        (InputLimit, "input_limit"),
+        (OutputLimit, "output_limit"),
+        (TotalLimit, "total_limit"),
+        (CachedInput, "cached_input"),
+        (CacheWriteInput, "cache_write_input"),
+        (ReasoningOutput, "reasoning_output"),
+        (TotalMismatch, "total_mismatch"),
+    ] {
+        let event = DebugEvent::WebUsage { reason };
+        assert!(!enabled());
+        emit(event.clone());
+        assert!(GLOBAL.sink.get().is_none());
+        assert_eq!(
+            decoded(event),
+            json!({
+                "format_version": 1, "sequence": u64::MAX,
+                "kind": "web_usage", "reason": label
+            })
+        );
     }
 }
 

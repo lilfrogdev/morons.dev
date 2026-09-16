@@ -16,6 +16,8 @@ fn web_diagnostic_is_closed_bounded_scoped_and_preserves_legacy_uncertain_bytes(
     };
     assert!(failure.valid_for_catalog(12));
     assert!(failure.valid_for_catalog(13));
+    assert!(failure.valid_for_catalog(14));
+    assert!(!failure.valid_for_catalog(15));
     assert!(!failure.valid_for_catalog(11));
     let result = ToolResult::error(ToolErrorKind::WebSearchUncertain(failure));
     assert!(result.is_uncertain());
@@ -28,10 +30,11 @@ fn web_diagnostic_is_closed_bounded_scoped_and_preserves_legacy_uncertain_bytes(
         result
     );
     let summary = result.summary();
-    assert!(summary.contains("OpenAI web search is uncertain"));
-    assert!(summary.contains("stage: response-model; category: malformed-response"));
+    assert!(summary.contains("Search couldn’t complete"));
+    assert!(!summary.contains("stage") && !summary.contains("category"));
+    assert!(!summary.contains("response-model") && !summary.contains("malformed-response"));
     assert!(summary.contains("nothing was retried"));
-    assert!(summary.is_ascii() && summary.len() < 256 && !summary.chars().any(char::is_control));
+    assert!(summary.len() < 256 && !summary.chars().any(char::is_control));
     for stage in [
         WebStage::SearchQueries,
         WebStage::SearchSources,
@@ -43,7 +46,8 @@ fn web_diagnostic_is_closed_bounded_scoped_and_preserves_legacy_uncertain_bytes(
         };
         assert!(!scoped.valid_for_catalog(12));
         assert!(scoped.valid_for_catalog(13));
-        assert!(!scoped.valid_for_catalog(14));
+        assert!(scoped.valid_for_catalog(14));
+        assert!(!scoped.valid_for_catalog(15));
         assert_eq!(
             serde_json::from_str::<WebFailure>(&serde_json::to_string(&scoped).unwrap()).unwrap(),
             scoped

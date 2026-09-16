@@ -26,6 +26,19 @@ async fn source_diagnostic_vocabulary_requires_catalog13_without_rewriting_catal
         .mark_tool_dispatched(run, call.call_id, call.operation_id)
         .await
         .unwrap();
+    let binding = store.web_binding(run, call.call_id).await.unwrap();
+    store
+        .dispatch_web_search(
+            &binding,
+            crate::persistence::WebInvocation {
+                child: 0,
+                ordinal: 0,
+                query_digest: binding.query_digest.unwrap(),
+                route: crate::persistence::WebRoute::OpenAi,
+            },
+        )
+        .await
+        .unwrap();
     let result = ToolResult::error(ToolErrorKind::WebSearchUncertain(WebFailure {
         stage: WebStage::SearchSources,
         category: WebCategory::ResponseLimitExceeded,
@@ -83,10 +96,12 @@ async fn root_web_diagnostic_commits_uncertainty_and_survives_reopen_without_rep
         .unwrap();
     let binding = store.web_binding(run, call.call_id).await.unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let exa = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let executor = WebSearchToolExecutor::for_test(
         store.clone(),
         format!("http://{}/search", listener.local_addr().unwrap()),
-    );
+    )
+    .with_exa_test_endpoint(format!("http://{}/mcp", exa.local_addr().unwrap()));
     let peer = tokio::spawn(async move {
         let (mut stream, _) = time::timeout(Duration::from_secs(10), listener.accept())
             .await
@@ -107,6 +122,11 @@ async fn root_web_diagnostic_commits_uncertainty_and_survives_reopen_without_rep
         .await
         .unwrap();
     assert_eq!(result, failure());
+    assert!(
+        time::timeout(Duration::from_millis(30), exa.accept())
+            .await
+            .is_err()
+    );
     let listener = peer.await.unwrap();
     let entry = store
         .complete_tool_result(run, call.call_id, call.operation_id, result.clone())
@@ -118,11 +138,8 @@ async fn root_web_diagnostic_commits_uncertainty_and_survives_reopen_without_rep
     else {
         panic!("tool result")
     };
-    assert!(
-        visible
-            .summary()
-            .contains("stage: http-status; category: request-rejected")
-    );
+    assert!(visible.summary().contains("Search couldn’t complete"));
+    assert!(!visible.summary().contains("stage") && !visible.summary().contains("category"));
     assert!(visible.summary().contains("nothing was retried"));
     assert!(!visible.summary().contains("PRIVATE"));
     assert_eq!(

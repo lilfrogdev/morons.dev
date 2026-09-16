@@ -15,16 +15,16 @@ impl WebFailure {
     pub const fn valid_for_catalog(self, catalog: u16) -> bool {
         match self.stage {
             WebStage::SearchQueries | WebStage::SearchSources | WebStage::SearchActionCount => {
-                catalog == 13
+                matches!(catalog, 13 | 14)
             }
-            _ => matches!(catalog, 12 | 13),
+            _ => matches!(catalog, 12..=14),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum WebStage {
+pub enum WebStage {
     Admission,
     Request,
     Headers,
@@ -89,7 +89,7 @@ impl WebStage {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum WebCategory {
+pub enum WebCategory {
     InvalidRequest,
     UnsupportedModel,
     DataUseRestricted,

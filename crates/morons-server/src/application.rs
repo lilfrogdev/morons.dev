@@ -1198,7 +1198,8 @@ impl ServerApplication {
             crate::tools::WebSearchToolExecutor::for_test(
                 sessions.clone(),
                 format!("{base}/backend-api/codex/responses"),
-            ),
+            )
+            .with_exa_test_endpoint(format!("{base}/mcp?tools=web_search_exa")),
             crate::tools::IpythonSupervisor::for_test(),
         );
         Self::from_supervised_parts(

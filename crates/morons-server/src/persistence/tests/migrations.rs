@@ -1,5 +1,7 @@
 use super::*;
 
+mod convergence;
+
 #[test]
 fn schema_version_one_migrates_to_current_version() {
     let root = TestRoot::new("schema-v1-migration");
