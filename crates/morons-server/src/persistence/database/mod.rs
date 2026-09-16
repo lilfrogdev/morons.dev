@@ -21,7 +21,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-pub(super) const SCHEMA_VERSION: i64 = 34;
+pub(super) const SCHEMA_VERSION: i64 = 41;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -59,6 +59,14 @@ const SCHEMA_V31: &str = include_str!("../schema_v31.sql");
 const SCHEMA_V32: &str = include_str!("../schema_v32.sql");
 const SCHEMA_V33: &str = include_str!("../schema_v33.sql");
 const SCHEMA_V34: &str = include_str!("../schema_v34.sql");
+const SCHEMA_V34_SEARCH: &str = include_str!("../schema_v34_search.sql");
+const SCHEMA_V41: &str = include_str!("../schema_v41.sql");
+const SCHEMA_V35: &str = include_str!("../schema_v35.sql");
+const SCHEMA_V36: &str = include_str!("../schema_v36.sql");
+const SCHEMA_V37: &str = include_str!("../schema_v37.sql");
+const SCHEMA_V38: &str = include_str!("../schema_v38.sql");
+const SCHEMA_V39: &str = include_str!("../schema_v39.sql");
+const SCHEMA_V40: &str = include_str!("../schema_v40.sql");
 
 const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("active_worktree_generations", "table"),
@@ -108,6 +116,11 @@ const EXPECTED_SCHEMA_OBJECTS: &[(&str, &str)] = &[
     ("provider_binding_epoch", "table"),
     ("task_model_bindings", "table"),
     ("task_model_bindings_by_run", "index"),
+    ("web_search_attempts", "table"),
+    ("web_provenance_epoch", "table"),
+    ("web_binding_provenance", "table"),
+    ("web_search_successes", "table"),
+    ("web_attempt_epoch", "table"),
     ("web_binding_epoch", "table"),
     ("web_model_bindings", "table"),
     ("web_model_bindings_by_run", "index"),
@@ -276,6 +289,14 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V32)?;
     connection.execute_batch(SCHEMA_V33)?;
     connection.execute_batch(SCHEMA_V34)?;
+    connection.execute_batch(SCHEMA_V34_SEARCH)?;
+    connection.execute_batch(SCHEMA_V35)?;
+    connection.execute_batch(SCHEMA_V36)?;
+    connection.execute_batch(SCHEMA_V37)?;
+    connection.execute_batch(SCHEMA_V38)?;
+    connection.execute_batch(SCHEMA_V39)?;
+    connection.execute_batch(SCHEMA_V40)?;
+    connection.execute_batch(SCHEMA_V41)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -400,8 +421,24 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (32, SCHEMA_V32),
         (33, SCHEMA_V33),
         (34, SCHEMA_V34),
+        (35, SCHEMA_V35),
+        (36, SCHEMA_V36),
+        (37, SCHEMA_V37),
+        (38, SCHEMA_V38),
+        (39, SCHEMA_V39),
+        (40, SCHEMA_V40),
+        (41, SCHEMA_V41),
     ] {
         if version > schema_version {
+            if version == 35 {
+                let has_search: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('web_model_bindings') WHERE name = 'exa_contract_revision')",
+                    [], |row| row.get(0),
+                )?;
+                if !has_search {
+                    migrate_schema(connection, SCHEMA_V34_SEARCH)?;
+                }
+            }
             migrate_schema(connection, schema)?;
         }
     }

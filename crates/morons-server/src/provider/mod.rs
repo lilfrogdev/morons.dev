@@ -5,6 +5,7 @@ mod chat_completions;
 mod data_use;
 pub(crate) mod dispatch;
 mod error;
+pub(crate) mod exa;
 pub mod openai_codex;
 pub mod openai_web;
 pub(crate) mod response_diagnostic;

@@ -23,8 +23,10 @@ pub(crate) use path::{ToolPath, WorktreePath};
 pub(crate) use web_search::WebSearchToolExecutor;
 pub(crate) use worktree::recovery_plan_is_valid;
 
+mod exa_web;
 mod hosted_web;
-pub(crate) use hosted_web::{HostedWebResult, WebCitation, WebReceipt};
+pub(crate) use exa_web::ExaWebResult;
+pub(crate) use hosted_web::{HostedWebResult, WebCitation, WebReceipt, WebSuccess};
 pub(crate) const TOOL_LIMITS_VERSION: u16 = 14;
 pub(crate) const LEGACY_WORKTREE_TOOL_CATALOG_VERSION: u16 = 1;
 pub(crate) const LEGACY_WORKTREE_TOOL_LIMITS_VERSION: u16 = 1;
@@ -462,6 +464,14 @@ pub(crate) struct SubagentResult {
     pub usage: SubagentUsage,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub web_searches: Vec<WebReceipt>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub exa_searches: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub web_successes: Vec<WebSuccess>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -516,6 +526,7 @@ pub(crate) enum ToolErrorKind {
     NotDispatched,
     Uncertain,
     WebSearchUncertain(crate::web_diagnostic::WebFailure),
+    ExaSearchUncertain,
     Filesystem,
     Network,
     InvalidResponse,
@@ -575,7 +586,11 @@ impl ToolResult {
     pub(crate) const fn is_uncertain(&self) -> bool {
         matches!(
             self.error_kind(),
-            Some(ToolErrorKind::Uncertain | ToolErrorKind::WebSearchUncertain(_))
+            Some(
+                ToolErrorKind::Uncertain
+                    | ToolErrorKind::WebSearchUncertain(_)
+                    | ToolErrorKind::ExaSearchUncertain
+            )
         )
     }
 
@@ -588,13 +603,6 @@ impl ToolResult {
             Self::Ok { output } => output.summary(),
             Self::Error { error, output } => {
                 let mut summary = format!("{} failed: {}", error.tool_label(), error.label());
-                if let ToolErrorKind::WebSearchUncertain(failure) = error {
-                    summary.push_str(&format!(
-                        " (stage: {}; category: {})",
-                        failure.stage.label(),
-                        failure.category.label()
-                    ));
-                }
                 if let Some(output) = output {
                     summary.push('\n');
                     summary.push_str(&output.summary());
@@ -632,8 +640,9 @@ impl ToolErrorKind {
             Self::Interrupted => "interrupted",
             Self::NotDispatched => "not dispatched",
             Self::Uncertain => "external effect or service usage is uncertain; nothing was retried",
+            Self::ExaSearchUncertain => "Exa search effects are uncertain; nothing was retried",
             Self::WebSearchUncertain(_) => {
-                "OpenAI web search is uncertain; service usage may have occurred; nothing was retried"
+                "Search couldn’t complete; service usage may have occurred; nothing was retried"
             }
             Self::Filesystem => "filesystem operation failed",
             Self::Network => "network request failed",
@@ -727,6 +736,9 @@ pub(crate) enum ToolOutput {
         results: Vec<WebSearchResult>,
         truncated: bool,
     },
+    ExaWeb {
+        result: ExaWebResult,
+    },
     OpenAiWeb {
         result: HostedWebResult,
     },
@@ -755,7 +767,9 @@ impl ToolOutput {
             Self::Written { .. } => ToolKind::Write,
             Self::Edited { .. } => ToolKind::Edit,
             Self::Bash { .. } => ToolKind::Bash,
-            Self::WebSearch { .. } | Self::OpenAiWeb { .. } => ToolKind::WebSearch,
+            Self::WebSearch { .. } | Self::OpenAiWeb { .. } | Self::ExaWeb { .. } => {
+                ToolKind::WebSearch
+            }
             Self::Ipython { .. } => ToolKind::Ipython,
             Self::Task { .. } => ToolKind::Task,
         }
@@ -841,6 +855,7 @@ impl ToolOutput {
                 }
                 summary
             }
+            Self::ExaWeb { result } => result.summary(),
             Self::OpenAiWeb { result } => result.summary(),
             Self::WebSearch {
                 results, truncated, ..
@@ -904,6 +919,12 @@ impl ToolOutput {
                     }
                     summary.push('\n');
                     summary.push_str(&result.output);
+                    if result.exa_searches > 0 {
+                        summary.push_str(&format!(
+                            "\nExa web · {} search(es); token usage not provided",
+                            result.exa_searches
+                        ));
+                    }
                     for receipt in &result.web_searches {
                         summary.push('\n');
                         summary.push_str(&receipt.summary());
@@ -954,7 +975,7 @@ fn bounded_text(value: &str, maximum: usize) -> &str {
 pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> bool {
     match result {
         ToolResult::Error {
-            error: ToolErrorKind::WebSearchUncertain(_),
+            error: ToolErrorKind::WebSearchUncertain(_) | ToolErrorKind::ExaSearchUncertain,
             output,
         } => matches!(tool, ToolKind::WebSearch | ToolKind::Task) && output.is_none(),
         ToolResult::Error { error, output } => output.as_ref().is_none_or(|output| match tool {
@@ -1105,6 +1126,9 @@ pub(crate) fn validate_canonical_result(tool: ToolKind, result: &ToolResult) -> 
                 && stderr.len() <= MAX_COMMAND_OUTPUT_BYTES
         }
         ToolResult::Ok {
+            output: ToolOutput::ExaWeb { result },
+        } => result.is_valid(),
+        ToolResult::Ok {
             output: ToolOutput::OpenAiWeb { result },
         } => result.is_valid(),
         ToolResult::Ok {
@@ -1155,6 +1179,17 @@ fn validate_subagent_results(results: &[SubagentResult]) -> bool {
                 && result.tool_mutations <= result.tool_calls
                 && u64::try_from(result.web_searches.len())
                     .is_ok_and(|count| count <= result.tool_calls)
+                && u64::try_from(result.web_searches.len())
+                    .ok()
+                    .and_then(|count| count.checked_add(result.exa_searches))
+                    .is_some_and(|count| count <= result.tool_calls)
+                && u64::try_from(result.web_successes.len())
+                    .is_ok_and(|count| count <= result.tool_calls)
+                && result.web_successes.iter().all(|success| {
+                    success.child == result.index
+                        && success.ordinal > 0
+                        && success.ordinal <= result.tool_calls
+                })
                 && result.web_searches.iter().all(WebReceipt::is_valid)
         })
 }
@@ -1164,6 +1199,12 @@ pub(crate) fn validate_canonical_result_for_input(input: &ToolInput, result: &To
         return false;
     }
     match (input, result) {
+        (
+            ToolInput::WebSearch { query },
+            ToolResult::Ok {
+                output: ToolOutput::ExaWeb { result },
+            },
+        ) => query == &result.query,
         (
             ToolInput::WebSearch { query },
             ToolResult::Ok {

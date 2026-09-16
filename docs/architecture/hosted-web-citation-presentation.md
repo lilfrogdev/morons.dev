@@ -1,3 +1,5 @@
-# Hosted-web citation validation
+# Hosted-web citation validation and failure presentation
 
 The OpenAI SDK defines URL-citation offsets relative to the message, not each output-text part ([schema](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_output_text.py)). Validate their ordering while parsing and their upper bound against the complete bounded message. Offsets remain discarded metadata, never Rust slicing authority. Keep existing citation counts, URL/title bounds, completed-search requirement, usage and stream-integrity checks. This fixes multipart compatibility; it does not establish the cause of a historical citation-stage rejection without its payload.
+
+Superseding ADR0045's visible-summary decision, ordinary hosted-web failure summaries show a plain failure and explicit service-usage/no-retry uncertainty, without stage/category diagnostics. Canonical/model-facing closed failures remain unchanged, including historical payloads; regenerated summaries use the new presentation. Emit the same closed stage/category through the existing default-off `--debug` bounded sink only, at the owned failed attempt, never by replaying stored evidence. No raw provider data, new log destination, retry or fallback is introduced.

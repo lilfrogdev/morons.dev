@@ -3,7 +3,7 @@ use super::{
     WebReceipt,
 };
 use crate::{
-    persistence::{PersistenceError, SessionStore, WebBinding},
+    persistence::{PersistenceError, SessionStore, WebBinding, WebInvocation, WebRoute},
     provider::{
         ProviderCancellation, ProviderError, openai_auth::OpenAiCredentialProvider,
         openai_web::SearchProvider,
@@ -15,6 +15,11 @@ use std::sync::Arc;
 pub(crate) struct WebSearchToolExecutor {
     sessions: Arc<SessionStore>,
     provider: SearchProvider,
+    exa: crate::provider::exa::ExaProvider,
+    #[cfg(test)]
+    prepared_barrier: Option<Arc<tokio::sync::Barrier>>,
+    #[cfg(test)]
+    admitted_barrier: Option<Arc<tokio::sync::Barrier>>,
 }
 impl WebSearchToolExecutor {
     pub(crate) fn new(sessions: Arc<SessionStore>) -> Self {
@@ -22,6 +27,11 @@ impl WebSearchToolExecutor {
         Self {
             sessions,
             provider: SearchProvider::new(credentials),
+            exa: crate::provider::exa::ExaProvider::new(),
+            #[cfg(test)]
+            prepared_barrier: None,
+            #[cfg(test)]
+            admitted_barrier: None,
         }
     }
     #[cfg(test)]
@@ -29,12 +39,34 @@ impl WebSearchToolExecutor {
         let credentials = Arc::new(OpenAiCredentialProvider::new(sessions.clone()));
         Self {
             sessions,
+            prepared_barrier: None,
+            admitted_barrier: None,
+            exa: crate::provider::exa::ExaProvider::new(),
             provider: SearchProvider::for_test(
                 credentials,
                 endpoint.parse().expect("fixture route"),
             ),
         }
     }
+    #[cfg(test)]
+    pub(crate) fn with_exa_test_endpoint(mut self, endpoint: String) -> Self {
+        self.exa =
+            crate::provider::exa::ExaProvider::for_test(endpoint.parse().expect("fixture route"));
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_prepared_barrier(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
+        self.prepared_barrier = Some(barrier);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_admitted_barrier(mut self, barrier: Arc<tokio::sync::Barrier>) -> Self {
+        self.admitted_barrier = Some(barrier);
+        self
+    }
+
     pub(crate) async fn execute(
         &self,
         input: &ToolInput,
@@ -61,8 +93,35 @@ impl WebSearchToolExecutor {
         if cancellation.is_cancelled() {
             return Ok(ToolResult::error(ToolErrorKind::Cancelled));
         }
+        let invocation = WebInvocation {
+            child,
+            ordinal,
+            query_digest: digest,
+            route: WebRoute::OpenAi,
+        };
         let policy = match self.sessions.admit_web_binding(binding).await {
             Ok(p) => p.restrictions,
+            Err(
+                error @ (PersistenceError::OpenAiCredentialNotConfigured
+                | PersistenceError::DataUseRestricted),
+            ) if binding.exa_contract_revision == 1 => {
+                let route = if matches!(error, PersistenceError::DataUseRestricted) {
+                    WebRoute::ExaPolicyDenied
+                } else {
+                    WebRoute::ExaMissingCredential
+                };
+                return self
+                    .execute_exa(
+                        query,
+                        binding,
+                        WebInvocation {
+                            route,
+                            ..invocation
+                        },
+                        &mut cancellation,
+                    )
+                    .await;
+            }
             Err(error) => return admission_error(error),
         };
         let operation = invocation_id(binding.operation_id, child, ordinal);
@@ -80,24 +139,65 @@ impl WebSearchToolExecutor {
             .await
         {
             Ok(d) => d,
+            Err(
+                error @ (ProviderError::CredentialNotConfigured | ProviderError::DataUseRestricted),
+            ) if binding.exa_contract_revision == 1 => {
+                let route = if matches!(error, ProviderError::DataUseRestricted) {
+                    WebRoute::ExaPolicyDenied
+                } else {
+                    WebRoute::ExaMissingCredential
+                };
+                return self
+                    .execute_exa(
+                        query,
+                        binding,
+                        WebInvocation {
+                            route,
+                            ..invocation
+                        },
+                        &mut cancellation,
+                    )
+                    .await;
+            }
             Err(e) => return preflight_error(e),
         };
-        // This worker admission, after credential preparation, is the policy linearization point.
-        let policy = match self.sessions.admit_web_binding(binding).await {
+        #[cfg(test)]
+        if let Some(barrier) = &self.prepared_barrier {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
+        if cancellation.is_cancelled() {
+            return Ok(ToolResult::error(ToolErrorKind::Cancelled));
+        }
+        let policy = match self
+            .sessions
+            .dispatch_web_search(binding, invocation.clone())
+            .await
+        {
             Ok(p) => p.restrictions,
             Err(error) => return admission_error(error),
         };
+        #[cfg(test)]
+        if let Some(barrier) = &self.admitted_barrier {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
         let result = match dispatch.execute(policy, &mut cancellation).await {
             Ok(result) => result,
             // Deliberately conservative: no complete outcome means service effects/usage may exist.
             Err(error) => {
+                let failure = attempt.failure(error);
+                crate::debug_log::emit(crate::debug_log::DebugEvent::WebSearch {
+                    stage: failure.stage,
+                    category: failure.category,
+                });
                 return Ok(ToolResult::error(ToolErrorKind::WebSearchUncertain(
-                    attempt.failure(error),
+                    failure,
                 )));
             }
         };
         let usage = result.usage;
-        Ok(ToolResult::Ok {
+        let result = ToolResult::Ok {
             output: ToolOutput::OpenAiWeb {
                 result: HostedWebResult {
                     query: query.clone(),
@@ -127,7 +227,59 @@ impl WebSearchToolExecutor {
                     },
                 },
             },
-        })
+        };
+        self.sessions
+            .complete_web_search(binding, invocation, result.clone())
+            .await?;
+        Ok(result)
+    }
+    async fn execute_exa(
+        &self,
+        query: &str,
+        binding: &WebBinding,
+        invocation: WebInvocation,
+        cancellation: &mut ProviderCancellation,
+    ) -> Result<ToolResult, PersistenceError> {
+        if cancellation.is_cancelled() {
+            return Ok(ToolResult::error(ToolErrorKind::Cancelled));
+        }
+        #[cfg(test)]
+        if let Some(barrier) = &self.prepared_barrier {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
+        if cancellation.is_cancelled() {
+            return Ok(ToolResult::error(ToolErrorKind::Cancelled));
+        }
+        if let Err(error) = self
+            .sessions
+            .dispatch_web_search(binding, invocation.clone())
+            .await
+        {
+            return admission_error(error);
+        }
+        #[cfg(test)]
+        if let Some(barrier) = &self.admitted_barrier {
+            barrier.wait().await;
+            barrier.wait().await;
+        }
+        let result = match self.exa.execute(query, cancellation).await {
+            Ok(result) => ToolResult::Ok {
+                output: ToolOutput::ExaWeb { result },
+            },
+            Err(crate::provider::exa::ExaFailure::BeforeDispatch(error)) => {
+                return preflight_error(error);
+            }
+            Err(crate::provider::exa::ExaFailure::Uncertain(_)) => {
+                ToolResult::error(ToolErrorKind::ExaSearchUncertain)
+            }
+        };
+        if matches!(result, ToolResult::Ok { .. }) {
+            self.sessions
+                .complete_web_search(binding, invocation, result.clone())
+                .await?;
+        }
+        Ok(result)
     }
 }
 fn invocation_id(owner: [u8; 16], child: u16, ordinal: u64) -> [u8; 16] {

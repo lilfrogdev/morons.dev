@@ -7,6 +7,7 @@ use crate::{
 use std::sync::Arc;
 
 mod diagnostic;
+mod exa;
 
 fn tokens() -> crate::provider::openai_auth::OAuthTokens {
     crate::provider::openai_auth::OAuthTokens::fixture(
@@ -30,6 +31,15 @@ async fn install(store: &SessionStore, generation: u64) {
         .unwrap();
 }
 async fn prepare(store: &SessionStore, native: bool, task: bool) -> (RunId, CommittedToolCall) {
+    prepare_at(store, native, task, None).await
+}
+
+async fn prepare_at(
+    store: &SessionStore,
+    native: bool,
+    task: bool,
+    directory: Option<&std::path::Path>,
+) -> (RunId, CommittedToolCall) {
     configure_credential(store).await;
     if task {
         store
@@ -43,10 +53,15 @@ async fn prepare(store: &SessionStore, native: bool, task: bool) -> (RunId, Comm
             .await
             .unwrap();
     }
-    let session = store
-        .create_session(MutationRequestId::from_bytes([0x92; 16]), None)
-        .await
-        .unwrap();
+    let request = MutationRequestId::from_bytes([0x92; 16]);
+    let session = if let Some(directory) = directory {
+        store
+            .create_session_at(request, None, directory.to_str().unwrap().into())
+            .await
+            .unwrap()
+    } else {
+        store.create_session(request, None).await.unwrap()
+    };
     let mut model = model_selection();
     if native {
         model.service = RunService::OpenAiChatGpt;
@@ -274,7 +289,10 @@ async fn task_web_binding_does_not_borrow_go_generation_or_adopt_later_login() {
                 .is_err()
         );
         let db = Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
-        db.execute("DELETE FROM web_model_bindings", []).unwrap();
+        db.execute_batch(
+            "PRAGMA foreign_keys=OFF; DELETE FROM web_model_bindings; PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
         assert!(store.web_binding(run, call.call_id).await.is_err());
     }
 }
@@ -356,16 +374,22 @@ async fn schema_31_web_migration_preserves_canonical_input_and_credentials_witho
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn root_search_without_native_login_never_marks_dispatched_or_uses_brave() {
+async fn root_search_without_native_login_binds_keyless_route_without_openai_admission() {
     let root = TestRoot::new("web-missing-login");
     let store = SessionStore::open_for_test(root.path()).unwrap();
     let (run, call) = prepare(&store, false, false).await;
+    store
+        .mark_tool_dispatched(run, call.call_id, call.operation_id)
+        .await
+        .unwrap();
+    let binding = store.web_binding(run, call.call_id).await.unwrap();
+    assert_eq!(binding.generation, 0);
+    assert_eq!(binding.exa_contract_revision, 1);
     assert!(matches!(
-        store
-            .mark_tool_dispatched(run, call.call_id, call.operation_id)
-            .await,
+        store.admit_web_binding(&binding).await,
         Err(PersistenceError::OpenAiCredentialNotConfigured)
     ));
+    assert!(store.admit_web_route(&binding, true).await.is_ok());
     let db = Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
     assert_eq!(
         db.query_row(
@@ -374,7 +398,7 @@ async fn root_search_without_native_login_never_marks_dispatched_or_uses_brave()
             |r| r.get::<_, i64>(0)
         )
         .unwrap(),
-        0
+        1
     );
     assert!(!include_str!("../../tools/web_search.rs").contains("BRAVE_SEARCH_API_KEY"));
     assert!(!include_str!("../../tools/web_search.rs").contains("search.brave.com"));

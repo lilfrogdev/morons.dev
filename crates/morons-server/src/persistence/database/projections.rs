@@ -1,4 +1,6 @@
 mod rebuild;
+#[cfg(test)]
+mod web_sequence_tests;
 
 use rusqlite::{Connection, OptionalExtension as _, params};
 
@@ -1734,7 +1736,7 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                        AND image.state = 2
                  ))
                 OR
-                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13)
+                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
                  AND (accepted.tool_limits_version = accepted.tool_catalog_version
                       OR (accepted.tool_catalog_version = 13 AND accepted.tool_limits_version = 14))
                  AND accepted.execution_image_generation IS NULL
@@ -1749,12 +1751,12 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
                OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
-               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
-               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
-               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7, 8, 9, 10, 11, 12, 13))
-               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7, 8, 9, 10, 11, 12, 13))
-               OR (call.tool_kind = 14 AND run.tool_catalog_version NOT IN (8, 9, 10, 11, 12, 13))
-               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
+               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14))
+               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14))
+               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14))
+               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7, 8, 9, 10, 11, 12, 13, 14))
+               OR (call.tool_kind = 14 AND run.tool_catalog_version NOT IN (8, 9, 10, 11, 12, 13, 14))
+               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14))
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id
@@ -1993,6 +1995,10 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                     ..
                 } => fact_kind == 6 && result_status == 4,
                 ToolResult::Error {
+                    error: ToolErrorKind::ExaSearchUncertain,
+                    ..
+                } => fact_kind == 6 && result_status == 4 && catalog >= 14 && web_bound,
+                ToolResult::Error {
                     error: ToolErrorKind::WebSearchUncertain(failure),
                     ..
                 } => {
@@ -2068,14 +2074,45 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
             SELECT sequence FROM earlier_sequences
             UNION ALL SELECT prepared_sequence FROM compaction_maintenance_jobs
             UNION ALL SELECT fact_sequence FROM compaction_maintenance_events
+         ), web_sequences(sequence) AS (
+            SELECT dispatch_sequence FROM web_search_attempts
+            UNION ALL SELECT completion_sequence FROM web_search_successes
+         ), other_sequences(sequence) AS (
+            SELECT sequence FROM canonical_sequences
+            UNION ALL SELECT sequence FROM other_tool_sequences
+            UNION ALL SELECT accepted_sequence FROM session_rename_requests
+            UNION ALL SELECT accepted_sequence FROM session_archive_requests
+            UNION ALL SELECT accepted_sequence FROM session_delete_requests
+            UNION ALL SELECT accepted_sequence FROM deleted_mutation_tombstones
+            UNION ALL SELECT accepted_sequence FROM repository_import_requests
+            UNION ALL SELECT fact_sequence FROM repository_import_facts
+            UNION ALL SELECT audit_sequence FROM repository_import_audit_facts
+         ), other_tool_sequences(sequence) AS (
+            SELECT fact_sequence FROM tool_calls
+            UNION ALL SELECT fact_sequence FROM tool_operation_facts
+            UNION ALL SELECT fact_sequence FROM tool_uncertainty_acknowledgements
+            UNION ALL SELECT audit_sequence FROM tool_audit_facts
+            UNION ALL SELECT accepted_sequence FROM local_commands
+            UNION ALL SELECT accepted_sequence FROM local_command_cancellations
+            UNION ALL SELECT audit_sequence FROM local_command_audit_facts
+            UNION ALL SELECT accepted_sequence FROM default_model_selections
+            UNION ALL SELECT accepted_sequence FROM subagent_model_selections
+            UNION ALL SELECT accepted_sequence FROM data_use_policies
          )
          SELECT EXISTS (
             SELECT 1 FROM canonical_sequences
             GROUP BY sequence HAVING COUNT(*) != 1
             UNION ALL
+            SELECT 1 FROM web_sequences
+            GROUP BY sequence HAVING COUNT(*) != 1
+            UNION ALL
+            SELECT 1 FROM web_sequences AS web
+            WHERE EXISTS (SELECT 1 FROM other_sequences WHERE sequence = web.sequence)
+            UNION ALL
             SELECT 1 FROM logical_sequences
             WHERE singleton != 1
                OR next_value <= COALESCE((SELECT MAX(sequence) FROM canonical_sequences), 0)
+               OR next_value <= COALESCE((SELECT MAX(sequence) FROM web_sequences), 0)
          )",
         [],
         |row| row.get(0),

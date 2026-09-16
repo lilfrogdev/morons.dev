@@ -13,7 +13,8 @@ use crate::{
     tools::{
         BashToolExecutor, DirectToolExecutor, MAX_SUBAGENT_OUTPUT_BYTES, SubagentModelDisclosure,
         SubagentResult, SubagentStatus, SubagentTask, SubagentUsage, ToolErrorKind, ToolInput,
-        ToolKind, ToolOutput, ToolResult, WebSearchToolExecutor, subagent_provider_tools,
+        ToolKind, ToolOutput, ToolResult, WebSearchToolExecutor, WebSuccess,
+        subagent_provider_tools,
     },
 };
 
@@ -54,12 +55,17 @@ enum ChildStop {
 
 fn record_child_stop(current: &mut Option<ToolErrorKind>, observed: ToolErrorKind) {
     // Keep the first closed web diagnosis while siblings drain. Uncertainty outranks cancellation.
-    if matches!(current, Some(ToolErrorKind::WebSearchUncertain(_))) {
+    if matches!(
+        current,
+        Some(ToolErrorKind::WebSearchUncertain(_) | ToolErrorKind::ExaSearchUncertain)
+    ) {
         return;
     }
     if matches!(
         observed,
-        ToolErrorKind::Uncertain | ToolErrorKind::WebSearchUncertain(_)
+        ToolErrorKind::Uncertain
+            | ToolErrorKind::WebSearchUncertain(_)
+            | ToolErrorKind::ExaSearchUncertain
     ) {
         *current = Some(observed);
     } else {
@@ -193,7 +199,9 @@ impl SubagentExecutor {
         working_directory: PathBuf,
         mut cancellation: ProviderCancellation,
     ) -> Result<SubagentResult, ChildStop> {
+        let mut web_successes = Vec::new();
         let mut web_searches = Vec::new();
+        let mut exa_searches = 0_u64;
         let result = async {
         let permit = tokio::select! {
             permit = Arc::clone(&self.permits).acquire_owned() => {
@@ -522,7 +530,9 @@ impl SubagentExecutor {
                                 ToolErrorKind::Cancelled => D::Cancelled,
                                 ToolErrorKind::Interrupted => D::Interrupted,
                                 ToolErrorKind::NotDispatched => D::NotDispatched,
-                                ToolErrorKind::Uncertain => D::Uncertain,
+                                ToolErrorKind::Uncertain | ToolErrorKind::ExaSearchUncertain => {
+                                    D::Uncertain
+                                }
                                 ToolErrorKind::WebSearchUncertain(_) => D::WebSearchUncertain,
                                 ToolErrorKind::Filesystem => D::Filesystem,
                                 ToolErrorKind::Network => D::Network,
@@ -550,8 +560,23 @@ impl SubagentExecutor {
                             exit_code,
                             signal,
                         });
+                        if let Some(binding) = &config.web_binding
+                            && let Some(success) =
+                                WebSuccess::new(binding.operation_id, index, ordinal, &result)
+                        {
+                            web_successes.push(success);
+                        }
                         if let ToolResult::Ok { output: ToolOutput::OpenAiWeb { result } } = &result {
                             web_searches.push(result.receipt.clone());
+                        }
+                        if matches!(&result, ToolResult::Ok { output: ToolOutput::ExaWeb { .. } }) {
+                            exa_searches = exa_searches.checked_add(1).ok_or(
+                                ChildStop::Persistence(
+                                    crate::persistence::PersistenceError::InvalidState {
+                                        reason: "child search counter overflow",
+                                    },
+                                ),
+                            )?;
                         }
                         if result.error_kind() == Some(ToolErrorKind::Cancelled) {
                             return Err(ChildStop::Cancelled);
@@ -613,7 +638,9 @@ impl SubagentExecutor {
         }
         }.await;
         result.map(|mut result: SubagentResult| {
+            result.web_successes = web_successes;
             result.web_searches = web_searches;
+            result.exa_searches = exa_searches;
             result
         })
     }
@@ -848,7 +875,9 @@ fn subagent_result(
         tool_calls: metrics.tool_calls,
         tool_mutations: metrics.tool_mutations,
         usage: metrics.usage,
+        web_successes: Vec::new(),
         web_searches: Vec::new(),
+        exa_searches: 0,
     }
 }
 

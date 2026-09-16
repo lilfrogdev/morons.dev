@@ -5,6 +5,7 @@ use rusqlite::Connection;
 
 /// Reconstruct the old schema, not just its user_version, in owned test fixtures.
 pub(crate) fn restore_schema_33(connection: &Connection) {
+    remove_child_schema(connection);
     let reference = super::super::database::schema_29_fixture();
     for schema in [
         include_str!("../schema_v30.sql"),
@@ -17,13 +18,91 @@ pub(crate) fn restore_schema_33(connection: &Connection) {
     connection
         .execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")
         .unwrap();
+    connection.execute_batch("DROP TABLE web_search_successes; DROP TABLE web_binding_provenance; DROP TABLE web_provenance_epoch; DROP TABLE web_attempt_epoch; DROP TABLE web_search_attempts;").unwrap();
     restore_tables(
         connection,
         &reference,
-        &["runs", "provider_operation_facts"],
+        &[
+            "runs",
+            "provider_operation_facts",
+            "web_model_bindings",
+            "context_accounting_epoch",
+        ],
     );
     connection
         .execute_batch("PRAGMA user_version = 33; COMMIT; PRAGMA foreign_keys = ON;")
+        .unwrap();
+}
+
+pub(crate) fn restore_schema_35(connection: &Connection) {
+    remove_child_schema(connection);
+    let reference = super::super::database::schema_29_fixture();
+    for schema in [
+        include_str!("../schema_v30.sql"),
+        include_str!("../schema_v31.sql"),
+        include_str!("../schema_v32.sql"),
+        include_str!("../schema_v33.sql"),
+        include_str!("../schema_v34_search.sql"),
+        include_str!("../schema_v35.sql"),
+    ] {
+        reference.execute_batch(schema).unwrap();
+    }
+    connection.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE; DROP TABLE web_search_successes; DROP TABLE web_binding_provenance; DROP TABLE web_provenance_epoch; DROP TABLE web_attempt_epoch;").unwrap();
+    restore_tables(
+        connection,
+        &reference,
+        &[
+            "runs",
+            "provider_operation_facts",
+            "web_model_bindings",
+            "web_search_attempts",
+            "context_accounting_epoch",
+        ],
+    );
+    connection
+        .execute_batch("PRAGMA user_version=35; COMMIT; PRAGMA foreign_keys=ON;")
+        .unwrap();
+}
+
+pub(crate) fn restore_schema_40(connection: &Connection) {
+    remove_child_schema(connection);
+    let reference = super::super::database::schema_29_fixture();
+    for schema in [
+        include_str!("../schema_v30.sql"),
+        include_str!("../schema_v31.sql"),
+        include_str!("../schema_v32.sql"),
+        include_str!("../schema_v33.sql"),
+        include_str!("../schema_v34_search.sql"),
+        include_str!("../schema_v35.sql"),
+        include_str!("../schema_v36.sql"),
+        include_str!("../schema_v37.sql"),
+        include_str!("../schema_v38.sql"),
+        include_str!("../schema_v39.sql"),
+        include_str!("../schema_v40.sql"),
+    ] {
+        reference.execute_batch(schema).unwrap();
+    }
+    connection
+        .execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;")
+        .unwrap();
+    restore_tables(
+        connection,
+        &reference,
+        &[
+            "runs",
+            "provider_operation_facts",
+            "web_model_bindings",
+            "web_search_attempts",
+        ],
+    );
+    connection
+        .execute_batch("PRAGMA user_version=40; COMMIT; PRAGMA foreign_keys=ON;")
+        .unwrap();
+}
+
+pub(crate) fn remove_child_schema(connection: &Connection) {
+    connection
+        .execute_batch("DROP TABLE IF EXISTS child_journal; DROP TABLE IF EXISTS child_runs;")
         .unwrap();
 }
 
@@ -90,7 +169,15 @@ fn restore_tables(connection: &Connection, reference: &Connection, tables: &[&st
             )
             .unwrap();
         let prefix = ddl.find('(').unwrap();
-        connection.execute_batch(&format!("CREATE TABLE {table}_restore {}; INSERT INTO {table}_restore SELECT * FROM {table}; DROP TABLE {table}; ALTER TABLE {table}_restore RENAME TO {table};", &ddl[prefix..])).unwrap();
+        let columns = reference
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join(",");
+        connection.execute_batch(&format!("CREATE TABLE {table}_restore {}; INSERT INTO {table}_restore ({columns}) SELECT {columns} FROM {table}; DROP TABLE {table}; ALTER TABLE {table}_restore RENAME TO {table};", &ddl[prefix..])).unwrap();
         let mut statement=reference.prepare("SELECT sql FROM sqlite_schema WHERE type='index' AND tbl_name=?1 AND sql IS NOT NULL").unwrap();
         for index in statement
             .query_map([table], |row| row.get::<_, String>(0))

@@ -1,6 +1,49 @@
 //! Canonical web results; independent of provider wire types and terminal rendering.
 use super::SubagentUsage;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebSuccess {
+    pub operation_id: [u8; 16],
+    pub child: u16,
+    pub ordinal: u64,
+    pub query_digest: [u8; 32],
+    pub exa: bool,
+    pub result_digest: [u8; 32],
+}
+impl WebSuccess {
+    pub(crate) fn new(
+        operation_id: [u8; 16],
+        child: u16,
+        ordinal: u64,
+        result: &super::ToolResult,
+    ) -> Option<Self> {
+        let (query, exa) = match result {
+            super::ToolResult::Ok {
+                output: super::ToolOutput::OpenAiWeb { result },
+            } => (&result.query, false),
+            super::ToolResult::Ok {
+                output: super::ToolOutput::ExaWeb { result },
+            } => (&result.query, true),
+            _ => return None,
+        };
+        let payload = serde_json::to_vec(result).ok()?;
+        Some(Self {
+            operation_id,
+            child,
+            ordinal,
+            query_digest: Sha256::digest(query.as_bytes()).into(),
+            exa,
+            result_digest: Sha256::new()
+                .chain_update(b"morons.dev/web-search-result/v1\0")
+                .chain_update(payload)
+                .finalize()
+                .into(),
+        })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,7 +122,7 @@ impl HostedWebResult {
         text
     }
 }
-fn valid_url(value: &str) -> bool {
+pub(super) fn valid_url(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 4096
         && value.is_ascii()

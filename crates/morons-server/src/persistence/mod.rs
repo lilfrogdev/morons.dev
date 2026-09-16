@@ -13,7 +13,7 @@ mod run_types;
 mod task_binding;
 pub(crate) use task_binding::TaskModelBinding;
 mod web_binding;
-pub(crate) use web_binding::WebBinding;
+pub(crate) use web_binding::{WebBinding, WebInvocation, WebRoute};
 mod runs;
 mod types;
 mod workspace;
