@@ -3,6 +3,7 @@ mod rebuild;
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 use super::validate_integrity;
+use crate::debug_log::{self, DebugStartupStage};
 use crate::persistence::{
     PersistenceError, RunModelSelection, RunService, SessionId, SubagentModelSetting,
     run_types::{
@@ -26,27 +27,33 @@ use crate::tools::{
 };
 
 pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError> {
-    validate_session_creation_facts(connection)?;
-    validate_session_rename_facts(connection)?;
-    validate_session_archive_facts(connection)?;
-    validate_session_delete_facts(connection)?;
-    validate_default_model_facts(connection)?;
-    validate_subagent_model_facts(connection)?;
-    validate_mutation_registry(connection)?;
-    validate_local_command_facts(connection)?;
-    validate_image_attachment_facts(connection)?;
-    validate_run_request_payloads(connection)?;
-    validate_server_stop_facts(connection)?;
-    validate_repository_import_facts(connection)?;
-    validate_execution_image_facts(connection)?;
-    validate_worktree_generation_facts(connection)?;
-    validate_run_canonical_facts(connection)?;
-    validate_run_skill_snapshots(connection)?;
-    validate_compaction_facts(connection)?;
-    validate_tool_facts(connection)?;
-    validate_logical_sequences(connection)?;
-    rebuild::rebuild(connection)?;
-    validate_integrity(connection)
+    debug_log::startup_stage(DebugStartupStage::FactValidation, || {
+        validate_session_creation_facts(connection)?;
+        validate_session_rename_facts(connection)?;
+        validate_session_archive_facts(connection)?;
+        validate_session_delete_facts(connection)?;
+        validate_default_model_facts(connection)?;
+        validate_subagent_model_facts(connection)?;
+        validate_mutation_registry(connection)?;
+        validate_local_command_facts(connection)?;
+        validate_image_attachment_facts(connection)?;
+        validate_run_request_payloads(connection)?;
+        validate_server_stop_facts(connection)?;
+        validate_repository_import_facts(connection)?;
+        validate_execution_image_facts(connection)?;
+        validate_worktree_generation_facts(connection)?;
+        validate_run_canonical_facts(connection)?;
+        validate_run_skill_snapshots(connection)?;
+        validate_compaction_facts(connection)?;
+        validate_tool_facts(connection)?;
+        validate_logical_sequences(connection)
+    })?;
+    debug_log::startup_stage(DebugStartupStage::ProjectionRebuild, || {
+        rebuild::rebuild(connection)
+    })?;
+    debug_log::startup_stage(DebugStartupStage::IntegrityValidation, || {
+        validate_integrity(connection)
+    })
 }
 
 fn validate_session_creation_facts(connection: &Connection) -> Result<(), PersistenceError> {
@@ -1309,9 +1316,16 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
             .ok_or_else(invalid_run_context)?;
         let estimate = conservative_input_token_estimate(context_bytes, context_items)
             .ok_or_else(invalid_run_context)?;
+        let can_compact = entry_count > 1 + u64::from(accepted_checkpoint.is_some());
+        // Acceptance caps oversized history for pre-dispatch compaction.
+        let accepted_estimate = if can_compact {
+            i64::from(estimate).min(maximum_input_tokens)
+        } else {
+            i64::from(estimate)
+        };
         if context_items == 0
-            || context_items > MAX_CONTEXT_ENTRIES as u64
-            || i64::from(estimate) != estimated_input_tokens
+            || (!can_compact && context_items > MAX_CONTEXT_ENTRIES as u64)
+            || accepted_estimate != estimated_input_tokens
             || estimated_input_tokens > maximum_input_tokens
             || !matches!(
                 u16::try_from(context_policy_version).ok(),
@@ -1684,7 +1698,14 @@ fn validate_compaction_facts(connection: &Connection) -> Result<(), PersistenceE
 
 fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> {
     let invalid: bool = connection.query_row(
-        "SELECT EXISTS (
+        "WITH tool_operation_facts AS MATERIALIZED (
+            SELECT fact_sequence, call_id, operation_id, session_id, run_id,
+                   fact_kind, workspace_delivery_event_id
+            FROM main.tool_operation_facts
+         ), tool_audit_facts AS MATERIALIZED (
+            SELECT * FROM main.tool_audit_facts
+         )
+         SELECT EXISTS (
             SELECT 1 FROM run_accepted_facts AS accepted
             WHERE NOT (
                 (accepted.tool_catalog_version = 0 AND accepted.tool_limits_version = 0
