@@ -62,13 +62,14 @@ async fn connect_retry_succeeds_with_same_request() {
 async fn connect_retries_are_capped() {
     let (_, mut cancellation) = provider_cancellation();
     let start = Instant::now();
+    // Allow four 10-second Windows connection attempts plus retry backoff.
     let error = time::timeout(
-        Duration::from_secs(4),
+        Duration::from_secs(50),
         send_model_request(
             &bounded_client(true, None),
             request(unused_address()),
-            Duration::from_secs(1),
-            start + Duration::from_secs(10),
+            Duration::from_secs(11),
+            start + Duration::from_secs(45),
             &mut cancellation,
         ),
     )
