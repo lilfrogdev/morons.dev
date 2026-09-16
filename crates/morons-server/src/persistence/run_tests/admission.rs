@@ -1,6 +1,59 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn oversized_context_accepted_for_compaction_survives_restart() {
+    let root = TestRoot::new("oversized-context-restart");
+    let session_id;
+    {
+        let store = SessionStore::open_at(root.path()).unwrap();
+        configure_credential(&store).await;
+        session_id = store
+            .create_session(MutationRequestId::from_bytes([0xe1; 16]), None)
+            .await
+            .unwrap()
+            .id;
+        store
+            .accept_session_input(
+                MutationRequestId::from_bytes([0xe2; 16]),
+                session_id,
+                "x".repeat(60_000),
+                model_selection(),
+            )
+            .await
+            .unwrap();
+    }
+    let run_id;
+    {
+        let store = SessionStore::open_at(root.path()).unwrap();
+        let accepted = store
+            .accept_session_input(
+                MutationRequestId::from_bytes([0xe3; 16]),
+                session_id,
+                "y".repeat(60_000),
+                model_selection(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            accepted.run.estimated_input_tokens,
+            accepted.run.maximum_input_tokens
+        );
+        run_id = accepted.run.id;
+    }
+    let reopened =
+        SessionStore::open_at(root.path()).expect("compaction admission must survive restart");
+    assert_eq!(
+        reopened
+            .get_run(session_id, run_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        RunState::Interrupted
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn rejected_run_input_does_not_append_transcript_state() {
     let root = TestRoot::new("rejected-run-input");
     let store = SessionStore::open_at(root.path()).expect("session store should open");

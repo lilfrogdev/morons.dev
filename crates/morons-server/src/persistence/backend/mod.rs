@@ -37,6 +37,8 @@ mod worktree_generation;
 
 use rusqlite::Connection;
 
+use crate::debug_log::{self, DebugStartupStage};
+
 use super::{
     PersistenceError,
     credentials::{CredentialStore, openai::OpenAiCredentialStore},
@@ -67,18 +69,20 @@ impl Backend {
             context_data_version: std::cell::Cell::new(None),
             maintenance_enabled: false,
         };
-        backend.reconcile_image_attachments()?;
-        backend.ensure_context_integrity()?;
-        backend.recover_compaction_operations()?;
-        backend.recover_credential_mutations()?;
-        backend.openai_credentials.recover_refresh()?;
-        backend.recover_maintenance_jobs()?;
-        backend.recover_incomplete_session_creations()?;
-        backend.recover_tool_operations()?;
-        backend.recover_local_commands()?;
-        backend.recover_nonterminal_runs()?;
-        backend.recover_session_archives()?;
-        backend.recover_session_deletes()?;
+        debug_log::startup_stage(DebugStartupStage::BackendRecovery, || {
+            backend.reconcile_image_attachments()?;
+            backend.ensure_context_integrity()?;
+            backend.recover_compaction_operations()?;
+            backend.recover_credential_mutations()?;
+            backend.openai_credentials.recover_refresh()?;
+            backend.recover_maintenance_jobs()?;
+            backend.recover_incomplete_session_creations()?;
+            backend.recover_tool_operations()?;
+            backend.recover_local_commands()?;
+            backend.recover_nonterminal_runs()?;
+            backend.recover_session_archives()?;
+            backend.recover_session_deletes()
+        })?;
         Ok(backend)
     }
 }

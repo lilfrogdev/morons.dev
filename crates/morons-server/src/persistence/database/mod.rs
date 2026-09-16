@@ -12,6 +12,8 @@ use std::{
 
 use rusqlite::{Connection, OpenFlags, backup::Backup};
 
+use crate::debug_log::{self, DebugStartupStage};
+
 use self::configuration::MAXIMUM_DATABASE_BYTES;
 use super::{
     PersistenceError,
@@ -193,16 +195,29 @@ pub(crate) fn schema_28_fixture() -> Connection {
 
 pub(crate) fn open(paths: &StoragePaths) -> Result<Connection, PersistenceError> {
     if !paths.database_exists()? {
-        initialize(paths)?;
+        debug_log::startup_stage(DebugStartupStage::DatabaseInitialize, || initialize(paths))?;
     }
-    paths.validate_database_file(MAXIMUM_DATABASE_BYTES)?;
-    validate_header(paths.database_path())?;
+    debug_log::startup_stage(DebugStartupStage::DatabaseFileValidation, || {
+        paths.validate_database_file(MAXIMUM_DATABASE_BYTES)?;
+        validate_header(paths.database_path())
+    })?;
 
-    let mut connection = open_connection(paths.database_path())?;
-    configuration::configure(&connection, false)?;
-    migrate(&connection, paths)?;
-    validate_identity_and_schema(&connection)?;
-    validate_quick_integrity(&connection)?;
+    let mut connection =
+        debug_log::startup_stage(DebugStartupStage::DatabaseConnectionOpen, || {
+            open_connection(paths.database_path())
+        })?;
+    debug_log::startup_stage(DebugStartupStage::DatabaseConfiguration, || {
+        configuration::configure(&connection, false)
+    })?;
+    debug_log::startup_stage(DebugStartupStage::DatabaseMigration, || {
+        migrate(&connection, paths)
+    })?;
+    debug_log::startup_stage(DebugStartupStage::DatabaseSchemaValidation, || {
+        validate_identity_and_schema(&connection)
+    })?;
+    debug_log::startup_stage(DebugStartupStage::DatabaseQuickValidation, || {
+        validate_quick_integrity(&connection)
+    })?;
     projections::repair(&mut connection)?;
     Ok(connection)
 }
