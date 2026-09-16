@@ -4,7 +4,7 @@ use crate::{
     provider::{
         DataUseRestrictions, ProviderCancellation, ProviderError, ProviderOutcome,
         ProviderStreamEvent,
-        http_client::{ProviderHttpClient, bounded_client},
+        http_client::{ProviderHttpClient, bounded_client, send_model_request},
         openai_auth::{OpenAiCredentialError, OpenAiCredentialLease, OpenAiCredentialProvider},
         response_diagnostic::ResponseStage,
         response_http::*,
@@ -18,7 +18,7 @@ use http::{
 };
 use http_body_util::Full;
 use std::sync::Arc;
-use tokio::time::{self, Instant};
+use tokio::time::Instant;
 
 pub(in crate::provider) const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
 const ROUTING_HEADER: &str = "x-codex-turn-state";
@@ -162,14 +162,15 @@ impl PreparedCodexDispatch<'_> {
                 .headers_mut()
                 .insert(ROUTING_HEADER, routing.clone());
         }
-        let started = Instant::now();
-        let deadline = started + self.provider.total_timeout;
-        let header_deadline = (started + self.provider.header_timeout).min(deadline);
-        let response = tokio::select! {
-            biased;
-            ()=cancellation.cancelled()=>return Err(ProviderError::Cancelled),
-            result=time::timeout_at(header_deadline,self.provider.client.request(request))=>result.map_err(|_|if header_deadline==deadline {ProviderError::TotalTimeout}else{ProviderError::ResponseHeaderTimeout})?.map_err(|_|ProviderError::Transport)?,
-        };
+        let deadline = Instant::now() + self.provider.total_timeout;
+        let response = send_model_request(
+            &self.provider.client,
+            request,
+            self.provider.header_timeout,
+            deadline,
+            cancellation,
+        )
+        .await?;
         drop(self.credential);
         validate_response_headers(response.headers())
             .map_err(|e| self.turn.record_failure(e, ResponseStage::Headers))?;

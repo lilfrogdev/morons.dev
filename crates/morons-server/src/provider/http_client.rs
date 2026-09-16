@@ -8,7 +8,57 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 
+use super::{ProviderCancellation, ProviderError};
+use http::{Request, Response};
+use hyper::body::Incoming;
+use tokio::time::{self, Instant};
+
 pub(crate) type ProviderHttpClient = Client<HttpsConnector<HttpConnector>, Full<Bytes>>;
+
+pub(crate) async fn send_model_request(
+    client: &ProviderHttpClient,
+    request: Request<Full<Bytes>>,
+    header_timeout: Duration,
+    deadline: Instant,
+    cancellation: &mut ProviderCancellation,
+) -> Result<Response<Incoming>, ProviderError> {
+    for attempt in 0..=3 {
+        if cancellation.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(ProviderError::TotalTimeout);
+        }
+        let header_deadline = (Instant::now() + header_timeout).min(deadline);
+        let result = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+            result = time::timeout_at(header_deadline, client.request(request.clone())) => {
+                result.map_err(|_| if header_deadline == deadline {
+                    ProviderError::TotalTimeout
+                } else {
+                    ProviderError::ResponseHeaderTimeout
+                })?
+            }
+        };
+        match result {
+            Ok(response) => return Ok(response),
+            // Hyper's Connect failures precede request transmission; other failures are uncertain.
+            Err(error) if error.is_connect() && attempt < 3 => {}
+            Err(_) => return Err(ProviderError::Transport),
+        }
+        let wake = (Instant::now() + Duration::from_millis(250 << attempt)).min(deadline);
+        tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
+            () = time::sleep_until(wake) => {}
+        }
+    }
+    unreachable!("last attempt returns without backoff")
+}
+
+#[cfg(test)]
+mod tests;
 
 pub(crate) fn bounded_client(
     allow_http: bool,

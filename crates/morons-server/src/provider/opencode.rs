@@ -22,7 +22,7 @@ use super::{
     catalog::{MAX_CATALOG_BODY_BYTES, parse_catalog},
     chat_completions::ChatCompletionsDecoder,
     gemini::GeminiDecoder,
-    http_client::{ProviderHttpClient, bounded_client},
+    http_client::{ProviderHttpClient, bounded_client, send_model_request},
     responses::ResponsesDecoder,
 };
 use crate::persistence::{PersistenceError, SessionStore};
@@ -398,15 +398,14 @@ impl OpenCodeClient {
             .map_err(|_| ProviderError::Transport)?;
         let deadline = Instant::now() + PROVIDER_TOTAL_TIMEOUT;
         diagnostic.stage(DebugStage::Headers);
-        let response = tokio::select! {
-            biased;
-            () = cancellation.cancelled() => return Err(ProviderError::Cancelled),
-            result = time::timeout(RESPONSE_HEADER_TIMEOUT, self.client.request(http_request)) => {
-                result
-                    .map_err(|_| ProviderError::ResponseHeaderTimeout)?
-                    .map_err(|_| ProviderError::Transport)?
-            }
-        };
+        let response = send_model_request(
+            &self.client,
+            http_request,
+            RESPONSE_HEADER_TIMEOUT,
+            deadline,
+            cancellation,
+        )
+        .await?;
         Ok((response, deadline))
     }
 
