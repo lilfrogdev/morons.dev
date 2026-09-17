@@ -355,7 +355,7 @@ impl Backend {
         let checkpoint = load_latest_checkpoint(
             &self.connection,
             run.session_id,
-            if native_usage {
+            if execution.allows_within_run_compaction() {
                 current_entry_high_water
             } else {
                 run.source_entry_high_water.saturating_sub(1)
@@ -387,7 +387,8 @@ impl Backend {
         )?;
         let mut budget =
             self.context_budget(run.session_id, covered_high_water, current_entry_high_water)?;
-        let retain_user = native_usage && covered_high_water >= run.source_entry_high_water;
+        let retain_user = execution.allows_within_run_compaction()
+            && covered_high_water >= run.source_entry_high_water;
         if retain_user {
             budget.include(&self.context_budget(
                 run.session_id,

@@ -87,7 +87,7 @@ impl Backend {
                 .map_or(0, |checkpoint| checkpoint.source_entry_high_water),
             through,
         )?;
-        if usage_admission
+        if execution.allows_within_run_compaction()
             && let Some(run) = &matching_run
             && checkpoint
                 .as_ref()

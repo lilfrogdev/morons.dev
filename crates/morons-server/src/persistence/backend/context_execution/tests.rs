@@ -163,6 +163,7 @@ fn usage_admission_keeps_independent_resources_and_legacy_fallback() {
         ..ContextBudget::default()
     };
     assert!(!ExecutionPolicy::Legacy.fits(&budget, 96_000, 0));
+    assert!(!ExecutionPolicy::ConservativeRepeated.fits(&budget, 96_000, 0));
     assert!(ExecutionPolicy::NativeUsage.fits(&budget, 96_000, 0));
     for budget in [
         ContextBudget {
@@ -202,6 +203,7 @@ fn usage_admission_keeps_independent_resources_and_legacy_fallback() {
         },
     ] {
         assert!(!ExecutionPolicy::NativeUsage.fits(&budget, 96_000, 0));
+        assert!(!ExecutionPolicy::ConservativeRepeated.fits(&budget, 96_000, 0));
     }
     let exact = ContextBudget {
         bytes: MAX_SOURCE_BYTES,

@@ -14,6 +14,8 @@ use crate::{
     tools::{ToolInput, ToolOutput, ToolPath, ToolResult, ValidatedProviderCall},
 };
 
+mod conservative;
+
 struct Fixture {
     backend: Backend,
     root: TestRoot,
@@ -74,7 +76,10 @@ async fn fixture() -> Fixture {
 
 impl Fixture {
     fn accept(&mut self, request: u8, text: &str) -> Run {
-        let model = selection();
+        self.accept_model(request, text, selection())
+    }
+
+    fn accept_model(&mut self, request: u8, text: &str, model: RunModelSelection) -> Run {
         let fingerprint =
             submit_session_input_fingerprint(self.session, text, model.service, &model.model_id);
         let run = self
@@ -144,7 +149,7 @@ impl Fixture {
                         total_tokens: input_tokens + 3,
                     },
                     calls: vec![ValidatedProviderCall {
-                        provider_call_id: "synthetic-call".into(),
+                        provider_call_id: format!("synthetic-call-{operation:?}"),
                         input: ToolInput::Read {
                             path: path.clone(),
                             offset: 1,
