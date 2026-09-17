@@ -1,4 +1,5 @@
 use super::*;
+use crate::persistence::ToolCallId;
 use crate::tools::{SubagentTask, ToolErrorKind, ToolInput, ToolPath, ValidatedProviderCall};
 
 #[tokio::test(flavor = "current_thread")]
@@ -103,6 +104,9 @@ async fn delete_history(task: bool, migrate: bool) {
         .mark_tool_dispatched(run, call.call_id, call.operation_id)
         .await
         .unwrap();
+    if task && !migrate {
+        verify_child_journal(&store, call.call_id).await;
+    }
     store
         .complete_tool_result(
             run,
@@ -159,6 +163,26 @@ async fn delete_history(task: bool, migrate: bool) {
                 .exists()
         );
         store
+    } else if task {
+        drop(store);
+        let store = SessionStore::open_for_test(root.path()).unwrap();
+        let (state, kind, payload): (i64, i64, Vec<u8>) = db.query_row(
+            "SELECT state,kind,payload FROM child_runs JOIN child_journal USING(call_id,child) ORDER BY ordinal DESC LIMIT 1",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!((state, kind), (3, 9));
+        assert!(
+            String::from_utf8(payload)
+                .unwrap()
+                .contains("nothing was retried")
+        );
+        drop(store);
+        let store = SessionStore::open_for_test(root.path()).unwrap();
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM child_journal", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3, "recovery must not append another interruption");
+        store
     } else {
         store
     };
@@ -176,10 +200,67 @@ async fn delete_history(task: bool, migrate: bool) {
             .unwrap(),
         0
     );
+    for table in ["child_runs", "child_journal"] {
+        let count: i64 = db
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
     assert_eq!(
         fs::read_to_string(selected.path().join("keep.txt")).unwrap(),
         "keep"
     );
     drop(store);
     assert!(SessionStore::open_for_test(root.path()).is_ok());
+}
+
+async fn verify_child_journal(store: &SessionStore, call: ToolCallId) {
+    use crate::persistence::ChildEntryKind as Kind;
+    assert!(
+        store
+            .append_child_entry(
+                ToolCallId::from_bytes([0xff; 16]),
+                1,
+                1,
+                Kind::Start,
+                b"start".to_vec(),
+                [0; 32]
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .append_child_entry(call, 4, 1, Kind::Start, b"start".to_vec(), [0; 32])
+            .await
+            .is_err()
+    );
+    let digest = store
+        .append_child_entry(call, 1, 1, Kind::Start, b"start".to_vec(), [0; 32])
+        .await
+        .unwrap();
+    for (ordinal, kind, previous) in [
+        (1, Kind::Start, [0; 32]),
+        (3, Kind::ProviderDispatch, digest),
+        (2, Kind::ProviderDispatch, [0; 32]),
+        (2, Kind::Checkpoint, digest),
+    ] {
+        assert!(
+            store
+                .append_child_entry(call, 1, ordinal, kind, b"invalid".to_vec(), previous)
+                .await
+                .is_err()
+        );
+    }
+    store
+        .append_child_entry(
+            call,
+            1,
+            2,
+            Kind::ProviderDispatch,
+            b"uncertain external effect".to_vec(),
+            digest,
+        )
+        .await
+        .unwrap();
 }

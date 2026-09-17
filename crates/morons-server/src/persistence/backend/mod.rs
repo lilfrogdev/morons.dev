@@ -1,3 +1,4 @@
+mod child_journal;
 pub(super) mod command_execution;
 mod compaction;
 mod context_budget;
@@ -77,6 +78,7 @@ impl Backend {
             backend.openai_credentials.recover_refresh()?;
             backend.recover_maintenance_jobs()?;
             backend.recover_incomplete_session_creations()?;
+            backend.recover_child_journals()?;
             backend.recover_tool_operations()?;
             backend.recover_local_commands()?;
             backend.recover_nonterminal_runs()?;

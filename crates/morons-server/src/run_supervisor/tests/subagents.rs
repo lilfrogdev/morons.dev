@@ -192,6 +192,8 @@ async fn task_tool_runs_scoped_children_and_commits_only_bounded_reports() {
     drop(application);
     drop(SessionStore::open_for_test(root.path()).expect("durable subagent result should reopen"));
     let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    // Historical v29 fixtures predate child tables; remove them before clearing bindings.
+    crate::persistence::data_use::tests::remove_child_schema(&db);
     db.execute("DELETE FROM task_model_bindings", []).unwrap();
     crate::persistence::data_use::tests::restore_schema_29(&db);
     drop(db);

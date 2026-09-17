@@ -8,7 +8,7 @@ Parent runs and child assignments have no cumulative provider-turn, tool-call,
 mutation, Task-call, tool-result-byte quota, or whole-run deadline. They continue
 until completion, cancellation, an operation failure, or a retained resource bound.
 This removes the former 32/64/16 parent and 8/24/8 child quotas, two-Task quota,
-2 MiB cumulative result quota, and 30/10 minute run/batch deadlines.
+2 MiB cumulative result quota, and 30/10 minute run deadlines.
 
 ## Resource and security boundary
 
