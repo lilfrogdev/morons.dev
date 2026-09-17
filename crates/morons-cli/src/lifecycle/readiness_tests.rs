@@ -60,9 +60,12 @@ async fn starting_becomes_authenticated_ready_without_launching() {
     let mut starting = Some(starting);
     let mut reports = 0;
     let mut discoveries = 0;
+    let original_deadline = Instant::now() + Duration::from_millis(100);
+    let startup_timeout = Duration::from_millis(500);
     let client = connect_or_start_until(
         Some(PathBuf::new()),
-        Instant::now() + Duration::from_secs(5),
+        original_deadline,
+        startup_timeout,
         || {
             discoveries += 1;
             ClientEndpoint::discover()
@@ -76,7 +79,8 @@ async fn starting_becomes_authenticated_ready_without_launching() {
     );
     let serve = async {
         observed.await.unwrap();
-        time::sleep(Duration::from_millis(100)).await;
+        time::sleep_until(original_deadline + Duration::from_millis(100)).await;
+        assert!(Instant::now() >= original_deadline);
         server.publish().unwrap();
         let mut connection = server.accept().await.unwrap();
         authorize_accepted_peer(&connection).unwrap();
