@@ -383,6 +383,7 @@ async fn startup_never_replays_a_dispatched_subagent_batch() {
             .load_run_context(accepted.run.id)
             .await
             .expect("run context should load");
+        use_historical_task_catalog(&store, accepted.run.id);
         let provider_operation_id = match store
             .prepare_provider_operation(
                 accepted.run.id,

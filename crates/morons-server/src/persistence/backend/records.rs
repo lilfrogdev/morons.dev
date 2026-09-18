@@ -17,6 +17,7 @@ pub(super) const MUTATION_OPERATION_SESSION_RENAME: i64 = 12;
 pub(super) const MUTATION_OPERATION_SESSION_ARCHIVE: i64 = 13;
 pub(super) const MUTATION_OPERATION_SESSION_DELETE: i64 = 14;
 pub(super) const MUTATION_OPERATION_DEFAULT_MODEL: i64 = 15;
+#[cfg(test)]
 pub(super) const MUTATION_OPERATION_SUBAGENT_MODEL: i64 = 16;
 
 pub(super) const CREATION_STATE_PREPARED: i64 = 0;

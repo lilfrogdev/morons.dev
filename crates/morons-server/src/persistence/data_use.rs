@@ -1,11 +1,11 @@
 #[cfg(test)]
+use super::RunService;
+#[cfg(test)]
 pub(crate) mod tests;
 
 use tokio::sync::oneshot;
 
-use super::{
-    MutationRequestId, PersistenceError, RunService, SessionStore, WorkerRequest, backend::Backend,
-};
+use super::{MutationRequestId, PersistenceError, SessionStore, WorkerRequest, backend::Backend};
 use crate::provider::DataUseRestrictions;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -22,6 +22,7 @@ pub(super) enum Request {
         restrictions: DataUseRestrictions,
         response: oneshot::Sender<Result<DataUsePolicy, PersistenceError>>,
     },
+    #[cfg(test)]
     Admit {
         service: RunService,
         model: String,
@@ -44,6 +45,7 @@ impl Request {
                 let _ =
                     response.send(backend.set_data_use_policy(id, expected_sequence, restrictions));
             }
+            #[cfg(test)]
             Self::Admit {
                 service,
                 model,
@@ -80,6 +82,7 @@ impl SessionStore {
         .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn admit_model_data_use(
         &self,
         service: RunService,

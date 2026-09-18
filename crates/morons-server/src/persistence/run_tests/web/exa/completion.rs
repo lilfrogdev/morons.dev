@@ -9,8 +9,7 @@ async fn failed_success_commit_preserves_admission_and_recovers_without_replay()
             if native {
                 install(&store, 0).await;
             }
-            let (run, call) = prepare(&store, native, task).await;
-            let session = store.load_run_context(run).await.unwrap().run.session_id;
+            let (session, run, call) = prepare_with_session(&store, native, task, None).await;
             store
                 .mark_tool_dispatched(run, call.call_id, call.operation_id)
                 .await

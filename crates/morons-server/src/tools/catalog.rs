@@ -16,7 +16,7 @@ use crate::provider::{
     PreparedProviderTools, ProviderError, ProviderTool, ProviderToolCall, json::parse_strict_value,
 };
 
-pub(crate) const TOOL_CATALOG_VERSION: u16 = 14;
+pub(crate) const TOOL_CATALOG_VERSION: u16 = 15;
 pub(crate) const LEGACY_SANDBOX_TOOL_CATALOG_VERSION: u16 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub(crate) enum ToolCallValidationError {
 }
 
 pub(crate) fn developer_instruction() -> &'static str {
-    crate::prompts::instruction(false)
+    crate::prompts::instruction()
 }
 
 pub(crate) fn provider_tools() -> Result<&'static PreparedProviderTools, ProviderError> {
@@ -120,46 +120,7 @@ fn tool_definitions() -> Vec<ProviderTool> {
                 &["cell"],
             ),
         },
-        ProviderTool {
-            strict: true,
-            name: ToolKind::Task.name().to_owned(),
-            description: "Run one to three focused subagents concurrently using the server-configured subagent model (Inherit parent uses the parent's model). Supply shared context once and a self-contained assignment per child. Children receive pinned project guidance plus read, write, edit, bash, and web_search in the same selected directory, but no parent transcript, active skills, persistent IPython, or further delegation. They may race, so assign disjoint mutations. Returns only bounded final reports and usage.".to_owned(),
-            parameters: object_schema(
-                json!({
-                    "context": {"type": "string", "minLength": 1, "maxLength": MAX_SUBAGENT_CONTEXT_BYTES},
-                    "tasks": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": MAX_SUBAGENT_TASKS,
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                                "name": {"type": ["string", "null"], "minLength": 1, "maxLength": MAX_SUBAGENT_NAME_BYTES, "pattern": "^[A-Za-z0-9_-]+$"},
-                                "task": {"type": "string", "minLength": 1, "maxLength": MAX_SUBAGENT_ASSIGNMENT_BYTES}
-                            },
-                            "required": ["name", "task"]
-                        }
-                    }
-                }),
-                &["context", "tasks"],
-            ),
-        },
     ]
-}
-
-pub(crate) fn subagent_provider_tools() -> Result<&'static PreparedProviderTools, ProviderError> {
-    static TOOLS: LazyLock<Result<PreparedProviderTools, ProviderError>> = LazyLock::new(|| {
-        PreparedProviderTools::new(
-            provider_tools()?
-                .definitions()
-                .iter()
-                .filter(|tool| !matches!(tool.name.as_str(), "ipython" | "task"))
-                .cloned()
-                .collect(),
-        )
-    });
-    TOOLS.as_ref().map_err(|error| *error)
 }
 
 pub(crate) fn validate_canonical_input(input: &ToolInput) -> bool {
@@ -220,12 +181,6 @@ pub(crate) fn parse_provider_calls_diagnosed(
 }
 
 #[cfg(test)]
-pub(crate) fn parse_subagent_provider_calls(
-    calls: Vec<ProviderToolCall>,
-) -> Result<Vec<ValidatedProviderCall>, ToolCallValidationError> {
-    parse_subagent_provider_calls_diagnosed(calls, &mut DebugNormalizationStage::Other)
-}
-
 pub(crate) fn parse_subagent_provider_calls_diagnosed(
     calls: Vec<ProviderToolCall>,
     stage: &mut DebugNormalizationStage,
@@ -378,7 +333,7 @@ fn parse_input_diagnosed(
                 cell: arguments.cell,
             })
         }
-        "task" => {
+        "task" if allow_legacy_command => {
             *stage = DebugNormalizationStage::ToolFieldSet;
             require_fields(&value, &["context", "tasks"])?;
             *stage = DebugNormalizationStage::ToolType;
@@ -733,21 +688,13 @@ mod tests {
     #[test]
     fn catalog_is_fixed_strict_and_complete() {
         let tools = provider_tools().unwrap().definitions();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 6);
         assert_eq!(
             tools
                 .iter()
                 .map(|tool| tool.name.as_str())
                 .collect::<Vec<_>>(),
-            [
-                "read",
-                "write",
-                "edit",
-                "bash",
-                "web_search",
-                "ipython",
-                "task"
-            ]
+            ["read", "write", "edit", "bash", "web_search", "ipython"]
         );
         assert!(
             tools
@@ -794,23 +741,19 @@ mod tests {
                 .input,
             ToolInput::Bash { .. }
         ));
-        assert!(matches!(
-            parse_provider_calls(
-                vec![call(
-                    "task",
-                    r#"{"context":"Review independently.","tasks":[{"name":"api","task":"Inspect the API."},{"name":"tests","task":"Inspect tests."}]}"#,
-                )],
-                TOOL_CATALOG_VERSION,
-            )
-            .expect("valid task batch should decode")[0]
-                .input,
-            ToolInput::Task { ref tasks, .. } if tasks.len() == 2
-        ));
+        let legacy = ToolInput::Task {
+            context: "Review independently.".to_owned(),
+            tasks: vec![SubagentTask {
+                name: None,
+                task: "Inspect tests.".to_owned(),
+            }],
+        };
+        assert!(validate_canonical_input(&legacy));
         assert!(
-            parse_subagent_provider_calls(vec![call(
-                "task",
-                r#"{"context":"context","tasks":[{"task":"recurse"}]}"#,
-            )])
+            parse_provider_calls(
+                vec![call("task", &legacy.provider_arguments().unwrap())],
+                TOOL_CATALOG_VERSION
+            )
             .is_err()
         );
 
@@ -879,7 +822,7 @@ mod tests {
                 )],
                 TOOL_CATALOG_VERSION,
             )
-            .is_ok()
+            .is_err()
         );
         for arguments in [
             r#"{"context":"","tasks":[{"task":"work"}]}"#,

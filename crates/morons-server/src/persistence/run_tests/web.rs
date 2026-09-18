@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    persistence::{CommittedToolCall, RunId},
+    persistence::{CommittedToolCall, RunId, SessionId},
     provider::DataUseRestrictions,
     tools::{SubagentTask, ToolErrorKind, ToolInput, ValidatedProviderCall, WebSearchToolExecutor},
 };
@@ -40,6 +40,16 @@ async fn prepare_at(
     task: bool,
     directory: Option<&std::path::Path>,
 ) -> (RunId, CommittedToolCall) {
+    let (_, run, call) = prepare_with_session(store, native, task, directory).await;
+    (run, call)
+}
+
+async fn prepare_with_session(
+    store: &SessionStore,
+    native: bool,
+    task: bool,
+    directory: Option<&std::path::Path>,
+) -> (SessionId, RunId, CommittedToolCall) {
     configure_credential(store).await;
     if task {
         store
@@ -80,6 +90,9 @@ async fn prepare_at(
     let run = accepted.run.id;
     store.activate_run(run).await.unwrap();
     let context = store.load_run_context(run).await.unwrap();
+    if task {
+        use_historical_task_catalog(store, run);
+    }
     let PrepareOperationOutcome::Prepared(operation) = store
         .prepare_provider_operation(
             run,
@@ -137,9 +150,8 @@ async fn prepare_at(
         .prepare_tool_operation(run, call.call_id, call.operation_id, None)
         .await
         .unwrap();
-    (run, call)
+    (session.id, run, call)
 }
-
 #[tokio::test(flavor = "current_thread")]
 async fn web_bindings_pin_native_and_cross_provider_generations_policy_source_and_recovery() {
     for native in [false, true] {

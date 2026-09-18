@@ -1,9 +1,8 @@
 use morons_protocol::{
     ApplicationEvent, ApplicationSettings, MessageId, ModelCapabilities, ModelRetention,
     ModelService, ModelSummary, ModelTrainingUse, OpenCodeApiKey, OpenCodeCredentialStatus,
-    ProviderProtocol, RunFailureKind, RunId, RunState, RunSummary, SessionContextStatus,
-    SessionEventCursor, SessionId, SessionSummary, SkillSource, SkillSummary, SubagentModelSetting,
-    TranscriptEntry,
+    RunFailureKind, RunId, RunState, RunSummary, SessionContextStatus, SessionEventCursor,
+    SessionId, SessionSummary, SkillSource, SkillSummary, SubagentModelSetting, TranscriptEntry,
 };
 use ratatui::{Terminal, backend::TestBackend};
 use ratatui_crossterm::crossterm::event::{

@@ -35,7 +35,6 @@ use crate::{
     },
 };
 
-mod child_recovery;
 mod data_use;
 mod hardening;
 pub(crate) mod maintenance;
@@ -50,13 +49,6 @@ const TERMINAL_RUN_TEST_TIMEOUT: Duration = if cfg!(windows) {
 } else {
     Duration::from_secs(15)
 };
-
-fn request_setting(request: &ApplicationRequest) -> SubagentModelSetting {
-    match request {
-        ApplicationRequest::SetSubagentModelSetting { setting, .. } => setting.clone(),
-        _ => panic!("request should contain a subagent setting"),
-    }
-}
 
 async fn append_completed_context_run(
     store: &SessionStore,

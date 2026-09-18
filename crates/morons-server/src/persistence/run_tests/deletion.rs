@@ -41,6 +41,9 @@ async fn delete_history(task: bool, migrate: bool) {
     let run = accepted.run.id;
     store.activate_run(run).await.unwrap();
     let context = store.load_run_context(run).await.unwrap();
+    if task {
+        use_historical_task_catalog(&store, run);
+    }
     let PrepareOperationOutcome::Prepared(operation) = store
         .prepare_provider_operation(
             run,
@@ -176,12 +179,18 @@ async fn delete_history(task: bool, migrate: bool) {
                 .unwrap()
                 .contains("nothing was retried")
         );
+        let recovered_count: i64 = db
+            .query_row("SELECT COUNT(*) FROM child_journal", [], |r| r.get(0))
+            .unwrap();
         drop(store);
         let store = SessionStore::open_for_test(root.path()).unwrap();
         let count: i64 = db
             .query_row("SELECT COUNT(*) FROM child_journal", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 3, "recovery must not append another interruption");
+        assert_eq!(
+            count, recovered_count,
+            "recovery must not append another interruption"
+        );
         store
     } else {
         store
@@ -252,15 +261,40 @@ async fn verify_child_journal(store: &SessionStore, call: ToolCallId) {
                 .is_err()
         );
     }
-    store
+    let mut digest = store
         .append_child_entry(
             call,
             1,
             2,
             Kind::ProviderDispatch,
-            b"uncertain external effect".to_vec(),
+            b"provider dispatch".to_vec(),
             digest,
         )
         .await
         .unwrap();
+    for (index, kind) in [
+        Kind::ProviderResult,
+        Kind::ToolDispatch,
+        Kind::ToolResult,
+        Kind::Batch,
+        Kind::ProviderDispatch,
+        Kind::ProviderResult,
+        Kind::Checkpoint,
+        Kind::ProviderDispatch,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        digest = store
+            .append_child_entry(
+                call,
+                1,
+                index as u64 + 3,
+                kind,
+                b"historical child evidence".to_vec(),
+                digest,
+            )
+            .await
+            .unwrap();
+    }
 }

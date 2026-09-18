@@ -8,7 +8,7 @@ Use Rust unit tests beside the module they verify. Larger suites use a module-lo
 
 - Provider adapters: request/stream contracts and malformed-input tests beside each adapter.
 - Persistence: separate migrations, session lifecycle, integrity, subscriptions, and run admission/history tests.
-- Run supervisor: separate lifecycle, selection, context, compaction, maintenance, tools, and subagents; shared loopback provider fixtures in `tests/providers.rs`.
+- Run supervisor: separate lifecycle, selection, context, compaction, maintenance, and tools; shared loopback provider fixtures in `tests/providers.rs`. Historical task recovery and integrity fixtures remain in persistence tests.
 - Terminal application: separate input, transcript, presentation, session, model, and credential tests.
 - Crate-root `tests/`: public-API/process integration, such as authenticated IPC and companion lifecycle.
 

@@ -531,6 +531,7 @@ pub(super) fn validate_model_identifier(model_id: &str) -> Result<(), Persistenc
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn validate_subagent_model_setting(
     setting: &SubagentModelSetting,
 ) -> Result<(), PersistenceError> {

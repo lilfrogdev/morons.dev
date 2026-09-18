@@ -20,7 +20,7 @@ The final category is user-owned authority that Morons deliberately grants to lo
 - Session, run, message, mutation, model, cursor, path, command, cell, query, and attachment inputs
 - Endpoint, registration, database, backup, attachment, and selected-directory filesystem state
 - Repository files, names, links, metadata, configuration, dependencies, hooks, and concurrent changes
-- Model output, reasoning, tool names, arguments, paths, generated commands, subagent shared context, assignments, and reports
+- Model output, reasoning, tool names, arguments, paths, generated commands, and historical subagent shared context, assignments, and reports
 - Skills, their Markdown instructions, scripts, references, and assets
 - Web search results and fetched external content
 - Clipboard data, drag-and-drop paths, image bytes, metadata, filenames, and decoder behavior
@@ -80,11 +80,9 @@ Same-user commands obtaining owner-readable IPC state are an accepted residual r
 - Snapshot/subscription races omit events, and unbounded subscribers exhaust memory.
 - A client forges assistant messages, tool calls, tool results, run transitions, or terminal outcomes.
 - Concurrent input creates more than one top-level run in a session or bypasses global capacity.
-- A task batch exceeds child, depth, provider-turn, tool-call, mutation, context, output, time, or global concurrency limits.
-- A child implicitly receives parent history, skills, images, kernel memory, sibling state, or another session's context.
-- A child recursively delegates, selects another provider or model, or continues after the parent task has reported completion.
-- Concurrent children race on the shared selected directory and overwrite or invalidate one another's observations.
-- A child result is injected out of assignment order, omitted, duplicated, or treated as durable before the outer task result commits.
+- A model emits a retired `task` call or a client submits a retired subagent setting to bypass main-agent-only execution.
+- Historical task bindings, child journals, or results are corrupted, cross-bound, or interpreted as authority to resume child execution.
+- Recovery injects a historical child result or replays an uncertain child effect instead of interrupting children before outer tools and runs.
 - Switching or closing a client implicitly cancels background work.
 - Session deletion follows a selected-directory or attachment path and deletes user files.
 - A missing or moved working directory is silently retargeted.
@@ -188,11 +186,8 @@ ADR 0031 adds explicit desktop interaction for the authenticated navigation URL:
 
 - Disclose the trusted-local authority model prominently and require external containment for users who need isolation.
 - Keep the tool catalog fixed and small while applying strict schema, count, byte, time, and output bounds.
-- Admit subagents only through the closed batched `task` schema; cap a batch at three children, global execution at four children, recursion at one level, and each child independently by provider turns, tool calls, mutations, context, output, and time.
-- Keep subagent model preference in a typed global owner setting outside repositories and prompts; validate exact pairs against the reviewed manifest, pin one selection before task dispatch, disclose it in results, and never silently fall back.
-- Give children only fixed instructions, selected-directory metadata, explicit shared context, and one assignment; do not inherit parent transcript, checkpoints, images, active skill bodies, reasoning continuation, IPython memory, or sibling context.
-- Block the parent until all children terminate, preserve input-order results, and provide no background registry, revival, messaging, or hidden result-injection path.
-- Treat the outer canonical task operation as the durable no-replay boundary and fan parent cancellation out through child provider, web, shell, and process-tree execution.
+- Reject `task` calls and retired subagent-setting mutations; the selected main model executes directly with the six fixed tools.
+- Preserve historical task bindings, child journal integrity, and bounded results. Interrupt unfinished historical children before outer tools and runs, without replay or hidden result injection.
 - Use exact unique replacements for `edit` and report direct filesystem errors without claiming rollback.
 - Run commands without a PTY or standard input, drain bounded streams concurrently, and terminate complete owned process trees on cancellation or limits.
 - Treat process supervision as lifecycle control only and never describe it as confinement.
@@ -207,7 +202,7 @@ ADR 0031 adds explicit desktop interaction for the authenticated navigation URL:
 - Serialize managed Python preparation with an owner-controlled process lock, supervise it under one cancellation and deadline, publish only a validated staged runtime by atomic rename, retain a dedicated verified-download cache for offline reuse, and never inject Morons-managed credentials.
 - Keep provider and web-search routes fixed in reviewed code, disable redirects, pin each model to one reviewed protocol revision, scope bearer, `x-api-key`, and `x-goog-api-key` headers to their exact routes, strictly decode bounded protocol-specific streams, and never retry dispatched inference or web search automatically.
 - Store global default-model changes as bounded idempotent facts, validate them against the reviewed manifest, use them only when the current sanitized catalog marks the pair available, and validate every run's explicit model independently.
-- Derive one opaque `x-opencode-session` value per Morons conversation: preserve a root value across its durable session, derive a distinct stable value for each canonical task child, rotate values across unrelated conversations, omit them from catalog requests, and never log or persist a derived header.
+- Derive one opaque `x-opencode-session` value per Morons conversation: preserve a root value across its durable session, rotate values across unrelated conversations, omit them from catalog requests, and never log or persist a derived header.
 - Store Morons-managed credentials outside SQLite and never intentionally include them in child environments, prompts, model-inference payload bodies, errors, logs, or audit facts. Only the reviewed fixed OAuth token endpoint accepts its required authentication form material.
 - Use one bounded storage worker, transactional canonical-entry and projection commits, ordered migrations, online SQLite backup, quotas, and startup recovery that performs no external effect.
 - Scope subscriptions and cursors to sessions, compose snapshots and replay at one high water, and disconnect slow consumers.
@@ -220,9 +215,9 @@ ADR 0031 adds explicit desktop interaction for the authenticated navigation URL:
 - No application-level design can keep owner-readable Morons state confidential from arbitrary processes running as the same user without an additional operating-system boundary.
 - Same-user processes may interfere with sessions, files, IPC, child processes, attachments, or credential state.
 - Cancellation and process-tree termination cannot undo filesystem changes, network requests, commits, pushes, publications, or processes that escaped ownership before termination.
-- Concurrent sessions, task children, and ordinary user tools can race in the same working directory and invalidate prior observations or overwrite changes.
-- Batched subagents can multiply provider cost and local side effects; hard application limits do not replace provider account budgets or user review.
-- Child internal turns are not independently durable or resumable. A crash preserves only the outer uncertain task boundary and may leave provider usage or local effects without a child report.
+- Concurrent sessions and ordinary user tools can race in the same working directory and invalidate prior observations or overwrite changes.
+- Historical child effects and provider costs remain even though delegation is retired; missing reports do not prove zero use.
+- Historical child internal turns are not independently resumable. A crash preserves only the outer uncertain task boundary and may leave provider usage or local effects without a child report.
 - SQLite cannot atomically commit direct filesystem, process, provider, Git, or network effects.
 - Context compaction is lossy and may omit relevant detail or preserve malicious instructions; canonical history remains available but is not all resent to the model.
 - Old image pixels are not automatically resent after compaction, so exact later visual analysis may require reattachment.

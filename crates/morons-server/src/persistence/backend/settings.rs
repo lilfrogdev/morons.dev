@@ -1,17 +1,18 @@
-use rusqlite::{OptionalExtension as _, TransactionBehavior, params};
-
-use super::{
-    Backend,
-    records::{
-        MUTATION_OPERATION_SUBAGENT_MODEL, current_time_milliseconds, load_mutation_operation,
-        next_sequence, sequence_to_sql, time_to_sql,
-    },
+use super::Backend;
+#[cfg(test)]
+use super::records::{
+    MUTATION_OPERATION_SUBAGENT_MODEL, current_time_milliseconds, load_mutation_operation,
+    next_sequence, sequence_to_sql, time_to_sql,
 };
+#[cfg(test)]
 use crate::persistence::{
-    MutationRequestId, PersistenceError, PersistenceResourceLimit, RunService,
-    SubagentModelSetting, types::REQUEST_FINGERPRINT_BYTES,
+    MutationRequestId, PersistenceResourceLimit, types::REQUEST_FINGERPRINT_BYTES,
 };
-
+use crate::persistence::{PersistenceError, RunService, SubagentModelSetting};
+use rusqlite::OptionalExtension as _;
+#[cfg(test)]
+use rusqlite::{TransactionBehavior, params};
+#[cfg(test)]
 const MAX_SUBAGENT_MODEL_SELECTIONS: i64 = 10_000;
 
 impl Backend {
@@ -30,6 +31,7 @@ impl Backend {
             .map_err(PersistenceError::from)
     }
 
+    #[cfg(test)]
     pub(crate) fn set_subagent_model_setting(
         &mut self,
         request_id: MutationRequestId,
@@ -140,6 +142,7 @@ fn subagent_model_from_columns(
     }
 }
 
+#[cfg(test)]
 fn setting_to_record(setting: &SubagentModelSetting) -> (i64, Option<i64>, Option<&str>) {
     match setting {
         SubagentModelSetting::InheritParent {} => (1, None, None),

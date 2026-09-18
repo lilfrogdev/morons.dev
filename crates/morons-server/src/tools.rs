@@ -12,10 +12,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub(crate) use bash::BashToolExecutor;
+#[cfg(test)]
+pub(crate) use catalog::parse_subagent_provider_calls_diagnosed;
 pub(crate) use catalog::{
     LEGACY_SANDBOX_TOOL_CATALOG_VERSION, TOOL_CATALOG_VERSION, ToolCallValidationError,
-    developer_instruction, parse_provider_calls_diagnosed, parse_subagent_provider_calls_diagnosed,
-    provider_tools, subagent_provider_tools, validate_canonical_input,
+    developer_instruction, parse_provider_calls_diagnosed, provider_tools,
+    validate_canonical_input,
 };
 pub(crate) use direct::DirectToolExecutor;
 pub(crate) use ipython::{IpythonSupervisor, validate_ipython_cell};

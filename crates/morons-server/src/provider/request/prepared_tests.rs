@@ -10,10 +10,8 @@ fn input() -> Vec<ProviderInputItem> {
 
 #[test]
 fn prepared_and_fresh_tools_encode_identically_for_every_wire_family() {
-    for tools in [
-        crate::tools::provider_tools().unwrap(),
-        crate::tools::subagent_provider_tools().unwrap(),
-    ] {
+    let tools = crate::tools::provider_tools().unwrap();
+    {
         for (service, model) in [
             (OpenCodeService::Zen, "gpt-5.6-luna"),
             (OpenCodeService::Go, "glm-5.3-flash"),
@@ -54,7 +52,7 @@ fn prepared_and_fresh_tools_encode_identically_for_every_wire_family() {
 }
 
 #[test]
-fn builtin_responses_tools_use_closed_strict_schemas_with_nullable_task_names() {
+fn builtin_responses_tools_use_closed_strict_schemas_without_delegation() {
     fn assert_closed(schema: &Value) {
         if schema["type"] == "object" {
             let properties = schema["properties"].as_object().unwrap();
@@ -70,10 +68,8 @@ fn builtin_responses_tools_use_closed_strict_schemas_with_nullable_task_names() 
             assert_closed(items);
         }
     }
-    for tools in [
-        crate::tools::provider_tools().unwrap(),
-        crate::tools::subagent_provider_tools().unwrap(),
-    ] {
+    let tools = crate::tools::provider_tools().unwrap();
+    {
         let request = OpenCodeResponseRequest::with_prepared_tools(
             [1; 16],
             OpenCodeService::Zen,
@@ -88,22 +84,15 @@ fn builtin_responses_tools_use_closed_strict_schemas_with_nullable_task_names() 
         for tool in body["tools"].as_array().unwrap() {
             assert_eq!(tool["strict"], true);
             assert_closed(&tool["parameters"]);
-            if tool["name"] == "task" {
-                assert_eq!(
-                    tool["parameters"]["properties"]["tasks"]["items"]["properties"]["name"]["type"],
-                    serde_json::json!(["string", "null"])
-                );
-            }
+            assert_ne!(tool["name"], "task");
         }
     }
 }
 
 #[test]
 fn gemini_read_descriptions_retain_limits_that_numeric_schema_lowering_omits() {
-    for tools in [
-        crate::tools::provider_tools().unwrap(),
-        crate::tools::subagent_provider_tools().unwrap(),
-    ] {
+    let tools = crate::tools::provider_tools().unwrap();
+    {
         let request = OpenCodeResponseRequest::with_prepared_tools(
             [1; 16],
             OpenCodeService::Zen,

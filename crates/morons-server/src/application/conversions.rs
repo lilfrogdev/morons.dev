@@ -235,22 +235,6 @@ pub(super) fn to_protocol_model_summary(model: ModelProfile, available: bool) ->
     }
 }
 
-pub(super) fn to_persistence_subagent_model_setting(
-    setting: morons_protocol::SubagentModelSetting,
-) -> SubagentModelSetting {
-    match setting {
-        morons_protocol::SubagentModelSetting::InheritParent {} => {
-            SubagentModelSetting::InheritParent {}
-        }
-        morons_protocol::SubagentModelSetting::Explicit { service, model_id } => {
-            SubagentModelSetting::Explicit {
-                service: to_persistence_service(service),
-                model_id,
-            }
-        }
-    }
-}
-
 pub(super) fn to_protocol_subagent_model_setting(
     setting: SubagentModelSetting,
 ) -> morons_protocol::SubagentModelSetting {

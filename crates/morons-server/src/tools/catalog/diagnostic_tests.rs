@@ -137,7 +137,7 @@ fn diagnostic_task_unknown_and_forbidden_child_tools() {
     reject(
         vec![call("task", json!({"context":"","tasks":[]}))],
         TOOL_CATALOG_VERSION,
-        Stage::TaskBounds,
+        Stage::UnknownTool,
         false,
     );
     for forbidden in [
@@ -147,12 +147,20 @@ fn diagnostic_task_unknown_and_forbidden_child_tools() {
             json!({"context":"scope","tasks":[{"task":"inspect"}]}),
         ),
     ] {
+        let forbidden_name = forbidden.name.clone();
         let mut stage = Stage::Other;
         assert!(matches!(
             parse_subagent_provider_calls_diagnosed(vec![forbidden], &mut stage),
             Err(ToolCallValidationError::InvalidProviderOutput)
         ));
-        assert_eq!(stage, Stage::ForbiddenChildTool);
+        assert_eq!(
+            stage,
+            if forbidden_name == "task" {
+                Stage::UnknownTool
+            } else {
+                Stage::ForbiddenChildTool
+            }
+        );
     }
 }
 

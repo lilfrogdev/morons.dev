@@ -1,7 +1,5 @@
 use crate::debug_log::DebugNormalizationStage;
 
-mod subagent;
-
 use std::{
     collections::HashMap,
     path::PathBuf,
@@ -18,7 +16,6 @@ use tokio::{
     time,
 };
 
-use self::subagent::SubagentExecutor;
 #[cfg(test)]
 use crate::provider::OpenCodeResponseRequest;
 use crate::provider::dispatch::{ModelInput, ModelProviders};
@@ -39,7 +36,7 @@ use crate::{
         BashToolExecutor, DirectToolExecutor, IpythonSupervisor, TOOL_CATALOG_VERSION,
         ToolCallValidationError, ToolKind, ToolResult, ValidatedProviderCall,
         WebSearchToolExecutor, developer_instruction, parse_provider_calls_diagnosed,
-        parse_subagent_provider_calls_diagnosed, provider_tools,
+        provider_tools,
     },
 };
 
@@ -61,7 +58,6 @@ pub(crate) struct RunSupervisor {
     session_events: Arc<SessionEventHub>,
     web_search: Arc<WebSearchToolExecutor>,
     ipython: Arc<IpythonSupervisor>,
-    subagents: SubagentExecutor,
     state: Mutex<SupervisorState>,
 }
 
@@ -145,11 +141,6 @@ impl RunSupervisor {
         ipython: Arc<IpythonSupervisor>,
     ) -> Arc<Self> {
         let web_search = Arc::new(web_search);
-        let subagents = SubagentExecutor::new(
-            Arc::clone(&sessions),
-            Arc::clone(&provider),
-            Arc::clone(&web_search),
-        );
         let shutdown_requests = watch::channel(false).0;
         let maintenance = crate::maintenance_supervisor::MaintenanceSupervisor::new(
             Arc::clone(&sessions),
@@ -166,7 +157,6 @@ impl RunSupervisor {
             session_events,
             web_search,
             ipython,
-            subagents,
             state: Mutex::new(SupervisorState {
                 controls: HashMap::new(),
                 tasks: JoinSet::new(),
@@ -804,31 +794,11 @@ impl RunSupervisor {
                 }
                 Err(error) => return Err(error),
             }
-            let task_binding = if tool == ToolKind::Task {
-                Some(
-                    self.sessions
-                        .task_model_binding(run_id, call.call_id)
-                        .await?,
-                )
-            } else {
-                None
-            };
             let execution_directory = working_directory.clone();
             let execution_input = call.input.clone();
             let execution_cancellation = cancellation.clone();
             let mutation = tool.is_mutation();
-            let result = if tool == ToolKind::Task {
-                self.subagents
-                    .execute(
-                        context,
-                        call.call_id,
-                        execution_directory,
-                        &execution_input,
-                        task_binding.expect("dispatched task tools have a durable model binding"),
-                        &execution_cancellation,
-                    )
-                    .await?
-            } else if tool == ToolKind::WebSearch {
+            let result = if tool == ToolKind::WebSearch {
                 let binding = self.sessions.web_binding(run_id, call.call_id).await?;
                 self.web_search
                     .execute(&execution_input, &binding, 0, 0, &execution_cancellation)
@@ -1279,11 +1249,16 @@ fn normalize_provider_turn_diagnosed(
     })
 }
 
+#[cfg(test)]
 fn normalize_subagent_provider_turn(
     outcome: ProviderOutcome,
     stage: &mut DebugNormalizationStage,
 ) -> Result<NormalizedTurn, RunFailureKind> {
-    normalize_tool_provider_turn(outcome, stage, parse_subagent_provider_calls_diagnosed)
+    normalize_tool_provider_turn(
+        outcome,
+        stage,
+        crate::tools::parse_subagent_provider_calls_diagnosed,
+    )
 }
 
 fn normalize_tool_provider_turn(

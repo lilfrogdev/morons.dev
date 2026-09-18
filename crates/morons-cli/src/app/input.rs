@@ -3,10 +3,7 @@ use ratatui_crossterm::crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 
-use super::{
-    AppAction, AppState, CredentialDialog, InformationDialog, SettingsDialog,
-    SubagentModelCandidate, View,
-};
+use super::{AppAction, AppState, CredentialDialog, InformationDialog, SettingsDialog, View};
 use crate::terminal::CredentialBuffer;
 
 const MAX_SESSION_NAME_BYTES: usize = 256;
@@ -142,11 +139,7 @@ impl AppState {
             self.append_model_search(paste);
             return;
         }
-        if matches!(
-            self.settings_dialog,
-            Some(SettingsDialog::SubagentModel { .. })
-        ) {
-            self.append_subagent_model_search(paste);
+        if self.settings_dialog.is_some() {
             return;
         }
         if let Some(input) = self.rename_dialog.as_mut() {
@@ -203,117 +196,9 @@ impl AppState {
                     self.set_status("Settings closed");
                     AppAction::None
                 }
-                KeyCode::Enter => {
-                    self.open_subagent_model_dialog();
-                    AppAction::None
-                }
-                _ => AppAction::None,
-            },
-            Some(SettingsDialog::SubagentModel { .. }) => match code {
-                KeyCode::Esc => {
-                    self.settings_dialog = Some(SettingsDialog::Overview);
-                    self.set_status("Subagent model selection cancelled");
-                    AppAction::None
-                }
-                KeyCode::Up => {
-                    self.move_subagent_model_selection(true);
-                    AppAction::None
-                }
-                KeyCode::Down => {
-                    self.move_subagent_model_selection(false);
-                    AppAction::None
-                }
-                KeyCode::Backspace => {
-                    if let Some(SettingsDialog::SubagentModel { query, selected }) =
-                        self.settings_dialog.as_mut()
-                    {
-                        query.backspace();
-                        *selected = 0;
-                    }
-                    AppAction::None
-                }
-                KeyCode::Enter => {
-                    let matches = self.subagent_model_dialog_matches();
-                    let selected = match self.settings_dialog.as_ref() {
-                        Some(SettingsDialog::SubagentModel { selected, .. }) => *selected,
-                        _ => 0,
-                    };
-                    if matches
-                        .get(selected)
-                        .is_some_and(|candidate| match candidate {
-                            SubagentModelCandidate::Model(index) => self
-                                .models
-                                .get(*index)
-                                .is_some_and(|model| self.model_policy_blocked(&model.model)),
-                            SubagentModelCandidate::InheritParent => false,
-                        })
-                    {
-                        self.set_status("Model blocked by data-use policy; review /settings");
-                        return AppAction::None;
-                    }
-                    let setting = match matches.get(selected) {
-                        Some(SubagentModelCandidate::InheritParent) => {
-                            Some(morons_protocol::SubagentModelSetting::InheritParent {})
-                        }
-                        Some(SubagentModelCandidate::Model(index)) => {
-                            self.models.get(*index).map(|model| {
-                                morons_protocol::SubagentModelSetting::Explicit {
-                                    service: model.model.service,
-                                    model_id: model.model.id.clone(),
-                                }
-                            })
-                        }
-                        None => None,
-                    };
-                    let Some(setting) = setting else {
-                        self.set_status("No available reviewed subagent model is selected");
-                        return AppAction::None;
-                    };
-                    self.settings_dialog = None;
-                    AppAction::SetSubagentModel { setting }
-                }
-                KeyCode::Char(character)
-                    if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.append_subagent_model_search(&character.to_string());
-                    AppAction::None
-                }
                 _ => AppAction::None,
             },
             None => AppAction::None,
-        }
-    }
-
-    fn append_subagent_model_search(&mut self, value: &str) {
-        let Some(SettingsDialog::SubagentModel { query, selected }) = self.settings_dialog.as_mut()
-        else {
-            return;
-        };
-        query.push_paste(value);
-        let mut maximum = query.len_bytes().min(super::MAX_MODEL_SEARCH_BYTES);
-        while !query.as_str().is_char_boundary(maximum) {
-            maximum = maximum.saturating_sub(1);
-        }
-        let truncated = maximum < query.len_bytes();
-        let _ = query.truncate(maximum);
-        *selected = 0;
-        if truncated {
-            self.set_status("Subagent model search accepts at most 128 UTF-8 bytes");
-        }
-    }
-
-    fn move_subagent_model_selection(&mut self, reverse: bool) {
-        let count = self.subagent_model_dialog_matches().len();
-        let Some(SettingsDialog::SubagentModel { selected, .. }) = self.settings_dialog.as_mut()
-        else {
-            return;
-        };
-        if count == 0 {
-            *selected = 0;
-        } else if reverse {
-            *selected = selected.checked_sub(1).unwrap_or(count - 1);
-        } else {
-            *selected = (*selected + 1) % count;
         }
     }
 

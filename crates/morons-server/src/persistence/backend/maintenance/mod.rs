@@ -68,7 +68,7 @@ impl Backend {
             || job.run.context_policy_version != 4
             || !matches!(
                 (job.run.tool_catalog_version, job.run.tool_limits_version),
-                (10, 10) | (11, 11) | (12, 12) | (13, 13) | (13, 14) | (14, 14)
+                (10, 10) | (11, 11) | (12, 12) | (13, 13) | (13, 14) | (14, 14) | (15, 14)
             )
             || job.run.execution_image_generation.is_some()
             || job.source >= job.run.source_entry_high_water
@@ -146,7 +146,7 @@ impl Backend {
             b"morons.dev/maintenance-instructions/v1\0",
             &[
                 crate::prompts::COMPACTION.as_bytes(),
-                crate::prompts::instruction(false).as_bytes(),
+                crate::prompts::instruction().as_bytes(),
                 skills.as_bytes(),
                 project.as_bytes(),
                 tools.as_bytes(),

@@ -175,7 +175,7 @@ impl ModelTurn {
                     _ => return Err(ProviderError::InvalidRequest),
                 }
             } else {
-                crate::prompts::instruction(false).to_owned()
+                crate::prompts::instruction().to_owned()
             };
             // Encoding grants no dispatch authority; the server checks policy before
             // credential preparation and again at durable dispatch admission.
@@ -211,13 +211,6 @@ impl ModelTurn {
     }
 }
 impl ModelDispatch<'_> {
-    pub(crate) const fn diagnostic_attempt_id(&self) -> Option<u64> {
-        match self {
-            Self::OpenCode(dispatch) => dispatch.diagnostic_attempt_id(),
-            Self::ChatGpt(_) => None,
-        }
-    }
-
     pub(crate) async fn execute<F: FnMut(ProviderStreamEvent)>(
         self,
         policy: DataUseRestrictions,
