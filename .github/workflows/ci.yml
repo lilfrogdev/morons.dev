@@ -54,6 +54,14 @@ jobs:
             cross_target: ""
             timeout_minutes: 40
             test_shard: workspace
+            test_skip: "--skip persistence::"
+          - os: windows-latest
+            platform: Windows persistence
+            runner_arch: X64
+            target: x86_64-pc-windows-msvc
+            cross_target: ""
+            timeout_minutes: 40
+            test_shard: persistence
             test_skip: ""
           - os: windows-11-arm
             platform: Windows aarch64
