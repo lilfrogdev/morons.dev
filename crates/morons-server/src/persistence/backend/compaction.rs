@@ -12,6 +12,9 @@ use crate::persistence::{
     PersistenceError, PersistenceResourceLimit, RunId, RunService, SessionId,
 };
 
+#[cfg(test)]
+mod tests;
+
 const STATE_PREPARED: i64 = 1;
 const STATE_DISPATCHED: i64 = 2;
 const STATE_FAILED: i64 = 4;
@@ -35,6 +38,8 @@ impl Backend {
                 row.get::<_, i64>(5)?,
             ))
         })?;
+        let mut session = None;
+        let mut prefixes = Vec::with_capacity(32);
         for checkpoint in checkpoints {
             let (_, session_id, high_water, expected_digest, summary, summary_tokens) = checkpoint?;
             let session_id = SessionId::from_bytes(session_id);
@@ -42,15 +47,57 @@ impl Backend {
                 u64::try_from(high_water).map_err(|_| PersistenceError::InvalidState {
                     reason: "a context checkpoint high water is invalid",
                 })?;
-            if self.context_digest_through(session_id, high_water)? != expected_digest
-                || crate::persistence::run_types::conservative_input_token_estimate(
-                    summary.len() as u64,
-                    1,
-                ) != u32::try_from(summary_tokens).ok()
+            if crate::persistence::run_types::conservative_input_token_estimate(
+                summary.len() as u64,
+                1,
+            ) != u32::try_from(summary_tokens).ok()
             {
                 return Err(PersistenceError::InvalidState {
                     reason: "a context checkpoint has an invalid source digest or token estimate",
                 });
+            }
+            if let Some(previous) = session
+                && (previous != session_id || prefixes.len() == 32)
+            {
+                self.validate_context_prefixes(previous, &prefixes)?;
+                prefixes.clear();
+            }
+            session = Some(session_id);
+            prefixes.push((high_water, expected_digest));
+        }
+        if let Some(session) = session {
+            self.validate_context_prefixes(session, &prefixes)?;
+        }
+        Ok(())
+    }
+
+    fn validate_context_prefixes(
+        &self,
+        session: SessionId,
+        prefixes: &[(u64, [u8; 32])],
+    ) -> Result<(), PersistenceError> {
+        use crate::persistence::compactions::ContextSourceHasher;
+
+        let invalid = || PersistenceError::InvalidState {
+            reason: "a context checkpoint has an invalid source digest or token estimate",
+        };
+        let through = prefixes.last().ok_or_else(invalid)?.0;
+        // Share bounded page reads, but keep the high-water-bound hash states independent.
+        let mut digests: Vec<_> = prefixes
+            .iter()
+            .map(|(high_water, _)| ContextSourceHasher::new(*high_water))
+            .collect();
+        self.visit_context_entries(session, 0, through, |entry| {
+            for ((high_water, _), digest) in prefixes.iter().zip(&mut digests) {
+                if entry.entry_sequence() <= *high_water {
+                    digest.push(&entry).ok_or_else(invalid)?;
+                }
+            }
+            Ok(true)
+        })?;
+        for ((_, expected), digest) in prefixes.iter().zip(digests) {
+            if digest.finish().ok_or_else(invalid)? != *expected {
+                return Err(invalid());
             }
         }
         Ok(())

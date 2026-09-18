@@ -1,8 +1,9 @@
 use rusqlite::params;
 
 use super::{Backend, records::sequence_to_sql, run_records::transcript_entry_from_row};
-use crate::persistence::{
-    PersistenceError, SessionId, TranscriptEntry, compactions::ContextSourceHasher,
+use crate::{
+    debug_log::{self, DebugStartupStage},
+    persistence::{PersistenceError, SessionId, TranscriptEntry, compactions::ContextSourceHasher},
 };
 
 const PAGE_ENTRIES: u16 = 32;
@@ -85,18 +86,62 @@ impl Backend {
     /// Other connections cannot silently invalidate the startup integrity proof.
     /// Our sole worker's writes are validated at their service/commit boundaries.
     pub(super) fn ensure_context_integrity(&self) -> Result<(), PersistenceError> {
+        self.ensure_context_integrity_with_diagnostics(false)
+    }
+
+    pub(super) fn ensure_startup_context_integrity(&self) -> Result<(), PersistenceError> {
+        self.ensure_context_integrity_with_diagnostics(true)
+    }
+
+    fn ensure_context_integrity_with_diagnostics(
+        &self,
+        startup_diagnostics: bool,
+    ) -> Result<(), PersistenceError> {
         let version: i64 = self
             .connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))?;
         if self.context_data_version.get() != Some(version) {
-            self.validate_data_use_policy()?;
-            self.validate_task_bindings()?;
-            self.validate_web_bindings()?;
-            self.validate_context_checkpoint_digests()?;
-            self.validate_maintenance_records()?;
+            self.validate_context_integrity_stage(
+                startup_diagnostics,
+                DebugStartupStage::DataUsePolicyValidation,
+                Self::validate_data_use_policy,
+            )?;
+            self.validate_context_integrity_stage(
+                startup_diagnostics,
+                DebugStartupStage::TaskBindingValidation,
+                Self::validate_task_bindings,
+            )?;
+            self.validate_context_integrity_stage(
+                startup_diagnostics,
+                DebugStartupStage::WebBindingValidation,
+                Self::validate_web_bindings,
+            )?;
+            self.validate_context_integrity_stage(
+                startup_diagnostics,
+                DebugStartupStage::CheckpointDigestValidation,
+                Self::validate_context_checkpoint_digests,
+            )?;
+            self.validate_context_integrity_stage(
+                startup_diagnostics,
+                DebugStartupStage::MaintenanceValidation,
+                Self::validate_maintenance_records,
+            )?;
             self.context_data_version.set(Some(version));
         }
         Ok(())
+    }
+
+    fn validate_context_integrity_stage(
+        &self,
+        startup_diagnostics: bool,
+        stage: DebugStartupStage,
+        validation: impl FnOnce(&Self) -> Result<(), PersistenceError>,
+    ) -> Result<(), PersistenceError> {
+        if startup_diagnostics {
+            debug_log::startup_stage(stage, || validation(self))
+        } else {
+            validation(self)
+        }
     }
 }
 

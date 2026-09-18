@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::super::{
     context_compaction::tests::{append_stopped, fixture},
     run_records::load_required_run,
@@ -87,6 +89,90 @@ fn events(backend: &Backend, id: [u8; 16]) -> i64 {
             |row| row.get(0),
         )
         .unwrap()
+}
+
+async fn maintenance_validation_fixture(
+    jobs: usize,
+) -> (TestRoot, TestRoot, Backend, Vec<[u8; 16]>) {
+    assert!((1..=16).contains(&jobs));
+    let (root, selected, store, session) = fixture("maintenance-validation").await;
+    let text = "x".repeat(32 * 1024 - "ENTRY_01_".len());
+    let mut trigger = None;
+    for request in 1..=48 {
+        trigger = Some(
+            append_stopped(
+                &store,
+                session,
+                request,
+                format!("ENTRY_{request:02}_{text}"),
+            )
+            .await,
+        );
+    }
+    drop(store);
+
+    let mut backend = Backend::open(root.path()).unwrap();
+    let mut ids = Vec::with_capacity(jobs);
+    for index in 1..=jobs {
+        let id = seed(&mut backend, trigger.unwrap(), (index * 3 - 1) as u64).unwrap();
+        advance(&mut backend, id, State::Cancelled).unwrap();
+        ids.push(id);
+    }
+    backend.validate_maintenance_records().unwrap();
+    (root, selected, backend, ids)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn multiple_terminal_maintenance_jobs_validate_and_reject_tampered_source_digest() {
+    let (_root, _selected, backend, ids) = maintenance_validation_fixture(16).await;
+    assert_eq!(ids.len(), 16);
+    for &id in &ids {
+        assert_eq!(
+            Job::load(&backend.connection, id).unwrap().state,
+            State::Cancelled
+        );
+        assert_eq!(events(&backend, id), 1);
+    }
+    backend.validate_maintenance_records().unwrap();
+
+    let id = ids[0];
+    let mut job = Job::load(&backend.connection, id).unwrap();
+    job.source_digest = [0; 32];
+    job.binding_digest = job.digest();
+    backend
+        .connection
+        .execute(
+            "UPDATE compaction_maintenance_jobs SET source_digest = ?1, binding_digest = ?2 WHERE job_id = ?3",
+            params![&job.source_digest[..], &job.binding_digest[..], &id[..]],
+        )
+        .unwrap();
+    assert!(backend.validate_maintenance_records().is_err());
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "offline release maintenance validation profile"]
+async fn benchmark_maintenance_validation() {
+    for jobs in [1, 16] {
+        let (_root, _selected, backend, ids) = maintenance_validation_fixture(jobs).await;
+        assert_eq!(ids.len(), jobs);
+        for id in ids {
+            assert_eq!(
+                Job::load(&backend.connection, id).unwrap().state,
+                State::Cancelled
+            );
+            assert_eq!(events(&backend, id), 1);
+        }
+        backend.validate_maintenance_records().unwrap();
+
+        for iteration in 1..=3 {
+            let started = Instant::now();
+            backend.validate_maintenance_records().unwrap();
+            eprintln!(
+                "maintenance validation: {jobs} cancelled jobs, full validation iteration {iteration}/3 (nonadditive): {:?}",
+                started.elapsed()
+            );
+        }
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

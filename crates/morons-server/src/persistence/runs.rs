@@ -20,6 +20,16 @@ use crate::tools::ToolResult;
 
 impl SessionStore {
     #[cfg(test)]
+    pub(crate) async fn prepared_provider_operation_count_for_test(
+        &self,
+        run_id: RunId,
+    ) -> Result<i64, PersistenceError> {
+        self.run_request(
+            |response| RunWorkerRequest::PreparedProviderOperationCount { run_id, response },
+        )
+        .await
+    }
+    #[cfg(test)]
     pub async fn find_session_input_retry(
         &self,
         request_id: MutationRequestId,
@@ -488,6 +498,11 @@ fn validate_request_id(request_id: MutationRequestId) -> Result<(), PersistenceE
 }
 
 pub(super) enum RunWorkerRequest {
+    #[cfg(test)]
+    PreparedProviderOperationCount {
+        run_id: RunId,
+        response: oneshot::Sender<Result<i64, PersistenceError>>,
+    },
     FindInputRetry {
         request_id: MutationRequestId,
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
@@ -626,6 +641,16 @@ pub(super) enum RunWorkerRequest {
 impl RunWorkerRequest {
     pub(super) fn execute(self, backend: &mut Backend) {
         match self {
+            #[cfg(test)]
+            Self::PreparedProviderOperationCount { run_id, response } => {
+                let _ = response.send(
+                    backend.connection.query_row(
+                        "SELECT COUNT(*) FROM provider_operation_facts WHERE run_id = ?1 AND fact_kind = 1",
+                        [&run_id.as_bytes()[..]],
+                        |row| row.get(0),
+                    ).map_err(PersistenceError::from),
+                );
+            }
             Self::FindInputRetry {
                 request_id,
                 fingerprint,

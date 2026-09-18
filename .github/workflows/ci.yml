@@ -29,30 +29,56 @@ jobs:
             target: x86_64-unknown-linux-gnu
             cross_target: ""
             timeout_minutes: 15
+            test_shard: workspace
+            test_skip: ""
           - os: ubuntu-24.04-arm
             platform: Linux aarch64
             runner_arch: ARM64
             target: aarch64-unknown-linux-gnu
             cross_target: ""
             timeout_minutes: 20
+            test_shard: workspace
+            test_skip: ""
           - os: macos-latest
             platform: macOS
             runner_arch: ARM64
             target: aarch64-apple-darwin
             cross_target: x86_64-apple-darwin
             timeout_minutes: 20
+            test_shard: workspace
+            test_skip: ""
           - os: windows-latest
             platform: Windows
             runner_arch: X64
             target: x86_64-pc-windows-msvc
             cross_target: ""
             timeout_minutes: 40
+            test_shard: workspace
+            test_skip: "--skip persistence::"
+          - os: windows-latest
+            platform: Windows persistence
+            runner_arch: X64
+            target: x86_64-pc-windows-msvc
+            cross_target: ""
+            timeout_minutes: 40
+            test_shard: persistence
+            test_skip: ""
           - os: windows-11-arm
             platform: Windows aarch64
             runner_arch: ARM64
             target: aarch64-pc-windows-msvc
             cross_target: ""
             timeout_minutes: 40
+            test_shard: workspace
+            test_skip: "--skip persistence::"
+          - os: windows-11-arm
+            platform: Windows aarch64 persistence
+            runner_arch: ARM64
+            target: aarch64-pc-windows-msvc
+            cross_target: ""
+            timeout_minutes: 40
+            test_shard: persistence
+            test_skip: ""
 
     steps:
       - name: Check out repository
@@ -74,21 +100,30 @@ jobs:
           exit 1
 
       - name: Check formatting
+        if: ${{ matrix.test_shard != 'persistence' }}
         run: cargo fmt --all -- --check
 
       - name: Install native target
         run: rustup target add ${{ matrix.target }}
 
       - name: Check workspace
+        if: ${{ matrix.test_shard != 'persistence' }}
         run: cargo check --workspace --target ${{ matrix.target }} --locked
 
       - name: Run Clippy
+        if: ${{ matrix.test_shard != 'persistence' }}
         run: cargo clippy --workspace --all-targets --all-features --target ${{ matrix.target }} --locked -- -D warnings
 
-      - name: Run tests
+      - name: Run workspace tests
+        if: ${{ matrix.test_shard != 'persistence' }}
         # SQLite-heavy integration tests otherwise contend enough on hosted runners
         # to exhaust test-only observation deadlines without a product failure.
-        run: cargo test --workspace --target ${{ matrix.target }} --locked -- --test-threads 2
+        run: cargo test --workspace --target ${{ matrix.target }} --locked -- ${{ matrix.test_skip }} --test-threads 2
+
+      - name: Run persistence tests
+        if: ${{ matrix.test_shard == 'persistence' }}
+        run: >-
+          cargo test -p morons-server --lib --target ${{ matrix.target }} --locked persistence:: -- --test-threads 2
 
       - name: Install cross-compilation target
         if: ${{ matrix.cross_target != '' }}

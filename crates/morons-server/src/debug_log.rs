@@ -19,7 +19,7 @@ pub use runtime::{
 use crate::provider::ProviderError;
 
 const PREFIX: &[u8] = b"MORONS_DEBUG ";
-const QUEUE_CAPACITY: usize = 32;
+const QUEUE_CAPACITY: usize = 80;
 const MAX_ENCODED_BYTES: usize = 1024;
 const MAX_RECORD_ATTEMPTS: u64 = 512;
 const SHUTDOWN_GRACE: Duration = Duration::from_millis(100);
@@ -101,6 +101,24 @@ pub enum DebugStartupStage {
     ProjectionRebuild,
     IntegrityValidation,
     BackendRecovery,
+    AttachmentReconciliation,
+    ContextIntegrity,
+    DataUsePolicyValidation,
+    TaskBindingValidation,
+    WebBindingValidation,
+    CheckpointDigestValidation,
+    MaintenanceValidation,
+    CompactionRecovery,
+    CredentialMutationRecovery,
+    CredentialRefreshRecovery,
+    MaintenanceRecovery,
+    SessionCreationRecovery,
+    ChildJournalRecovery,
+    ToolRecovery,
+    LocalCommandRecovery,
+    RunRecovery,
+    SessionArchiveRecovery,
+    SessionDeleteRecovery,
 }
 
 pub fn startup_stage<T, E>(

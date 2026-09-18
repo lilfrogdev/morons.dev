@@ -71,19 +71,34 @@ impl Backend {
             maintenance_enabled: false,
         };
         debug_log::startup_stage(DebugStartupStage::BackendRecovery, || {
-            backend.reconcile_image_attachments()?;
-            backend.ensure_context_integrity()?;
-            backend.recover_compaction_operations()?;
-            backend.recover_credential_mutations()?;
-            backend.openai_credentials.recover_refresh()?;
-            backend.recover_maintenance_jobs()?;
-            backend.recover_incomplete_session_creations()?;
-            backend.recover_child_journals()?;
-            backend.recover_tool_operations()?;
-            backend.recover_local_commands()?;
-            backend.recover_nonterminal_runs()?;
-            backend.recover_session_archives()?;
-            backend.recover_session_deletes()
+            use DebugStartupStage::*;
+            debug_log::startup_stage(AttachmentReconciliation, || {
+                backend.reconcile_image_attachments()
+            })?;
+            debug_log::startup_stage(ContextIntegrity, || {
+                backend.ensure_startup_context_integrity()
+            })?;
+            debug_log::startup_stage(CompactionRecovery, || {
+                backend.recover_compaction_operations()
+            })?;
+            debug_log::startup_stage(CredentialMutationRecovery, || {
+                backend.recover_credential_mutations()
+            })?;
+            debug_log::startup_stage(CredentialRefreshRecovery, || {
+                backend.openai_credentials.recover_refresh()
+            })?;
+            debug_log::startup_stage(MaintenanceRecovery, || backend.recover_maintenance_jobs())?;
+            debug_log::startup_stage(SessionCreationRecovery, || {
+                backend.recover_incomplete_session_creations()
+            })?;
+            debug_log::startup_stage(ChildJournalRecovery, || backend.recover_child_journals())?;
+            debug_log::startup_stage(ToolRecovery, || backend.recover_tool_operations())?;
+            debug_log::startup_stage(LocalCommandRecovery, || backend.recover_local_commands())?;
+            debug_log::startup_stage(RunRecovery, || backend.recover_nonterminal_runs())?;
+            debug_log::startup_stage(SessionArchiveRecovery, || {
+                backend.recover_session_archives()
+            })?;
+            debug_log::startup_stage(SessionDeleteRecovery, || backend.recover_session_deletes())
         })?;
         Ok(backend)
     }

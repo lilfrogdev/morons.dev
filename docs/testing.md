@@ -52,7 +52,7 @@ For an explicitly authorized foreground measurement, run `morons-server --debug 
 
 Filter stderr for `MORONS_DEBUG ` JSON with `kind: "startup"`. Each fixed stage emits `began: true` followed by `began: false`, `success` and `elapsed_us`; begin records have null result/timing fields. `total` spans endpoint preparation through application open and endpoint publication, not server lifetime. Nested stages cover database initialization (fresh profiles only), file/open/configuration/migration/schema/quick checks, historical fact validation, projection rebuilding, integrity validation and backend recovery. Parent durations include children: do not sum them. Failures return unchanged and end enclosing stages with `success: false`; no error text, SQL, paths or credentials enter timing records.
 
-The maximum ordinary startup emits31 records including the sink start record, within the unchanged32-slot queue even without draining. All records remain best-effort: backpressure, writer failure or process shutdown can lose even final failure/total records. Missing stages are not proof of success or skipped validation. Preserve existing timeouts and recovery checks; collect timings before attributing a bottleneck. No live startup measurement is part of the offline tests.
+The maximum ordinary startup emits 67 records including the sink start record, within the bounded 80-slot queue even without draining. Backend recovery has separate timers for attachment reconciliation, context integrity, data-use policy, task bindings, web bindings, checkpoint digests, maintenance validation, compaction, credential mutations and refresh, maintenance recovery, session creation, child journals, tools, local commands, runs, archives and deletes. All records remain best-effort: backpressure, writer failure or process shutdown can lose even final failure/total records. Missing stages are not proof of success or skipped validation. Preserve existing timeouts and recovery checks; collect timings before attributing a bottleneck. No live startup measurement is part of the offline tests.
 
 ```sh
 cargo test -p morons-server --offline debug_log -- --test-threads=2
@@ -60,6 +60,20 @@ cargo test -p morons-cli --offline lifecycle:: -- --test-threads=2
 ```
 
 The delayed authenticated-readiness fixture runs on Unix in a bounded dedicated subprocess with a temporary private HOME, a real local endpoint, peer authorization, mutual authentication and protocol negotiation. It never opens application persistence or contacts a provider. Windows delayed-readiness coverage remains outstanding.
+
+### Offline checkpoint-validation benchmark
+
+Run `cargo test --locked --release -p morons-server --lib benchmark_checkpoint_validation -- --ignored --nocapture` to compare independent prefix validation with bounded batched validation on disposable synthetic databases. The text fixture has 48 checkpoints and 48 user entries of 32 KiB each (1.5 MiB); the tool-heavy fixture has 48 checkpoints, 48 persisted tool calls, and 48 persisted tool results of 32 KiB each (1.5 MiB), without executing tools. Fixture creation is outside the reported timings; both paths verify the same stored digests and summary token estimates. The test also reports individual context-validation stages, but these fixtures have no task/web bindings or maintenance jobs. It does not measure live startup. There are no wall-clock pass/fail thresholds. Checkpoint batches share canonical page reads, retain at most 32 independent hash states, and keep the existing digest format and all validation checks.
+
+### Offline maintenance validation
+
+Use the ignored release probe directly:
+
+```sh
+cargo test -p morons-server --lib --release --locked benchmark_maintenance_validation -- --ignored --nocapture --test-threads 1
+```
+
+It constructs disposable `TestRoot` state before timing: one session with 48 stopped text entries of exactly 32 KiB each, then either 1 cancelled maintenance job with source prefix entry 2 or 16 cancelled maintenance jobs with source prefix entries 2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 41, 44, and 47. It prints three individual full `validate_maintenance_records` traversals for each job count; they are nonadditive measurements. The probe does not access a live database, credentials, providers, or the network. It has no timing threshold and is not a production, disk, concurrency, or live-performance qualification.
 
 ## Opt-in provider debugging
 
@@ -69,7 +83,7 @@ cargo test -p morons-server --lib --locked diagnostic -- --test-threads 2
 cargo test -p morons-server --lib --locked qa_transport -- --test-threads 2
 ```
 
-[ADR 0049](adr/0049-opt-in-provider-debug-mode.md) and [ADR 0050](adr/0050-closed-runtime-debug-diagnostics.md) define the closed sink/transport/runtime schema. Queue and blocked-writer tests prove producer and guard completion before draining/releasing the blocked resource, with generous test watchdogs rather than tight scheduler-latency assertions. Failure cleanup releases the writer and joins test workers. Keep production100ms shutdown grace,32queue slots,512record attempts and1024encoded bytes unchanged.
+[ADR 0049](adr/0049-opt-in-provider-debug-mode.md) and [ADR 0050](adr/0050-closed-runtime-debug-diagnostics.md) define the closed sink/transport/runtime schema. Queue and blocked-writer tests prove producer and guard completion before draining/releasing the blocked resource, with generous test watchdogs rather than tight scheduler-latency assertions. Failure cleanup releases the writer and joins test workers. Keep production 100ms shutdown grace, 80 queue slots, 512 record attempts and 1024 encoded bytes unchanged.
 
 For a separately scoped foreground smoke, use a fresh profile with no credentials and the exact matching pair. Start normally and verify no extra diagnostic records. Stop through the matching authenticated client; start `morons-server --debug` under that same fresh profile in a separate terminal, then attach its matching client. Expect the `MORONS_DEBUG ` start record, not a normal UI panel or a log file. Stop and confirm process/terminal restoration. Unknown/duplicate arguments reject before state preparation. No environment variable, debug-build default or later client can activate logging in an existing server. Keep stdout's readiness banner separate from stderr. If the owner redirects stderr, use an owner-controlled path outside repositories; same-user tools can still read it. Do not capture raw provider bodies/headers, environment dumps, credentials or browser data. A model/tool diagnostic scenario needs its own live authority; do not infer billing, no dispatch or zero usage from missing records.
 
