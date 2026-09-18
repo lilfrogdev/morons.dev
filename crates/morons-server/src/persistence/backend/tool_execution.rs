@@ -63,6 +63,16 @@ impl Backend {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let run = load_required_run(&transaction, run_id)?;
+        if run.tool_catalog_version >= 15
+            && turn
+                .calls
+                .iter()
+                .any(|call| call.input.kind() == ToolKind::Task)
+        {
+            return Err(PersistenceError::InvalidInput {
+                reason: "task delegation is not supported by this run's tool catalog",
+            });
+        }
         require_dispatched_active_operation(&transaction, &run, operation_id)?;
         let expected_high_water = provider_source_high_water(&transaction, operation_id)?;
         let entry_high_water = load_entry_high_water(&transaction, run.session_id)?;

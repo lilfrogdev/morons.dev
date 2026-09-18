@@ -24,12 +24,11 @@ async fn prepared_search_rechecks_before_http(cancel: bool, admitted: bool) {
                 if native {
                     install(&store, 0).await;
                 }
-                let (run, call) = prepare(&store, native, task).await;
+                let (session, run, call) = prepare_with_session(&store, native, task, None).await;
                 store
                     .mark_tool_dispatched(run, call.call_id, call.operation_id)
                     .await
                     .unwrap();
-                let session = store.load_run_context(run).await.unwrap().run.session_id;
                 let binding = store.web_binding(run, call.call_id).await.unwrap();
                 let execution_binding = binding.clone();
                 let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -2,7 +2,7 @@
 
 A lightweight, local-first coding-agent CLI built in Rust.
 
-Morons works directly in the directory where you start it. It keeps durable sessions in a local companion server and provides a small model tool set: `read`, `write`, `edit`, `bash`, `web_search`, persistent-session `ipython`, and bounded batched `task` subagents.
+Morons works directly in the directory where you start it. It keeps durable sessions in a local companion server and provides a small model tool set: `read`, `write`, `edit`, `bash`, `web_search`, persistent-session `ipython`.
 
 ## Security model
 
@@ -87,7 +87,7 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `!command`: execute bounded noninteractive Bash and include its command/result in later model context
 - `!!command`: execute Bash but exclude its command/result from model context
 - `/model [search]`: search available reviewed models and save one global default for every session
-- `/settings`: choose the subagent model; `t` toggles Block training use and `r` toggles Require zero data retention
+- `/settings`: `t` toggles Block training use and `r` toggles Require zero data retention
 - `/login`: choose OpenCode hidden API-key input or experimental ChatGPT browser login (`Ctrl+K` shortcut)
 - `/logout`: choose a provider for explicit, confirmed local credential removal
 - `/context`: inspect context/cache/timing observations and the last accepted run's project-guidance paths and warnings; use arrows, PageUp/PageDown, Home/End to scroll
@@ -140,11 +140,9 @@ Files, warnings and enabled state are pinned in SQLite with each tool-enabled ru
 
 To disable automatic discovery, set `MORONS_NO_PROJECT_CONTEXT` (any value) before the companion starts; unset it to enable. Stop an existing companion with `Ctrl+S` before changing this server environment setting. This disables automatic loading, not ordinary tool access or user-supplied instructions. See [ADR 0025](docs/adr/0025-project-guidance-and-prompt-led-delegation.md).
 
-## Subagents
+## Main agent
 
-By default the main selected model inspects and plans implementation work, uses one implementation child for a small change, then reviews changed code and runs relevant checks. Only independent assignments should run in parallel; dependent implementation and verification should not race. After a child failure, the prompt asks the parent to report partial progress and stop rather than retry or take over without explicit user direction. Parent and child loops have no cumulative turn, tool, mutation, or whole-run time quota; they can continue consuming paid usage until completion, cancellation, failure, or a retained context/per-operation/storage bound. Child reports and individual operations remain bounded. See [ADR 0053](docs/adr/0053-uncapped-agent-loops.md). Discussion-only requests can be answered directly. This is **prompt-led delegation**, not enforced planner-only mode: the main agent retains its normal tools and can follow explicit requests for direct execution. Model compliance is not guaranteed by a prompt. See [ADR 0027](docs/adr/0027-tool-feedback-and-provider-output-validation.md).
-
-The `task` tool follows a bounded OMP-style batch contract: the parent supplies shared context once and one to three self-contained assignments. By default children inherit the parent's model and credential identity. Before dispatch, each batch durably binds its selected provider/model and provider-local credential generation; cross-provider children never borrow an unrelated parent's counter. `/settings` can instead pin one exact available reviewed service/model pair for later task calls, including a different family, service, or wire protocol such as Zen GPT 5.6 Sol with Go GLM-5.3-Flash. Morons never silently substitutes another child model; each completed report discloses the selected model and protocol revision. Children run concurrently, receive the parent's pinned project guidance and only `read`, `write`, `edit`, `bash`, and `web_search` tools, and return input-ordered bounded reports. Active parent skills are not automatically inherited; include relevant task-specific context explicitly. They do not inherit the parent transcript, share IPython memory, recurse, continue in the background, or receive isolated worktrees. Children share the real selected directory, so parallel mutations can race.
+The selected model inspects, plans, implements, and verifies changes directly. There is no task delegation or subagent model selector. Historical child results remain readable, and interrupted historical work is recovered without replay. See [Main-agent-only execution](docs/main-agent-only.md).
 
 ## Skills
 

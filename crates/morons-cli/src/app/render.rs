@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use morons_protocol::{ModelRetention, ModelTrainingUse, RunId, RunState, SubagentModelSetting};
+use morons_protocol::{ModelRetention, ModelTrainingUse, RunId, RunState};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Margin, Rect},
@@ -14,8 +14,8 @@ use ratatui::{
 
 use super::{
     AppState, CredentialDialog, InformationDialog, PendingOperation, PresentedModel, SessionView,
-    SettingsDialog, SubagentModelCandidate, TranscriptBlockKey, TranscriptViewport, View,
-    service_label, terminal_run_presentation,
+    SettingsDialog, TranscriptBlockKey, TranscriptViewport, View, service_label,
+    terminal_run_presentation,
 };
 use crate::terminal::SafeText;
 
@@ -657,37 +657,6 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                 height,
             };
             frame.render_widget(Clear, popup);
-            let value = match app
-                .settings
-                .as_ref()
-                .map(|settings| &settings.subagent_model)
-            {
-                Some(SubagentModelSetting::InheritParent {}) => "Inherit parent".to_owned(),
-                Some(SubagentModelSetting::Explicit { service, model_id }) => {
-                    let available = app.models.iter().any(|model| {
-                        model.model.available
-                            && model.model.capabilities.text_input
-                            && model.model.capabilities.text_output
-                            && model.model.capabilities.tool_calls
-                            && model.model.service == *service
-                            && model.model.id == *model_id
-                    });
-                    format!(
-                        "{} / {}{}",
-                        service_label(*service),
-                        model_id,
-                        if available { "" } else { " · unavailable" }
-                    )
-                }
-                None => "Loading".to_owned(),
-            };
-            let item = ListItem::new(vec![
-                Line::from(Span::styled(
-                    "Subagent model",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
-                Line::from(value),
-            ]);
             let flag = |value: Option<bool>| match value {
                 Some(true) => "ON",
                 Some(false) => "OFF",
@@ -695,7 +664,6 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             };
             let policy = app.settings.as_ref().map(|settings| settings.data_use);
             let list = List::new(vec![
-                item,
                 ListItem::new(format!(
                     "t · Block training use: {}",
                     flag(policy.map(|p| p.block_training_use))
@@ -710,7 +678,7 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Settings · Enter change · Esc close "),
+                    .title(" Settings · t/r toggle · Esc close "),
             )
             .highlight_style(
                 Style::default()
@@ -721,100 +689,6 @@ fn render_settings_dialog(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             .highlight_symbol("› ");
             let mut state = ListState::default().with_selected(Some(0));
             frame.render_stateful_widget(list, popup, &mut state);
-        }
-        Some(SettingsDialog::SubagentModel { query, selected }) => {
-            let width = area.width.min(88);
-            let height = area.height.min(18);
-            let popup = Rect {
-                x: area.x + area.width.saturating_sub(width) / 2,
-                y: area.y + area.height.saturating_sub(height) / 2,
-                width,
-                height,
-            };
-            frame.render_widget(Clear, popup);
-            let sections = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(3),
-                    Constraint::Length(5),
-                ])
-                .split(popup);
-            frame.render_widget(
-                Paragraph::new(SafeText::from_untrusted(query.as_str()).as_str().to_owned()).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(" Subagent model search "),
-                ),
-                sections[0],
-            );
-            let matches = app.subagent_model_dialog_matches();
-            let selected = (*selected).min(matches.len().saturating_sub(1));
-            let visible_rows = usize::from(sections[1].height.saturating_sub(2)).max(1);
-            let start = selected
-                .saturating_sub(visible_rows / 2)
-                .min(matches.len().saturating_sub(visible_rows));
-            let items = matches
-                .iter()
-                .skip(start)
-                .take(visible_rows)
-                .filter_map(|candidate| match candidate {
-                    SubagentModelCandidate::InheritParent => Some(ListItem::new("Inherit parent")),
-                    SubagentModelCandidate::Model(index) => app.models.get(*index).map(|model| {
-                        ListItem::new(Line::from(vec![
-                            Span::raw(service_label(model.model.service)),
-                            Span::raw(" · "),
-                            Span::raw(model.id.first_line()),
-                            Span::raw(" · "),
-                            Span::raw(model.display_name.first_line()),
-                            Span::raw(if app.model_policy_blocked(&model.model) {
-                                " · data-use blocked"
-                            } else {
-                                ""
-                            }),
-                            Span::styled(
-                                format!(" · protocol {}", model.model.protocol_revision),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        ]))
-                    }),
-                })
-                .collect::<Vec<_>>();
-            let list = if items.is_empty() {
-                List::new(vec![ListItem::new("No matching available models")])
-            } else {
-                List::new(items)
-            }
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Subagent model · type to filter · ↑↓ choose · Enter save · Esc back "),
-            )
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("› ");
-            let mut state = ListState::default();
-            if !matches.is_empty() {
-                state.select(Some(selected.saturating_sub(start)));
-            }
-            frame.render_stateful_widget(list, sections[1], &mut state);
-            let selected_model = matches.get(selected).and_then(|candidate| match candidate {
-                SubagentModelCandidate::InheritParent => None,
-                SubagentModelCandidate::Model(index) => app.models.get(*index),
-            });
-            if matches.get(selected) == Some(&SubagentModelCandidate::InheritParent) {
-                frame.render_widget(
-                    Paragraph::new("Inherits each parent run's exact reviewed model and limits")
-                        .block(Block::default().borders(Borders::ALL)),
-                    sections[2],
-                );
-            } else {
-                render_model_disclosure(frame, sections[2], selected_model, None);
-            }
         }
         None => {}
     }
@@ -958,7 +832,7 @@ fn render_information_dialog(
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools and task subagents use your normal user authority; there are no approval prompts or rollback. Parallel subagents share the selected directory and may race. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure global subagent model · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · /help session help · ? browser help · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure data-use policy · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · /help session help · ? browser help · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             16,
         ),

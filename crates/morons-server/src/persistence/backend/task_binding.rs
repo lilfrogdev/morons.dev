@@ -79,6 +79,7 @@ impl Backend {
             sequence: 0,
         }))
     }
+    #[cfg(test)]
     pub(crate) fn load_task_model_binding(
         &self,
         run_id: RunId,

@@ -476,48 +476,10 @@ impl ServerApplication {
                     },
                 ))
             }
-            ApplicationRequest::SetSubagentModelSetting {
-                mutation_request_id,
-                setting,
-            } => {
-                let setting = to_persistence_subagent_model_setting(setting);
-                if let crate::persistence::SubagentModelSetting::Explicit { service, model_id } =
-                    &setting
-                {
-                    let model = find_model_profile(
-                        to_provider_service(to_protocol_service(*service)),
-                        model_id,
-                    )
-                    .ok_or(ApplicationError::UnsupportedModel)?;
-                    if !model.capabilities.text_input
-                        || !model.capabilities.text_output
-                        || !model.capabilities.tool_calls
-                    {
-                        return Err(ApplicationError::UnsupportedModel);
-                    }
-                }
-                let setting = self
-                    .sessions
-                    .set_subagent_model_setting(
-                        to_persistence_mutation_id(mutation_request_id),
-                        setting,
-                    )
-                    .await
-                    .map_err(to_application_error)?;
-                Ok(ApplicationOutcome::Response(
-                    ApplicationResponse::ApplicationSettingsUpdated {
-                        settings: morons_protocol::ApplicationSettings {
-                            subagent_model: to_protocol_subagent_model_setting(setting),
-                            data_use: to_protocol_data_use(
-                                self.sessions
-                                    .data_use_policy()
-                                    .await
-                                    .map_err(to_application_error)?,
-                            ),
-                        },
-                    },
-                ))
+            ApplicationRequest::SetSubagentModelSetting { .. } => {
+                Err(ApplicationError::UnsupportedModel)
             }
+
             ApplicationRequest::ListSessionSkills { session_id } => {
                 let working_directory = self
                     .sessions

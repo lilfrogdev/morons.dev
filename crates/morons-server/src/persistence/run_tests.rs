@@ -28,6 +28,22 @@ async fn configure_credential(store: &SessionStore) -> OpenCodeCredentialStatus 
         .expect("credential should be configured")
 }
 
+fn use_historical_task_catalog(store: &SessionStore, run: super::RunId) {
+    // Rewrite only the idle disposable fixture after context loading and before provider preparation.
+    let mut db = Connection::open(store.application_root.join("data/sessions.sqlite3")).unwrap();
+    let transaction = db.transaction().unwrap();
+    for table in ["run_accepted_facts", "runs"] {
+        assert_eq!(
+            transaction.execute(
+                &format!("UPDATE {table} SET tool_catalog_version=14 WHERE run_id=?1 AND tool_catalog_version=15 AND tool_limits_version=14"),
+                [&run.as_bytes()[..]],
+            ).unwrap(),
+            1
+        );
+    }
+    transaction.commit().unwrap();
+}
+
 fn model_selection() -> RunModelSelection {
     RunModelSelection {
         service: RunService::Zen,
@@ -79,4 +95,5 @@ mod counters;
 mod deletion;
 mod lifecycle;
 mod selection;
+mod task_rejection;
 mod web;

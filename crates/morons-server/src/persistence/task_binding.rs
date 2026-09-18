@@ -1,4 +1,7 @@
-use super::{PersistenceError, RunId, RunService, SessionStore, ToolCallId, WorkerRequest};
+#[cfg(test)]
+use super::{PersistenceError, SessionStore, WorkerRequest};
+use super::{RunId, RunService, ToolCallId};
+#[cfg(test)]
 use tokio::sync::oneshot;
 
 #[derive(Clone, Debug)]
@@ -15,6 +18,7 @@ pub(crate) struct TaskModelBinding {
     pub policy_sequence: u64,
     pub sequence: u64,
 }
+#[cfg(test)]
 impl SessionStore {
     pub(crate) async fn task_model_binding(
         &self,

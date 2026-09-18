@@ -119,11 +119,11 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 
 | ID | Check |
 | --- | --- |
-| SET-01 | `/settings` shows a typed **Subagent model** row; Enter opens a bounded searchable picker and Esc returns without mutation. |
-| SET-02 | **Inherit parent** is the initial policy and remains independent from `/model` selection. |
-| SET-03 | With Zen `gpt-5.6-sol` selected for the main run and Go `glm-5.3-flash` selected for subagents, `task` routes children through Chat Completions and reports `OpenCode Go / glm-5.3-flash · protocol revision 2`. |
-| SET-04 | The exact child setting survives client and companion restart; an unavailable or unauthorized saved pair fails clearly without falling back or rewriting the setting. |
-| SET-05 | Returning to **Inherit parent** makes later task calls use the main run's exact selected service/model while an already running task remains pinned. |
+| SET-01 | `/settings` shows data-use policy controls, with no subagent model row or picker. |
+| SET-02 | Main `/model` selection remains independent from data-use settings. |
+| SET-03 | Retired `SetSubagentModelSetting` requests fail without mutation; link the application regression test. |
+| SET-04 | Historical child settings and task bindings remain readable and validated after restart. |
+| SET-05 | Stored historical settings cannot authorize new task dispatch. |
 
 ### Inference, tools, and context
 
@@ -135,12 +135,12 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-04 | Long wrapped output follows the bottom until wheel/PageUp history scrolling begins; new output does not steal that viewport, and End resumes the latest output. |
 | RUN-05 | `!command` is durable and context-bearing; `!!command` is durable but excluded from later provider context. |
 | RUN-06 | `@qa-skill` invokes the exact project skill and returns `QA-SKILL-OK`; Tab completes only a visible exact skill match. |
-| RUN-07 | Two disjoint `task` children run concurrently, cannot recurse or use IPython, and return input-ordered bounded reports. |
+| RUN-07 | The six-tool catalog excludes `task`; unsolicited task calls fail before dispatch. Historical interrupted children recover without replay; link deterministic fixtures. |
 | RUN-08 | First IPython use automatically prepares Python 3.11.15 with `jupyter_client` 8.6.3 and `ipykernel` 6.30.1, evaluates a value, preserves it across cells/runs, starts in `QA_REPO`, and renders a traceback without ANSI fragments. |
 | RUN-09 | After successful setup, a companion restart reuses the validated runtime with network unavailable and without invoking `morons-uv`; a stale manifest is rejected and rebuilt under the lock when reviewed sources are available. |
 | RUN-10 | `/context` separately reports admission policy/estimate, legacy byte-heavy estimate, source bytes/cap, reviewed model limit, threshold, reserves, checkpoint and last accepted run's project-guidance paths/warnings. Values are predictive, not exact token/billing or dispatch evidence. Arrows/PageUp/PageDown/Home/End scroll longer metadata; paths and warnings render without terminal escapes. |
 | RUN-11 | `/compact <instructions>` commits a bounded source-bound checkpoint and continues without deleting canonical history. |
-| RUN-12 | OpenAI-only `web_search` returns a bounded searched answer, visible source URLs and separate token/action receipts. Without ChatGPT login or permitted data-use policy it fails without inference/fallback. Verify Astra main → GLM-5.3-Flash child → isolated native search as a distinct capability combination; child usage excludes search receipts. Unknown search outcomes stop the owner without replay. |
+| RUN-12 | OpenAI-only `web_search` returns a bounded searched answer, visible source URLs and separate token/action receipts. Without ChatGPT login or permitted data-use policy it fails without inference/fallback. Verify the selected main model's isolated native search binding; coding usage excludes search receipts. Unknown search outcomes stop the owner without replay. |
 | RUN-13 | A transcript exceeding 512 entries opens at its latest window; PageUp/wheel crosses older windows, Home reaches the first entry, PageDown returns through newer windows, and End restores current live output without unbounded rendering. |
 | RUN-14 | An explicit `MORONS_PYTHON` lacking Jupyter packages fails with actionable guidance naming `jupyter_client`, `ipykernel`, and `MORONS_PYTHON`. |
 | RUN-15 | Go `glm-5.3-flash` completes plain text, a normalized image request, and a natural `read` tool loop through Chat Completions, with bounded reasoning ignored and no duplicate terminal output. |
@@ -153,8 +153,8 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 | RUN-22 | Representative current Zen models from all four protocol groups complete without substitution; live catalog-only entries either complete on their frozen route or surface the exact upstream rejection without retry. |
 | RUN-23 | Short-message entry pressure and image count/byte pressure trigger compaction below the token threshold; `/compact` remains usable for an older session at capacity. Retained tool call/results remain paired, canonical history stays intact, and `!!` content never enters the summary. Link deterministic regression evidence when constructing these histories manually is impractical. |
 | RUN-24 | Legacy/ineligible runs that cannot fit their mandatory current context fail durably without leaving the session busy. Eligible new native text roots may use compatible same-run usage and completed-batch compaction, retaining original intent/latest batch and resetting continuation. At most four foreground attempts including initial/manual, with advancing source and intervening completed coding progress; summaries are extra requests outside32completedcoding turns. Independent source/item/image/encoding bounds still apply. If retained information cannot fit, fail without hidden truncation. Failed/uncertain/cancelled compaction installs no partial checkpoint and is never automatically retried. Link deterministic native provenance, epoch, continuation and failure tests; do not borrow a live request budget. |
-| RUN-25 | Global/ancestor `AGENTS.override.md`/`AGENTS.md`/`CLAUDE.md` discovery obeys precedence and limits, reports skips, pins guidance through a run and its children, refreshes only on new input, and honors the server-startup opt-out. Canonical history and source files remain unchanged by snapshot cleanup; link deterministic pinning/corruption/migration regressions. |
-| RUN-26 | Representative implementation requests use the selected main model to plan/review and the configured child model to execute/check; discussion and explicit direct-execution requests work without mandatory delegation. Record actual model behavior separately from prompt-composition tests; no prompt guarantees compliance. |
+| RUN-25 | Global/ancestor `AGENTS.override.md`/`AGENTS.md`/`CLAUDE.md` discovery obeys precedence and limits, reports skips, pins guidance through a run, refreshes only on new input, and honors the server-startup opt-out. Canonical history and source files remain unchanged by snapshot cleanup; link deterministic pinning/corruption/migration regressions. |
+| RUN-26 | Representative implementation requests use the selected main model to inspect, plan, implement, and verify directly. Record actual model behavior separately from prompt-composition tests; no prompt guarantees compliance. |
 | RUN-27 | Follow the [no-inference viewer procedure](testing.md#navigable-transcript-viewer) with owned bounded local-command history: complete long-entry tails, byte-aware windows below64entries, adjacent cursors, new-output indication without moving a reader, resize anchoring and terminal restoration. No model submission or real credentials required. |
 | RUN-28 | Follow the [explicit-debug procedure](testing.md#opt-in-provider-debugging): default silence, foreground-only `--debug`, closed bounded metadata, no ordinary UI/log-file addition and clean stop. Diagnostic loss is unknown, not zero provider usage. Any live model scenario is separately authorized. |
 

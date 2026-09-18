@@ -1,3 +1,5 @@
+#[cfg(test)]
+use types::{subagent_model_fingerprint, validate_subagent_model_setting};
 mod child_journal;
 pub(crate) use child_journal::ChildEntryKind;
 mod backend;
@@ -37,9 +39,8 @@ use self::{
         MAX_SESSION_CATALOG_EVENT_PAGE_SIZE, MAX_SESSION_EVENT_PAGE_SIZE, MAX_SESSION_PAGE_SIZE,
         REQUEST_FINGERPRINT_BYTES, archive_session_fingerprint,
         create_session_with_directory_fingerprint, default_model_fingerprint,
-        delete_session_fingerprint, rename_session_fingerprint, subagent_model_fingerprint,
-        validate_display_name, validate_model_identifier, validate_subagent_model_setting,
-        validate_working_directory_path,
+        delete_session_fingerprint, rename_session_fingerprint, validate_display_name,
+        validate_model_identifier, validate_working_directory_path,
     },
 };
 
@@ -460,6 +461,7 @@ impl SessionStore {
             .map_err(|_| PersistenceError::WorkerStopped)?
     }
 
+    #[cfg(test)]
     pub async fn set_subagent_model_setting(
         &self,
         request_id: MutationRequestId,
@@ -688,7 +690,9 @@ impl Drop for SessionStore {
 }
 
 enum WorkerRequest {
+    #[cfg(test)]
     ChildJournal(child_journal::Request),
+    #[cfg(test)]
     TaskModelBinding {
         run_id: RunId,
         call_id: ToolCallId,
@@ -756,6 +760,7 @@ enum WorkerRequest {
     GetSubagentModelSetting {
         response: oneshot::Sender<Result<SubagentModelSetting, PersistenceError>>,
     },
+    #[cfg(test)]
     SetSubagentModelSetting {
         request_id: MutationRequestId,
         fingerprint: [u8; REQUEST_FINGERPRINT_BYTES],
@@ -810,6 +815,7 @@ fn run_worker(
     while let Some(request) = receiver.blocking_recv() {
         let mut force_event_notification = false;
         match request {
+            #[cfg(test)]
             WorkerRequest::TaskModelBinding {
                 run_id,
                 call_id,
@@ -898,6 +904,7 @@ fn run_worker(
                 force_event_notification = result.is_ok();
                 let _ = response.send(result);
             }
+            #[cfg(test)]
             WorkerRequest::ChildJournal(request) => request.execute(&mut backend),
             WorkerRequest::Run(request) => request.execute(&mut backend),
             WorkerRequest::StopServer {
@@ -922,6 +929,7 @@ fn run_worker(
             WorkerRequest::GetSubagentModelSetting { response } => {
                 let _ = response.send(backend.subagent_model_setting());
             }
+            #[cfg(test)]
             WorkerRequest::SetSubagentModelSetting {
                 request_id,
                 fingerprint,

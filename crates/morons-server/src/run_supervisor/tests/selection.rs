@@ -120,7 +120,7 @@ async fn default_model_selection_is_reviewed_idempotent_and_queryable() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn subagent_model_setting_is_reviewed_idempotent_and_queryable() {
+async fn retired_subagent_model_setting_is_rejected_without_mutation() {
     let root = TestRoot::new("subagent-model-application");
     let store = SessionStore::open_for_test(root.path()).expect("session store should open");
     let application = ServerApplication::from_session_store_for_test(store, "http://127.0.0.1:9");
@@ -143,22 +143,8 @@ async fn subagent_model_setting_is_reviewed_idempotent_and_queryable() {
         },
     };
     for _ in 0..2 {
-        let updated = application
-            .execute_for_local_owner(request.clone())
-            .await
-            .expect("subagent model setting should succeed");
-        assert!(matches!(
-            updated,
-            ApplicationOutcome::Response(ApplicationResponse::ApplicationSettingsUpdated {
-                settings
-            }) if matches!(
-                settings.subagent_model,
-                SubagentModelSetting::Explicit {
-                    service: ModelService::Go,
-                    ref model_id,
-                } if model_id == "glm-5.3-flash"
-            )
-        ));
+        let updated = application.execute_for_local_owner(request.clone()).await;
+        assert!(matches!(updated, Err(ApplicationError::UnsupportedModel)));
     }
     let loaded = application
         .execute_for_local_owner(ApplicationRequest::GetApplicationSettings)
@@ -167,7 +153,7 @@ async fn subagent_model_setting_is_reviewed_idempotent_and_queryable() {
     assert!(matches!(
         loaded,
         ApplicationOutcome::Response(ApplicationResponse::ApplicationSettings { settings })
-            if settings.subagent_model == request_setting(&request)
+            if settings.subagent_model == SubagentModelSetting::InheritParent {}
     ));
 
     let unsupported = application

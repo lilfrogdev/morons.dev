@@ -377,14 +377,6 @@ impl RuntimeState {
                 self.app
                     .set_status("Saving data-use policy; already admitted work may continue");
             }
-            AppAction::SetSubagentModel { setting } => {
-                let command = RequestCommand::SetSubagentModel {
-                    mutation_request_id: generate_mutation_request_id()?,
-                    setting,
-                };
-                self.start_mutation(command, PendingOperation::UpdateSettings, commands)?;
-                self.app.set_status("Saving global subagent model setting");
-            }
             AppAction::ShowContext {
                 session_id,
                 service,

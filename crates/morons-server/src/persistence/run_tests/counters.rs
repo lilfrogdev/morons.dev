@@ -4,7 +4,10 @@ use crate::{
     tools::{SubagentTask, TextReplacement, ToolInput, ToolPath, ValidatedProviderCall},
 };
 
-async fn prepared(store: &SessionStore) -> (SessionId, RunId, ProviderOperationId) {
+async fn prepared(
+    store: &SessionStore,
+    historical_task: bool,
+) -> (SessionId, RunId, ProviderOperationId) {
     configure_credential(store).await;
     let session = store
         .create_session(MutationRequestId::from_bytes([0x81; 16]), None)
@@ -21,6 +24,9 @@ async fn prepared(store: &SessionStore) -> (SessionId, RunId, ProviderOperationI
         .unwrap();
     store.activate_run(accepted.run.id).await.unwrap();
     let context = store.load_run_context(accepted.run.id).await.unwrap();
+    if historical_task {
+        use_historical_task_catalog(store, accepted.run.id);
+    }
     let PrepareOperationOutcome::Prepared(operation) = store
         .prepare_provider_operation(
             accepted.run.id,
@@ -36,10 +42,10 @@ async fn prepared(store: &SessionStore) -> (SessionId, RunId, ProviderOperationI
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_counters_cross_former_turn_call_mutation_and_task_quotas() {
+async fn run_counters_cross_former_turn_call_and_mutation_quotas() {
     let root = TestRoot::new("counter-uncapped");
     let store = SessionStore::open_at(root.path()).unwrap();
-    let (session, run, mut operation) = prepared(&store).await;
+    let (session, run, mut operation) = prepared(&store, false).await;
     for turn_index in 0..33 {
         if turn_index > 0 {
             let context = store.load_run_context(run).await.unwrap();
@@ -71,18 +77,8 @@ async fn run_counters_cross_former_turn_call_mutation_and_task_quotas() {
                     calls: (0..3)
                         .map(|index| ValidatedProviderCall {
                             provider_call_id: format!("call_{turn_index}_{index}"),
-                            input: if index == 0 {
-                                ToolInput::Task {
-                                    context: "fixture".into(),
-                                    tasks: vec![SubagentTask {
-                                        name: None,
-                                        task: "fixture".into(),
-                                    }],
-                                }
-                            } else {
-                                ToolInput::Bash {
-                                    command: "fixture only; never executed".into(),
-                                }
+                            input: ToolInput::Bash {
+                                command: "fixture only; never executed".into(),
                             },
                             opaque_continuation: None,
                         })
@@ -130,7 +126,7 @@ async fn run_counters_cross_former_turn_call_mutation_and_task_quotas() {
 async fn cumulative_results_preserve_payloads_beyond_two_mib() {
     let root = TestRoot::new("counter-result-bytes");
     let store = SessionStore::open_at(root.path()).unwrap();
-    let (session, run, operation) = prepared(&store).await;
+    let (session, run, operation) = prepared(&store, false).await;
     let mut expected_bytes = 0;
     store
         .mark_provider_dispatched(run, operation)
@@ -222,7 +218,7 @@ async fn counter_sqlite_overflow_rolls_back_completed_response() {
     for cancel in [false, true] {
         let root = TestRoot::new("counter-overflow");
         let store = SessionStore::open_at(root.path()).unwrap();
-        let (session, run, operation) = prepared(&store).await;
+        let (session, run, operation) = prepared(&store, false).await;
         store
             .mark_provider_dispatched(run, operation)
             .await
@@ -304,7 +300,7 @@ async fn run_counters_rebuild_only_completed_provider_receipts() {
     for dispatched in [false, true] {
         let root = TestRoot::new("counter-interrupted");
         let store = SessionStore::open_at(root.path()).unwrap();
-        let (session, run, operation) = prepared(&store).await;
+        let (session, run, operation) = prepared(&store, false).await;
         if dispatched {
             store
                 .mark_provider_dispatched(run, operation)
@@ -339,7 +335,7 @@ async fn run_counters_include_completed_response_discarded_after_cancellation() 
     for cancel in [false, true] {
         let root = TestRoot::new("counter-complete");
         let store = SessionStore::open_at(root.path()).unwrap();
-        let (session, run, operation) = prepared(&store).await;
+        let (session, run, operation) = prepared(&store, false).await;
         store
             .mark_provider_dispatched(run, operation)
             .await
@@ -440,7 +436,8 @@ async fn run_counters_rebuild_direct_mutation_capable_calls_without_execution() 
         let mutations = u64::from(input.kind().is_mutation());
         let root = TestRoot::new("counter-tools");
         let store = SessionStore::open_at(root.path()).unwrap();
-        let (session, run, operation) = prepared(&store).await;
+        let (session, run, operation) =
+            prepared(&store, matches!(input, ToolInput::Task { .. })).await;
         store
             .mark_provider_dispatched(run, operation)
             .await

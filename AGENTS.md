@@ -27,12 +27,12 @@ The application consists of a long-running local server and a separate terminal 
 - Morons provides lifecycle supervision, bounded output, and cancellation, not a security sandbox or rollback boundary.
 - The terminal has `!command` context-bearing command mode and `!!command` context-excluded command mode, without a PTY or interactive subprocess terminal.
 - Skills use standards-compatible Markdown `SKILL.md` directories with progressive loading; exact installed `@name` tokens explicitly invoke skills.
-- Bounded global/ancestor project guidance is pinned with each tool-enabled run and supplied separately to the parent and children; it cannot override user instructions, model routing or harness constraints.
-- The shared coding core favors simple verified changes. Main-model planning and subagent implementation are prompt-led, user-overridable defaults, not enforced tool restrictions.
+- Bounded global/ancestor project guidance is pinned with each tool-enabled run and supplied to the main agent; it cannot override user instructions, model routing or harness constraints.
+- The shared coding core favors simple verified changes. The main agent plans, implements, and verifies directly; task delegation is not available.
 - Images enter through clipboard paste, drag and drop, explicit paths, or `read`, appear as atomic filename markers, and persist as structured bounded session attachments.
 - OpenCode Zen and OpenCode Go use one concrete provider integration with reviewed Responses, Chat Completions, Anthropic Messages, and Gemini routes while remaining distinct service and billing identities.
 - Native ChatGPT uses a separate reviewed Codex Responses adapter and credential identity. Task batches durably bind their own selected model and credential generation before dispatch; no cross-provider credential or model fallback is allowed.
-- Web search uses only OpenAI-hosted search through the server's ChatGPT credential broker. Root tools and task batches durably bind the separate search identity; only the query enters its request. Historical Brave results remain readable, but there is no Brave executor, key lookup, selector, or fallback.
+- Web search uses only OpenAI-hosted search through the server's ChatGPT credential broker. Root tools durably bind the separate search identity; historical task-batch bindings remain validated; only the query enters its request. Historical Brave results remain readable, but there is no Brave executor, key lookup, selector, or fallback.
 - A reviewed built-in manifest, not remote catalog metadata, defines supported service, model, protocol, image, tool, limit, and data-use combinations.
 - Independent default-off training and zero-retention restrictions are enforced by server admission; unknown policy cannot satisfy a restriction, and changes cannot recall already admitted work.
 - Session identity and lifetime are independent of client connections and temporary runtimes.

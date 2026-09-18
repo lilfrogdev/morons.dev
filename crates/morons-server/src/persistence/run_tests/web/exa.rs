@@ -762,13 +762,12 @@ async fn exa_child_post_dispatch_cancellation_is_terminal_and_not_replayed_after
 async fn assert_exa_uncertain_not_replayed(cancel_after_request: bool, task: bool) {
     let root = TestRoot::new("exa-uncertain");
     let store = Arc::new(SessionStore::open_for_test(root.path()).unwrap());
-    let (run, call) = prepare(&store, false, task).await;
+    let (session, run, call) = prepare_with_session(&store, false, task, None).await;
     let input = ToolInput::WebSearch {
         query: "public query".into(),
     };
     let child = u16::from(task);
     let ordinal = u16::from(task);
-    let session = store.load_run_context(run).await.unwrap().run.session_id;
     store
         .mark_tool_dispatched(run, call.call_id, call.operation_id)
         .await
@@ -1094,8 +1093,8 @@ async fn check_search_history_deletion(native: bool, task: bool) {
         if native {
             install(&store, 0).await;
         }
-        let (run, call) = prepare_at(&store, native, task, Some(selected.path())).await;
-        let session = store.load_run_context(run).await.unwrap().run.session_id;
+        let (session, run, call) =
+            prepare_with_session(&store, native, task, Some(selected.path())).await;
         let other = store
             .create_session_at(
                 MutationRequestId::from_bytes([0xd0; 16]),

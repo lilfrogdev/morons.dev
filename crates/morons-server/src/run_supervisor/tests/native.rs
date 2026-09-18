@@ -5,7 +5,6 @@ mod context_continuation;
 mod diagnostics;
 mod lifecycle;
 mod mixed;
-mod web;
 
 const NATIVE_MODELS: [&str; 6] = [
     "gpt-5.5",
@@ -28,7 +27,7 @@ pub(super) fn synthetic_tokens() -> crate::provider::openai_auth::OAuthTokens {
         expires,
     )
 }
-async fn write_native_model(
+pub(super) async fn write_native_model(
     stream: &mut tokio::net::TcpStream,
     id: &str,
     output: &str,

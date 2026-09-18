@@ -12,8 +12,8 @@ use std::{error::Error, fmt};
 use morons_protocol::{
     ApplicationEvent, ApplicationSettings, LocalCommandId, MessageId, ModelSelection, ModelService,
     ModelSummary, OpenCodeApiKey, OpenCodeCredentialStatus, RunFailureKind, RunId, RunState,
-    RunSummary, SessionContextStatus, SessionId, SessionSummary, SkillSummary,
-    SubagentModelSetting, TranscriptCursor, TranscriptEntry,
+    RunSummary, SessionContextStatus, SessionId, SessionSummary, SkillSummary, TranscriptCursor,
+    TranscriptEntry,
 };
 use ratatui::Frame;
 
@@ -65,16 +65,6 @@ pub(super) struct ModelDialog {
 
 pub(super) enum SettingsDialog {
     Overview,
-    SubagentModel {
-        query: PromptBuffer,
-        selected: usize,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SubagentModelCandidate {
-    InheritParent,
-    Model(usize),
 }
 
 pub(super) enum CredentialDialog {
@@ -139,9 +129,6 @@ pub(super) enum AppAction {
     SetDefaultModel {
         service: ModelService,
         model_id: String,
-    },
-    SetSubagentModel {
-        setting: SubagentModelSetting,
     },
     SubmitInput {
         session_id: SessionId,
@@ -243,10 +230,6 @@ impl fmt::Debug for AppAction {
                 .debug_struct("SetDefaultModel")
                 .field("service", service)
                 .field("model_id", model_id)
-                .finish(),
-            Self::SetSubagentModel { setting } => formatter
-                .debug_struct("SetSubagentModel")
-                .field("setting", setting)
                 .finish(),
             Self::SubmitInput {
                 session_id,
@@ -938,78 +921,6 @@ impl AppState {
     pub(super) fn open_settings_dialog(&mut self) {
         self.settings_dialog = Some(SettingsDialog::Overview);
         self.set_status("Application settings are server-authoritative and global");
-    }
-
-    pub(super) fn open_subagent_model_dialog(&mut self) {
-        self.settings_dialog = Some(SettingsDialog::SubagentModel {
-            query: PromptBuffer::default(),
-            selected: 0,
-        });
-        let matches = self.subagent_model_dialog_matches();
-        let current = self
-            .settings
-            .as_ref()
-            .map(|settings| &settings.subagent_model);
-        if let Some(position) = matches
-            .iter()
-            .position(|candidate| match (candidate, current) {
-                (
-                    SubagentModelCandidate::InheritParent,
-                    Some(SubagentModelSetting::InheritParent {}),
-                ) => true,
-                (
-                    SubagentModelCandidate::Model(index),
-                    Some(SubagentModelSetting::Explicit { service, model_id }),
-                ) => self.models.get(*index).is_some_and(|model| {
-                    model.model.service == *service && model.model.id == *model_id
-                }),
-                _ => false,
-            })
-            && let Some(SettingsDialog::SubagentModel { selected, .. }) =
-                self.settings_dialog.as_mut()
-        {
-            *selected = position;
-        }
-        self.set_status("Choose Inherit parent or one exact available reviewed subagent model");
-    }
-
-    pub(super) fn subagent_model_dialog_matches(&self) -> Vec<SubagentModelCandidate> {
-        let query = match self.settings_dialog.as_ref() {
-            Some(SettingsDialog::SubagentModel { query, .. }) => query.as_str(),
-            _ => "",
-        };
-        let normalized = query.trim().to_lowercase();
-        let mut matches = Vec::new();
-        if normalized.is_empty()
-            || "inherit parent default"
-                .split_whitespace()
-                .any(|label| label.contains(&normalized) || normalized.contains(label))
-        {
-            matches.push(SubagentModelCandidate::InheritParent);
-        }
-        let mut models = self
-            .models
-            .iter()
-            .enumerate()
-            .filter(|(_, model)| {
-                model.model.available
-                    && model.model.capabilities.text_input
-                    && model.model.capabilities.text_output
-                    && model.model.capabilities.tool_calls
-            })
-            .filter_map(|(index, model)| {
-                model_search_score(model, query).map(|score| (score, index))
-            })
-            .collect::<Vec<_>>();
-        if !normalized.is_empty() {
-            models.sort_by_key(|(score, index)| (*score, *index));
-        }
-        matches.extend(
-            models
-                .into_iter()
-                .map(|(_, index)| SubagentModelCandidate::Model(index)),
-        );
-        matches
     }
 
     pub(super) fn open_model_dialog(&mut self, initial_query: &str) {
