@@ -60,15 +60,14 @@ async fn cancellation_during_native_credential_wait_is_cancelled_without_dispatc
     let base = format!("http://{}", listener.local_addr().unwrap());
     let app = ServerApplication::from_native_shared_for_test(store.clone(), &base);
     let (session_id, run_id) = start(&app, session).await;
-    let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    // Observe through the worker so a competing SQLite reader cannot block its commit.
     time::timeout(TERMINAL_RUN_TEST_TIMEOUT, async {
         loop {
-            if db
-                .query_row(
-                    "SELECT COUNT(*) FROM provider_operation_facts WHERE fact_kind=1",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
+            if store
+                .prepared_provider_operation_count_for_test(crate::persistence::RunId::from_bytes(
+                    *run_id.as_bytes(),
+                ))
+                .await
                 .unwrap()
                 == 1
             {
@@ -90,6 +89,16 @@ async fn cancellation_during_native_credential_wait_is_cancelled_without_dispatc
         wait_for_terminal(&app, session_id, run_id).await,
         RunState::Cancelled
     );
+    assert!(
+        time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+    drop(lease);
+    app.shutdown().await;
+    drop(app);
+    drop(store);
+    let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
     assert_eq!(
         db.query_row(
             "SELECT COUNT(*) FROM provider_operation_facts WHERE fact_kind=2",
@@ -99,16 +108,7 @@ async fn cancellation_during_native_credential_wait_is_cancelled_without_dispatc
         .unwrap(),
         0
     );
-    assert!(
-        time::timeout(Duration::from_millis(50), listener.accept())
-            .await
-            .is_err()
-    );
-    drop(lease);
     drop(db);
-    app.shutdown().await;
-    drop(app);
-    drop(store);
     let _store = SessionStore::open_for_test(root.path()).unwrap();
 }
 
