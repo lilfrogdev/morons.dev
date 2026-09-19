@@ -836,7 +836,7 @@ impl RunSupervisor {
             };
             let result = enforce_image_capability(result, supports_image_input);
             let cancelled = result.error_kind() == Some(crate::tools::ToolErrorKind::Cancelled);
-            let uncertain = result.is_uncertain();
+            let stops_run = result.stops_run(run.tool_catalog_version);
             self.sessions
                 .complete_tool_result(run_id, call.call_id, call.operation_id, result)
                 .await?;
@@ -844,7 +844,7 @@ impl RunSupervisor {
                 self.sessions.finish_run_stopped(run_id, None).await?;
                 return Ok(true);
             }
-            if uncertain {
+            if stops_run {
                 return Ok(true);
             }
         }

@@ -1,5 +1,7 @@
 # ADR 0049: Opt-in, bounded provider debugging outside the normal product UI
 
+The activation and file-sink portions below are superseded by [opt-in daily debug files](../debug-logging.md); closed-schema and loss bounds remain.
+
 ## Status and motivation
 
 Accepted before implementation. The owner requests Go/subagent diagnosis and explicitly requires extra logs/error detail to stay out of normal/default product presentation. The last Go child failed before tools with a generic invalid-response label; its exact provider category, terminal reason and rejected payload are unknown. This decision does not diagnose that historical response or authorize replay, a model fallback, an output/turn-limit increase, or the separate Daybreak alias repair.

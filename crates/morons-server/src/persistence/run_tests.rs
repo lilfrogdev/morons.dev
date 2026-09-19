@@ -35,7 +35,7 @@ fn use_historical_task_catalog(store: &SessionStore, run: super::RunId) {
     for table in ["run_accepted_facts", "runs"] {
         assert_eq!(
             transaction.execute(
-                &format!("UPDATE {table} SET tool_catalog_version=14 WHERE run_id=?1 AND tool_catalog_version=15 AND tool_limits_version=14"),
+                &format!("UPDATE {table} SET tool_catalog_version=14 WHERE run_id=?1 AND tool_catalog_version IN (15,16) AND tool_limits_version=14"),
                 [&run.as_bytes()[..]],
             ).unwrap(),
             1

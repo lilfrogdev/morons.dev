@@ -196,14 +196,17 @@ fn validate_binary_format(path: &Path) -> Result<(), ConnectOrStartError> {
     Ok(())
 }
 
-pub(super) fn spawn_companion(path: &Path) -> Result<Child, ConnectOrStartError> {
-    companion_command(path)
+pub(super) fn spawn_companion(path: &Path, debug: bool) -> Result<Child, ConnectOrStartError> {
+    companion_command(path, debug)
         .spawn()
         .map_err(ConnectOrStartError::CompanionIo)
 }
 
-fn companion_command(path: &Path) -> Command {
+fn companion_command(path: &Path, debug: bool) -> Command {
     let mut command = Command::new(path);
+    if debug {
+        command.arg("--debug");
+    }
     command
         .current_dir(path.parent().expect("validated companion has a parent"))
         .stdin(Stdio::null())
@@ -330,7 +333,12 @@ mod tests {
         } else {
             "/opt/morons/morons-server"
         });
-        let command = companion_command(path);
+        let command = companion_command(path, false);
+        assert_eq!(command.get_args().count(), 0);
+        assert_eq!(
+            companion_command(path, true).get_args().collect::<Vec<_>>(),
+            ["--debug"]
+        );
         let names = command
             .get_envs()
             .map(|(name, _)| name.to_string_lossy().into_owned())

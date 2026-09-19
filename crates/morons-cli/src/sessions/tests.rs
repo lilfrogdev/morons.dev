@@ -20,6 +20,50 @@ fn fixture_working_directory() -> String {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn debug_status_round_trips_and_rejects_unexpected_responses() {
+    let (connection, mut server) = tokio::io::duplex(4096);
+    let mut client = ApplicationClient::from_negotiated_connection(connection);
+    let expected = ApplicationResponse::DebugStatus {
+        active: true,
+        failed: false,
+        daily_capped: true,
+        dropped_records: 42,
+        log_directory: Some(fixture_working_directory()),
+    };
+    let client_exchange = async {
+        assert_eq!(client.debug_status().await.unwrap(), expected);
+        assert!(matches!(
+            client.debug_status().await,
+            Err(ApplicationClientError::UnexpectedApplicationResponse)
+        ));
+        assert!(matches!(
+            client.debug_status().await,
+            Err(ApplicationClientError::ConnectionUnusable)
+        ));
+    };
+    let server_exchange = async {
+        for (id, response) in [
+            (1, expected.clone()),
+            (
+                2,
+                ApplicationResponse::SessionDeleted {
+                    session_id: SessionId::from_bytes([0x22; 16]),
+                },
+            ),
+        ] {
+            assert_eq!(
+                read_request(&mut server, id).await,
+                ApplicationRequest::GetDebugStatus
+            );
+            write_server_message(&mut server, &ServerMessage::response(id, response))
+                .await
+                .unwrap();
+        }
+    };
+    tokio::join!(client_exchange, server_exchange);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn session_client_correlates_create_get_and_list_requests() {
     let (client_connection, mut server) = tokio::io::duplex(4096);
     let mut client = ApplicationClient::from_negotiated_connection(client_connection);

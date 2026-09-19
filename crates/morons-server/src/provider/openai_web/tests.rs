@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::{Value, json};
 
+mod citations;
 mod diagnostic;
 mod sources;
 mod usage;

@@ -12,7 +12,7 @@ pub(crate) mod images;
 mod local_commands;
 pub(crate) mod maintenance;
 mod openai;
-mod paths;
+pub(crate) mod paths;
 mod run_types;
 mod task_binding;
 pub(crate) use task_binding::TaskModelBinding;

@@ -1,5 +1,7 @@
 # ADR 0050: Closed runtime diagnostics and child correlation
 
+The activation and file-sink portions below are superseded by [opt-in daily debug files](../debug-logging.md); closed-schema and loss bounds remain.
+
 ## Status
 
 Accepted before implementation, under the owner's opt-in diagnostics request and explicit Astra-direct implementation authority. Extends ADR0049 only; no inference, tool, persistence, model, capability, route, cancellation or retry contract changes. Historical failures remain historical and their missing subtypes are not reconstructed.

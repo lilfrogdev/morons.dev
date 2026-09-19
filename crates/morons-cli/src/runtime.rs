@@ -21,7 +21,7 @@ use crate::{
         AppAction, AppState, PendingOperation, TranscriptNavigation, TranscriptWindowData,
         UiStateError,
     },
-    connect_or_start, generate_mutation_request_id,
+    generate_mutation_request_id,
     terminal::{
         SafeText, TerminalEvents, TerminalInput, TerminalSession, require_interactive_terminal,
     },
@@ -105,8 +105,14 @@ impl From<UiStateError> for TerminalApplicationError {
 }
 
 pub async fn run_terminal_application() -> Result<(), TerminalApplicationError> {
+    run_terminal_application_with_debug(false).await
+}
+
+pub async fn run_terminal_application_with_debug(
+    debug: bool,
+) -> Result<(), TerminalApplicationError> {
     require_interactive_terminal()?;
-    let connected = connect_or_start().await?;
+    let connected = crate::lifecycle::connect_or_start_with_debug(debug).await?;
     let server_version = connected.server_version().to_owned();
     let client = ApplicationClient::from_negotiated_connection(connected.into_connection());
 

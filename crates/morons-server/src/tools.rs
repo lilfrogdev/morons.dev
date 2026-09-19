@@ -596,6 +596,15 @@ impl ToolResult {
         )
     }
 
+    pub(crate) const fn stops_run(&self, catalog_version: u16) -> bool {
+        self.is_uncertain()
+            && !(catalog_version >= 16
+                && matches!(
+                    self.error_kind(),
+                    Some(ToolErrorKind::WebSearchUncertain(_))
+                ))
+    }
+
     pub(crate) fn provider_output(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }

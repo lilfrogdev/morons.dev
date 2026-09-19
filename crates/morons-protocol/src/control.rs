@@ -113,6 +113,11 @@ impl ServerEndpoint {
         &self.control.host_epoch
     }
 
+    #[must_use]
+    pub fn profile_root(&self) -> &Path {
+        &self.control.paths.root_directory
+    }
+
     pub fn claim_persistence_root(&self) -> Result<&Path, ControlError> {
         self.control
             .persistence_claimed
@@ -168,6 +173,11 @@ impl ClientEndpoint {
 
     pub fn discover() -> Result<ClientEndpointDiscovery, ControlError> {
         Self::discover_with_paths(ControlPaths::discover()?)
+    }
+
+    #[must_use]
+    pub const fn server_process_id(&self) -> u32 {
+        self.server_process_id
     }
 
     pub async fn connect(&self) -> io::Result<Stream> {

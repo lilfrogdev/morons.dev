@@ -1736,9 +1736,9 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                        AND image.state = 2
                  ))
                 OR
-                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+                (accepted.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
                  AND ((accepted.tool_catalog_version <= 14 AND accepted.tool_limits_version = accepted.tool_catalog_version)
-                      OR (accepted.tool_catalog_version IN (13, 15) AND accepted.tool_limits_version = 14))
+                      OR (accepted.tool_catalog_version IN (13, 15, 16) AND accepted.tool_limits_version = 14))
                  AND accepted.execution_image_generation IS NULL
                  AND EXISTS (
                      SELECT 1 FROM session_created_facts AS session
@@ -1751,12 +1751,12 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             JOIN run_accepted_facts AS run ON run.run_id = call.run_id
             WHERE call.session_id IS NOT run.session_id
                OR (call.tool_kind = 7 AND run.tool_catalog_version != 2)
-               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
-               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
-               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
-               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
+               OR (call.tool_kind BETWEEN 8 AND 10 AND run.tool_catalog_version NOT IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))
+               OR (call.tool_kind = 11 AND run.tool_catalog_version NOT IN (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))
+               OR (call.tool_kind = 12 AND run.tool_catalog_version NOT IN (5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))
+               OR (call.tool_kind = 13 AND run.tool_catalog_version NOT IN (6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))
                OR (call.tool_kind = 14 AND run.tool_catalog_version NOT IN (8, 9, 10, 11, 12, 13, 14))
-               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
+               OR (call.tool_kind BETWEEN 1 AND 7 AND run.tool_catalog_version IN (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))
                OR call.fact_sequence <= run.fact_sequence
                OR (SELECT COUNT(*) FROM provider_operation_facts AS provider
                    WHERE provider.operation_id = call.provider_operation_id
@@ -1834,7 +1834,13 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                     FROM session_entries AS entry
                     WHERE entry.tool_call_id = terminal.call_id AND entry.entry_kind = 4)
                 OR (terminal.fact_kind = 6) != (terminal.workspace_delivery_event_id IS NOT NULL)
-                OR (terminal.fact_kind = 6 AND NOT EXISTS (
+                OR (terminal.fact_kind = 6 AND NOT (
+                    call.tool_kind = 12 AND EXISTS (
+                        SELECT 1 FROM run_accepted_facts AS accepted
+                        WHERE accepted.run_id = terminal.run_id
+                          AND accepted.tool_catalog_version >= 16
+                    )
+                ) AND NOT EXISTS (
                     SELECT 1 FROM run_state_facts AS state
                     WHERE state.run_id = terminal.run_id AND state.state = 7
                       AND state.fact_sequence > terminal.fact_sequence
@@ -1954,7 +1960,10 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
     let mut statement = connection.prepare(
         "SELECT terminal.fact_kind, terminal.result_status, terminal.result_payload,
                 call.tool_kind, call.input_payload, accepted.tool_catalog_version,
-                EXISTS(SELECT 1 FROM web_model_bindings WHERE call_id=call.call_id)
+                EXISTS(SELECT 1 FROM web_model_bindings WHERE call_id=call.call_id),
+                EXISTS(SELECT 1 FROM run_state_facts AS state
+                       WHERE state.run_id=terminal.run_id AND state.state=7
+                         AND state.fact_sequence>terminal.fact_sequence)
          FROM tool_operation_facts AS terminal
          JOIN tool_calls AS call ON call.call_id = terminal.call_id
          JOIN run_accepted_facts AS accepted ON accepted.run_id=call.run_id
@@ -1970,10 +1979,20 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
                 row.get::<_, Vec<u8>>(4)?,
                 row.get::<_, i64>(5)?,
                 row.get::<_, bool>(6)?,
+                row.get::<_, bool>(7)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    for (fact_kind, result_status, payload, tool_kind, input_payload, catalog, web_bound) in results
+    for (
+        fact_kind,
+        result_status,
+        payload,
+        tool_kind,
+        input_payload,
+        catalog,
+        web_bound,
+        stopped,
+    ) in results
     {
         let result: ToolResult =
             serde_json::from_slice(&payload).map_err(|_| PersistenceError::InvalidState {
@@ -1986,7 +2005,9 @@ fn validate_tool_facts(connection: &Connection) -> Result<(), PersistenceError> 
             serde_json::from_slice(&input_payload).map_err(|_| PersistenceError::InvalidState {
                 reason: "a canonical tool result has an invalid call input",
             })?;
-        let valid = input.kind() == tool_kind
+        let valid = u16::try_from(catalog)
+            .is_ok_and(|catalog| !result.stops_run(catalog) || stopped)
+            && input.kind() == tool_kind
             && validate_canonical_result_for_input(&input, &result)
             && match result {
                 ToolResult::Ok { .. } => fact_kind == 3 && result_status == 1,

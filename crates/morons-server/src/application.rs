@@ -569,6 +569,9 @@ impl ServerApplication {
                     },
                 ))
             }
+            ApplicationRequest::GetDebugStatus => {
+                Ok(ApplicationOutcome::Response(crate::debug_log::status()))
+            }
             ApplicationRequest::GetOpenCodeCredentialStatus => {
                 let credential = self
                     .sessions

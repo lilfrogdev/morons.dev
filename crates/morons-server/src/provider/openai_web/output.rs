@@ -2,6 +2,7 @@ use super::{
     Citation, MAX_ACTIONS, MAX_ANSWER_BYTES, MAX_CITATIONS, MAX_CONSULTED_SOURCES, MAX_ITEMS,
     SearchResult,
 };
+use crate::debug_log::DebugCitationRejection as CitationReason;
 use crate::provider::{ProviderError, ProviderUsage, responses::validate_response_identifier};
 use crate::web_diagnostic::WebStage;
 use http::Uri;
@@ -52,6 +53,7 @@ pub(super) fn parse(
     items: &[Value],
     usage: ProviderUsage,
     stage: &mut WebStage,
+    citation_rejection: &mut Option<CitationReason>,
 ) -> Result<SearchResult, ProviderError> {
     *stage = WebStage::OutputItem;
     if items.is_empty() || items.len() > MAX_ITEMS {
@@ -173,23 +175,35 @@ pub(super) fn parse(
                         return Err(ProviderError::ResponseLimitExceeded);
                     }
                     *stage = WebStage::Citation;
+                    *citation_rejection = Some(CitationReason::Annotations);
                     let annotations = array(part, "annotations")?;
+                    *citation_rejection = None;
                     if annotations.len() + citations.len() > MAX_CITATIONS {
                         return Err(ProviderError::ResponseLimitExceeded);
                     }
                     for annotation in annotations {
+                        *citation_rejection = Some(CitationReason::AnnotationType);
                         if string(annotation, "type")? != "url_citation" {
                             return Err(ProviderError::MalformedResponse);
                         }
+                        *citation_rejection = Some(CitationReason::Url);
                         let source = string(annotation, "url")?;
                         url(source)?;
+                        *citation_rejection = Some(CitationReason::Title);
                         let title = string(annotation, "title")?;
+                        *citation_rejection = Some(CitationReason::Offsets);
                         let start = number(annotation, "start_index")?;
                         let end = number(annotation, "end_index")?;
                         // Offsets address the whole message, not an individual text part.
-                        if title.len() > 512 || start > end {
+                        *citation_rejection = Some(CitationReason::TitleLimit);
+                        if title.len() > 512 {
                             return Err(ProviderError::MalformedResponse);
                         }
+                        *citation_rejection = Some(CitationReason::OffsetOrder);
+                        if start > end {
+                            return Err(ProviderError::MalformedResponse);
+                        }
+                        *citation_rejection = None;
                         citation_end = citation_end.max(end);
                         citations.push(Citation {
                             url: source.into(),
@@ -199,6 +213,7 @@ pub(super) fn parse(
                     answer.push_str(text);
                 }
                 if citation_end > answer.len() as u64 {
+                    *citation_rejection = Some(CitationReason::OffsetBounds);
                     return Err(ProviderError::MalformedResponse);
                 }
                 if phase != Some("commentary") {
@@ -226,6 +241,7 @@ pub(super) fn parse(
     }
     *stage = WebStage::Citation;
     if result.citations.is_empty() {
+        *citation_rejection = Some(CitationReason::MissingCitations);
         return Err(ProviderError::MalformedResponse);
     }
     *stage = WebStage::SearchAction;

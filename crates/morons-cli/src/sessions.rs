@@ -397,6 +397,15 @@ where
         }
     }
 
+    pub async fn debug_status(&mut self) -> Result<ApplicationResponse, ApplicationClientError> {
+        let response = self.request(ApplicationRequest::GetDebugStatus).await?;
+        if matches!(response, ApplicationResponse::DebugStatus { .. }) {
+            Ok(response)
+        } else {
+            Err(self.unexpected_application_response())
+        }
+    }
+
     pub async fn create_session(
         &mut self,
         mutation_request_id: MutationRequestId,

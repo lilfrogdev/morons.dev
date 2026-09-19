@@ -15,9 +15,9 @@ impl WebFailure {
     pub const fn valid_for_catalog(self, catalog: u16) -> bool {
         match self.stage {
             WebStage::SearchQueries | WebStage::SearchSources | WebStage::SearchActionCount => {
-                matches!(catalog, 13..=15)
+                matches!(catalog, 13..=16)
             }
-            _ => matches!(catalog, 12..=15),
+            _ => matches!(catalog, 12..=16),
         }
     }
 }

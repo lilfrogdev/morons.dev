@@ -256,6 +256,15 @@ async fn read_image_tool_stores_bytes_outside_sqlite_and_returns_multimodal_cont
 
 #[tokio::test(flavor = "current_thread")]
 async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
+    check_web_search_tool_loop(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn missing_search_citations_fail_only_the_tool_and_agent_continues() {
+    check_web_search_tool_loop(true).await;
+}
+
+async fn check_web_search_tool_loop(missing_citations: bool) {
     let root = TestRoot::new("web-search-tool-loop");
     let selected = TestRoot::new("web-search-directory");
     fs::write(selected.path().join("keep.txt"), "keep").unwrap();
@@ -286,7 +295,8 @@ async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
         .unwrap();
     let (provider_base, provider_requests, provider_task) =
         spawn_web_search_tool_loop_provider().await;
-    let (search_origin, search_request, search_task) = spawn_search_adapter().await;
+    let (search_origin, search_request, search_task) =
+        spawn_search_adapter(missing_citations).await;
     let application = ServerApplication::from_session_store_with_search_for_test(
         store,
         &provider_base,
@@ -328,9 +338,15 @@ async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
         .expect("provider requests should be captured");
     assert_eq!(provider_requests.len(), 2);
     assert!(provider_requests[0].contains("\"name\":\"web_search\""));
-    assert!(provider_requests[1].contains("https://example.com/source"));
-    assert!(provider_requests[1].contains("Fixture answer."));
-    assert!(provider_requests[1].contains("\\\"receipt\\\""));
+    if missing_citations {
+        assert!(provider_requests[1].contains("web_search_uncertain"));
+        assert!(provider_requests[1].contains("citation"));
+        assert!(!provider_requests[1].contains("Fixture answer."));
+    } else {
+        assert!(provider_requests[1].contains("https://example.com/source"));
+        assert!(provider_requests[1].contains("Fixture answer."));
+        assert!(provider_requests[1].contains("\\\"receipt\\\""));
+    }
     assert!(
         !provider_requests
             .iter()
@@ -371,14 +387,23 @@ async fn web_search_tool_uses_reviewed_adapter_and_commits_cited_results() {
     assert!(matches!(
         entries[2],
         morons_protocol::TranscriptEntry::ToolResult {
-            status: morons_protocol::ToolResultStatus::Succeeded,
+            status,
             ..
+        } if status == if missing_citations {
+            morons_protocol::ToolResultStatus::Failed
+        } else {
+            morons_protocol::ToolResultStatus::Succeeded
         }
     ));
     if let morons_protocol::TranscriptEntry::ToolResult { summary, .. } = &entries[2] {
-        assert!(summary.contains("https://example.com/source"));
-        assert!(summary.contains("Fixture answer."));
-        assert!(summary.contains("separate from coding usage"));
+        if missing_citations {
+            assert!(summary.contains("Search couldn’t complete"));
+            assert!(!summary.contains("Fixture answer."));
+        } else {
+            assert!(summary.contains("https://example.com/source"));
+            assert!(summary.contains("Fixture answer."));
+            assert!(summary.contains("separate from coding usage"));
+        }
     }
     application.shutdown().await;
     drop(application);

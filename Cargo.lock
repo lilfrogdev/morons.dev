@@ -965,6 +965,7 @@ dependencies = [
  "ratatui",
  "ratatui-crossterm",
  "rustix",
+ "serde_json",
  "tokio",
  "zeroize",
 ]

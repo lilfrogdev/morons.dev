@@ -20,6 +20,7 @@ getrandom.workspace = true
 interprocess.workspace = true
 morons-image = { path = "../morons-image" }
 morons-protocol = { path = "../morons-protocol" }
+serde_json.workspace = true
 ratatui.workspace = true
 ratatui-crossterm.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }

@@ -70,6 +70,7 @@ pub enum ConnectOrStartError {
     AuthenticationTimedOut,
     Handshake(HandshakeError),
     HandshakeTimedOut,
+    DebugRequiresStoppedServer,
     StartupTimedOut,
 }
 
@@ -103,6 +104,9 @@ impl ConnectOrStartError {
             }
             Self::Handshake(_) => "registered local server failed protocol negotiation",
             Self::HandshakeTimedOut => "registered local server protocol negotiation timed out",
+            Self::DebugRequiresStoppedServer => {
+                "debug startup requires a stopped server; connect with morons, stop with Ctrl+S when work is idle, then run morons --debug; use morons to reconnect to an existing debug server"
+            }
             Self::StartupTimedOut => {
                 "server companion did not become available before the startup timeout"
             }
@@ -122,6 +126,7 @@ impl fmt::Debug for ConnectOrStartError {
             Self::AuthenticationTimedOut => "ConnectOrStartError::AuthenticationTimedOut",
             Self::Handshake(_) => "ConnectOrStartError::Handshake",
             Self::HandshakeTimedOut => "ConnectOrStartError::HandshakeTimedOut",
+            Self::DebugRequiresStoppedServer => "ConnectOrStartError::DebugRequiresStoppedServer",
             Self::StartupTimedOut => "ConnectOrStartError::StartupTimedOut",
         })
     }
@@ -145,6 +150,7 @@ impl Error for ConnectOrStartError {
             Self::CompanionInvalid { .. }
             | Self::AuthenticationTimedOut
             | Self::HandshakeTimedOut
+            | Self::DebugRequiresStoppedServer
             | Self::StartupTimedOut => None,
         }
     }
@@ -156,8 +162,24 @@ impl From<ControlError> for ConnectOrStartError {
     }
 }
 
+pub async fn connect_existing() -> Result<Option<ConnectedServer>, ConnectOrStartError> {
+    match ClientEndpoint::discover().map_err(ConnectOrStartError::Control)? {
+        ClientEndpointDiscovery::Registered(endpoint) => {
+            connect_registered_server(endpoint, Instant::now() + STARTUP_TIMEOUT, false).await
+        }
+        _ => Ok(None),
+    }
+}
+
 pub async fn connect_or_start() -> Result<ConnectedServer, ConnectOrStartError> {
-    connect_or_start_until(
+    connect_or_start_with_debug(false).await
+}
+
+pub async fn connect_or_start_with_debug(
+    debug: bool,
+) -> Result<ConnectedServer, ConnectOrStartError> {
+    connect_or_start_until_mode(
+        debug,
         None,
         Instant::now() + STARTUP_TIMEOUT,
         STARTUP_TIMEOUT,
@@ -167,7 +189,27 @@ pub async fn connect_or_start() -> Result<ConnectedServer, ConnectOrStartError> 
     .await
 }
 
+#[cfg(test)]
 async fn connect_or_start_until(
+    companion: Option<PathBuf>,
+    deadline: Instant,
+    startup_timeout: Duration,
+    discover: impl FnMut() -> Result<ClientEndpointDiscovery, ControlError>,
+    report_starting: impl FnMut(),
+) -> Result<ConnectedServer, ConnectOrStartError> {
+    connect_or_start_until_mode(
+        false,
+        companion,
+        deadline,
+        startup_timeout,
+        discover,
+        report_starting,
+    )
+    .await
+}
+
+async fn connect_or_start_until_mode(
+    debug: bool,
     mut companion: Option<PathBuf>,
     mut deadline: Instant,
     startup_timeout: Duration,
@@ -208,14 +250,23 @@ async fn connect_or_start_until(
                 }
             }
             ClientEndpointDiscovery::Starting => {
+                if debug && !launched_companion {
+                    return Err(ConnectOrStartError::DebugRequiresStoppedServer);
+                }
                 incomplete_control_since = None;
             }
             ClientEndpointDiscovery::Registered(endpoint) => {
                 incomplete_control_since = None;
+                let debug_child_matches = child
+                    .as_ref()
+                    .is_some_and(|child| child.id() == endpoint.server_process_id());
                 if let Some(connection) =
                     connect_registered_server(endpoint, deadline, launched_companion).await?
                 {
                     reap_exited_child(&mut child)?;
+                    if debug && !debug_child_matches {
+                        return Err(ConnectOrStartError::DebugRequiresStoppedServer);
+                    }
                     return Ok(connection);
                 }
                 startup_allowed = true;
@@ -227,7 +278,7 @@ async fn connect_or_start_until(
                 Some(path) => path,
                 None => companion.insert(discover_companion_executable()?),
             };
-            child = Some(spawn_companion(path)?);
+            child = Some(spawn_companion(path, debug)?);
             launched_companion = true;
         }
         reap_exited_child(&mut child)?;
