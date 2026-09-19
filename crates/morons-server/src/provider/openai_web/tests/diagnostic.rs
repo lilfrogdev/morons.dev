@@ -94,6 +94,95 @@ fn hosted_diagnostic_tracks_exact_validation_guards_without_changing_errors() {
 }
 
 #[test]
+fn citation_reasons_identify_rejections_without_response_data() {
+    use crate::debug_log::DebugCitationRejection::*;
+    type Mutation = fn(&mut Value);
+    let cases: &[(_, Mutation)] = &[
+        (Annotations, |p| p["annotations"] = json!("PRIVATE")),
+        (AnnotationType, |p| {
+            p["annotations"][0]["type"] = json!("PRIVATE")
+        }),
+        (Url, |p| {
+            p["annotations"][0]["url"] = json!("file:///PRIVATE")
+        }),
+        (Title, |p| p["annotations"][0]["title"] = json!(null)),
+        (Offsets, |p| p["annotations"][0]["start_index"] = json!(-1)),
+        (TitleLimit, |p| {
+            p["annotations"][0]["title"] = json!("X".repeat(513))
+        }),
+        (OffsetOrder, |p| {
+            p["annotations"][0]["start_index"] = json!(2);
+            p["annotations"][0]["end_index"] = json!(1);
+        }),
+        (OffsetBounds, |p| {
+            p["annotations"][0]["end_index"] = json!(99999)
+        }),
+        (MissingCitations, |p| p["annotations"] = json!([])),
+    ];
+    for (expected, mutate) in cases {
+        let mut v = events();
+        mutate(&mut v[2]["item"]["content"][0]);
+        let mut stage = WebStage::Admission;
+        let mut reason = None;
+        let body = wire(&v);
+        assert_eq!(
+            super::super::decode::decode_response_with_citations(
+                &body,
+                &mut stage,
+                &mut None,
+                &mut reason
+            ),
+            Err(ProviderError::MalformedResponse)
+        );
+        assert_eq!(stage, WebStage::Citation);
+        assert_eq!(reason, Some(*expected));
+        assert_eq!(
+            decode_response(&body),
+            Err(ProviderError::MalformedResponse)
+        );
+    }
+    let mut reason = Some(MissingCitations);
+    super::super::decode::decode_response_with_citations(
+        &response_fixture(),
+        &mut WebStage::Admission,
+        &mut None,
+        &mut reason,
+    )
+    .unwrap();
+    assert_eq!(reason, None);
+}
+
+#[test]
+fn streamed_citation_reasons_distinguish_metadata_annotation_and_consistency() {
+    use crate::debug_log::DebugCitationRejection::*;
+    for expected in [StreamMetadata, StreamAnnotation, StreamConsistency] {
+        let mut data = events();
+        let annotation = data[2]["item"]["content"][0]["annotations"][0].clone();
+        let mut event = json!({"type":"response.output_text.annotation.added","output_index":1,"content_index":0,"annotation_index":0,"item_id":"msg_fixture","annotation":annotation});
+        match expected {
+            StreamMetadata => event["content_index"] = json!(-1),
+            StreamAnnotation => event["annotation"]["type"] = json!("PRIVATE"),
+            StreamConsistency => event["annotation"]["url"] = json!("https://example.com/PRIVATE"),
+            _ => unreachable!(),
+        }
+        data.insert(2, event);
+        let mut stage = WebStage::Admission;
+        let mut reason = None;
+        assert_eq!(
+            super::super::decode::decode_response_with_citations(
+                &wire(&data),
+                &mut stage,
+                &mut None,
+                &mut reason
+            ),
+            Err(ProviderError::MalformedResponse)
+        );
+        assert_eq!(stage, WebStage::Citation);
+        assert_eq!(reason, Some(expected));
+    }
+}
+
+#[test]
 fn hosted_diagnostic_categories_preserve_existing_closed_provider_errors() {
     let cases = [
         (ProviderError::RequestRejected, WebCategory::RequestRejected),

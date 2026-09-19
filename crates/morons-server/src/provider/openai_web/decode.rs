@@ -2,6 +2,7 @@ use super::{
     MAX_ANSWER_BYTES, MAX_ITEMS, MAX_RESPONSE_BYTES, MODEL, SearchResult,
     output::{self, array, number, string},
 };
+use crate::debug_log::DebugCitationRejection as CitationReason;
 use crate::provider::{
     ProviderError,
     json::parse_strict_value,
@@ -32,6 +33,25 @@ pub(super) fn decode_response_detailed(
     stage: &mut WebStage,
     usage_rejection: &mut Option<crate::debug_log::DebugUsageRejection>,
 ) -> Result<SearchResult, ProviderError> {
+    let mut citation_rejection = None;
+    let result =
+        decode_response_with_citations(body, stage, usage_rejection, &mut citation_rejection);
+    if result.is_err()
+        && *stage == WebStage::Citation
+        && let Some(reason) = citation_rejection
+    {
+        crate::debug_log::emit(crate::debug_log::DebugEvent::WebCitation { reason });
+    }
+    result
+}
+
+pub(super) fn decode_response_with_citations(
+    body: &[u8],
+    stage: &mut WebStage,
+    usage_rejection: &mut Option<crate::debug_log::DebugUsageRejection>,
+    citation_rejection: &mut Option<CitationReason>,
+) -> Result<SearchResult, ProviderError> {
+    *citation_rejection = None;
     *usage_rejection = None;
     *stage = WebStage::BodyBounds;
     if body.len() > MAX_RESPONSE_BYTES {
@@ -166,6 +186,7 @@ pub(super) fn decode_response_detailed(
                     }
                 }
                 *stage = WebStage::Citation;
+                *citation_rejection = Some(CitationReason::StreamConsistency);
                 for ((index, part, annotation), (item_id, value)) in &annotations {
                     let item = output.get(*index).ok_or(ProviderError::MalformedResponse)?;
                     let content = array(item, "content")?
@@ -177,6 +198,7 @@ pub(super) fn decode_response_detailed(
                         return Err(ProviderError::MalformedResponse);
                     }
                 }
+                *citation_rejection = None;
                 *stage = WebStage::Usage;
                 let usage = decode_usage_detailed(
                     response.get("usage").cloned(),
@@ -187,7 +209,7 @@ pub(super) fn decode_response_detailed(
                     *usage_rejection = Some(reason);
                     ProviderError::MalformedResponse
                 })?;
-                terminal = Some(output::parse(output, usage, stage)?);
+                terminal = Some(output::parse(output, usage, stage, citation_rejection)?);
                 items = BTreeMap::new();
             }
             "response.output_item.done" => {
@@ -229,6 +251,7 @@ pub(super) fn decode_response_detailed(
                 *stage = WebStage::Lifecycle;
                 active(&response_id)?;
                 *stage = WebStage::Citation;
+                *citation_rejection = Some(CitationReason::StreamMetadata);
                 let index = index(&value)?;
                 let part = usize::try_from(number(&value, "content_index")?)
                     .map_err(|_| ProviderError::MalformedResponse)?;
@@ -239,6 +262,7 @@ pub(super) fn decode_response_detailed(
                 if part >= 64 || position >= super::MAX_CITATIONS || items.contains_key(&index) {
                     return Err(ProviderError::MalformedResponse);
                 }
+                *citation_rejection = Some(CitationReason::StreamAnnotation);
                 if let Some(annotation) = value.get("annotation").filter(|value| !value.is_null())
                     && (string(annotation, "type")? != "url_citation"
                         || annotations.len() >= super::MAX_CITATIONS
@@ -248,6 +272,7 @@ pub(super) fn decode_response_detailed(
                 {
                     return Err(ProviderError::MalformedResponse);
                 }
+                *citation_rejection = None;
             }
             "response.output_item.added" => {
                 *stage = WebStage::Lifecycle;

@@ -45,14 +45,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("{USAGE}");
         return Ok(());
     }
+    let mut server = ServerEndpoint::prepare()?;
     let _debug_guard = if mode == StartupMode::Debug {
-        Some(morons_server::debug_log::start().map_err(|_| "debug startup failed")?)
+        Some(
+            morons_server::debug_log::start(server.profile_root())
+                .map_err(|_| "debug startup failed")?,
+        )
     } else {
         None
     };
     let (server, application) = startup_stage(DebugStartupStage::Total, || {
-        let mut server =
-            startup_stage(DebugStartupStage::EndpointPrepare, ServerEndpoint::prepare)?;
         let application = startup_stage(DebugStartupStage::ApplicationOpen, || {
             ServerApplication::open(&server)
         })?;

@@ -9,6 +9,16 @@ use tokio::{
     time::{self, Duration},
 };
 
+fn use_legacy_catalog(store: &SessionStore, run: crate::persistence::RunId) {
+    let db = Connection::open(store.application_root.join("data/sessions.sqlite3")).unwrap();
+    for table in ["run_accepted_facts", "runs", "provider_operation_facts"] {
+        db.execute(
+            &format!("UPDATE {table} SET tool_catalog_version=15 WHERE run_id=?1 AND tool_catalog_version=16"),
+            [run.as_bytes()],
+        ).unwrap();
+    }
+}
+
 fn failure() -> ToolResult {
     ToolResult::error(ToolErrorKind::WebSearchUncertain(WebFailure {
         stage: WebStage::HttpStatus,
@@ -22,6 +32,7 @@ async fn source_diagnostic_vocabulary_requires_catalog13_without_rewriting_catal
     let store = SessionStore::open_for_test(root.path()).unwrap();
     install(&store, 0).await;
     let (run, call) = prepare(&store, true, false).await;
+    use_legacy_catalog(&store, run);
     store
         .mark_tool_dispatched(run, call.call_id, call.operation_id)
         .await
@@ -90,6 +101,7 @@ async fn root_web_diagnostic_commits_uncertainty_and_survives_reopen_without_rep
     install(&store, 0).await;
     let (run, call) = prepare(&store, true, false).await;
     let session = store.load_run_context(run).await.unwrap().run.session_id;
+    use_legacy_catalog(&store, run);
     store
         .mark_tool_dispatched(run, call.call_id, call.operation_id)
         .await

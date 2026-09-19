@@ -481,7 +481,9 @@ pub(super) async fn spawn_web_search_tool_loop_provider() -> (
     (format!("http://{address}"), requests_receiver, server)
 }
 
-pub(super) async fn spawn_search_adapter() -> (
+pub(super) async fn spawn_search_adapter(
+    missing_citations: bool,
+) -> (
     String,
     oneshot::Receiver<String>,
     tokio::task::JoinHandle<()>,
@@ -502,8 +504,43 @@ pub(super) async fn spawn_search_adapter() -> (
         request_sender
             .send(String::from_utf8(request).expect("search request should be UTF-8"))
             .unwrap_or_else(|_| panic!("search request should be observed"));
-        let body =
+        let mut body =
             String::from_utf8(crate::provider::openai_web::response_sources_fixture()).unwrap();
+        if missing_citations {
+            body = body
+                .lines()
+                .map(|line| {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        let mut value: serde_json::Value = serde_json::from_str(data).unwrap();
+                        if let Some(content) = value
+                            .pointer_mut("/item/content")
+                            .and_then(|v| v.as_array_mut())
+                        {
+                            for part in content {
+                                part["annotations"] = serde_json::json!([]);
+                            }
+                        }
+                        if let Some(output) = value
+                            .pointer_mut("/response/output")
+                            .and_then(|v| v.as_array_mut())
+                        {
+                            for item in output {
+                                if let Some(content) =
+                                    item.get_mut("content").and_then(|v| v.as_array_mut())
+                                {
+                                    for part in content {
+                                        part["annotations"] = serde_json::json!([]);
+                                    }
+                                }
+                            }
+                        }
+                        format!("data: {value}\n")
+                    } else {
+                        format!("{line}\n")
+                    }
+                })
+                .collect();
+        }
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()

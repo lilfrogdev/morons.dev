@@ -56,6 +56,10 @@ async fn starting_becomes_authenticated_ready_without_launching() {
     }
 
     let mut server = ServerEndpoint::prepare().unwrap();
+    assert!(matches!(
+        connect_or_start_with_debug(true).await,
+        Err(ConnectOrStartError::DebugRequiresStoppedServer)
+    ));
     let (starting, observed) = tokio::sync::oneshot::channel();
     let mut starting = Some(starting);
     let mut reports = 0;
@@ -109,4 +113,34 @@ async fn starting_becomes_authenticated_ready_without_launching() {
     assert!(!connected.launched_companion());
     assert_eq!(reports, 1);
     assert!(discoveries >= 2);
+
+    let debug_client = connect_or_start_with_debug(true);
+    let serve = async {
+        let mut connection = server.accept().await.unwrap();
+        authorize_accepted_peer(&connection).unwrap();
+        authenticate_server(
+            &mut connection,
+            server.authentication_key(),
+            server.host_epoch(),
+        )
+        .await
+        .unwrap();
+        read_client_message(&mut connection).await.unwrap();
+        write_server_message(&mut connection, &ServerMessage::hello("readiness-fixture"))
+            .await
+            .unwrap();
+    };
+    let (result, ()) = time::timeout(Duration::from_secs(8), async {
+        tokio::join!(debug_client, serve)
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        result,
+        Err(ConnectOrStartError::DebugRequiresStoppedServer)
+    ));
+    assert!(matches!(
+        ClientEndpoint::discover().unwrap(),
+        ClientEndpointDiscovery::Registered(_)
+    ));
 }

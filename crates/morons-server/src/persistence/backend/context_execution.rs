@@ -23,9 +23,9 @@ pub(in crate::persistence) fn policy(
         "SELECT accepted.fact_sequence >= epoch.first_sequence
           AND accepted.open_code_service = 3 AND accepted.protocol_revision = 5
           AND accepted.context_policy_version = 4
-          AND accepted.tool_catalog_version IN (13, 14, 15)
+          AND accepted.tool_catalog_version IN (13, 14, 15, 16)
           AND ((accepted.tool_catalog_version IN (13, 14) AND accepted.tool_limits_version = accepted.tool_catalog_version)
-               OR (accepted.tool_catalog_version IN (13, 15) AND accepted.tool_limits_version = 14))
+               OR (accepted.tool_catalog_version IN (13, 15, 16) AND accepted.tool_limits_version = 14))
           AND accepted.maximum_input_tokens = 96000 AND accepted.maximum_output_tokens = 32000
           AND accepted.model_id IN ('gpt-5.5','gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-5.6-terra','gpt-daybreak-blue-latest')
          FROM run_accepted_facts AS accepted CROSS JOIN context_accounting_epoch AS epoch
@@ -35,7 +35,7 @@ pub(in crate::persistence) fn policy(
         "SELECT accepted.fact_sequence >= epoch.repeated_first_sequence
           AND accepted.open_code_service IN (1, 2) AND accepted.protocol_revision BETWEEN 1 AND 4
           AND accepted.context_policy_version = 4
-          AND accepted.tool_catalog_version IN (14, 15) AND accepted.tool_limits_version = 14
+          AND accepted.tool_catalog_version IN (14, 15, 16) AND accepted.tool_limits_version = 14
           AND accepted.maximum_input_tokens = 96000 AND accepted.maximum_output_tokens = 32000
          FROM run_accepted_facts AS accepted CROSS JOIN context_accounting_epoch AS epoch
          WHERE accepted.run_id = ?1 AND epoch.singleton = 1",

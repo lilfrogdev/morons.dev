@@ -481,10 +481,9 @@ fn diagnostic_allowed(
         [binding.run_id.as_bytes()],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    Ok(
-        ((catalog <= 14 && catalog == limits) || matches!((catalog, limits), (13, 14) | (15, 14)))
-            && failure.valid_for_catalog(catalog),
-    )
+    Ok(((catalog <= 14 && catalog == limits)
+        || matches!((catalog, limits), (13, 14) | (15, 14) | (16, 14)))
+        && failure.valid_for_catalog(catalog))
 }
 fn invalid() -> PersistenceError {
     PersistenceError::InvalidState {

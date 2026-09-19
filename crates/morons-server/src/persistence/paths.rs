@@ -543,7 +543,7 @@ impl StoragePaths {
     }
 }
 
-pub(super) fn ensure_private_directory(path: &Path) -> Result<bool, PathError> {
+pub(crate) fn ensure_private_directory(path: &Path) -> Result<bool, PathError> {
     let created = if path_entry_exists(path)? {
         false
     } else {
@@ -575,7 +575,7 @@ pub(super) fn ensure_private_directory(path: &Path) -> Result<bool, PathError> {
     Ok(created)
 }
 
-pub(super) fn validate_private_directory(path: &Path) -> Result<(), PathError> {
+pub(crate) fn validate_private_directory(path: &Path) -> Result<(), PathError> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
         return Err(PathError::InvalidState {
@@ -602,7 +602,7 @@ pub(super) fn validate_private_directory(path: &Path) -> Result<(), PathError> {
     Ok(())
 }
 
-pub(super) fn create_private_file(path: &Path) -> Result<File, PathError> {
+pub(crate) fn create_private_file(path: &Path) -> Result<File, PathError> {
     #[cfg(unix)]
     let file = OpenOptions::new()
         .read(true)
@@ -629,7 +629,7 @@ pub(super) fn create_private_file(path: &Path) -> Result<File, PathError> {
     Ok(file)
 }
 
-pub(super) fn validate_private_file(
+pub(crate) fn validate_private_file(
     path: &Path,
     maximum_bytes: Option<u64>,
 ) -> Result<(), PathError> {

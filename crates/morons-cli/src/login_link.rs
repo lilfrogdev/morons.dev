@@ -24,7 +24,10 @@ pub(crate) struct LinkEvent {
 pub fn run_login_link_helper() -> Option<std::process::ExitCode> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next()?;
-    let result = if first == COPY_HELPER && args.next().is_none() {
+    if first != COPY_HELPER {
+        return None;
+    }
+    let result = if args.next().is_none() {
         // A parent crash must not leave a blocked platform clipboard call alive.
         // This watchdog is inside the disposable helper, never the terminal client.
         if std::thread::Builder::new()

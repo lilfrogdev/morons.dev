@@ -32,7 +32,15 @@ fn decoded(event: DebugEvent) -> Value {
     assert!(line.starts_with(PREFIX));
     assert_eq!(line.last(), Some(&b'\n'));
     assert_eq!(line.iter().filter(|&&byte| byte == b'\n').count(), 1);
-    serde_json::from_slice(&line[PREFIX.len()..]).unwrap()
+    let mut value: Value = serde_json::from_slice(&line[PREFIX.len()..]).unwrap();
+    assert_eq!(value["format_version"], 2);
+    assert!(value["timestamp_unix_ms"].as_u64().unwrap() > 0);
+    assert_eq!(value["process_id"], std::process::id());
+    let object = value.as_object_mut().unwrap();
+    for field in ["timestamp_unix_ms", "process_id", "level", "component"] {
+        object.remove(field);
+    }
+    value
 }
 
 #[test]
@@ -42,6 +50,10 @@ fn startup_timings_preserve_results_and_redact_errors() {
         sender,
         state: Arc::new(State {
             enabled: AtomicBool::new(true),
+            failed: AtomicBool::new(false),
+            daily_capped: AtomicBool::new(false),
+            window: Mutex::new(Instant::now()),
+            dropped: AtomicU64::new(0),
             record_attempts: AtomicU64::new(0),
             attempt_ids: AtomicU64::new(0),
         }),
@@ -61,7 +73,7 @@ fn startup_timings_preserve_results_and_redact_errors() {
         assert_eq!(
             begin,
             json!({
-                "format_version": 1, "sequence": u64::MAX, "kind": "startup",
+                "format_version": 2, "sequence": u64::MAX, "kind": "startup",
                 "stage": "total", "began": true, "success": null, "elapsed_us": null
             })
         );
@@ -161,7 +173,7 @@ fn debug_web_failure_is_closed_bounded_and_default_off() {
     assert_eq!(
         decoded(event),
         json!({
-            "format_version": 1, "sequence": u64::MAX,
+            "format_version": 2, "sequence": u64::MAX,
             "kind": "web_search", "stage": "citation", "category": "malformed_response"
         })
     );
@@ -188,8 +200,39 @@ fn debug_web_usage_reasons_are_closed_bounded_and_default_off() {
         assert_eq!(
             decoded(event),
             json!({
-                "format_version": 1, "sequence": u64::MAX,
+                "format_version": 2, "sequence": u64::MAX,
                 "kind": "web_usage", "reason": label
+            })
+        );
+    }
+}
+
+#[test]
+fn debug_web_citation_reasons_are_closed_bounded_and_default_off() {
+    use DebugCitationRejection::*;
+    for (reason, label) in [
+        (StreamMetadata, "stream_metadata"),
+        (StreamAnnotation, "stream_annotation"),
+        (StreamConsistency, "stream_consistency"),
+        (Annotations, "annotations"),
+        (AnnotationType, "annotation_type"),
+        (Url, "url"),
+        (Title, "title"),
+        (Offsets, "offsets"),
+        (TitleLimit, "title_limit"),
+        (OffsetOrder, "offset_order"),
+        (OffsetBounds, "offset_bounds"),
+        (MissingCitations, "missing_citations"),
+    ] {
+        let event = DebugEvent::WebCitation { reason };
+        assert!(!enabled());
+        emit(event.clone());
+        assert!(GLOBAL.sink.get().is_none());
+        assert_eq!(
+            decoded(event),
+            json!({
+                "format_version": 2, "sequence": u64::MAX,
+                "kind": "web_citation", "reason": label
             })
         );
     }
@@ -214,10 +257,11 @@ fn debug_default_silence_and_one_shot_startup() {
         io::ErrorKind::AlreadyExists
     );
     wait_until(|| capture.0.lock().unwrap().ends_with(b"\n"));
-    assert_eq!(
-        &*capture.0.lock().unwrap(),
-        b"MORONS_DEBUG {\"format_version\":1,\"sequence\":1,\"kind\":\"started\"}\n"
-    );
+    let bytes = capture.0.lock().unwrap().clone();
+    let value: Value = serde_json::from_slice(&bytes[PREFIX.len()..]).unwrap();
+    assert_eq!(value["kind"], "started");
+    assert_eq!(value["format_version"], 2);
+    assert_eq!(value["sequence"], 1);
     drop(guard);
     assert!(!sink.enabled());
     assert_eq!(sink.next_attempt_id(), None);
@@ -234,7 +278,7 @@ fn debug_default_silence_and_one_shot_startup() {
 fn debug_exact_schema_and_maximum_locators() {
     assert_eq!(
         decoded(DebugEvent::Started),
-        json!({"format_version":1,"sequence":u64::MAX,"kind":"started"})
+        json!({"format_version":2,"sequence":u64::MAX,"kind":"started"})
     );
     let event = DebugEvent::Provider {
         attempt_id: u64::MAX,
@@ -251,7 +295,7 @@ fn debug_exact_schema_and_maximum_locators() {
     assert_eq!(
         decoded(event),
         json!({
-            "format_version":1,"sequence":u64::MAX,"kind":"provider",
+            "format_version":2,"sequence":u64::MAX,"kind":"provider",
             "attempt_id":u64::MAX,"service":"zen","protocol":u16::MAX,
             "requested_output_tokens":u32::MAX,"stage":"header_framing",
             "finish":"context_window_exceeded","done":false,"usage_seen":false,
@@ -273,7 +317,7 @@ fn debug_exact_schema_and_maximum_locators() {
                 error,
             }),
             json!({
-                "format_version":1,"sequence":u64::MAX,"kind":"child",
+                "format_version":2,"sequence":u64::MAX,"kind":"child",
                 "session_id":vec![255;16],"task_call_id":vec![255;16],"child_index":u16::MAX,
                 "child_attempt":u64::MAX,"provider_attempt_id":u64::MAX,
                 "receipt_accepted":false,"error":error
@@ -326,6 +370,10 @@ fn local_sink(capacity: usize) -> (Arc<Sink>, Receiver<DebugEvent>) {
             sender,
             state: Arc::new(State {
                 enabled: AtomicBool::new(true),
+                failed: AtomicBool::new(false),
+                daily_capped: AtomicBool::new(false),
+                window: Mutex::new(Instant::now()),
+                dropped: AtomicU64::new(0),
                 record_attempts: AtomicU64::new(0),
                 attempt_ids: AtomicU64::new(0),
             }),
@@ -359,17 +407,41 @@ fn debug_concurrent_cap_and_checked_ids() {
     let mut sorted = ids;
     sorted.sort_unstable();
     assert_eq!(sorted, (1..=2048).collect::<Vec<_>>());
-    assert_eq!(
-        sink.state.record_attempts.load(Ordering::Acquire),
-        MAX_RECORD_ATTEMPTS
-    );
-    assert_eq!(receiver.try_iter().count(), MAX_RECORD_ATTEMPTS as usize);
+    let admitted = sink.state.record_attempts.load(Ordering::Acquire);
+    assert!(admitted <= MAX_RECORD_ATTEMPTS);
+    assert_eq!(receiver.try_iter().count(), admitted as usize);
+    assert_eq!(sink.state.dropped.load(Ordering::Acquire), 2048 - admitted);
     sink.state
         .attempt_ids
         .store(u64::MAX - 1, Ordering::Release);
     assert_eq!(sink.next_attempt_id(), Some(u64::MAX));
     assert_eq!(sink.next_attempt_id(), None);
     assert_eq!(sink.state.attempt_ids.load(Ordering::Acquire), u64::MAX);
+}
+
+#[test]
+fn debug_rate_budget_renews_and_reports_drops() {
+    let (sink, receiver) = local_sink(MAX_RECORD_ATTEMPTS as usize);
+    for _ in 0..MAX_RECORD_ATTEMPTS + 7 {
+        sink.emit(DebugEvent::Started);
+    }
+    assert_eq!(receiver.try_iter().count(), MAX_RECORD_ATTEMPTS as usize);
+    assert_eq!(sink.state.dropped.load(Ordering::Acquire), 7);
+    *sink.state.window.lock().unwrap() = Instant::now() - RATE_WINDOW;
+    sink.emit(DebugEvent::Started);
+    assert_eq!(sink.state.record_attempts.load(Ordering::Acquire), 1);
+    let state = Arc::clone(&sink.state);
+    drop(sink);
+    let capture = Capture::default();
+    write_events_with_interval(capture.clone(), receiver, state, Duration::ZERO);
+    let bytes = capture.0.lock().unwrap();
+    let lines: Vec<_> = bytes.split_inclusive(|b| *b == b'\n').collect();
+    assert_eq!(lines.len(), 2);
+    let summary: Value = serde_json::from_slice(&lines[0][PREFIX.len()..]).unwrap();
+    assert_eq!(summary["kind"], "dropped");
+    assert_eq!(summary["records"], 7);
+    assert_eq!(summary["level"], "warn");
+    assert_eq!(summary["component"], "logger");
 }
 
 #[test]
@@ -408,6 +480,45 @@ fn debug_queue_backpressure_and_disconnect() {
     assert_eq!(sink.next_attempt_id(), None);
 }
 
+#[test]
+fn daily_cap_drops_without_disabling_and_writing_resumes() {
+    struct CappedWriter {
+        capped: Arc<AtomicBool>,
+        capture: Capture,
+    }
+    impl Write for CappedWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.capped.load(Ordering::Acquire) {
+                Err(io::ErrorKind::WouldBlock.into())
+            } else {
+                self.capture.write(bytes)
+            }
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let registry = Registry::default();
+    let capped = Arc::new(AtomicBool::new(true));
+    let capture = Capture::default();
+    let guard = registry
+        .start(CappedWriter {
+            capped: Arc::clone(&capped),
+            capture: capture.clone(),
+        })
+        .unwrap();
+    let sink = registry.sink.get().unwrap();
+    wait_until(|| sink.state.daily_capped.load(Ordering::Acquire));
+    assert!(sink.enabled());
+    assert!(!sink.state.failed.load(Ordering::Acquire));
+    assert_eq!(sink.state.dropped.load(Ordering::Acquire), 1);
+    capped.store(false, Ordering::Release);
+    sink.emit(DebugEvent::Started);
+    wait_until(|| !sink.state.daily_capped.load(Ordering::Acquire));
+    assert!(!capture.0.lock().unwrap().is_empty());
+    drop(guard);
+}
+
 struct FailWriter {
     flush_error: bool,
 }
@@ -433,6 +544,7 @@ fn debug_writer_errors_disable_diagnostics() {
         let sink = registry.sink.get().unwrap();
         wait_until(|| !sink.enabled());
         assert_eq!(sink.next_attempt_id(), None);
+        assert!(sink.state.failed.load(Ordering::Acquire));
         sink.emit(DebugEvent::Started);
         assert_eq!(sink.state.record_attempts.load(Ordering::Acquire), 1);
         drop(guard);
@@ -628,12 +740,15 @@ fn debug_runtime_maximum_records_are_bounded_and_located() {
         let mut record: Value = serde_json::from_slice(&line[PREFIX.len()..]).unwrap();
         assert_eq!(
             record.as_object_mut().unwrap().remove("format_version"),
-            Some(json!(1))
+            Some(json!(2))
         );
         assert_eq!(
             record.as_object_mut().unwrap().remove("sequence"),
             Some(json!(index + 1))
         );
+        for field in ["timestamp_unix_ms", "process_id", "level", "component"] {
+            record.as_object_mut().unwrap().remove(field);
+        }
         assert_eq!(record, expected);
     }
 }

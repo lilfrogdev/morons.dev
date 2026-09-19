@@ -314,6 +314,7 @@ pub enum ApplicationRequest {
         mutation_request_id: MutationRequestId,
         expected_generation: u64,
     },
+    GetDebugStatus,
     GetOpenCodeCredentialStatus,
     SetOpenCodeCredential {
         mutation_request_id: MutationRequestId,
@@ -471,6 +472,7 @@ impl fmt::Debug for ApplicationRequest {
             Self::BeginOpenAiLogin { .. } => formatter.write_str("BeginOpenAiLogin"),
             Self::CancelOpenAiLogin { .. } => formatter.write_str("CancelOpenAiLogin"),
             Self::RemoveOpenAiCredential { .. } => formatter.write_str("RemoveOpenAiCredential"),
+            Self::GetDebugStatus => formatter.write_str("GetDebugStatus"),
             Self::GetOpenCodeCredentialStatus => formatter.write_str("GetOpenCodeCredentialStatus"),
             Self::SetOpenCodeCredential {
                 mutation_request_id,
@@ -626,6 +628,13 @@ pub enum ApplicationResponse {
     OpenAiLoginStarted {
         attempt_id: MutationRequestId,
         url: crate::OpenAiAuthorizationUrl,
+    },
+    DebugStatus {
+        active: bool,
+        failed: bool,
+        daily_capped: bool,
+        dropped_records: u64,
+        log_directory: Option<String>,
     },
     OpenCodeCredentialStatus {
         credential: crate::OpenCodeCredentialStatus,

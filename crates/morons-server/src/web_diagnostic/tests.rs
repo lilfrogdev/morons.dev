@@ -18,10 +18,15 @@ fn web_diagnostic_is_closed_bounded_scoped_and_preserves_legacy_uncertain_bytes(
     assert!(failure.valid_for_catalog(13));
     assert!(failure.valid_for_catalog(14));
     assert!(failure.valid_for_catalog(15));
-    assert!(!failure.valid_for_catalog(16));
+    assert!(failure.valid_for_catalog(16));
+    assert!(!failure.valid_for_catalog(17));
     assert!(!failure.valid_for_catalog(11));
     let result = ToolResult::error(ToolErrorKind::WebSearchUncertain(failure));
     assert!(result.is_uncertain());
+    assert!(result.stops_run(15));
+    assert!(!result.stops_run(16));
+    assert!(legacy.stops_run(16));
+    assert!(ToolResult::error(ToolErrorKind::ExaSearchUncertain).stops_run(16));
     assert!(validate_canonical_result(ToolKind::WebSearch, &result));
     assert!(validate_canonical_result(ToolKind::Task, &result));
     assert!(!validate_canonical_result(ToolKind::Read, &result));
@@ -49,7 +54,8 @@ fn web_diagnostic_is_closed_bounded_scoped_and_preserves_legacy_uncertain_bytes(
         assert!(scoped.valid_for_catalog(13));
         assert!(scoped.valid_for_catalog(14));
         assert!(scoped.valid_for_catalog(15));
-        assert!(!scoped.valid_for_catalog(16));
+        assert!(scoped.valid_for_catalog(16));
+        assert!(!scoped.valid_for_catalog(17));
         assert_eq!(
             serde_json::from_str::<WebFailure>(&serde_json::to_string(&scoped).unwrap()).unwrap(),
             scoped

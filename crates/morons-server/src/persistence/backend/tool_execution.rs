@@ -565,7 +565,7 @@ impl Backend {
             ],
         )?;
         update_entry_high_water(&transaction, &run, entry_sequence, entry_fact_sequence)?;
-        if result.is_uncertain() {
+        if result.stops_run(run.tool_catalog_version) {
             append_run_transition(
                 &transaction,
                 &run,
