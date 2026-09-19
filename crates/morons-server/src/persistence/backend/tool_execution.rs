@@ -159,7 +159,12 @@ impl Backend {
             let call_entry_fact_id = random_identifier()?;
             let delivery_event_id = random_identifier()?;
             let call_audit_id = random_identifier()?;
-            let input_payload = encode_payload(&call.input)?;
+            let input_payload = encode_payload(
+                &call.input,
+                run.id,
+                call_id,
+                crate::debug_log::DebugContextCheck::ToolInputBytes,
+            )?;
             let path_digest = tool_path_digest(call.input.path_text());
             transaction.execute(
                 "INSERT INTO tool_calls (
@@ -429,7 +434,12 @@ impl Backend {
             .flatten();
         let mut image_staging =
             stage_tool_result_image(attachment_paths, attachment_session_id, &mut result)?;
-        let result_payload = encode_payload(&result)?;
+        let result_payload = encode_payload(
+            &result,
+            run_id,
+            call_id,
+            crate::debug_log::DebugContextCheck::ToolResultBytes,
+        )?;
         let result_bytes = u64::try_from(result_payload.len()).map_err(|_| limit())?;
         let fact_id = random_identifier()?;
         let entry_fact_id = random_identifier()?;
@@ -1156,11 +1166,23 @@ fn update_entry_high_water(
     Ok(())
 }
 
-fn encode_payload<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, PersistenceError> {
+fn encode_payload<T: serde::Serialize>(
+    value: &T,
+    run_id: RunId,
+    call_id: ToolCallId,
+    check: crate::debug_log::DebugContextCheck,
+) -> Result<Vec<u8>, PersistenceError> {
     let payload = serde_json::to_vec(value).map_err(|_| PersistenceError::InvalidInput {
         reason: "a typed tool payload could not be encoded",
     })?;
     if payload.len() < 2 || payload.len() > MAX_TOOL_PAYLOAD_BYTES {
+        crate::debug_log::emit(crate::debug_log::DebugEvent::ContextLimit {
+            run_id: *run_id.as_bytes(),
+            call_id: Some(*call_id.as_bytes()),
+            check,
+            measured: payload.len() as u64,
+            limit: MAX_TOOL_PAYLOAD_BYTES as u64,
+        });
         return Err(limit());
     }
     Ok(payload)
@@ -1175,5 +1197,40 @@ const fn limit() -> PersistenceError {
 const fn transcript_limit() -> PersistenceError {
     PersistenceError::ResourceLimit {
         resource: PersistenceResourceLimit::Transcript,
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    #[test]
+    fn payload_diagnostics_preserve_encoding_bounds() {
+        for check in [
+            crate::debug_log::DebugContextCheck::ToolInputBytes,
+            crate::debug_log::DebugContextCheck::ToolResultBytes,
+        ] {
+            let encode = |value: &str| {
+                encode_payload(
+                    &value,
+                    RunId::from_bytes([1; 16]),
+                    ToolCallId::from_bytes([2; 16]),
+                    check,
+                )
+            };
+            assert_eq!(encode("").unwrap(), b"\"\"");
+            assert_eq!(
+                encode(&"x".repeat(MAX_TOOL_PAYLOAD_BYTES - 2))
+                    .unwrap()
+                    .len(),
+                MAX_TOOL_PAYLOAD_BYTES
+            );
+            assert!(matches!(
+                encode(&"x".repeat(MAX_TOOL_PAYLOAD_BYTES - 1)),
+                Err(PersistenceError::ResourceLimit {
+                    resource: PersistenceResourceLimit::Context
+                })
+            ));
+        }
     }
 }

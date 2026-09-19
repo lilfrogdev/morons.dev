@@ -835,6 +835,14 @@ impl RunSupervisor {
                 })
             };
             let result = enforce_image_capability(result, supports_image_input);
+            if let Some(event) = crate::debug_log::tool_limit_event(
+                *run_id.as_bytes(),
+                *call.call_id.as_bytes(),
+                tool,
+                &result,
+            ) {
+                crate::debug_log::emit(event);
+            }
             let cancelled = result.error_kind() == Some(crate::tools::ToolErrorKind::Cancelled);
             let stops_run = result.stops_run(run.tool_catalog_version);
             self.sessions

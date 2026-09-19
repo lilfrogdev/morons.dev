@@ -18,6 +18,18 @@ Files are capped at 8 MiB per day, with no automatic deletion or replay. Queue, 
 per monotonic 60-second window, with bounded dropped-record summaries; the budget
 renews throughout the server lifetime. Daily-cap drops resume on the next UTC day.
 Logs are lossy observations, not durable evidence.
+Root tool output/resource-limit failures emit warning-level `tool_limit` records
+before result persistence, correlated by run and local call IDs. Records contain
+only tool/error categories and, for Bash, retained stdout/stderr byte counts and
+the per-stream byte cap; counts are not total bytes produced. A record observes
+execution, not a successful database commit. Commands, paths and output content
+are excluded. Provider and persistence limits retain their separate diagnostics.
+New `context_limit` warnings identify selected persistence checks using fixed enums,
+run/call identifiers, measured sizes and limits only. Coverage currently includes
+only tool payload encoding, not run-context entry, source-byte or input-token
+checks. These pre-commit observations do not prove persistence or authorize retry.
+No payload content is recorded.
+
 New files use exclusive creation; existing files and directories are validated,
 with symlinks rejected. Owner-only permissions are not secrecy from same-user
 commands. No credentials, raw payloads, prompts, queries or tool output are added.

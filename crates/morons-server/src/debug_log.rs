@@ -13,6 +13,7 @@ use serde::Serialize;
 
 mod daily;
 mod runtime;
+pub(crate) use runtime::tool_limit_event;
 pub use runtime::{
     DebugLocation, DebugNormalizationStage, DebugResource, DebugToolError, DebugToolKind,
 };
@@ -172,9 +173,32 @@ pub enum DebugCitationRejection {
     MissingCitations,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugContextCheck {
+    ToolInputBytes,
+    ToolResultBytes,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DebugEvent {
+    ContextLimit {
+        run_id: [u8; 16],
+        call_id: Option<[u8; 16]>,
+        check: DebugContextCheck,
+        measured: u64,
+        limit: u64,
+    },
+    ToolLimit {
+        run_id: [u8; 16],
+        call_id: [u8; 16],
+        tool: DebugToolKind,
+        error: DebugToolError,
+        stdout_bytes: Option<usize>,
+        stderr_bytes: Option<usize>,
+        per_stream_limit_bytes: Option<usize>,
+    },
     Resource {
         location: DebugLocation,
         resource: DebugResource,
@@ -430,6 +454,13 @@ impl DebugEvent {
             }
             | Self::Provider { error: Some(_), .. }
             | Self::Child { error: Some(_), .. }
+            | Self::ContextLimit { .. }
+            | Self::ToolLimit { .. }
+            | Self::Resource { .. }
+            | Self::Normalization {
+                resource_limit: true,
+                ..
+            }
             | Self::ChildTool { error: Some(_), .. } => "warn",
             Self::Started => "info",
             _ => "debug",
