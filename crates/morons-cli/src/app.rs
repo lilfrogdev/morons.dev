@@ -5,6 +5,7 @@ mod native_diagnostic;
 mod render;
 mod transcript;
 use transcript::SessionView;
+mod selection;
 mod viewport;
 
 use std::{error::Error, fmt};
@@ -96,6 +97,7 @@ pub(super) struct TranscriptWindowData {
 
 #[derive(PartialEq, Eq)]
 pub(super) enum AppAction {
+    CopySelection(String),
     None,
     Quit,
     Refresh,
@@ -174,6 +176,7 @@ pub(super) enum AppAction {
 impl fmt::Debug for AppAction {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CopySelection(_) => formatter.write_str("CopySelection([REDACTED])"),
             Self::None => formatter.write_str("None"),
             Self::Quit => formatter.write_str("Quit"),
             Self::Refresh => formatter.write_str("Refresh"),
@@ -449,6 +452,7 @@ pub(super) struct AppState {
     pub(super) pending_unknown: bool,
     pub(super) confirm_stop: bool,
     pub(super) confirm_delete: Option<SessionId>,
+    selection: selection::Selection,
     transcript_viewport: TranscriptViewport,
     transcript_page_loading: bool,
     pub(super) skill_completion_index: usize,
@@ -484,6 +488,7 @@ impl AppState {
             pending_unknown: false,
             confirm_stop: false,
             confirm_delete: None,
+            selection: selection::Selection::default(),
             transcript_viewport: TranscriptViewport::default(),
             transcript_page_loading: false,
             skill_completion_index: 0,

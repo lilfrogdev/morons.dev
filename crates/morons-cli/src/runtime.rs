@@ -200,6 +200,9 @@ pub async fn run_terminal_application_with_debug(
                     runtime.handle_action(action, &request_commands).await?;
                 }
             }
+            event = runtime.selection_clipboard.events.recv() => {
+                if let Some(event) = event { runtime.app.set_status(event.message); }
+            }
             event = runtime.links.events.recv() => {
                 if let Some(event) = event {runtime.app.handle_link_event(event);}
             }
@@ -216,6 +219,7 @@ pub async fn run_terminal_application_with_debug(
     };
 
     drop(request_commands);
+    runtime.selection_clipboard.shutdown().await;
     runtime.links.shutdown().await;
     runtime.auth.shutdown().await;
     runtime.abort_background_tasks();
@@ -227,6 +231,7 @@ pub async fn run_terminal_application_with_debug(
 struct RuntimeState {
     app: AppState,
     auth: auth::AuthRuntime,
+    selection_clipboard: login_link::LinkRuntime,
     links: login_link::LinkRuntime,
     pending_command: Option<RequestCommand>,
     pending_credential_mutation: Option<MutationRequestId>,
@@ -244,6 +249,7 @@ impl RuntimeState {
         Self {
             app: AppState::new(&server_version),
             auth: auth::AuthRuntime::default(),
+            selection_clipboard: login_link::LinkRuntime::default(),
             links: login_link::LinkRuntime::default(),
             pending_command: None,
             pending_credential_mutation: None,
@@ -263,6 +269,7 @@ impl RuntimeState {
         commands: &mpsc::Sender<RequestCommand>,
     ) -> Result<bool, TerminalApplicationError> {
         match action {
+            AppAction::CopySelection(text) => self.selection_clipboard.copy_selection(text).await,
             AppAction::None => {}
             AppAction::Quit => return Ok(true),
             AppAction::Refresh => {

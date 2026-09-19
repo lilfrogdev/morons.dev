@@ -5,6 +5,8 @@ use morons_protocol::OpenAiAuthorizationUrl;
 use zeroize::Zeroizing;
 
 pub(crate) const COPY_HELPER: &str = "--internal-copy-login-link";
+pub(crate) const SELECTION_HELPER: &str = "--internal-copy-selection";
+pub(crate) const MAX_SELECTION_BYTES: usize = 256 * 1024;
 pub(crate) const READY: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,12 +21,12 @@ pub(crate) struct LinkEvent {
 }
 
 /// Handles the bounded clipboard subprocess before terminal/server initialization.
-/// This intentionally has no arbitrary text, token or endpoint argument interface.
+/// Login URLs and rendered selections use separate validated helper modes.
 #[doc(hidden)]
 pub fn run_login_link_helper() -> Option<std::process::ExitCode> {
     let mut args = std::env::args_os().skip(1);
     let first = args.next()?;
-    if first != COPY_HELPER {
+    if first != COPY_HELPER && first != SELECTION_HELPER {
         return None;
     }
     let result = if args.next().is_none() {
@@ -40,15 +42,27 @@ pub fn run_login_link_helper() -> Option<std::process::ExitCode> {
         {
             return Some(std::process::ExitCode::FAILURE);
         }
-        copy_link(
-            &mut std::io::stdin().lock(),
-            &mut std::io::stdout().lock(),
-            |url| {
-                let mut clipboard = arboard::Clipboard::new().map_err(|_| ())?;
-                clipboard.set_text(url.as_str()).map_err(|_| ())?;
-                Ok(clipboard)
-            },
-        )
+        if first == SELECTION_HELPER {
+            copy_selection(
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout().lock(),
+                |text| {
+                    let mut clipboard = arboard::Clipboard::new().map_err(|_| ())?;
+                    clipboard.set_text(text).map_err(|_| ())?;
+                    Ok(clipboard)
+                },
+            )
+        } else {
+            copy_link(
+                &mut std::io::stdin().lock(),
+                &mut std::io::stdout().lock(),
+                |url| {
+                    let mut clipboard = arboard::Clipboard::new().map_err(|_| ())?;
+                    clipboard.set_text(url.as_str()).map_err(|_| ())?;
+                    Ok(clipboard)
+                },
+            )
+        }
     } else {
         Err(())
     };
@@ -57,6 +71,36 @@ pub fn run_login_link_helper() -> Option<std::process::ExitCode> {
     } else {
         std::process::ExitCode::FAILURE
     })
+}
+
+fn copy_selection<R: Read, W: Write, C>(
+    input: &mut R,
+    output: &mut W,
+    copy: impl FnOnce(&str) -> Result<C, ()>,
+) -> Result<(), ()> {
+    let mut length = [0; 4];
+    input.read_exact(&mut length).map_err(|_| ())?;
+    let length = u32::from_be_bytes(length) as usize;
+    if length == 0 || length > MAX_SELECTION_BYTES {
+        return Err(());
+    }
+    let mut bytes = Zeroizing::new(vec![0; length]);
+    input.read_exact(&mut bytes).map_err(|_| ())?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| ())?;
+    if text
+        .chars()
+        .any(|c| (c.is_control() && c != '\n') || crate::terminal::is_bidirectional_control(c))
+    {
+        return Err(());
+    }
+    let _owner = copy(text)?;
+    output.write_all(&[READY]).map_err(|_| ())?;
+    output.flush().map_err(|_| ())?;
+    let mut end = [0];
+    match input.read(&mut end) {
+        Ok(0) => Ok(()),
+        _ => Err(()),
+    }
 }
 
 fn copy_link<R: Read, W: Write, C>(
@@ -131,6 +175,42 @@ mod tests {
                 copy_link(&mut &input[..], &mut Vec::new(), |_| -> Result<(), ()> {
                     panic!("no OS access")
                 })
+                .is_err()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    #[test]
+    fn selection_helper_validates_before_copy_and_acknowledges_without_echo() {
+        for text in ["hello\n界", "bad\x1b]52", "bad\u{202e}", ""] {
+            let mut frame = (text.len() as u32).to_be_bytes().to_vec();
+            frame.extend_from_slice(text.as_bytes());
+            let mut output = Vec::new();
+            let mut copied = false;
+            let result = copy_selection(&mut frame.as_slice(), &mut output, |value| {
+                assert_eq!(value, text);
+                copied = true;
+                Ok(())
+            });
+            assert_eq!(result.is_ok(), text == "hello\n界");
+            assert_eq!(copied, result.is_ok());
+            assert_eq!(output, if copied { vec![READY] } else { vec![] });
+        }
+        for frame in [
+            ((MAX_SELECTION_BYTES + 1) as u32).to_be_bytes().to_vec(),
+            vec![0, 0, 0, 1, 255],
+            vec![0, 0, 0, 2, b'a'],
+        ] {
+            assert!(
+                copy_selection(
+                    &mut frame.as_slice(),
+                    &mut Vec::new(),
+                    |_| -> Result<(), ()> { panic!("invalid input must not copy") }
+                )
                 .is_err()
             );
         }

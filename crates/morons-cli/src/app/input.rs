@@ -11,6 +11,7 @@ const MOUSE_SCROLL_ROWS: usize = 3;
 
 impl AppState {
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> AppAction {
+        self.selection.clear();
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return AppAction::None;
         }
@@ -115,6 +116,15 @@ impl AppState {
     }
 
     pub(crate) fn handle_mouse(&mut self, mouse: MouseEvent) -> AppAction {
+        match self.selection.mouse(mouse) {
+            super::selection::Gesture::Copy(text) => return AppAction::CopySelection(text),
+            super::selection::Gesture::TooLarge => {
+                self.set_status("Selection exceeds the 256 KiB clipboard limit; select less text");
+                return AppAction::None;
+            }
+            super::selection::Gesture::Consumed => return AppAction::None,
+            super::selection::Gesture::Click | super::selection::Gesture::Other => {}
+        }
         if self.auth_dialog.is_some() {
             return self.handle_auth_mouse(mouse);
         }
@@ -138,6 +148,7 @@ impl AppState {
     }
 
     pub(crate) fn handle_paste(&mut self, paste: &str) {
+        self.selection.clear();
         if self.auth_dialog.is_some() {
             return;
         }

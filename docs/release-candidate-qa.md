@@ -229,3 +229,18 @@ Reviewer:
 4. Remove `QA_HOME`, `QA_REPO`, the downloaded candidate bundle, and all prior/current extraction directories using exact recorded temporary paths.
 5. Confirm the source checkout is still clean and the selected working directory was not removed by session deletion.
 6. Record cleanup as part of the result artifact. Deletion is not represented as forensic erasure.
+
+### App-wide copy on selection
+
+- Drag text in the session browser, conversation, composer, help, and settings;
+  verify visible highlighting and clipboard content after release, with success feedback.
+- Repeat backwards, over multiple rows, with CJK and combining characters; verify
+  no duplicate wide characters. Only visible rendered cells are copied.
+- Click without dragging and verify the clipboard is unchanged. Drag over login
+  buttons and verify no browser launch/login-link copy; a plain click still works.
+- Enter a synthetic API key and select the whole screen; verify the key is absent.
+- While dragging, resize, scroll, type, or update displayed content; verify the
+  stale selection is cancelled rather than copying replacement text.
+- Test unavailable clipboard service: bounded failure feedback, responsive UI,
+  no automatic retry. Verify clipboard ownership while the client remains open
+  and helper cleanup after another copy or client exit on X11/Wayland.
