@@ -98,6 +98,7 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `Tab` / `Shift+Tab`: complete or navigate visible skill matches
 - `Ctrl+V` (`Alt+V` on Windows): paste an image when available
 - `Esc`: request cancellation of the selected session's active run or command; dialogs consume `Esc` first. Completed effects are not rolled back.
+- `Ctrl+D`: detach the terminal client without stopping the server or cancelling running work; close dialogs first. Unsubmitted drafts are not saved on exit.
 - `Ctrl+Space`: return to the session browser without cancelling server-owned work (legacy terminals may encode this as NUL, also shared by `Ctrl+@`).
 - `?` in the session browser or `/help` in the composer: show usage and the security disclosure; question marks in text input remain literal
 - `Ctrl+S`: stop the companion server and interrupt active work

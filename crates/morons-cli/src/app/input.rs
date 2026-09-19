@@ -15,7 +15,10 @@ impl AppState {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return AppAction::None;
         }
-        if key.code == KeyCode::Esc && key.kind == KeyEventKind::Repeat {
+        if (key.code == KeyCode::Esc
+            || (key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL)))
+            && key.kind == KeyEventKind::Repeat
+        {
             return AppAction::None;
         }
         if self.auth_dialog.is_some() {
@@ -312,6 +315,7 @@ impl AppState {
 
     fn handle_control_key(&mut self, code: KeyCode) -> AppAction {
         match code {
+            KeyCode::Char('d') if self.pending.is_none() => AppAction::Quit,
             KeyCode::Char(' ') if self.view == View::Session && self.pending.is_none() => {
                 AppAction::CloseSession
             }
