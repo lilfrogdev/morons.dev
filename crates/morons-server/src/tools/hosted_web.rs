@@ -107,7 +107,6 @@ impl HostedWebResult {
             && !self.answer.trim().is_empty()
             && self.answer.len() <= 16 * 1024
             && self.receipt.is_valid()
-            && !self.citations.is_empty()
             && self.citations.len() <= 10
             && self
                 .citations
@@ -115,7 +114,10 @@ impl HostedWebResult {
                 .all(|c| c.title.len() <= 512 && valid_url(&c.url))
     }
     pub(crate) fn summary(&self) -> String {
-        let mut text = format!("{}\n{}\nSources:", self.receipt.summary(), self.answer);
+        let mut text = format!("{}\n{}", self.receipt.summary(), self.answer);
+        if !self.citations.is_empty() {
+            text.push_str("\nSources:");
+        }
         for (i, c) in self.citations.iter().enumerate() {
             text.push_str(&format!("\n[{}] {}\n{}", i + 1, c.title, c.url));
         }
@@ -165,6 +167,19 @@ mod tests {
             },
         }
     }
+    #[test]
+    fn uncited_results_preserve_answer_and_receipt_without_a_source_list() {
+        let mut result = result();
+        result.citations.clear();
+        assert!(result.is_valid());
+        let summary = result.summary();
+        assert!(summary.contains("Answer"));
+        assert!(summary.contains("separate from coding usage"));
+        assert!(!summary.contains("Sources:"));
+        result.receipt.search_calls = 0;
+        assert!(!result.is_valid());
+    }
+
     #[test]
     fn canonical_hosted_web_results_bound_citations_identity_and_separate_usage() {
         let original = result();

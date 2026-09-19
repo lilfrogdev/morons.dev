@@ -1,5 +1,7 @@
 # Hosted search failures do not terminate coding runs
 
+Citation presence is optional: an otherwise-valid completed hosted search with a nonempty final answer may return an empty citation list. Supplied citations still require the existing type, URL, title, offset, count and stream-consistency validation. Missing or malformed annotation containers remain invalid. Consulted sources and inline links are not promoted into citations. Canonical results accept empty citation lists; no citations are manufactured. This supersedes ADR 0041's minimum-one-citation requirement without changing search-action evidence, usage validation, routing or retry rules.
+
 New runs use tool catalog 16 with limits 14. A committed `WebSearchUncertain` result remains an uncertain tool fact, with its diagnostic, audit and delivery event, but does not transition the coding run to uncertain. The supervisor passes the failure to the next model turn. Citation validation still rejects unusable search output; no trust-warning text is added.
 
 Catalogs through 15 retain their terminal uncertainty invariant. Other uncertain tool results still stop runs. Restart recovery still terminates interrupted runs and never replays an uncertain search; persistence failures and cancellation still stop execution. Continuing inference is not authorization to retry the failed external effect. No credential, route, or isolation boundary changes.

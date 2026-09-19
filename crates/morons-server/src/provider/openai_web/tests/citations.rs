@@ -19,7 +19,7 @@ fn reject(data: &[Value], expected: DebugCitationRejection) {
 }
 
 #[test]
-fn sources_and_inline_links_do_not_substitute_for_final_annotations() {
+fn uncited_answers_do_not_promote_sources_or_inline_links_to_citations() {
     for text in [
         "Fixture answer.",
         "See [source](https://example.com/source).",
@@ -28,10 +28,12 @@ fn sources_and_inline_links_do_not_substitute_for_final_annotations() {
         let mut data = events();
         data[2]["item"]["content"][0]["text"] = json!(text);
         data[2]["item"]["content"][0]["annotations"] = json!([]);
-        reject(&data, DebugCitationRejection::MissingCitations);
+        let result = decode_response(&wire(&data)).unwrap();
+        assert_eq!(result.answer, text);
+        assert!(result.citations.is_empty());
         data[3]["response"]["output"] = json!([data[1]["item"].clone(), data[2]["item"].clone()]);
         data.drain(1..3);
-        reject(&data, DebugCitationRejection::MissingCitations);
+        assert_eq!(decode_response(&wire(&data)).unwrap(), result);
     }
 }
 
@@ -47,7 +49,7 @@ fn commentary_citations_are_not_promoted_to_the_final_answer() {
         2,
         json!({"type":"response.output_item.done","output_index":1,"item":commentary}),
     );
-    reject(&data, DebugCitationRejection::MissingCitations);
+    assert!(decode_response(&wire(&data)).unwrap().citations.is_empty());
     data[3]["item"]["content"][0]["annotations"] =
         item_message()["content"][0]["annotations"].clone();
     let result = decode_response(&wire(&data)).unwrap();
@@ -56,7 +58,7 @@ fn commentary_citations_are_not_promoted_to_the_final_answer() {
 }
 
 #[test]
-fn annotation_shapes_fail_at_their_specific_guard_not_missing_citations() {
+fn malformed_annotation_shapes_are_rejected() {
     for (annotations, reason) in [
         (json!(null), DebugCitationRejection::Annotations),
         (json!({}), DebugCitationRejection::Annotations),

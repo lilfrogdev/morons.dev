@@ -482,7 +482,7 @@ pub(super) async fn spawn_web_search_tool_loop_provider() -> (
 }
 
 pub(super) async fn spawn_search_adapter(
-    missing_citations: bool,
+    annotations: Option<serde_json::Value>,
 ) -> (
     String,
     oneshot::Receiver<String>,
@@ -506,7 +506,7 @@ pub(super) async fn spawn_search_adapter(
             .unwrap_or_else(|_| panic!("search request should be observed"));
         let mut body =
             String::from_utf8(crate::provider::openai_web::response_sources_fixture()).unwrap();
-        if missing_citations {
+        if let Some(annotations) = annotations {
             body = body
                 .lines()
                 .map(|line| {
@@ -517,7 +517,7 @@ pub(super) async fn spawn_search_adapter(
                             .and_then(|v| v.as_array_mut())
                         {
                             for part in content {
-                                part["annotations"] = serde_json::json!([]);
+                                part["annotations"] = annotations.clone();
                             }
                         }
                         if let Some(output) = value
@@ -529,7 +529,7 @@ pub(super) async fn spawn_search_adapter(
                                     item.get_mut("content").and_then(|v| v.as_array_mut())
                                 {
                                     for part in content {
-                                        part["annotations"] = serde_json::json!([]);
+                                        part["annotations"] = annotations.clone();
                                     }
                                 }
                             }

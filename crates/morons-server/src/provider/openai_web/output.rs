@@ -239,11 +239,6 @@ pub(super) fn parse(
     if final_messages != 1 || result.answer.trim().is_empty() {
         return Err(ProviderError::MalformedResponse);
     }
-    *stage = WebStage::Citation;
-    if result.citations.is_empty() {
-        *citation_rejection = Some(CitationReason::MissingCitations);
-        return Err(ProviderError::MalformedResponse);
-    }
     *stage = WebStage::SearchAction;
     if result.search_calls == 0 {
         return Err(ProviderError::MalformedResponse);
