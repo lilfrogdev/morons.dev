@@ -162,7 +162,8 @@ Drag with the left mouse button to select visible text anywhere in the terminal 
 release to copy it to the system clipboard. A click alone does not copy. Selection
 copies rendered text (including visible borders and line breaks), not hidden or
 scrollback content. API-key input is never rendered and is never selectable.
-Resizing, changing the displayed text, typing, or scrolling clears selection.
+Resizing, changing selected text, typing, or scrolling clears selection.
+Updates outside the selected cells leave selection intact.
 Clipboard managers may retain copied text; selection does not send it to the server.
 Copy uses a bounded, supervised local helper, without putting text in arguments or
 logs. Clipboard failure is reported without automatic retry. Clipboard ownership

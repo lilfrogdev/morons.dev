@@ -24,15 +24,26 @@ impl Selection {
         self.dragged = false;
     }
 
-    pub(super) fn render(&mut self, buffer: &mut Buffer) {
-        if self.screen.as_ref().is_some_and(|old| {
-            old.area != buffer.area
-                || old
-                    .content
-                    .iter()
-                    .zip(&buffer.content)
-                    .any(|(a, b)| a.symbol() != b.symbol())
-        }) {
+    pub(super) fn render(&mut self, buffer: &mut Buffer) -> bool {
+        let range = self.range().or_else(|| self.anchor.map(|p| (p, p)));
+        let invalidated =
+            range.is_some()
+                && self.screen.as_ref().is_some_and(|old| {
+                    old.area != buffer.area
+                        || old.content.iter().zip(&buffer.content).enumerate().any(
+                            |(index, (a, b))| {
+                                let p = Position::new(
+                                    old.area.x + (index % usize::from(old.area.width)) as u16,
+                                    old.area.y + (index / usize::from(old.area.width)) as u16,
+                                );
+                                let (start, end) = range.expect("active selection");
+                                ordered(p) >= ordered(start)
+                                    && ordered(p) <= ordered(end)
+                                    && a.symbol() != b.symbol()
+                            },
+                        )
+                });
+        if invalidated {
             self.clear();
         }
         self.screen = Some(buffer.clone());
@@ -46,6 +57,7 @@ impl Selection {
                 }
             }
         }
+        invalidated
     }
 
     fn range(&self) -> Option<(Position, Position)> {
@@ -181,6 +193,31 @@ mod tests {
             Gesture::Click
         ));
     }
+    #[test]
+    fn outside_updates_preserve_drag_but_resize_and_anchor_updates_clear_it() {
+        let mut screen = Buffer::empty(Rect::new(0, 0, 8, 2));
+        screen.set_string(0, 0, "select", Style::default());
+        let mut selection = Selection::default();
+        selection.render(&mut screen.clone());
+        selection.mouse(event(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        selection.mouse(event(MouseEventKind::Drag(MouseButton::Left), 3, 0));
+        screen.set_string(0, 1, "update", Style::default());
+        assert!(!selection.render(&mut screen.clone()));
+        let Gesture::Copy(text) =
+            selection.mouse(event(MouseEventKind::Up(MouseButton::Left), 3, 0))
+        else {
+            panic!("expected preserved selection");
+        };
+        assert_eq!(text, "sele");
+        selection.mouse(event(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        assert!(selection.render(&mut Buffer::empty(Rect::new(0, 0, 9, 2))));
+
+        selection.render(&mut screen.clone());
+        selection.mouse(event(MouseEventKind::Down(MouseButton::Left), 0, 0));
+        screen.set_string(0, 0, "changed", Style::default());
+        assert!(selection.render(&mut screen));
+    }
+
     #[test]
     fn changing_content_cancels_drag() {
         let mut screen = Buffer::empty(Rect::new(0, 0, 8, 2));
