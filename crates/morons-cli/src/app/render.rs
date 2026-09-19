@@ -96,11 +96,6 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 }
 
 fn render_sessions(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(area);
-
     let items: Vec<ListItem<'_>> = app
         .sessions
         .iter()
@@ -147,43 +142,6 @@ fn render_sessions(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     if !app.sessions.is_empty() {
         state.select(Some(app.selected_session));
     }
-    frame.render_stateful_widget(list, columns[0], &mut state);
-    render_models(frame, columns[1], app);
-}
-
-fn render_models(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let items: Vec<ListItem<'_>> = app
-        .models
-        .iter()
-        .map(|model| {
-            let service = service_label(model.model.service);
-            let availability = if app.model_policy_blocked(&model.model) {
-                " data-use blocked"
-            } else if model.model.available {
-                ""
-            } else {
-                " unavailable"
-            };
-            ListItem::new(Line::from(vec![
-                Span::raw(service),
-                Span::raw(" · "),
-                Span::raw(model.display_name.first_line()),
-                Span::raw(" · "),
-                Span::raw(model.id.first_line()),
-                Span::styled(availability, Style::default().fg(Color::DarkGray)),
-            ]))
-        })
-        .collect();
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Models "))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("› ");
-    let mut state = ListState::default();
-    state.select(app.selected_model);
     frame.render_stateful_widget(list, area, &mut state);
 }
 
