@@ -105,6 +105,76 @@ fn browser_help_and_explicit_composer_help_do_not_submit_on_dismissal() {
 }
 
 #[test]
+fn escape_interrupts_exact_work_without_discarding_the_draft() {
+    let (session, run) = fixture_session_and_run();
+    let session_id = session.id;
+    let run_id = run.id;
+    let mut app = AppState::new("test-server");
+    app.open_session(session, Vec::new(), vec![run], Some(run_id), None)
+        .unwrap();
+    app.handle_paste("keep this draft");
+    let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    let control_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+    assert_eq!(app.handle_key(control_x), AppAction::None);
+    assert_eq!(
+        app.handle_key(escape),
+        AppAction::CancelRun { session_id, run_id }
+    );
+    assert_eq!(app.prompt.as_str(), "keep this draft");
+    assert_eq!(app.view, View::Session);
+    app.information_dialog = Some(InformationDialog::Help);
+    assert_eq!(app.handle_key(escape), AppAction::None);
+    assert!(app.information_dialog.is_none());
+    let mut repeat = escape;
+    repeat.kind = ratatui_crossterm::crossterm::event::KeyEventKind::Repeat;
+    assert_eq!(app.handle_key(repeat), AppAction::None);
+    app.mark_pending(PendingOperation::CancelRun);
+    assert_eq!(app.handle_key(escape), AppAction::None);
+    app.pending = None;
+    let current = app.session.as_mut().unwrap();
+    current.active_run_id = None;
+    let command_id = morons_protocol::LocalCommandId::from_bytes([0x44; 16]);
+    current.active_command_id = Some(command_id);
+    assert_eq!(app.handle_key(control_x), AppAction::None);
+    assert_eq!(
+        app.handle_key(escape),
+        AppAction::CancelLocalCommand {
+            session_id,
+            command_id
+        }
+    );
+    app.session.as_mut().unwrap().active_command_id = None;
+    assert_eq!(app.handle_key(escape), AppAction::None);
+    assert_eq!(app.prompt.as_str(), "keep this draft");
+    assert_eq!(app.view, View::Session);
+}
+
+#[test]
+fn control_space_opens_browser_without_cancelling_work() {
+    let (session, run) = fixture_session_and_run();
+    let run_id = run.id;
+    let mut app = AppState::new("test-server");
+    app.open_session(session, Vec::new(), vec![run], Some(run_id), None)
+        .unwrap();
+    for key in [
+        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Null, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Null, KeyModifiers::CONTROL),
+    ] {
+        assert_eq!(app.handle_key(key), AppAction::CloseSession);
+        assert_eq!(app.session.as_ref().unwrap().active_run_id, Some(run_id));
+        app.information_dialog = Some(InformationDialog::Help);
+        assert_eq!(app.handle_key(key), AppAction::None);
+        app.information_dialog = None;
+        app.mark_pending(PendingOperation::CancelRun);
+        assert_eq!(app.handle_key(key), AppAction::None);
+        app.pending = None;
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+    assert_eq!(app.prompt.as_str(), " ");
+}
+
+#[test]
 fn prompt_paste_and_rendering_remain_bounded() {
     let (session, run) = fixture_session_and_run();
     let mut app = AppState::new("test-server");

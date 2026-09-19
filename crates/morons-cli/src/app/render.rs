@@ -632,7 +632,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             "↑↓ select · Enter open · n new · r rename · a archive · d delete archived · Ctrl+K credential · Ctrl+S stop · q detach"
         }
         View::Session => {
-            "Enter send · wheel/PgUp/PgDn scroll · Home/End · @ skill · /model · /settings · /login · /logout · /context · /compact · Esc sessions · Ctrl+X cancel"
+            "Enter send · wheel/PgUp/PgDn scroll · Home/End · @ skill · /model · /settings · /login · /logout · /context · /compact · Ctrl+Space sessions · Esc cancel"
         }
     };
     let status = Line::from(vec![
@@ -832,7 +832,7 @@ fn render_information_dialog(
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure data-use policy · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · /help session help · ? browser help · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Ctrl+X cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Esc sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure data-use policy · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · /help session help · ? browser help · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Esc cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Ctrl+Space sessions · q detach from browser\n\nEnter/Esc/? close",
             88,
             16,
         ),
