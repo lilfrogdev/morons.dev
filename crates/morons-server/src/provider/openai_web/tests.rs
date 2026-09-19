@@ -222,8 +222,8 @@ fn hosted_citation_bounds_do_not_include_other_messages() {
 }
 
 #[test]
-fn hosted_output_rejects_missing_search_citations_and_contradictions() {
-    let mutations: [fn(&mut Vec<Value>); 16] = [
+fn hosted_output_rejects_missing_search_malformed_citations_and_contradictions() {
+    let mutations: [fn(&mut Vec<Value>); 15] = [
         |v| {
             v[1]["item"]["type"] = json!("function_call");
         },
@@ -235,9 +235,6 @@ fn hosted_output_rejects_missing_search_citations_and_contradictions() {
         },
         |v| {
             v[1]["item"]["action"]["queries"] = json!([null]);
-        },
-        |v| {
-            v[2]["item"]["content"][0]["annotations"] = json!([]);
         },
         |v| {
             v[2]["item"]["role"] = json!("user");

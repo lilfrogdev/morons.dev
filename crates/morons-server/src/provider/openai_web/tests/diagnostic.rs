@@ -54,7 +54,7 @@ fn hosted_diagnostic_tracks_exact_validation_guards_without_changing_errors() {
             v[2]["item"]["content"][0]["annotations"][0]["url"] = json!("file:///PRIVATE")
         }),
         (WebStage::Citation, |v| {
-            v[2]["item"]["content"][0]["annotations"] = json!([])
+            v[2]["item"]["content"][0]["annotations"] = json!(null)
         }),
         (WebStage::Completion, |v| {
             v[2]["item"]["phase"] = json!("commentary")
@@ -117,7 +117,6 @@ fn citation_reasons_identify_rejections_without_response_data() {
         (OffsetBounds, |p| {
             p["annotations"][0]["end_index"] = json!(99999)
         }),
-        (MissingCitations, |p| p["annotations"] = json!([])),
     ];
     for (expected, mutate) in cases {
         let mut v = events();
@@ -141,7 +140,7 @@ fn citation_reasons_identify_rejections_without_response_data() {
             Err(ProviderError::MalformedResponse)
         );
     }
-    let mut reason = Some(MissingCitations);
+    let mut reason = Some(Annotations);
     super::super::decode::decode_response_with_citations(
         &response_fixture(),
         &mut WebStage::Admission,
