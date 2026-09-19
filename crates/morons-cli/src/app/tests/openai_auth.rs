@@ -248,6 +248,15 @@ fn login_link_buttons_support_plain_and_control_click_and_narrow_layouts() {
                     kind: MouseEventKind::Down(MouseButton::Left),
                     column: 1,
                     row: 2,
+                    modifiers,
+                }),
+                AppAction::None
+            );
+            assert_eq!(
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: 1,
+                    row: 2,
                     modifiers
                 }),
                 AppAction::OpenAiLink(LinkAction::Open)
@@ -256,6 +265,15 @@ fn login_link_buttons_support_plain_and_control_click_and_narrow_layouts() {
             assert_eq!(
                 app.handle_mouse(MouseEvent {
                     kind: MouseEventKind::Down(MouseButton::Left),
+                    column: copy_x,
+                    row: copy_y,
+                    modifiers,
+                }),
+                AppAction::None
+            );
+            assert_eq!(
+                app.handle_mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
                     column: copy_x,
                     row: copy_y,
                     modifiers
@@ -287,4 +305,45 @@ fn login_link_buttons_support_plain_and_control_click_and_narrow_layouts() {
         AppAction::None
     );
     assert!(app.prompt.is_empty());
+}
+
+#[test]
+fn selection_is_app_wide_and_never_reads_hidden_credentials() {
+    use ratatui_crossterm::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let mut app = AppState::new("test");
+    app.credential_dialog = Some(CredentialDialog::Enter {
+        replacing: false,
+        input: CredentialBuffer::default(),
+    });
+    app.handle_paste("synthetic-secret-never-copy");
+    let shown = render(&mut app, 100, 24);
+    assert!(!shown.contains("synthetic-secret-never-copy"));
+    let mouse = |kind, column, row| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0));
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 99, 23));
+    let AppAction::CopySelection(text) =
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 99, 23))
+    else {
+        panic!("expected selection");
+    };
+    assert!(text.contains("morons"));
+    assert!(text.contains("Input is hidden"));
+    assert!(!text.contains("synthetic-secret-never-copy"));
+
+    app.credential_dialog = None;
+    open(&mut app, false);
+    key(&mut app, KeyCode::Enter);
+    app.handle_auth_event(AuthEvent::Started(url()));
+    render(&mut app, 100, 24);
+    app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 1, 2));
+    app.handle_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 8, 2));
+    assert!(matches!(
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 8, 2)),
+        AppAction::CopySelection(_)
+    ));
 }

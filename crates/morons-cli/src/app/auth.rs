@@ -110,7 +110,7 @@ impl AppState {
         }
     }
     pub(super) fn handle_auth_mouse(&mut self, mouse: MouseEvent) -> AppAction {
-        if mouse.kind != MouseEventKind::Down(MouseButton::Left) || self.login_link().is_none() {
+        if mouse.kind != MouseEventKind::Up(MouseButton::Left) || self.login_link().is_none() {
             return AppAction::None;
         }
         let Some(buttons) = self.auth_link_buttons else {

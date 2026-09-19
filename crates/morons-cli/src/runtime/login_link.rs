@@ -48,6 +48,43 @@ impl Drop for LinkRuntime {
     }
 }
 impl LinkRuntime {
+    pub(super) async fn copy_selection(&mut self, text: String) {
+        if let Some(job) = self.clipboard.take() {
+            drain(job).await;
+        }
+        let (cancel, cancellation) = watch::channel(false);
+        let scope = Arc::new(());
+        let task_scope = Arc::clone(&scope);
+        let sender = self.sender.clone();
+        let task = tokio::spawn(async move {
+            let text = zeroize::Zeroizing::new(text);
+            let result = match std::env::current_exe() {
+                Ok(executable) => {
+                    let mut command = Command::new(executable);
+                    command.arg(crate::login_link::SELECTION_HELPER);
+                    run_text(command, LinkAction::Copy, &text, cancellation, || {
+                        let _ = sender.try_send(LinkEvent {
+                            scope: Arc::clone(&task_scope),
+                            message: "Selection copied to clipboard",
+                        });
+                    })
+                    .await
+                }
+                Err(_) => Err(()),
+            };
+            if result.is_err() {
+                let _ = sender.try_send(LinkEvent {
+                    scope: task_scope,
+                    message: "Copy failed or is uncertain; clipboard may have changed",
+                });
+            }
+        });
+        self.clipboard = Some(Job {
+            scope,
+            cancel,
+            task,
+        });
+    }
     pub(super) fn reconcile(&self, scope: Option<&Arc<()>>) {
         for job in [&self.browser, &self.clipboard].into_iter().flatten() {
             if scope.is_none_or(|scope| !Arc::ptr_eq(scope, &job.scope)) {
@@ -156,9 +193,19 @@ fn failure(action: LinkAction) -> &'static str {
     }
 }
 async fn run(
-    mut command: Command,
+    command: Command,
     action: LinkAction,
     url: &OpenAiAuthorizationUrl,
+    cancel: watch::Receiver<bool>,
+    ready: impl FnOnce(),
+) -> Result<(), ()> {
+    run_text(command, action, url.as_str(), cancel, ready).await
+}
+
+async fn run_text(
+    mut command: Command,
+    action: LinkAction,
+    text: &str,
     mut cancel: watch::Receiver<bool>,
     ready: impl FnOnce(),
 ) -> Result<(), ()> {
@@ -185,8 +232,8 @@ async fn run(
                 LinkAction::Open => child.wait().await.map_err(|_| ()).and_then(|s| s.success().then_some(()).ok_or(())),
                 LinkAction::Copy => {
                     let input = child.stdin.as_mut().ok_or(())?;
-                    input.write_all(&(url.as_str().len() as u32).to_be_bytes()).await.map_err(|_| ())?;
-                    input.write_all(url.as_str().as_bytes()).await.map_err(|_| ())?;
+                    input.write_all(&(text.len() as u32).to_be_bytes()).await.map_err(|_| ())?;
+                    input.write_all(text.as_bytes()).await.map_err(|_| ())?;
                     input.flush().await.map_err(|_| ())?;
                     let mut ack = [0];
                     child.stdout.as_mut().ok_or(())?.read_exact(&mut ack).await.map_err(|_| ())?;

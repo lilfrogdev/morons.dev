@@ -68,6 +68,7 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     if let Some(dialog) = app.auth_dialog.as_ref() {
         app.auth_link_buttons = super::auth::render(frame, dialog, &mut app.auth_scroll);
     }
+    app.selection.render(frame.buffer_mut());
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
