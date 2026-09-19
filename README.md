@@ -97,8 +97,8 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `d` in the session browser: delete an archived session's Morons-owned history and attachments after confirmation; the working directory is never changed
 - `Tab` / `Shift+Tab`: complete or navigate visible skill matches
 - `Ctrl+V` (`Alt+V` on Windows): paste an image when available
-- `Ctrl+X`: cancel the selected session's active run or command
-- `Esc`: return to the session browser without cancelling server-owned work
+- `Esc`: request cancellation of the selected session's active run or command; dialogs consume `Esc` first. Completed effects are not rolled back.
+- `Ctrl+Space`: return to the session browser without cancelling server-owned work (legacy terminals may encode this as NUL, also shared by `Ctrl+@`).
 - `?` in the session browser or `/help` in the composer: show usage and the security disclosure; question marks in text input remain literal
 - `Ctrl+S`: stop the companion server and interrupt active work
 

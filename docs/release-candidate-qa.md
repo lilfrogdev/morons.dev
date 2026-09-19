@@ -173,8 +173,8 @@ Record every item as `pass`, `fail`, `blocked`, or `not run`. A failure blocks t
 
 | ID | Check |
 | --- | --- |
-| LIFE-01 | `Ctrl+X` cancels the exact active run/command, stops descendants, and leaves completed filesystem effects visible rather than claiming rollback. |
-| LIFE-02 | `Esc` detaches from an active run without cancelling it; reopening shows the durable outcome. |
+| LIFE-01 | `Esc` cancels the exact active run/command, stops descendants, and leaves completed filesystem effects visible rather than claiming rollback. Dialogs consume `Esc` first; idle Escape preserves the draft and session. |
+| LIFE-02 | `Ctrl+Space` (including legacy NUL encoding) returns to the session browser during an active run without cancelling it; reopening shows the durable outcome. |
 | LIFE-03 | `Ctrl+S` requires confirmation, stops the companion, interrupts active work durably, and restores terminal ownership. |
 | LIFE-04 | After forced companion termination, restart marks interrupted work terminal and never replays provider, command, Python, web, or filesystem effects. |
 | LIFE-05 | ANSI-colored command output and IPython tracebacks render as plain text with no control-sequence fragments. |

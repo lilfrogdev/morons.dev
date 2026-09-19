@@ -14,6 +14,9 @@ impl AppState {
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
             return AppAction::None;
         }
+        if key.code == KeyCode::Esc && key.kind == KeyEventKind::Repeat {
+            return AppAction::None;
+        }
         if self.auth_dialog.is_some() {
             return self.handle_auth_key(key.code, key.modifiers);
         }
@@ -94,6 +97,9 @@ impl AppState {
         }
         if self.credential_dialog.is_some() {
             return self.handle_credential_key(key.code, key.modifiers);
+        }
+        if key.code == KeyCode::Null {
+            return self.handle_control_key(KeyCode::Char(' '));
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return self.handle_control_key(key.code);
@@ -295,6 +301,9 @@ impl AppState {
 
     fn handle_control_key(&mut self, code: KeyCode) -> AppAction {
         match code {
+            KeyCode::Char(' ') if self.view == View::Session && self.pending.is_none() => {
+                AppAction::CloseSession
+            }
             KeyCode::Char('k') if self.pending.is_none() => {
                 self.auth_scroll = 0;
                 self.auth_dialog = Some(super::auth::AuthDialog::Choose { logout: false });
@@ -305,26 +314,6 @@ impl AppState {
                 self.confirm_stop = true;
                 AppAction::None
             }
-            KeyCode::Char('x') if self.view == View::Session && self.pending.is_none() => self
-                .session
-                .as_ref()
-                .and_then(|session| {
-                    session
-                        .active_run_id
-                        .map(|run_id| AppAction::CancelRun {
-                            session_id: session.summary.id,
-                            run_id,
-                        })
-                        .or_else(|| {
-                            session.active_command_id.map(|command_id| {
-                                AppAction::CancelLocalCommand {
-                                    session_id: session.summary.id,
-                                    command_id,
-                                }
-                            })
-                        })
-                })
-                .unwrap_or(AppAction::None),
             _ => AppAction::None,
         }
     }
@@ -560,7 +549,26 @@ impl AppState {
 
     fn handle_session_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> AppAction {
         match code {
-            KeyCode::Esc if self.pending.is_none() => AppAction::CloseSession,
+            KeyCode::Esc if self.pending.is_none() => self
+                .session
+                .as_ref()
+                .and_then(|session| {
+                    session
+                        .active_run_id
+                        .map(|run_id| AppAction::CancelRun {
+                            session_id: session.summary.id,
+                            run_id,
+                        })
+                        .or_else(|| {
+                            session.active_command_id.map(|command_id| {
+                                AppAction::CancelLocalCommand {
+                                    session_id: session.summary.id,
+                                    command_id,
+                                }
+                            })
+                        })
+                })
+                .unwrap_or(AppAction::None),
             KeyCode::Tab => {
                 let _ = self.complete_selected_skill();
                 AppAction::None
