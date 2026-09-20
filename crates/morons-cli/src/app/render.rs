@@ -68,7 +68,34 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     if let Some(dialog) = app.auth_dialog.as_ref() {
         app.auth_link_buttons = super::auth::render(frame, dialog, &mut app.auth_scroll);
     }
-    app.selection.render(frame.buffer_mut());
+    if app
+        .copy_toast
+        .as_ref()
+        .is_some_and(|(_, started)| started.elapsed() >= std::time::Duration::from_secs(4))
+    {
+        app.copy_toast = None;
+    }
+    if let Some((message, _)) = &app.copy_toast {
+        let width = area.width.min(74);
+        let height = area.height.min(4);
+        let toast = Rect::new(
+            area.right().saturating_sub(width),
+            area.bottom().saturating_sub(height),
+            width,
+            height,
+        );
+        frame.render_widget(Clear, toast);
+        frame.render_widget(
+            Paragraph::new(message.as_str())
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(Color::Yellow))
+                .block(Block::default().borders(Borders::ALL).title(" Clipboard ")),
+            toast,
+        );
+    }
+    if app.selection.render(frame.buffer_mut()) {
+        app.show_copy_toast("Selection changed; select again to copy");
+    }
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -96,11 +123,6 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 }
 
 fn render_sessions(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(area);
-
     let items: Vec<ListItem<'_>> = app
         .sessions
         .iter()
@@ -147,43 +169,6 @@ fn render_sessions(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     if !app.sessions.is_empty() {
         state.select(Some(app.selected_session));
     }
-    frame.render_stateful_widget(list, columns[0], &mut state);
-    render_models(frame, columns[1], app);
-}
-
-fn render_models(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
-    let items: Vec<ListItem<'_>> = app
-        .models
-        .iter()
-        .map(|model| {
-            let service = service_label(model.model.service);
-            let availability = if app.model_policy_blocked(&model.model) {
-                " data-use blocked"
-            } else if model.model.available {
-                ""
-            } else {
-                " unavailable"
-            };
-            ListItem::new(Line::from(vec![
-                Span::raw(service),
-                Span::raw(" · "),
-                Span::raw(model.display_name.first_line()),
-                Span::raw(" · "),
-                Span::raw(model.id.first_line()),
-                Span::styled(availability, Style::default().fg(Color::DarkGray)),
-            ]))
-        })
-        .collect();
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Models "))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("› ");
-    let mut state = ListState::default();
-    state.select(app.selected_model);
     frame.render_stateful_widget(list, area, &mut state);
 }
 
@@ -467,7 +452,7 @@ fn transcript_block<'a>(
             lines.push(Line::from(Span::styled(entry.role, role_style)));
             explain_graphemes(&mut lines, &entry.text);
         }
-        extend_part_lines(&mut lines, text, last);
+        extend_part_lines(&mut lines, &entry.text, text, last);
         if last {
             if let Some(run) = terminal_run_by_last_entry.get(&index) {
                 lines.push(Line::default());
@@ -502,7 +487,7 @@ fn transcript_block<'a>(
             )));
             explain_graphemes(&mut lines, &transient.presented);
         }
-        extend_part_lines(&mut lines, text, last);
+        extend_part_lines(&mut lines, &transient.presented, text, last);
         if last && transient.truncated {
             lines.push(Line::from(Span::styled(
                 "Preview paused; waiting for complete message",
@@ -630,10 +615,10 @@ fn render_model_disclosure(
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let help = match app.view {
         View::Sessions => {
-            "↑↓ select · Enter open · n new · r rename · a archive · d delete archived · Ctrl+K credential · Ctrl+S stop · q detach"
+            "↑↓ select · Enter open · n new · r rename · a archive · d delete archived · Ctrl+K credential · Ctrl+S stop · Ctrl+D/q detach"
         }
         View::Session => {
-            "Enter send · wheel/PgUp/PgDn scroll · Home/End · @ skill · /model · /settings · /login · /logout · /context · /compact · Ctrl+Space sessions · Esc cancel"
+            "Enter send · wheel/PgUp/PgDn scroll · Home/End · @ skill · /model · /settings · /login · /logout · /context · /compact · Ctrl+Space sessions · Esc cancel · Ctrl+D detach"
         }
     };
     let status = Line::from(vec![
@@ -833,7 +818,7 @@ fn render_information_dialog(
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure data-use policy · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · /help session help · ? browser help · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Esc cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Ctrl+Space sessions · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure data-use policy · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · /help session help · ? browser help · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Esc cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Ctrl+Space sessions · Ctrl+D detach (server and work continue) · q detach from browser\n\nEnter/Esc/? close",
             88,
             16,
         ),
@@ -952,7 +937,12 @@ fn render_stop_confirmation(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-fn extend_part_lines<'a>(lines: &mut Vec<Line<'a>>, text: &'a str, last: bool) {
+fn extend_part_lines<'a>(
+    lines: &mut Vec<Line<'a>>,
+    source: &'a crate::terminal::TranscriptText,
+    text: &'a str,
+    last: bool,
+) {
     // A structural newline separating parts is not an extra blank display row.
     // Final deliberate empty lines belong to the delivered text and stay visible.
     let text = if last {
@@ -960,7 +950,7 @@ fn extend_part_lines<'a>(lines: &mut Vec<Line<'a>>, text: &'a str, last: bool) {
     } else {
         text.strip_suffix('\n').unwrap_or(text)
     };
-    lines.extend(text.split('\n').map(Line::from));
+    lines.extend(text.split('\n').map(|line| source.line(line)));
 }
 
 fn explain_graphemes(lines: &mut Vec<Line<'_>>, text: &crate::terminal::TranscriptText) {

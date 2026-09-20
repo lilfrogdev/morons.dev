@@ -131,12 +131,15 @@ pub async fn run_terminal_application_with_debug(
     let mut runtime = RuntimeState::new(server_version, request_worker);
     enqueue_initial_queries(&request_commands)?;
 
+    let mut toast_tick = tokio::time::interval(std::time::Duration::from_millis(250));
+    toast_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let result = loop {
         runtime
             .links
             .reconcile(runtime.app.login_link().map(|link| &link.scope));
         terminal.draw(|frame| runtime.app.render(frame))?;
         tokio::select! {
+            _ = toast_tick.tick(), if runtime.app.copy_toast.is_some() => {}
             input = terminal_events.next() => {
                 let Some(input) = input else {
                     break Err(TerminalApplicationError::Terminal(io::Error::new(
@@ -201,7 +204,10 @@ pub async fn run_terminal_application_with_debug(
                 }
             }
             event = runtime.selection_clipboard.events.recv() => {
-                if let Some(event) = event { runtime.app.set_status(event.message); }
+                if let Some(event) = event {
+                    runtime.app.show_copy_toast(event.message);
+                    runtime.app.set_status(event.message);
+                }
             }
             event = runtime.links.events.recv() => {
                 if let Some(event) = event {runtime.app.handle_link_event(event);}
@@ -269,7 +275,10 @@ impl RuntimeState {
         commands: &mpsc::Sender<RequestCommand>,
     ) -> Result<bool, TerminalApplicationError> {
         match action {
-            AppAction::CopySelection(text) => self.selection_clipboard.copy_selection(text).await,
+            AppAction::CopySelection(text) => {
+                self.app.show_copy_toast("Copying selection…");
+                self.selection_clipboard.copy_selection(text).await;
+            }
             AppAction::None => {}
             AppAction::Quit => return Ok(true),
             AppAction::Refresh => {

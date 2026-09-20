@@ -1,3 +1,5 @@
+mod markdown;
+
 use std::{fmt, ops::Range};
 
 use ratatui::{style::Style, text::Span};
@@ -16,6 +18,7 @@ pub(crate) struct TranscriptText {
     text: String,
     parts: Vec<Range<usize>>,
     escaped_graphemes: bool,
+    styles: Vec<(Range<usize>, Style)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +49,7 @@ impl TranscriptText {
                 text: String::with_capacity(sanitized.len()),
                 parts: Vec::new(),
                 escaped_graphemes: false,
+                styles: Vec::new(),
             },
             start: 0,
             scalars: 0,
@@ -87,6 +91,32 @@ impl TranscriptText {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.text
+    }
+
+    pub(crate) fn line<'a>(&'a self, text: &'a str) -> ratatui::text::Line<'a> {
+        let start = text.as_ptr() as usize - self.text.as_ptr() as usize;
+        let end = start + text.len();
+        let mut spans = Vec::new();
+        let mut cursor = start;
+        let first = self.styles.partition_point(|(range, _)| range.end <= start);
+        for (range, style) in self.styles[first..]
+            .iter()
+            .take_while(|(range, _)| range.start < end)
+        {
+            let left = range.start.max(start);
+            let right = range.end.min(end);
+            if cursor < left {
+                spans.push(Span::raw(&self.text[cursor..left]));
+            }
+            if left < right {
+                spans.push(Span::styled(&self.text[left..right], *style));
+            }
+            cursor = right;
+        }
+        if cursor < end {
+            spans.push(Span::raw(&self.text[cursor..end]));
+        }
+        ratatui::text::Line::from(spans)
     }
 
     pub fn parts(&self) -> impl Iterator<Item = &str> {
