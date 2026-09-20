@@ -60,6 +60,13 @@ pub(crate) fn append_run_transition(
             reason: "a run transition has an invalid terminal classification",
         });
     }
+    if state.is_terminal() {
+        transaction.execute(
+            "UPDATE steering_queues SET paused = 1, revision = revision + 1
+             WHERE session_id = ?1 AND target_run_id = ?2 AND paused = 0",
+            params![&run.session_id.as_bytes()[..], &run.id.as_bytes()[..]],
+        )?;
+    }
     let fact_sequence = next_sequence(transaction)?;
     let audit_sequence = next_sequence(transaction)?;
     transaction.execute(

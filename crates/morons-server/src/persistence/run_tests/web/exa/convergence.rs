@@ -158,7 +158,7 @@ async fn schema_41_preserves_populated_search_evidence_and_accepts_wide_ordinals
             crate::persistence::data_use::tests::restore_schema_40(&db);
         } else {
             // Exercise the table rebuild without rewriting already committed evidence.
-            crate::persistence::data_use::tests::remove_child_schema(&db);
+            crate::persistence::data_use::tests::remove_post_v41_schema(&db);
             db.pragma_update(None, "foreign_keys", false).unwrap();
             db.execute_batch(include_str!("../../../schema_v41.sql"))
                 .unwrap();

@@ -190,6 +190,13 @@ impl Backend {
                 &event_id[..],
             ],
         )?;
+        if archived {
+            transaction.execute(
+                "UPDATE steering_queues SET paused = 1, revision = revision + 1
+                 WHERE session_id = ?1 AND paused = 0",
+                [&session_id.as_bytes()[..]],
+            )?;
+        }
         transaction.commit()?;
         Ok((session, false))
     }
