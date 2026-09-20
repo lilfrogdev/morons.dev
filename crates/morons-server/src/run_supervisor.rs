@@ -311,7 +311,12 @@ impl RunSupervisor {
                             .finish_run_failure(
                                 run_id,
                                 None,
-                                self.classify_provider_failure(error),
+                                self.classify_provider_failure(
+                                    &context,
+                                    crate::debug_log::DebugProviderStage::Compaction,
+                                    error,
+                                    error != ProviderError::DataUseRestricted,
+                                ),
                                 if error == ProviderError::DataUseRestricted {
                                     ProviderOperationFailureState::Failed
                                 } else {
@@ -347,7 +352,12 @@ impl RunSupervisor {
                         .finish_run_failure(
                             run_id,
                             None,
-                            self.classify_provider_failure(error),
+                            self.classify_provider_failure(
+                                &context,
+                                crate::debug_log::DebugProviderStage::Request,
+                                error,
+                                false,
+                            ),
                             ProviderOperationFailureState::Failed,
                         )
                         .await?;
@@ -400,7 +410,12 @@ impl RunSupervisor {
                         .finish_run_failure(
                             run_id,
                             Some(operation_id),
-                            self.classify_provider_failure(error),
+                            self.classify_provider_failure(
+                                &context,
+                                crate::debug_log::DebugProviderStage::PrepareDispatch,
+                                error,
+                                false,
+                            ),
                             ProviderOperationFailureState::Failed,
                         )
                         .await?;
@@ -461,7 +476,13 @@ impl RunSupervisor {
                         .finish_run_failure(
                             run_id,
                             Some(operation_id),
-                            self.classify_provider_failure(error),
+                            self.classify_provider_failure(
+                                &context,
+                                crate::debug_log::DebugProviderStage::Execute,
+                                error,
+                                provider_failure_state(error)
+                                    == ProviderOperationFailureState::Uncertain,
+                            ),
                             provider_failure_state(error),
                         )
                         .await?;
@@ -592,7 +613,20 @@ impl RunSupervisor {
         }
     }
 
-    fn classify_provider_failure(&self, error: ProviderError) -> RunFailureKind {
+    fn classify_provider_failure(
+        &self,
+        context: &crate::persistence::RunContext,
+        stage: crate::debug_log::DebugProviderStage,
+        error: ProviderError,
+        uncertain: bool,
+    ) -> RunFailureKind {
+        crate::debug_log::emit(crate::debug_log::DebugEvent::ProviderFailure {
+            session_id: *context.run.session_id.as_bytes(),
+            run_id: *context.run.id.as_bytes(),
+            stage,
+            error,
+            uncertain,
+        });
         if error == ProviderError::CredentialStoreUnavailable {
             self.shutdown_requests.send_replace(true);
         }

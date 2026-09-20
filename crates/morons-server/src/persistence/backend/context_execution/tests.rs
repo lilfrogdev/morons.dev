@@ -1,5 +1,66 @@
 use super::*;
 
+#[test]
+fn rejected_budget_diagnostics_match_policy_guards() {
+    let run = RunId::from_bytes([7; 16]);
+    for policy in [
+        ExecutionPolicy::Legacy,
+        ExecutionPolicy::ConservativeRepeated,
+        ExecutionPolicy::NativeUsage,
+    ] {
+        for budget in [
+            ContextBudget::default(),
+            ContextBudget {
+                bytes: MAX_SOURCE_BYTES + 1,
+                observed_input_tokens: Some(1),
+                ..Default::default()
+            },
+            ContextBudget {
+                entries: 233,
+                ..Default::default()
+            },
+            ContextBudget {
+                images: 100,
+                ..Default::default()
+            },
+            ContextBudget {
+                image_bytes: u64::MAX,
+                ..Default::default()
+            },
+        ] {
+            let events: Vec<_> = policy
+                .rejected_budget_events(run, &budget, 96_000, 0)
+                .collect();
+            assert_eq!(events.is_empty(), policy.fits(&budget, 96_000, 0));
+            for event in events {
+                let crate::debug_log::DebugEvent::ContextLimit {
+                    run_id,
+                    call_id,
+                    measured,
+                    limit,
+                    ..
+                } = event
+                else {
+                    panic!("unexpected event")
+                };
+                assert_eq!(run_id, [7; 16]);
+                assert_eq!(call_id, None);
+                assert!(measured > limit);
+            }
+        }
+        let boundary = ContextBudget {
+            entries: 232,
+            ..Default::default()
+        };
+        assert_eq!(
+            policy
+                .rejected_budget_events(run, &boundary, 96_000, 0)
+                .count(),
+            0
+        );
+    }
+}
+
 mod native;
 
 #[tokio::test(flavor = "current_thread")]

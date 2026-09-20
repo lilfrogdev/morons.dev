@@ -178,11 +178,32 @@ pub enum DebugCitationRejection {
 pub enum DebugContextCheck {
     ToolInputBytes,
     ToolResultBytes,
+    InputTokens,
+    SourceBytes,
+    ReservedEntries,
+    ImageCount,
+    ImageBytes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DebugProviderStage {
+    Compaction,
+    Request,
+    PrepareDispatch,
+    Execute,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DebugEvent {
+    ProviderFailure {
+        session_id: [u8; 16],
+        run_id: [u8; 16],
+        stage: DebugProviderStage,
+        error: ProviderError,
+        uncertain: bool,
+    },
     ContextLimit {
         run_id: [u8; 16],
         call_id: Option<[u8; 16]>,
@@ -435,7 +456,7 @@ impl DebugEvent {
         match self {
             Self::Started | Self::Dropped { .. } => "logger",
             Self::Startup { .. } => "startup",
-            Self::Provider { .. } => "provider",
+            Self::Provider { .. } | Self::ProviderFailure { .. } => "provider",
             Self::WebSearch { .. } | Self::WebCitation { .. } | Self::WebUsage { .. } => {
                 "web_search"
             }
@@ -454,6 +475,7 @@ impl DebugEvent {
             }
             | Self::Provider { error: Some(_), .. }
             | Self::Child { error: Some(_), .. }
+            | Self::ProviderFailure { .. }
             | Self::ContextLimit { .. }
             | Self::ToolLimit { .. }
             | Self::Resource { .. }

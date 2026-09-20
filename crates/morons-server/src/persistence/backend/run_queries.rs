@@ -465,6 +465,15 @@ impl Backend {
                     .as_ref()
                     .map_or(0, |checkpoint| checkpoint.summary.len()),
         ) {
+            execution.log_rejected_budget(
+                run.id,
+                &budget,
+                run.maximum_input_tokens,
+                instruction_bytes
+                    + checkpoint
+                        .as_ref()
+                        .map_or(0, |checkpoint| checkpoint.summary.len()),
+            );
             return Err(PersistenceError::ResourceLimit {
                 resource: crate::persistence::PersistenceResourceLimit::Context,
             });
