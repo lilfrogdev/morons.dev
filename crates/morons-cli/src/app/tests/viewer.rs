@@ -1,6 +1,30 @@
 use super::*;
 use crate::app::transcript::PresentedTranscriptEntry;
 
+#[test]
+fn prompt_cursor_is_visible_after_scrolling_and_resize() {
+    let (mut app, _) = opened("reply".to_owned());
+    app.prompt
+        .push_paste(&format!("{}\n{}", "line\n".repeat(20), "界".repeat(80)));
+    for width in [40, 28, 60] {
+        let backend = ratatui::backend::TestBackend::new(width, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let completed = terminal.draw(|frame| app.render(frame)).unwrap();
+        assert!(
+            !completed
+                .buffer
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .contains("connected · server")
+        );
+        let position = terminal.get_cursor_position().unwrap();
+        assert!(position.x < width && position.y < 24);
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    }
+}
+
 fn message(run: &RunSummary, id: u8, text: String) -> TranscriptEntry {
     TranscriptEntry::AssistantMessage {
         id: MessageId::from_bytes([id; 16]),
@@ -45,6 +69,55 @@ fn delta(app: &mut AppState, run: &RunSummary, sequence: u64, text: &str) {
         refusal: false,
     })
     .unwrap();
+}
+
+#[test]
+fn chat_messages_align_by_speaker_after_wrapping_and_resize() {
+    let (session, run) = fixture_session_and_run();
+    let mut app = AppState::new("test-server");
+    app.open_session(
+        session,
+        vec![
+            TranscriptEntry::UserMessage {
+                id: run.user_message_id,
+                run_id: run.id,
+                text: "hello 界\nabcdefghijklmnopqrstuvwxy tail".to_owned(),
+                attachments: Vec::new(),
+                created_at_milliseconds: 1,
+            },
+            message(&run, 2, "left reply".to_owned()),
+            TranscriptEntry::ToolCall {
+                id: MessageId::from_bytes([3; 16]),
+                run_id: run.id,
+                call_id: morons_protocol::ToolCallId::from_bytes([4; 16]),
+                tool: morons_protocol::ToolKind::ReadFile,
+                path: "file.rs".to_owned(),
+                created_at_milliseconds: 1,
+            },
+        ],
+        vec![run.clone()],
+        Some(run.id),
+        None,
+    )
+    .unwrap();
+    for width in [40, 28, 50] {
+        let rows = render_rows(&mut app, width, 30);
+        for suffix in ["You│", "hello 界 │", "tail│"] {
+            assert!(rows.iter().any(|row| row.ends_with(suffix)), "{rows:?}");
+        }
+        for prefix in [
+            "│Moron",
+            "│left reply",
+            "│Tool call",
+            "│read_file · file.rs",
+        ] {
+            assert!(rows.iter().any(|row| row.starts_with(prefix)), "{rows:?}");
+        }
+    }
+    delta(&mut app, &run, 1, "streamed reply");
+    let rows = render_rows(&mut app, 50, 30);
+    assert!(rows.iter().any(|row| row.starts_with("│Moron · streaming")));
+    assert!(rows.iter().any(|row| row.starts_with("│streamed reply")));
 }
 
 #[test]
@@ -116,7 +189,7 @@ fn structural_part_newlines_do_not_drop_final_empty_lines_or_duplicate_outcomes(
     assert_eq!(rows.join("\n").matches("Run failed · Zen").count(), 2);
     app.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
     let rows = render_rows(&mut app, 200, 20);
-    assert!(rows[2].contains("Assistant"));
+    assert!(rows[1].contains("Moron"));
     assert!(!rows[3..15].join("\n").contains("Run failed"));
 }
 

@@ -292,7 +292,7 @@ impl PresentedTranscriptEntry {
                 id,
                 run_id: Some(run_id),
                 command_id: None,
-                role: "Assistant",
+                role: "Moron",
                 text: TranscriptText::from_markdown(&text)
                     .map_err(|_| UiStateError::ResourceLimitExceeded)?,
                 refusal,

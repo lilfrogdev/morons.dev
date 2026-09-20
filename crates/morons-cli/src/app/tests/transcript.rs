@@ -413,7 +413,7 @@ fn composer_stays_bottom_docked_and_grows_upward() {
     assert!(row_containing(&completion_rows, "Skills ·").is_some());
 
     app.prompt.clear();
-    app.handle_paste(&"wrapped composer text ".repeat(40));
+    app.handle_paste(&"multiline composer text\n".repeat(40));
     let long_rows = render_rows(&mut app, 60, 24);
     let long_top =
         row_containing(&long_rows, "Message · Enter submit").expect("long composer should render");

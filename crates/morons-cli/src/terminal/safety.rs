@@ -79,6 +79,8 @@ impl fmt::Debug for SafeText {
 #[derive(Default, PartialEq, Eq)]
 pub struct PromptBuffer {
     text: String,
+    cursor: usize,
+    markers: Vec<(usize, usize)>,
 }
 
 impl PromptBuffer {
@@ -119,12 +121,85 @@ impl PromptBuffer {
         }
     }
 
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn set_cursor(&mut self, position: usize) {
+        if position <= self.text.len() && self.text.is_char_boundary(position) {
+            self.cursor = self
+                .markers
+                .iter()
+                .find(|(start, end)| position > *start && position < *end)
+                .map_or(position, |(_, end)| *end);
+        }
+    }
+
+    pub fn move_left(&mut self) {
+        if let Some((position, _)) = self.text[..self.cursor].char_indices().next_back() {
+            self.cursor = self
+                .markers
+                .iter()
+                .find(|(start, end)| position >= *start && position < *end)
+                .map_or(position, |(start, _)| *start);
+        }
+    }
+
+    pub fn move_right(&mut self) {
+        if let Some(character) = self.text[self.cursor..].chars().next() {
+            self.set_cursor(self.cursor + character.len_utf8());
+        }
+    }
+
+    pub fn move_vertical(&mut self, down: bool) {
+        let start = self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1);
+        let column = self.text[start..self.cursor].chars().count();
+        let target = if down {
+            self.text[self.cursor..]
+                .find('\n')
+                .map(|i| self.cursor + i + 1)
+        } else {
+            start
+                .checked_sub(1)
+                .map(|end| self.text[..end].rfind('\n').map_or(0, |i| i + 1))
+        };
+        if let Some(target) = target {
+            let line = self.text[target..].split('\n').next().unwrap_or_default();
+            let offset = line
+                .char_indices()
+                .nth(column)
+                .map_or(line.len(), |(i, _)| i);
+            self.set_cursor(target + offset);
+        }
+    }
+
+    pub fn marker_start(&self, name: &str) -> Option<u32> {
+        self.markers.iter().find_map(|(start, end)| {
+            (self.text.get(start + 1..end - 1) == Some(name))
+                .then(|| u32::try_from(*start).ok())
+                .flatten()
+        })
+    }
+
     pub fn backspace(&mut self) {
-        self.text.pop();
+        let end = self.cursor;
+        self.move_left();
+        let start = self.cursor;
+        self.text.replace_range(start..end, "");
+        self.markers.retain(|(a, b)| *b <= start || *a >= end);
+        for (a, b) in &mut self.markers {
+            if *a >= end {
+                *a -= end - start;
+                *b -= end - start;
+            }
+        }
     }
 
     #[must_use]
     pub fn skill_completion_prefix(&self) -> Option<&str> {
+        if self.cursor != self.text.len() {
+            return None;
+        }
         let start = self
             .text
             .char_indices()
@@ -143,6 +218,12 @@ impl PromptBuffer {
     }
 
     pub fn push_image_marker(&mut self, display_name: &str) -> Option<u32> {
+        if display_name
+            .chars()
+            .any(|c| c.is_control() || is_bidirectional_control(c))
+        {
+            return None;
+        }
         let marker_bytes = display_name.len().checked_add(2)?;
         if self
             .text
@@ -152,10 +233,12 @@ impl PromptBuffer {
         {
             return None;
         }
-        let start = u32::try_from(self.text.len()).ok()?;
-        self.text.push('[');
-        self.text.push_str(display_name);
-        self.text.push(']');
+        let start = u32::try_from(self.cursor).ok()?;
+        let position = self.cursor;
+        for character in format!("[{display_name}]").chars() {
+            self.push_visible(character);
+        }
+        self.markers.push((position, self.cursor));
         Some(start)
     }
 
@@ -163,7 +246,16 @@ impl PromptBuffer {
         if bytes > self.text.len() || !self.text.is_char_boundary(bytes) {
             return false;
         }
+        if self
+            .markers
+            .iter()
+            .any(|(start, end)| bytes > *start && bytes < *end)
+        {
+            return false;
+        }
         self.text.truncate(bytes);
+        self.cursor = self.cursor.min(bytes);
+        self.markers.retain(|(_, end)| *end <= bytes);
         true
     }
 
@@ -183,11 +275,14 @@ impl PromptBuffer {
         self.text.push('@');
         self.text.push_str(name);
         self.text.push(' ');
+        self.cursor = self.text.len();
         true
     }
 
     pub fn clear(&mut self) {
         self.text.clear();
+        self.cursor = 0;
+        self.markers.clear();
     }
 
     fn push_visible(&mut self, character: char) -> bool {
@@ -195,7 +290,14 @@ impl PromptBuffer {
         if next_length.is_none_or(|length| length > MAX_PROMPT_BYTES) {
             return false;
         }
-        self.text.push(character);
+        self.text.insert(self.cursor, character);
+        for (start, end) in &mut self.markers {
+            if *start >= self.cursor {
+                *start += character.len_utf8();
+                *end += character.len_utf8();
+            }
+        }
+        self.cursor += character.len_utf8();
         true
     }
 }
