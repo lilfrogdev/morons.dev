@@ -1,6 +1,7 @@
 use super::*;
 
 mod convergence;
+mod steering;
 
 #[test]
 fn schema_version_one_migrates_to_current_version() {

@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 /// Reconstruct the old schema, not just its user_version, in owned test fixtures.
 pub(crate) fn restore_schema_33(connection: &Connection) {
-    remove_child_schema(connection);
+    remove_post_v41_schema(connection);
     let reference = super::super::database::schema_29_fixture();
     for schema in [
         include_str!("../schema_v30.sql"),
@@ -35,7 +35,7 @@ pub(crate) fn restore_schema_33(connection: &Connection) {
 }
 
 pub(crate) fn restore_schema_35(connection: &Connection) {
-    remove_child_schema(connection);
+    remove_post_v41_schema(connection);
     let reference = super::super::database::schema_29_fixture();
     for schema in [
         include_str!("../schema_v30.sql"),
@@ -65,7 +65,7 @@ pub(crate) fn restore_schema_35(connection: &Connection) {
 }
 
 pub(crate) fn restore_schema_40(connection: &Connection) {
-    remove_child_schema(connection);
+    remove_post_v41_schema(connection);
     let reference = super::super::database::schema_29_fixture();
     for schema in [
         include_str!("../schema_v30.sql"),
@@ -100,9 +100,14 @@ pub(crate) fn restore_schema_40(connection: &Connection) {
         .unwrap();
 }
 
-pub(crate) fn remove_child_schema(connection: &Connection) {
+pub(crate) fn remove_post_v41_schema(connection: &Connection) {
     connection
-        .execute_batch("DROP TABLE IF EXISTS child_journal; DROP TABLE IF EXISTS child_runs;")
+        .execute_batch(
+            "DROP TABLE IF EXISTS steering_pending_messages;
+             DROP TABLE IF EXISTS steering_queues;
+             DROP INDEX IF EXISTS run_accepted_facts_by_session_run;
+             DROP TABLE IF EXISTS child_journal; DROP TABLE IF EXISTS child_runs;",
+        )
         .unwrap();
 }
 
