@@ -26,9 +26,18 @@ execution, not a successful database commit. Commands, paths and output content
 are excluded. Provider and persistence limits retain their separate diagnostics.
 New `context_limit` warnings identify selected persistence checks using fixed enums,
 run/call identifiers, measured sizes and limits only. Coverage currently includes
-only tool payload encoding, not run-context entry, source-byte or input-token
-checks. These pre-commit observations do not prove persistence or authorize retry.
-No payload content is recorded.
+tool payload encoding and the final run-context budget guard (tokens, source bytes,
+reserved entries, image count and image bytes). Arithmetic and earlier compaction
+failures are not all individually instrumented. These pre-commit observations do
+not prove persistence or authorize retry. No payload content is recorded.
+
+Root `provider_failure` warnings correlate session/run IDs with fixed stages
+(compaction, request construction, dispatch preparation, response execution), the
+original `ProviderError` category, and the uncertainty classification supplied to
+persistence. They observe failure handling, not a successful commit. The shared
+error type does not retain HTTP status codes; these events do not invent them or
+capture raw transport errors. Logging remains opt-in, bounded and lossy, with no
+changes to credentials, retries, timeouts, routing or failure semantics.
 
 New files use exclusive creation; existing files and directories are validated,
 with symlinks rejected. Owner-only permissions are not secrecy from same-user

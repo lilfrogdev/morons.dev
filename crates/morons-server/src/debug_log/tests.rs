@@ -52,6 +52,41 @@ fn root_tool_limits_are_correlated_bounded_and_content_free() {
     );
 }
 
+#[test]
+fn provider_failures_preserve_categories_and_correlation() {
+    for stage in [
+        DebugProviderStage::Compaction,
+        DebugProviderStage::Request,
+        DebugProviderStage::PrepareDispatch,
+        DebugProviderStage::Execute,
+    ] {
+        for error in [
+            ProviderError::Unavailable,
+            ProviderError::Transport,
+            ProviderError::ResponseHeaderTimeout,
+            ProviderError::StreamInactivityTimeout,
+            ProviderError::TotalTimeout,
+        ] {
+            let event = DebugEvent::ProviderFailure {
+                session_id: [1; 16],
+                run_id: [2; 16],
+                stage,
+                error,
+                uncertain: true,
+            };
+            assert_eq!(event.level(), "warn");
+            assert_eq!(event.component(), "provider");
+            let value = decoded(event);
+            assert_eq!(value["kind"], "provider_failure");
+            assert_eq!(value["session_id"], json!(vec![1; 16]));
+            assert_eq!(value["run_id"], json!(vec![2; 16]));
+            assert_eq!(value["error"], serde_json::to_value(error).unwrap());
+            assert_eq!(value["stage"], serde_json::to_value(stage).unwrap());
+            assert_eq!(value["uncertain"], true);
+        }
+    }
+}
+
 const COMPLETION_WATCHDOG: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]

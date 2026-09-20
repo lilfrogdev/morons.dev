@@ -79,6 +79,74 @@ impl ExecutionPolicy {
             && budget.image_bytes <= crate::persistence::images::MAX_CONTEXT_IMAGE_BYTES
     }
 
+    pub(super) fn log_rejected_budget(
+        self,
+        run: RunId,
+        budget: &ContextBudget,
+        maximum: u32,
+        extra: usize,
+    ) {
+        for event in self.rejected_budget_events(run, budget, maximum, extra) {
+            crate::debug_log::emit(event);
+        }
+    }
+
+    fn rejected_budget_events(
+        self,
+        run: RunId,
+        budget: &ContextBudget,
+        maximum: u32,
+        extra: usize,
+    ) -> impl Iterator<Item = crate::debug_log::DebugEvent> {
+        use crate::debug_log::{DebugContextCheck as Check, DebugEvent};
+        let tokens = if self == Self::NativeUsage {
+            self.estimate(budget, extra)
+        } else {
+            budget.tokens(extra)
+        };
+        let checks = [
+            (Check::InputTokens, tokens, u64::from(maximum)),
+            (
+                Check::SourceBytes,
+                budget.bytes.saturating_add(extra as u64),
+                if self == Self::NativeUsage {
+                    MAX_SOURCE_BYTES
+                } else {
+                    u64::MAX
+                },
+            ),
+            (
+                Check::ReservedEntries,
+                budget
+                    .entries
+                    .saturating_add(budget.images)
+                    .saturating_add(CONTEXT_ITEM_RESERVE),
+                MAX_ACTIVE_CONTEXT_ENTRIES as u64,
+            ),
+            (
+                Check::ImageCount,
+                budget.images,
+                crate::persistence::images::MAX_CONTEXT_IMAGES as u64,
+            ),
+            (
+                Check::ImageBytes,
+                budget.image_bytes,
+                crate::persistence::images::MAX_CONTEXT_IMAGE_BYTES,
+            ),
+        ];
+        checks
+            .into_iter()
+            .filter_map(move |(check, measured, limit)| {
+                (measured > limit).then_some(DebugEvent::ContextLimit {
+                    run_id: *run.as_bytes(),
+                    call_id: None,
+                    check,
+                    measured,
+                    limit,
+                })
+            })
+    }
+
     pub(super) fn pressure(self, budget: &ContextBudget, maximum: u32, extra: usize) -> bool {
         if self != Self::NativeUsage {
             return budget.pressure(maximum, extra);
