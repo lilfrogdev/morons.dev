@@ -494,7 +494,7 @@ fn transcript_block<'a>(
             lines.push(Line::from(Span::styled(entry.role, role_style)));
             explain_graphemes(&mut lines, &entry.text);
         }
-        extend_part_lines(&mut lines, text, last);
+        extend_part_lines(&mut lines, &entry.text, text, last);
         if last {
             if let Some(run) = terminal_run_by_last_entry.get(&index) {
                 lines.push(Line::default());
@@ -529,7 +529,7 @@ fn transcript_block<'a>(
             )));
             explain_graphemes(&mut lines, &transient.presented);
         }
-        extend_part_lines(&mut lines, text, last);
+        extend_part_lines(&mut lines, &transient.presented, text, last);
         if last && transient.truncated {
             lines.push(Line::from(Span::styled(
                 "Preview paused; waiting for complete message",
@@ -979,7 +979,12 @@ fn render_stop_confirmation(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-fn extend_part_lines<'a>(lines: &mut Vec<Line<'a>>, text: &'a str, last: bool) {
+fn extend_part_lines<'a>(
+    lines: &mut Vec<Line<'a>>,
+    source: &'a crate::terminal::TranscriptText,
+    text: &'a str,
+    last: bool,
+) {
     // A structural newline separating parts is not an extra blank display row.
     // Final deliberate empty lines belong to the delivered text and stay visible.
     let text = if last {
@@ -987,7 +992,7 @@ fn extend_part_lines<'a>(lines: &mut Vec<Line<'a>>, text: &'a str, last: bool) {
     } else {
         text.strip_suffix('\n').unwrap_or(text)
     };
-    lines.extend(text.split('\n').map(Line::from));
+    lines.extend(text.split('\n').map(|line| source.line(line)));
 }
 
 fn explain_graphemes(lines: &mut Vec<Line<'_>>, text: &crate::terminal::TranscriptText) {
