@@ -1,6 +1,53 @@
 use super::*;
 
 #[test]
+fn prompt_cursor_and_newline_shortcuts_edit_in_place() {
+    let (session, run) = fixture_session_and_run();
+    let mut app = AppState::new("test-server");
+    app.open_session(session, Vec::new(), vec![run], None, None)
+        .unwrap();
+    app.prompt.push_paste("ab\ncd");
+    for code in [
+        KeyCode::Left,
+        KeyCode::Up,
+        KeyCode::Char('X'),
+        KeyCode::Down,
+        KeyCode::Char('Y'),
+    ] {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+    assert_eq!(app.prompt.as_str(), "aXb\ncdY");
+    for (code, modifiers) in [
+        (KeyCode::Enter, KeyModifiers::SHIFT),
+        (KeyCode::Enter, KeyModifiers::ALT),
+        (KeyCode::Char('j'), KeyModifiers::CONTROL),
+    ] {
+        assert_eq!(
+            app.handle_key(KeyEvent::new(code, modifiers)),
+            AppAction::None
+        );
+    }
+    assert_eq!(app.prompt.as_str(), "aXb\ncdY\n\n\n");
+}
+
+#[test]
+fn prompt_cursor_preserves_unicode_and_atomic_image_markers() {
+    let mut prompt = crate::terminal::PromptBuffer::default();
+    prompt.push_paste("界a");
+    prompt.push_image_marker("image.png").unwrap();
+    prompt.move_left();
+    prompt.push_character('!');
+    assert_eq!(prompt.marker_start("image.png"), Some(5));
+    prompt.move_right();
+    prompt.backspace();
+    assert_eq!(prompt.as_str(), "界a!");
+    assert_eq!(prompt.marker_start("image.png"), None);
+    prompt.set_cursor(3);
+    prompt.backspace();
+    assert_eq!(prompt.as_str(), "a!");
+}
+
+#[test]
 fn question_marks_are_text_in_prompts_and_both_command_modes() {
     for text in ["What? No tools.", "!printf '?done'", "!!printf '?done'"] {
         let (session, run) = fixture_session_and_run();

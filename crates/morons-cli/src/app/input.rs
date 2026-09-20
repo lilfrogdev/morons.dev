@@ -105,7 +105,9 @@ impl AppState {
         if key.code == KeyCode::Null {
             return self.handle_control_key(KeyCode::Char(' '));
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && !(self.view == View::Session && key.code == KeyCode::Char('j'))
+        {
             return self.handle_control_key(key.code);
         }
         if self.view == View::Sessions && key.code == KeyCode::Char('?') {
@@ -602,7 +604,30 @@ impl AppState {
                 self.backspace_prompt();
                 AppAction::None
             }
-            KeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) && self.pending.is_none() => {
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+                if self.pending.is_none() =>
+            {
+                match code {
+                    KeyCode::Left => self.prompt.move_left(),
+                    KeyCode::Right => self.prompt.move_right(),
+                    KeyCode::Up => self.prompt.move_vertical(false),
+                    KeyCode::Down => self.prompt.move_vertical(true),
+                    _ => {}
+                }
+                self.reset_skill_completion();
+                AppAction::None
+            }
+            KeyCode::Char('j')
+                if modifiers.contains(KeyModifiers::CONTROL) && self.pending.is_none() =>
+            {
+                let _ = self.prompt.push_character('\n');
+                self.reset_skill_completion();
+                AppAction::None
+            }
+            KeyCode::Enter
+                if modifiers.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+                    && self.pending.is_none() =>
+            {
                 let _ = self.prompt.push_character('\n');
                 self.reset_skill_completion();
                 AppAction::None

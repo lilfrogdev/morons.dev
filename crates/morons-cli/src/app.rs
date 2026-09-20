@@ -717,23 +717,23 @@ impl AppState {
     }
 
     pub(super) fn backspace_prompt(&mut self) {
-        if let Some(image) = self.draft_images.last() {
-            let marker_start = usize::try_from(image.upload.marker_start).unwrap_or(usize::MAX);
-            let marker_end = marker_start.saturating_add(image.upload.display_name.len() + 2);
-            if marker_end == self.prompt.len_bytes() && self.prompt.truncate(marker_start) {
-                self.draft_images.pop();
-                self.reset_skill_completion();
-                return;
-            }
-        }
         self.prompt.backspace();
+        self.draft_images.retain(|image| {
+            self.prompt
+                .marker_start(&image.upload.display_name)
+                .is_some()
+        });
         self.reset_skill_completion();
     }
 
     fn image_uploads(&self) -> Vec<morons_protocol::ImageUpload> {
         self.draft_images
             .iter()
-            .map(|image| image.upload.clone())
+            .filter_map(|image| {
+                let mut upload = image.upload.clone();
+                upload.marker_start = self.prompt.marker_start(&upload.display_name)?;
+                Some(upload)
+            })
             .collect()
     }
 

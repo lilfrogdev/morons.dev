@@ -24,12 +24,14 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(if app.view == View::Sessions { 1 } else { 0 }),
             Constraint::Min(1),
             Constraint::Length(2),
         ])
         .split(area);
-    render_header(frame, layout[0], app);
+    if app.view == View::Sessions {
+        render_header(frame, layout[0], app);
+    }
     match app.view {
         View::Sessions => render_sessions(frame, layout[1], app),
         View::Session => render_session(frame, layout[1], app),
@@ -177,7 +179,7 @@ fn render_sessions(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 pub(super) const MAX_PROMPT_HEIGHT: u16 = 10;
 
 fn render_session(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
-    let desired_prompt_height = prompt_height(area.width, app.prompt.as_str());
+    let desired_prompt_height = prompt_height(app.prompt.as_str());
     let desired_completion_height = app.skill_completion().map_or(0, |(skills, _)| {
         u16::try_from(skills.len().min(5) + 2).unwrap_or(7)
     });
@@ -277,12 +279,8 @@ fn render_session(frame: &mut Frame<'_>, area: Rect, app: &mut AppState) {
     }
 }
 
-fn prompt_height(width: u16, prompt: &str) -> u16 {
-    let inner_width = width.saturating_sub(2).max(1);
-    let rendered_lines = Paragraph::new(prompt)
-        .wrap(Wrap { trim: false })
-        .line_count(inner_width)
-        .max(1);
+fn prompt_height(prompt: &str) -> u16 {
+    let rendered_lines = prompt.split('\n').count();
     u16::try_from(rendered_lines)
         .unwrap_or(u16::MAX)
         .saturating_add(2)
@@ -293,16 +291,41 @@ fn render_prompt(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let prompt_title = if app.pending == Some(PendingOperation::SubmitInput) {
         " Message · submitting "
     } else {
-        " Message · Enter submit · Shift+Enter newline "
+        " Message · Enter submit · Shift+Enter / Ctrl+J newline "
     };
-    let prompt = SafeText::from_untrusted(app.prompt.as_str());
+    let prompt = app.prompt.as_str();
     let block = Block::default().borders(Borders::ALL).title(prompt_title);
     let inner = block.inner(area);
-    let paragraph = Paragraph::new(prompt.as_str()).wrap(Wrap { trim: false });
-    let rendered_height = paragraph.line_count(inner.width.max(1));
-    let scroll = u16::try_from(rendered_height.saturating_sub(usize::from(inner.height)))
-        .unwrap_or(u16::MAX);
-    frame.render_widget(paragraph.block(block).scroll((scroll, 0)), area);
+    let prefix = &prompt[..app.prompt.cursor()];
+    let row = prefix.chars().filter(|c| *c == '\n').count();
+    let column = Line::from(prefix.rsplit('\n').next().unwrap_or_default()).width();
+    let scroll_y = row.saturating_sub(usize::from(inner.height.saturating_sub(1)));
+    let scroll_x = column.saturating_sub(usize::from(inner.width.saturating_sub(1)));
+    frame.render_widget(
+        Paragraph::new(prompt).block(block).scroll((
+            u16::try_from(scroll_y).unwrap_or(u16::MAX),
+            u16::try_from(scroll_x).unwrap_or(u16::MAX),
+        )),
+        area,
+    );
+    if inner.width > 0
+        && inner.height > 0
+        && app.pending.is_none()
+        && app.credential_dialog.is_none()
+        && app.auth_dialog.is_none()
+        && app.model_dialog.is_none()
+        && app.settings_dialog.is_none()
+        && app.information_dialog.is_none()
+        && app.rename_dialog.is_none()
+        && !app.confirm_stop
+        && app.confirm_delete.is_none()
+        && !app.pending_unknown
+    {
+        frame.set_cursor_position((
+            inner.x + u16::try_from(column - scroll_x).unwrap_or(0),
+            inner.y + u16::try_from(row - scroll_y).unwrap_or(0),
+        ));
+    }
 }
 
 const fn skill_source_label(source: morons_protocol::SkillSource) -> &'static str {
@@ -455,6 +478,11 @@ fn transcript_block<'a>(
             explain_graphemes(&mut lines, &entry.text);
         }
         extend_part_lines(&mut lines, &entry.text, text, last);
+        if entry.role == "You" {
+            for line in &mut lines {
+                *line = std::mem::take(line).right_aligned();
+            }
+        }
         if last {
             if let Some(run) = terminal_run_by_last_entry.get(&index) {
                 lines.push(Line::default());
@@ -474,9 +502,9 @@ fn transcript_block<'a>(
             .as_ref()
             .expect("part belongs to transient");
         let label = if transient.refusal {
-            "Assistant refusal · streaming"
+            "Moron refusal · streaming"
         } else {
-            "Assistant · streaming"
+            "Moron · streaming"
         };
         let last = part + 1 == transient.presented.part_count();
         let mut lines = Vec::new();
@@ -820,7 +848,7 @@ fn render_information_dialog(
         ),
         InformationDialog::Help => (
             " Help and safety ",
-            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter newline · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure data-use policy · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · /help session help · ? browser help · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Esc cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Ctrl+Space sessions · Ctrl+D detach (server and work continue) · q detach from browser\n\nEnter/Esc/? close",
+            "Trusted-local: tools use your normal user authority; there are no approval prompts or rollback. Wrap the complete app externally when containment is required.\n\nEnter send · Shift+Enter/Ctrl+J newline · arrows edit prompt · wheel/PageUp/PageDown scroll transcript · Home history start · End latest output · @ skill · ! command in context · !! command excluded from model context · /model [search] select global default · /settings configure data-use policy · /login choose OpenCode or ChatGPT · /logout choose provider for confirmed local removal · /context inspect · /compact [instructions] summarize · /help session help · ? browser help · Tab complete skill · r rename · a archive/unarchive · d delete archived in browser · Esc cancel · Ctrl+K credential · Ctrl+L refresh · Ctrl+S stop server · Ctrl+Space sessions · Ctrl+D detach (server and work continue) · q detach from browser\n\nEnter/Esc/? close",
             88,
             16,
         ),

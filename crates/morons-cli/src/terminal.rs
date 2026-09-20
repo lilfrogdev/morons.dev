@@ -21,7 +21,9 @@ use ratatui_crossterm::{
         cursor::{Hide, Show},
         event::{
             self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
-            EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+            EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+            KeyboardEnhancementFlags, MouseEvent, PopKeyboardEnhancementFlags,
+            PushKeyboardEnhancementFlags,
         },
         execute,
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -95,11 +97,13 @@ impl TerminalSession {
             EnterAlternateScreen,
             EnableBracketedPaste,
             EnableMouseCapture,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
             Hide
         ) {
             let _ = execute!(
                 stdout,
                 Show,
+                PopKeyboardEnhancementFlags,
                 DisableMouseCapture,
                 DisableBracketedPaste,
                 LeaveAlternateScreen
@@ -115,6 +119,7 @@ impl TerminalSession {
                 let _ = execute!(
                     stdout,
                     Show,
+                    PopKeyboardEnhancementFlags,
                     DisableMouseCapture,
                     DisableBracketedPaste,
                     LeaveAlternateScreen
@@ -148,6 +153,7 @@ impl TerminalSession {
         if let Err(error) = execute!(
             self.terminal.backend_mut(),
             Show,
+            PopKeyboardEnhancementFlags,
             DisableMouseCapture,
             DisableBracketedPaste,
             LeaveAlternateScreen

@@ -80,7 +80,8 @@ Direct source-tree binaries do not automatically download build companions. Main
 ## Interaction
 
 - `Enter`: submit a message
-- `Shift+Enter`: insert a newline
+- `Shift+Enter`: insert a newline in terminals supporting enhanced keyboard input; `Ctrl+J` or `Alt+Enter` also inserts a newline
+- Arrow keys: move the prompt cursor (Up/Down select suggestions while skill completion is open); long lines scroll horizontally
 - Mouse wheel/trackpad or `PageUp`/`PageDown`: scroll the fullscreen transcript
 - `Home`/`End`: jump to the start/latest transcript output
 - `@name`: activate an installed Agent Skill
