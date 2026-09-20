@@ -150,6 +150,45 @@ fn escape_interrupts_exact_work_without_discarding_the_draft() {
 }
 
 #[test]
+fn control_d_detaches_without_cancelling_work_and_respects_guards() {
+    let (session, run) = fixture_session_and_run();
+    let run_id = run.id;
+    let mut app = AppState::new("test-server");
+    let key = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+    assert_eq!(app.handle_key(key), AppAction::Quit);
+    app.open_session(session, Vec::new(), vec![run], Some(run_id), None)
+        .unwrap();
+    app.handle_paste("draft");
+    assert_eq!(app.handle_key(key), AppAction::Quit);
+    assert_eq!(app.session.as_ref().unwrap().active_run_id, Some(run_id));
+    assert!(!app.confirm_stop);
+    assert_eq!(app.prompt.as_str(), "draft");
+    let current = app.session.as_mut().unwrap();
+    current.active_run_id = None;
+    let command_id = morons_protocol::LocalCommandId::from_bytes([0x44; 16]);
+    current.active_command_id = Some(command_id);
+    assert_eq!(app.handle_key(key), AppAction::Quit);
+    assert_eq!(
+        app.session.as_ref().unwrap().active_command_id,
+        Some(command_id)
+    );
+    app.information_dialog = Some(InformationDialog::Help);
+    assert_eq!(app.handle_key(key), AppAction::None);
+    app.information_dialog = None;
+    app.mark_pending(PendingOperation::CancelRun);
+    assert_eq!(app.handle_key(key), AppAction::None);
+    app.pending = None;
+    for kind in [
+        ratatui_crossterm::crossterm::event::KeyEventKind::Repeat,
+        ratatui_crossterm::crossterm::event::KeyEventKind::Release,
+    ] {
+        assert_eq!(app.handle_key(KeyEvent { kind, ..key }), AppAction::None);
+    }
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+    assert_eq!(app.prompt.as_str(), "draftd");
+}
+
+#[test]
 fn control_space_opens_browser_without_cancelling_work() {
     let (session, run) = fixture_session_and_run();
     let run_id = run.id;

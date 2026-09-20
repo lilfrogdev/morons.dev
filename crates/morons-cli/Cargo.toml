@@ -25,6 +25,7 @@ ratatui.workspace = true
 ratatui-crossterm.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "sync", "time"] }
 zeroize.workspace = true
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process", "std"] }

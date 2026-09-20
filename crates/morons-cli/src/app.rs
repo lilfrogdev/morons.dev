@@ -453,6 +453,7 @@ pub(super) struct AppState {
     pub(super) confirm_stop: bool,
     pub(super) confirm_delete: Option<SessionId>,
     selection: selection::Selection,
+    pub(super) copy_toast: Option<(SafeText, std::time::Instant)>,
     transcript_viewport: TranscriptViewport,
     transcript_page_loading: bool,
     pub(super) skill_completion_index: usize,
@@ -489,6 +490,7 @@ impl AppState {
             confirm_stop: false,
             confirm_delete: None,
             selection: selection::Selection::default(),
+            copy_toast: None,
             transcript_viewport: TranscriptViewport::default(),
             transcript_page_loading: false,
             skill_completion_index: 0,
@@ -733,6 +735,10 @@ impl AppState {
             .iter()
             .map(|image| image.upload.clone())
             .collect()
+    }
+
+    pub(super) fn show_copy_toast(&mut self, message: &str) {
+        self.copy_toast = Some((SafeText::from_untrusted(message), std::time::Instant::now()));
     }
 
     pub(super) fn set_status(&mut self, status: impl AsRef<str>) {

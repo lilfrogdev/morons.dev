@@ -98,6 +98,7 @@ Direct source-tree binaries do not automatically download build companions. Main
 - `Tab` / `Shift+Tab`: complete or navigate visible skill matches
 - `Ctrl+V` (`Alt+V` on Windows): paste an image when available
 - `Esc`: request cancellation of the selected session's active run or command; dialogs consume `Esc` first. Completed effects are not rolled back.
+- `Ctrl+D`: detach the terminal client without stopping the server or cancelling running work; close dialogs first. Unsubmitted drafts are not saved on exit.
 - `Ctrl+Space`: return to the session browser without cancelling server-owned work (legacy terminals may encode this as NUL, also shared by `Ctrl+@`).
 - `?` in the session browser or `/help` in the composer: show usage and the security disclosure; question marks in text input remain literal
 - `Ctrl+S`: stop the companion server and interrupt active work
@@ -162,7 +163,8 @@ Drag with the left mouse button to select visible text anywhere in the terminal 
 release to copy it to the system clipboard. A click alone does not copy. Selection
 copies rendered text (including visible borders and line breaks), not hidden or
 scrollback content. API-key input is never rendered and is never selectable.
-Resizing, changing the displayed text, typing, or scrolling clears selection.
+Resizing, changing selected text, typing, or scrolling clears selection.
+Updates outside the selected cells leave selection intact.
 Clipboard managers may retain copied text; selection does not send it to the server.
 Copy uses a bounded, supervised local helper, without putting text in arguments or
 logs. Clipboard failure is reported without automatic retry. Clipboard ownership
