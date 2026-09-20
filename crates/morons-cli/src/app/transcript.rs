@@ -252,7 +252,8 @@ impl SessionView {
             return Ok(());
         }
         transient.text.push_str(delta);
-        transient.presented = transcript_text(&transient.text)?;
+        transient.presented = TranscriptText::from_markdown(&transient.text)
+            .map_err(|_| UiStateError::ResourceLimitExceeded)?;
         Ok(())
     }
 }
@@ -292,7 +293,8 @@ impl PresentedTranscriptEntry {
                 run_id: Some(run_id),
                 command_id: None,
                 role: "Assistant",
-                text: transcript_text(&text)?,
+                text: TranscriptText::from_markdown(&text)
+                    .map_err(|_| UiStateError::ResourceLimitExceeded)?,
                 refusal,
             },
             TranscriptEntry::ToolCall {

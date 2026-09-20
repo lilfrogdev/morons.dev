@@ -68,7 +68,34 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     if let Some(dialog) = app.auth_dialog.as_ref() {
         app.auth_link_buttons = super::auth::render(frame, dialog, &mut app.auth_scroll);
     }
-    app.selection.render(frame.buffer_mut());
+    if app
+        .copy_toast
+        .as_ref()
+        .is_some_and(|(_, started)| started.elapsed() >= std::time::Duration::from_secs(4))
+    {
+        app.copy_toast = None;
+    }
+    if let Some((message, _)) = &app.copy_toast {
+        let width = area.width.min(74);
+        let height = area.height.min(4);
+        let toast = Rect::new(
+            area.right().saturating_sub(width),
+            area.bottom().saturating_sub(height),
+            width,
+            height,
+        );
+        frame.render_widget(Clear, toast);
+        frame.render_widget(
+            Paragraph::new(message.as_str())
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(Color::Yellow))
+                .block(Block::default().borders(Borders::ALL).title(" Clipboard ")),
+            toast,
+        );
+    }
+    if app.selection.render(frame.buffer_mut()) {
+        app.show_copy_toast("Selection changed; select again to copy");
+    }
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
@@ -467,7 +494,7 @@ fn transcript_block<'a>(
             lines.push(Line::from(Span::styled(entry.role, role_style)));
             explain_graphemes(&mut lines, &entry.text);
         }
-        extend_part_lines(&mut lines, text, last);
+        extend_part_lines(&mut lines, &entry.text, text, last);
         if last {
             if let Some(run) = terminal_run_by_last_entry.get(&index) {
                 lines.push(Line::default());
@@ -502,7 +529,7 @@ fn transcript_block<'a>(
             )));
             explain_graphemes(&mut lines, &transient.presented);
         }
-        extend_part_lines(&mut lines, text, last);
+        extend_part_lines(&mut lines, &transient.presented, text, last);
         if last && transient.truncated {
             lines.push(Line::from(Span::styled(
                 "Preview paused; waiting for complete message",
@@ -952,7 +979,12 @@ fn render_stop_confirmation(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-fn extend_part_lines<'a>(lines: &mut Vec<Line<'a>>, text: &'a str, last: bool) {
+fn extend_part_lines<'a>(
+    lines: &mut Vec<Line<'a>>,
+    source: &'a crate::terminal::TranscriptText,
+    text: &'a str,
+    last: bool,
+) {
     // A structural newline separating parts is not an extra blank display row.
     // Final deliberate empty lines belong to the delivered text and stay visible.
     let text = if last {
@@ -960,7 +992,7 @@ fn extend_part_lines<'a>(lines: &mut Vec<Line<'a>>, text: &'a str, last: bool) {
     } else {
         text.strip_suffix('\n').unwrap_or(text)
     };
-    lines.extend(text.split('\n').map(Line::from));
+    lines.extend(text.split('\n').map(|line| source.line(line)));
 }
 
 fn explain_graphemes(lines: &mut Vec<Line<'_>>, text: &crate::terminal::TranscriptText) {
