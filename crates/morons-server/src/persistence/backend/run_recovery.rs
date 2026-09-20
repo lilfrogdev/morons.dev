@@ -5,6 +5,10 @@ use crate::persistence::{PersistenceError, RunId, run_types::ProviderOperationId
 
 impl Backend {
     pub(super) fn recover_nonterminal_runs(&mut self) -> Result<(), PersistenceError> {
+        self.connection.execute(
+            "UPDATE steering_queues SET paused = 1, revision = revision + 1 WHERE paused = 0",
+            [],
+        )?;
         let runs = {
             let mut statement = self.connection.prepare(
                 "SELECT run_id

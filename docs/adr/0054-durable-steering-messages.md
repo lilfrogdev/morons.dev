@@ -9,8 +9,12 @@ Schema 43 reserves per-session queue state and pending text records; no applicat
 path writes them yet. Queues default to paused, target a run in the same session,
 and hold at most sixteen 64-KiB messages (one MiB total). FIFO order uses enqueue
 sequence, not reusable capacity slots. Actor 1 denotes `LocalOwner`. Mutation
-history, attachments, storage-worker operations, projections, integrity/recovery,
+history, attachments, storage-worker mutation operations, projections, integrity,
 and delivery are still pending; this migration alone does not enable queueing.
+Startup, cancellation intent, terminal run transitions, and archive preparation
+pause existing queues without consuming messages; unarchiving does not resume
+them. Session deletion removes queue records before
+run facts, explicitly deleting pending text without touching the selected directory.
 
 ## Decision
 

@@ -14,7 +14,7 @@ CREATE TABLE steering_queues (
 
 CREATE TABLE steering_pending_messages (
     item_id BLOB PRIMARY KEY NOT NULL CHECK (length(item_id) = 16),
-    session_id BLOB NOT NULL REFERENCES steering_queues(session_id) ON DELETE CASCADE,
+    session_id BLOB NOT NULL REFERENCES steering_queues(session_id),
     slot INTEGER NOT NULL CHECK (slot BETWEEN 1 AND 16),
     enqueue_sequence INTEGER NOT NULL CHECK (enqueue_sequence > 0),
     revision INTEGER NOT NULL CHECK (revision > 0),

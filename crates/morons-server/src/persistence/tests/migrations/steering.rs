@@ -92,6 +92,14 @@ fn steering_schema_rejects_cross_session_targets_and_invalid_records() {
         assert!(connection.execute(statement, []).is_err(), "{statement}");
     }
     assert!(insert(&connection, 2, 1, "duplicate sequence").is_err());
+    assert!(
+        connection
+            .execute("DELETE FROM steering_queues", [])
+            .is_err()
+    );
+    connection
+        .execute("DELETE FROM steering_pending_messages", [])
+        .unwrap();
     connection
         .execute("DELETE FROM steering_queues", [])
         .unwrap();
