@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn session_browser_uses_full_width_without_models_panel() {
+    let (mut session, _) = fixture_session_and_run();
+    let name = "A session name that extends beyond the old left panel";
+    session.display_name = Some(name.to_owned());
+    let mut app = AppState::new("test-server");
+    app.replace_sessions(vec![session])
+        .expect("session should be presented");
+
+    for width in [70, 100] {
+        let rows = render_rows(&mut app, width, 12);
+        assert!(rows.iter().any(|row| row.contains(name)));
+        assert!(!rows.iter().any(|row| row.contains(" Models ")));
+        assert!(rows[1].starts_with("┌ Sessions "));
+        assert!(rows[1].ends_with('┐'));
+        assert_eq!(rows[1].matches('┌').count(), 1);
+    }
+}
+
+#[test]
 fn session_browser_presents_the_bound_working_directory() {
     let (mut session, _) = fixture_session_and_run();
     session.working_directory = Some("/projects/example".to_owned());
