@@ -2,6 +2,56 @@ use super::*;
 use serde_json::{Value, json};
 use std::sync::{Mutex, mpsc};
 
+#[test]
+fn root_tool_limits_are_correlated_bounded_and_content_free() {
+    use crate::tools::{MAX_BASH_OUTPUT_BYTES, ToolErrorKind, ToolKind, ToolOutput, ToolResult};
+
+    let result = ToolResult::error_with_output(
+        ToolErrorKind::OutputLimit,
+        ToolOutput::Bash {
+            exit_code: None,
+            signal: Some(9),
+            stdout: "S".repeat(MAX_BASH_OUTPUT_BYTES),
+            stderr: "private stderr".into(),
+        },
+    );
+    let event = tool_limit_event([1; 16], [2; 16], ToolKind::Bash, &result).unwrap();
+    assert_eq!(event.level(), "warn");
+    assert_eq!(event.component(), "tools");
+    let value = decoded(event);
+    assert_eq!(value["kind"], "tool_limit");
+    assert_eq!(value["run_id"], json!(vec![1; 16]));
+    assert_eq!(value["call_id"], json!(vec![2; 16]));
+    assert_eq!(value["tool"], "bash");
+    assert_eq!(value["error"], "output_limit");
+    assert_eq!(value["stdout_bytes"], MAX_BASH_OUTPUT_BYTES);
+    assert_eq!(value["stderr_bytes"], 14);
+    assert_eq!(value["per_stream_limit_bytes"], MAX_BASH_OUTPUT_BYTES);
+    assert!(value.get("stdout").is_none());
+    assert!(!value.to_string().contains("private stderr"));
+
+    let event = tool_limit_event(
+        [1; 16],
+        [3; 16],
+        ToolKind::Read,
+        &ToolResult::error(ToolErrorKind::ResourceLimit),
+    )
+    .unwrap();
+    let value = decoded(event);
+    assert_eq!(value["error"], "resource_limit");
+    assert!(value["stdout_bytes"].is_null());
+    assert!(value["per_stream_limit_bytes"].is_null());
+    assert!(
+        tool_limit_event(
+            [1; 16],
+            [2; 16],
+            ToolKind::Bash,
+            &ToolResult::error(ToolErrorKind::Cancelled),
+        )
+        .is_none()
+    );
+}
+
 const COMPLETION_WATCHDOG: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Default)]
@@ -677,6 +727,20 @@ fn debug_runtime_maximum_records_are_bounded_and_located() {
         child_index: u16::MAX,
     };
     let events = [
+        DebugEvent::ContextLimit {
+            run_id: [255; 16],
+            call_id: Some([254; 16]),
+            check: DebugContextCheck::ToolInputBytes,
+            measured: u64::MAX,
+            limit: u64::MAX,
+        },
+        DebugEvent::ContextLimit {
+            run_id: [255; 16],
+            call_id: Some([254; 16]),
+            check: DebugContextCheck::ToolResultBytes,
+            measured: u64::MAX,
+            limit: u64::MAX,
+        },
         DebugEvent::Resource {
             location: DebugLocation::Root { run_id: [255; 16] },
             resource: DebugResource::CredentialGeneration,

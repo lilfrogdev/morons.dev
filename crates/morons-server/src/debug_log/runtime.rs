@@ -2,6 +2,37 @@ use serde::Serialize;
 
 use crate::{persistence::PersistenceResourceLimit, tools::ToolKind};
 
+pub(crate) fn tool_limit_event(
+    run_id: [u8; 16],
+    call_id: [u8; 16],
+    tool: ToolKind,
+    result: &crate::tools::ToolResult,
+) -> Option<super::DebugEvent> {
+    use crate::tools::{MAX_BASH_OUTPUT_BYTES, ToolErrorKind, ToolOutput, ToolResult};
+
+    let error = match result.error_kind()? {
+        ToolErrorKind::OutputLimit => DebugToolError::OutputLimit,
+        ToolErrorKind::ResourceLimit => DebugToolError::ResourceLimit,
+        _ => return None,
+    };
+    let (stdout_bytes, stderr_bytes) = match result {
+        ToolResult::Error {
+            output: Some(ToolOutput::Bash { stdout, stderr, .. }),
+            ..
+        } => (Some(stdout.len()), Some(stderr.len())),
+        _ => (None, None),
+    };
+    Some(super::DebugEvent::ToolLimit {
+        run_id,
+        call_id,
+        tool: tool.into(),
+        error,
+        stdout_bytes,
+        stderr_bytes,
+        per_stream_limit_bytes: (tool == ToolKind::Bash).then_some(MAX_BASH_OUTPUT_BYTES),
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DebugLocation {
