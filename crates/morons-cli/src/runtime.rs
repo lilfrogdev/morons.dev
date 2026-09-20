@@ -206,7 +206,6 @@ pub async fn run_terminal_application_with_debug(
             event = runtime.selection_clipboard.events.recv() => {
                 if let Some(event) = event {
                     runtime.app.show_copy_toast(event.message);
-                    runtime.app.set_status(event.message);
                 }
             }
             event = runtime.links.events.recv() => {
@@ -276,7 +275,7 @@ impl RuntimeState {
     ) -> Result<bool, TerminalApplicationError> {
         match action {
             AppAction::CopySelection(text) => {
-                self.app.show_copy_toast("Copying selection…");
+                self.app.copy_toast = None;
                 self.selection_clipboard.copy_selection(text).await;
             }
             AppAction::None => {}

@@ -122,7 +122,7 @@ impl AppState {
         match self.selection.mouse(mouse) {
             super::selection::Gesture::Copy(text) => return AppAction::CopySelection(text),
             super::selection::Gesture::TooLarge => {
-                self.set_status("Selection exceeds the 256 KiB clipboard limit; select less text");
+                crate::clipboard_log::record("Selection exceeds the 256 KiB clipboard limit");
                 return AppAction::None;
             }
             super::selection::Gesture::Consumed => return AppAction::None,

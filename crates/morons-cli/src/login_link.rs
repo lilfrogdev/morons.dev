@@ -8,6 +8,9 @@ pub(crate) const COPY_HELPER: &str = "--internal-copy-login-link";
 pub(crate) const SELECTION_HELPER: &str = "--internal-copy-selection";
 pub(crate) const MAX_SELECTION_BYTES: usize = 256 * 1024;
 pub(crate) const READY: u8 = 1;
+pub(crate) const INVALID_SELECTION: u8 = 2;
+pub(crate) const CLIPBOARD_CONNECT_FAILED: u8 = 3;
+pub(crate) const CLIPBOARD_WRITE_FAILED: u8 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinkAction {
@@ -43,15 +46,23 @@ pub fn run_login_link_helper() -> Option<std::process::ExitCode> {
             return Some(std::process::ExitCode::FAILURE);
         }
         if first == SELECTION_HELPER {
-            copy_selection(
+            let result = copy_selection(
                 &mut std::io::stdin().lock(),
                 &mut std::io::stdout().lock(),
                 |text| {
-                    let mut clipboard = arboard::Clipboard::new().map_err(|_| ())?;
-                    clipboard.set_text(text).map_err(|_| ())?;
+                    let mut clipboard =
+                        arboard::Clipboard::new().map_err(|_| CLIPBOARD_CONNECT_FAILED)?;
+                    clipboard
+                        .set_text(text)
+                        .map_err(|_| CLIPBOARD_WRITE_FAILED)?;
                     Ok(clipboard)
                 },
-            )
+            );
+            result.map_err(|code| {
+                if code != 0 {
+                    let _ = std::io::stdout().lock().write_all(&[code]);
+                }
+            })
         } else {
             copy_link(
                 &mut std::io::stdin().lock(),
@@ -76,30 +87,34 @@ pub fn run_login_link_helper() -> Option<std::process::ExitCode> {
 fn copy_selection<R: Read, W: Write, C>(
     input: &mut R,
     output: &mut W,
-    copy: impl FnOnce(&str) -> Result<C, ()>,
-) -> Result<(), ()> {
+    copy: impl FnOnce(&str) -> Result<C, u8>,
+) -> Result<(), u8> {
     let mut length = [0; 4];
-    input.read_exact(&mut length).map_err(|_| ())?;
+    input
+        .read_exact(&mut length)
+        .map_err(|_| INVALID_SELECTION)?;
     let length = u32::from_be_bytes(length) as usize;
     if length == 0 || length > MAX_SELECTION_BYTES {
-        return Err(());
+        return Err(INVALID_SELECTION);
     }
     let mut bytes = Zeroizing::new(vec![0; length]);
-    input.read_exact(&mut bytes).map_err(|_| ())?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| ())?;
+    input
+        .read_exact(&mut bytes)
+        .map_err(|_| INVALID_SELECTION)?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| INVALID_SELECTION)?;
     if text
         .chars()
         .any(|c| (c.is_control() && c != '\n') || crate::terminal::is_bidirectional_control(c))
     {
-        return Err(());
+        return Err(INVALID_SELECTION);
     }
     let _owner = copy(text)?;
-    output.write_all(&[READY]).map_err(|_| ())?;
-    output.flush().map_err(|_| ())?;
+    output.write_all(&[READY]).map_err(|_| 0)?;
+    output.flush().map_err(|_| 0)?;
     let mut end = [0];
     match input.read(&mut end) {
         Ok(0) => Ok(()),
-        _ => Err(()),
+        _ => Err(0),
     }
 }
 
@@ -185,6 +200,22 @@ mod tests {
 mod selection_tests {
     use super::*;
     #[test]
+    fn selection_backend_errors_preserve_stage_without_success_acknowledgment() {
+        for code in [CLIPBOARD_CONNECT_FAILED, CLIPBOARD_WRITE_FAILED] {
+            let mut frame = 4u32.to_be_bytes().to_vec();
+            frame.extend_from_slice(b"test");
+            let mut output = Vec::new();
+            assert_eq!(
+                copy_selection(&mut frame.as_slice(), &mut output, |_| -> Result<(), u8> {
+                    Err(code)
+                }),
+                Err(code)
+            );
+            assert!(output.is_empty());
+        }
+    }
+
+    #[test]
     fn selection_helper_validates_before_copy_and_acknowledges_without_echo() {
         for text in ["hello\n界", "bad\x1b]52", "bad\u{202e}", ""] {
             let mut frame = (text.len() as u32).to_be_bytes().to_vec();
@@ -209,7 +240,7 @@ mod selection_tests {
                 copy_selection(
                     &mut frame.as_slice(),
                     &mut Vec::new(),
-                    |_| -> Result<(), ()> { panic!("invalid input must not copy") }
+                    |_| -> Result<(), u8> { panic!("invalid input must not copy") }
                 )
                 .is_err()
             );

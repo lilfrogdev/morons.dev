@@ -65,18 +65,15 @@ impl LinkRuntime {
                     run_text(command, LinkAction::Copy, &text, cancellation, || {
                         let _ = sender.try_send(LinkEvent {
                             scope: Arc::clone(&task_scope),
-                            message: "Selection copied to clipboard",
+                            message: "Copied",
                         });
                     })
                     .await
                 }
-                Err(_) => Err(()),
+                Err(_) => Err("Copy failed: cannot locate CLI executable"),
             };
-            if result.is_err() {
-                let _ = sender.try_send(LinkEvent {
-                    scope: task_scope,
-                    message: "Copy failed or is uncertain; clipboard may have changed",
-                });
+            if let Err(message) = result {
+                crate::clipboard_log::record(message);
             }
         });
         self.clipboard = Some(Job {
@@ -199,7 +196,9 @@ async fn run(
     cancel: watch::Receiver<bool>,
     ready: impl FnOnce(),
 ) -> Result<(), ()> {
-    run_text(command, action, url.as_str(), cancel, ready).await
+    run_text(command, action, url.as_str(), cancel, ready)
+        .await
+        .map_err(|_| ())
 }
 
 async fn run_text(
@@ -208,7 +207,7 @@ async fn run_text(
     text: &str,
     mut cancel: watch::Receiver<bool>,
     ready: impl FnOnce(),
-) -> Result<(), ()> {
+) -> Result<(), &'static str> {
     if *cancel.borrow() {
         return Ok(());
     }
@@ -223,28 +222,30 @@ async fn run_text(
             command.stdin(Stdio::piped()).stdout(Stdio::piped());
         }
     }
-    let mut child = command.spawn().map_err(|_| ())?;
+    let mut child = command
+        .spawn()
+        .map_err(|_| "Copy failed: helper could not start")?;
     let started = tokio::select! {
         biased;
         _ = cancel.changed() => {stop(&mut child).await;return Ok(());}
         result = time::timeout(START_TIMEOUT, async {
             match action {
-                LinkAction::Open => child.wait().await.map_err(|_| ()).and_then(|s| s.success().then_some(()).ok_or(())),
+                LinkAction::Open => child.wait().await.map_err(|_| "Browser wait failed").and_then(|s| s.success().then_some(()).ok_or("Browser exited unsuccessfully")),
                 LinkAction::Copy => {
-                    let input = child.stdin.as_mut().ok_or(())?;
-                    input.write_all(&(text.len() as u32).to_be_bytes()).await.map_err(|_| ())?;
-                    input.write_all(text.as_bytes()).await.map_err(|_| ())?;
-                    input.flush().await.map_err(|_| ())?;
+                    let input = child.stdin.as_mut().ok_or("Copy failed: helper input unavailable")?;
+                    input.write_all(&(text.len() as u32).to_be_bytes()).await.map_err(|_| "Copy uncertain: helper frame write failed")?;
+                    input.write_all(text.as_bytes()).await.map_err(|_| "Copy uncertain: helper text write failed")?;
+                    input.flush().await.map_err(|_| "Copy uncertain: helper input flush failed")?;
                     let mut ack = [0];
-                    child.stdout.as_mut().ok_or(())?.read_exact(&mut ack).await.map_err(|_| ())?;
-                    (ack == [READY]).then_some(()).ok_or(())
+                    child.stdout.as_mut().ok_or("Copy failed: helper output unavailable")?.read_exact(&mut ack).await.map_err(|_| "Copy uncertain: helper closed before acknowledgment")?;
+                    copy_acknowledgment(ack[0])
                 }
             }
-        }) => result.map_err(|_| ()).and_then(|result| result),
+        }) => result.map_err(|_| "Copy uncertain: helper startup timed out").and_then(|result| result),
     };
-    if started.is_err() {
+    if let Err(error) = started {
         stop(&mut child).await;
-        return Err(());
+        return Err(error);
     }
     if *cancel.borrow() {
         stop(&mut child).await;
@@ -252,17 +253,31 @@ async fn run_text(
     }
     ready();
     if action == LinkAction::Copy {
+        // Child::wait closes its stdin; retain the ownership pipe separately while waiting.
+        let ownership = child.stdin.take();
         tokio::select! {
             biased;
             _ = cancel.changed() => {}
             _ = time::sleep(HOLD_TIMEOUT) => {}
-            _ = child.wait() => return Err(()),
+            _ = child.wait() => return Err("Clipboard ownership ended: helper exited after copy"),
         }
-        child.stdin.take();
+        drop(ownership);
         stop(&mut child).await;
     }
     Ok(())
 }
+fn copy_acknowledgment(code: u8) -> Result<(), &'static str> {
+    match code {
+        READY => Ok(()),
+        crate::login_link::INVALID_SELECTION => Err("Copy failed: helper rejected selection"),
+        crate::login_link::CLIPBOARD_CONNECT_FAILED => {
+            Err("Copy failed: clipboard connection failed")
+        }
+        crate::login_link::CLIPBOARD_WRITE_FAILED => Err("Copy uncertain: clipboard write failed"),
+        _ => Err("Copy uncertain: invalid helper acknowledgment"),
+    }
+}
+
 async fn stop(child: &mut Child) {
     let _ = child.start_kill();
     let _ = time::timeout(DRAIN_TIMEOUT, child.wait()).await;
