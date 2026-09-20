@@ -167,5 +167,7 @@ Resizing, changing selected text, typing, or scrolling clears selection.
 Updates outside the selected cells leave selection intact.
 Clipboard managers may retain copied text; selection does not send it to the server.
 Copy uses a bounded, supervised local helper, without putting text in arguments or
-logs. Clipboard failure is reported without automatic retry. Clipboard ownership
+logs. Successful copies show a compact green “Copied” toast. Selection failures
+are logged only, without automatic retry; see [clipboard diagnostics](docs/debug-logging.md#cli-clipboard-diagnostics).
+Clipboard ownership
 is held for up to roughly eleven minutes, until another copy, or until client exit.

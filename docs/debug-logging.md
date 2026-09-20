@@ -38,3 +38,17 @@ Endpoint preparation precedes file logger activation so the server owns the
 profile lock before opening logs. Endpoint preparation itself cannot be captured
 by the file logger. File setup failures fail debug startup with a fixed message;
 later writer failures disable diagnostics without stopping application work.
+
+## CLI clipboard diagnostics
+
+Selection-copy failures are not rendered as toasts or status messages. The CLI
+lazily creates `morons-cli-clipboard-<pid>-<timestamp>.log` in the OS temporary
+directory on the first failure or selection invalidation. Each process writes at
+most 64 KiB, then stops logging; files are not automatically deleted. Logging is
+best-effort and an unavailable log never triggers a clipboard retry. Unix files
+are created with mode 0600; on Windows they inherit temporary-directory access.
+These files contain only timestamps and fixed failure categories, never selected
+text, login URLs, credentials, or raw backend errors. They are separate from the
+opt-in server debug log and do not require restarting the server. Successful
+selection copies display only a compact green `Copied` toast. Login-dialog
+recovery messages are unchanged.

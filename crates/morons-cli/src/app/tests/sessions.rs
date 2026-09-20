@@ -117,11 +117,37 @@ fn session_browser_requires_archived_confirmation_before_deletion() {
 }
 
 #[test]
+fn clipboard_success_toast_is_boxed_content_sized_and_green() {
+    let mut app = AppState::new("test-server");
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let before = terminal.backend().buffer().clone();
+    app.show_copy_toast("Copied");
+    terminal.draw(|frame| app.render(frame)).unwrap();
+    let after = terminal.backend().buffer();
+    for y in 0..24 {
+        for x in 0..80 {
+            if y >= 21 && x >= 70 {
+                assert_eq!(after[(x, y)].fg, ratatui::style::Color::Green);
+            } else {
+                assert_eq!(after[(x, y)], before[(x, y)]);
+            }
+        }
+    }
+    for (y, expected) in [(21, "┌────────┐"), (22, "│ Copied │"), (23, "└────────┘")]
+    {
+        let row: String = (70..80).map(|x| after[(x, y)].symbol()).collect();
+        assert_eq!(row, expected);
+    }
+}
+
+#[test]
 fn clipboard_toast_is_safe_bounded_and_expires() {
     let mut app = AppState::new("test-server");
     app.show_copy_toast("Copied\u{1b}[31m");
     let rows = render_rows(&mut app, 80, 24);
-    assert!(rows.iter().any(|row| row.contains(" Clipboard ")));
+    assert!(rows[22].contains("Copied"));
+    assert!(!rows.iter().any(|row| row.contains(" Clipboard ")));
     assert!(!rows.iter().any(|row| row.contains('\u{1b}')));
     for (width, height) in [(1, 1), (10, 3)] {
         render_rows(&mut app, width, height);

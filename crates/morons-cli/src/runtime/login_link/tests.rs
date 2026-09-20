@@ -2,6 +2,87 @@ use super::*;
 mod fixture;
 use fixture::Helper;
 
+#[test]
+fn selection_failure_codes_produce_only_fixed_stage_messages() {
+    assert_eq!(copy_acknowledgment(READY), Ok(()));
+    for (code, expected) in [
+        (
+            crate::login_link::INVALID_SELECTION,
+            "Copy failed: helper rejected selection",
+        ),
+        (
+            crate::login_link::CLIPBOARD_CONNECT_FAILED,
+            "Copy failed: clipboard connection failed",
+        ),
+        (
+            crate::login_link::CLIPBOARD_WRITE_FAILED,
+            "Copy uncertain: clipboard write failed",
+        ),
+        (255, "Copy uncertain: invalid helper acknowledgment"),
+    ] {
+        assert_eq!(copy_acknowledgment(code), Err(expected));
+    }
+}
+
+#[tokio::test]
+async fn selection_reports_startup_stages_without_publishing_success() {
+    let fixture = Helper::new().await;
+    for (kind, expected) in [
+        ("bad_ack", "Copy uncertain: invalid helper acknowledgment"),
+        ("hold", "Copy uncertain: helper startup timed out"),
+    ] {
+        let (_cancel, cancellation) = watch::channel(false);
+        assert_eq!(
+            run_text(
+                fixture.command(kind),
+                LinkAction::Copy,
+                "synthetic selection",
+                cancellation,
+                || panic!("failure cannot publish success")
+            )
+            .await,
+            Err(expected)
+        );
+    }
+}
+
+#[tokio::test]
+async fn clipboard_wait_keeps_ownership_pipe_open_until_cancelled() {
+    let fixture = Helper::new().await;
+    let (cancel, cancellation) = watch::channel(false);
+    let (ready, acknowledged) = tokio::sync::oneshot::channel();
+    let command = fixture.command("copy");
+    let mut task = tokio::spawn(async move {
+        run_text(
+            command,
+            LinkAction::Copy,
+            "synthetic selection",
+            cancellation,
+            || {
+                let _ = ready.send(());
+            },
+        )
+        .await
+    });
+    time::timeout(Duration::from_secs(10), acknowledged)
+        .await
+        .unwrap()
+        .unwrap();
+    let early_exit = time::timeout(Duration::from_millis(250), &mut task).await;
+    cancel.send_replace(true);
+    assert!(
+        early_exit.is_err(),
+        "helper exited while its ownership pipe should be open: {early_exit:?}"
+    );
+    assert_eq!(
+        time::timeout(Duration::from_secs(10), task)
+            .await
+            .unwrap()
+            .unwrap(),
+        Ok(())
+    );
+}
+
 fn url() -> OpenAiAuthorizationUrl {
     OpenAiAuthorizationUrl::new(
         "https://auth.openai.com/oauth/authorize?state=synthetic-link&scope=openid%20email".into(),

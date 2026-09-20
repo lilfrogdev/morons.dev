@@ -76,8 +76,11 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
         app.copy_toast = None;
     }
     if let Some((message, _)) = &app.copy_toast {
-        let width = area.width.min(74);
-        let height = area.height.min(4);
+        let width = area.width.min(
+            u16::try_from(Line::from(message.as_str()).width().saturating_add(4))
+                .unwrap_or(u16::MAX),
+        );
+        let height = area.height.min(3);
         let toast = Rect::new(
             area.right().saturating_sub(width),
             area.bottom().saturating_sub(height),
@@ -86,15 +89,14 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
         );
         frame.render_widget(Clear, toast);
         frame.render_widget(
-            Paragraph::new(message.as_str())
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::Yellow))
-                .block(Block::default().borders(Borders::ALL).title(" Clipboard ")),
+            Paragraph::new(format!(" {} ", message.as_str()))
+                .block(Block::default().borders(Borders::ALL))
+                .style(Style::default().fg(Color::Green)),
             toast,
         );
     }
     if app.selection.render(frame.buffer_mut()) {
-        app.show_copy_toast("Selection changed; select again to copy");
+        crate::clipboard_log::record("Selection invalidated by rendered content change");
     }
 }
 

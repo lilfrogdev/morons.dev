@@ -1,4 +1,5 @@
 mod app;
+mod clipboard_log;
 mod handshake;
 mod lifecycle;
 mod login_link;
