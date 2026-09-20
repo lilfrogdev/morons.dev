@@ -68,7 +68,34 @@ pub(super) fn render(frame: &mut Frame<'_>, app: &mut AppState) {
     if let Some(dialog) = app.auth_dialog.as_ref() {
         app.auth_link_buttons = super::auth::render(frame, dialog, &mut app.auth_scroll);
     }
-    app.selection.render(frame.buffer_mut());
+    if app
+        .copy_toast
+        .as_ref()
+        .is_some_and(|(_, started)| started.elapsed() >= std::time::Duration::from_secs(4))
+    {
+        app.copy_toast = None;
+    }
+    if let Some((message, _)) = &app.copy_toast {
+        let width = area.width.min(74);
+        let height = area.height.min(4);
+        let toast = Rect::new(
+            area.right().saturating_sub(width),
+            area.bottom().saturating_sub(height),
+            width,
+            height,
+        );
+        frame.render_widget(Clear, toast);
+        frame.render_widget(
+            Paragraph::new(message.as_str())
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(Color::Yellow))
+                .block(Block::default().borders(Borders::ALL).title(" Clipboard ")),
+            toast,
+        );
+    }
+    if app.selection.render(frame.buffer_mut()) {
+        app.show_copy_toast("Selection changed; select again to copy");
+    }
 }
 
 fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {

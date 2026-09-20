@@ -96,3 +96,20 @@ fn session_browser_requires_archived_confirmation_before_deletion() {
     );
     assert_eq!(app.confirm_delete, None);
 }
+
+#[test]
+fn clipboard_toast_is_safe_bounded_and_expires() {
+    let mut app = AppState::new("test-server");
+    app.show_copy_toast("Copied\u{1b}[31m");
+    let rows = render_rows(&mut app, 80, 24);
+    assert!(rows.iter().any(|row| row.contains(" Clipboard ")));
+    assert!(!rows.iter().any(|row| row.contains('\u{1b}')));
+    for (width, height) in [(1, 1), (10, 3)] {
+        render_rows(&mut app, width, height);
+    }
+    app.copy_toast.as_mut().unwrap().1 =
+        std::time::Instant::now() - std::time::Duration::from_secs(5);
+    let rows = render_rows(&mut app, 80, 24);
+    assert!(app.copy_toast.is_none());
+    assert!(!rows.iter().any(|row| row.contains(" Clipboard ")));
+}
