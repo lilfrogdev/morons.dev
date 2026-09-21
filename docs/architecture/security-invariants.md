@@ -35,7 +35,7 @@ ADR 0012 defines Morons as a trusted-local coding-agent harness. These invariant
 - Morons must not inject its stored provider credentials, local IPC authentication key, or internal provider authorization headers into child arguments or environments.
 - Credentials independently available to the local user may be read or emitted by a child process. Once emitted through a context-bearing command or tool, that data may be persisted and sent to the model. Morons must document this residual risk rather than claim to prevent it.
 - Child environment values are bounded transient execution input. Morons must not intentionally persist, audit, log, render, or send the environment to a provider unless a command itself emits a value.
-- Shell commands, command mode, IPython cells, web requests, and descendants have explicit wall-clock, inactivity, output, process-count, and aggregate-run limits.
+- Shell commands and command mode have bounded output and process-tree cancellation, but no implicit wall-clock or inactivity deadline (ADR 0055). IPython and web requests retain their independent execution deadlines and resource limits.
 - Cancellation, timeout, output exhaustion, kernel restart, graceful shutdown, and client-requested stop terminate the complete process tree owned by the operation. Morons must not report termination until controlled descendants are known to have stopped or the result is explicitly uncertain.
 - Process-tree control and bounded pipes are lifecycle controls, not containment. Effects completed before termination remain applied.
 - Standard input remains closed for model-selected and command-mode subprocesses. Morons exposes no user-facing subprocess PTY, interactive terminal, terminal emulator, or SSH surface.

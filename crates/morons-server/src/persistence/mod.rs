@@ -19,7 +19,7 @@ pub(crate) use task_binding::TaskModelBinding;
 mod web_binding;
 pub(crate) use web_binding::{WebBinding, WebInvocation, WebRoute};
 mod runs;
-mod steering;
+pub(crate) mod steering;
 mod types;
 mod workspace;
 
@@ -151,7 +151,7 @@ impl SessionStore {
     ) -> Result<Self, PersistenceError> {
         let mut backend = Backend::open(application_root)?;
         backend.configure_maintenance(maintenance_enabled)?;
-        let event_high_water = backend.delivery_event_high_water()?;
+        let event_high_water = backend.notification_high_water()?;
         let (event_notifications, _) = watch::channel(event_high_water);
         let notification_sender = event_notifications.clone();
         let (sender, receiver) = mpsc::channel(WORKER_QUEUE_CAPACITY);
@@ -691,7 +691,6 @@ impl Drop for SessionStore {
 }
 
 enum WorkerRequest {
-    #[cfg(test)]
     Steering(steering::Request),
     #[cfg(test)]
     ChildJournal(child_journal::Request),
@@ -830,7 +829,6 @@ fn run_worker(
             WorkerRequest::WebBinding(request) => request.execute(&mut backend),
             WorkerRequest::Maintenance(request) => request.execute(&mut backend),
             WorkerRequest::OpenAi(request) => request.execute(&mut backend),
-            #[cfg(test)]
             WorkerRequest::Steering(request) => request.execute(&mut backend),
             WorkerRequest::LocalCommand(request) => request.execute(&mut backend),
             WorkerRequest::CreateSession {
@@ -1009,7 +1007,7 @@ fn run_worker(
                 let _ = response.send(backend.read_session_events(session_id, cursor, limit));
             }
         }
-        match backend.delivery_event_high_water() {
+        match backend.notification_high_water() {
             Ok(high_water) => {
                 if force_event_notification {
                     // Archive acceptance reserves its catalog sequence before active work stops.

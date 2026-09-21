@@ -1,8 +1,6 @@
 use sha2::{Digest as _, Sha256};
-#[cfg(test)]
 use tokio::sync::oneshot;
 
-#[cfg(test)]
 use super::{MutationRequestId, SessionStore, WorkerRequest};
 use super::{PersistenceError, RunId, SessionId, types::validate_user_text};
 
@@ -27,7 +25,6 @@ pub(crate) enum SteeringChange {
     },
 }
 
-#[cfg(test)]
 #[derive(Clone, Debug)]
 pub(crate) struct SteeringMutation {
     pub request_id: MutationRequestId,
@@ -36,7 +33,6 @@ pub(crate) struct SteeringMutation {
     pub change: SteeringChange,
 }
 
-#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SteeringReceipt {
     pub sequence: u64,
@@ -45,7 +41,6 @@ pub(crate) struct SteeringReceipt {
     pub item_revision: Option<u64>,
 }
 
-#[cfg(test)]
 pub(super) enum Request {
     Mutate {
         mutation: SteeringMutation,
@@ -62,14 +57,12 @@ pub(super) enum Request {
     },
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SteeringCursor {
     pub session_id: SessionId,
     pub sequence: u64,
 }
 
-#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SteeringItem {
     pub id: [u8; 16],
@@ -78,7 +71,6 @@ pub(crate) struct SteeringItem {
     pub text: String,
 }
 
-#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SteeringSnapshot {
     pub cursor: SteeringCursor,
@@ -88,21 +80,18 @@ pub(crate) struct SteeringSnapshot {
     pub items: Vec<SteeringItem>,
 }
 
-#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SteeringNotice {
     pub cursor: SteeringCursor,
     pub revision: u64,
 }
 
-#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct SteeringPage {
     pub notices: Vec<SteeringNotice>,
     pub high_water: SteeringCursor,
 }
 
-#[cfg(test)]
 impl SessionStore {
     pub(crate) async fn steering_snapshot(
         &self,
@@ -158,7 +147,6 @@ impl SessionStore {
     }
 }
 
-#[cfg(test)]
 impl Request {
     pub(super) fn execute(self, backend: &mut super::backend::Backend) {
         match self {

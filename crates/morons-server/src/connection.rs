@@ -1,6 +1,8 @@
 use std::{error::Error, fmt, time::Duration};
 #[cfg(test)]
 mod native_diagnostics_tests;
+#[cfg(test)]
+mod steering_tests;
 
 use morons_protocol::{
     ApplicationResponse, ClientMessage, FrameError, PROTOCOL_VERSION, ServerMessage,
@@ -117,6 +119,19 @@ where
         };
 
         match application.execute_for_local_owner(request).await {
+            Ok(ApplicationOutcome::SteeringSubscription(subscription)) => {
+                write_subscription_message(
+                    connection,
+                    &ServerMessage::response(
+                        request_id,
+                        ApplicationResponse::SteeringSubscriptionStarted {
+                            cursor: subscription.cursor,
+                        },
+                    ),
+                )
+                .await?;
+                return stream_steering_events(connection, application, subscription).await;
+            }
             Ok(ApplicationOutcome::OpenAiLogin(login)) => {
                 return stream_openai_login(connection, request_id, login).await;
             }
@@ -354,6 +369,63 @@ where
                 }
             }
         }
+    }
+}
+
+async fn stream_steering_events<S>(
+    connection: &mut S,
+    application: &ServerApplication,
+    mut subscription: crate::application::steering::SteeringSubscription,
+) -> Result<(), ConnectionError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut reader, mut writer) = tokio::io::split(connection);
+    let stream = async {
+        loop {
+            let observed = *subscription.notifications.borrow_and_update();
+            let page = match application
+                .read_steering_events(subscription.cursor, 128)
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    write_subscription_message(
+                        &mut writer,
+                        &ServerMessage::subscription_ended(error),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+            if !page.notices.is_empty() {
+                for notice in page.notices {
+                    let cursor = notice.cursor;
+                    write_subscription_message(
+                        &mut writer,
+                        &ServerMessage::SteeringChanged { notice },
+                    )
+                    .await?;
+                    subscription.cursor = cursor;
+                }
+                continue;
+            }
+            if *subscription.notifications.borrow() != observed {
+                continue;
+            }
+            if subscription.notifications.changed().await.is_err() {
+                return Ok(());
+            }
+        }
+    };
+    tokio::select! {
+        incoming = read_client_message(&mut reader) => {
+            match incoming? {
+                None => Ok(()),
+                Some(_) => Err(ConnectionError::UnexpectedClientMessage),
+            }
+        }
+        result = stream => result,
     }
 }
 

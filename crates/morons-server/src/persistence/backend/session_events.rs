@@ -29,14 +29,18 @@ const EVENT_LOCAL_COMMAND_CHANGED: i64 = 16;
 const EVENT_LOCAL_COMMAND_ENTRY: i64 = 17;
 
 impl Backend {
-    pub(crate) fn delivery_event_high_water(&self) -> Result<u64, PersistenceError> {
+    pub(crate) fn notification_high_water(&self) -> Result<u64, PersistenceError> {
         let value = self.connection.query_row(
-            "SELECT COALESCE(MAX(event_sequence), 0) FROM delivery_events",
+            "SELECT COALESCE(MAX(sequence), 0) FROM (
+                SELECT MAX(event_sequence) AS sequence FROM delivery_events
+                UNION ALL SELECT MAX(accepted_sequence) FROM steering_mutation_requests
+                UNION ALL SELECT MAX(fact_sequence) FROM steering_lifecycle_facts
+            )",
             [],
             |row| row.get::<_, i64>(0),
         )?;
         u64::try_from(value).map_err(|_| PersistenceError::InvalidState {
-            reason: "the delivery event high water is invalid",
+            reason: "the notification high water is invalid",
         })
     }
 

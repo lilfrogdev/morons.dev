@@ -3,12 +3,15 @@ use std::{
     path::PathBuf,
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+#[cfg(unix)]
+use std::time::Instant;
 
 #[cfg(unix)]
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
@@ -30,8 +33,6 @@ macro_rules! platform_job {
 }
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
-const WALL_TIME_LIMIT: Duration = Duration::from_secs(5 * 60);
-const INACTIVITY_LIMIT: Duration = Duration::from_secs(60);
 #[cfg(unix)]
 const TREE_TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(target_os = "macos")]
@@ -105,22 +106,18 @@ impl BashToolExecutor {
             return stop_after_setup_failure(child, process_group, platform_job!(job));
         };
 
-        let activity = Arc::new(Mutex::new(Instant::now()));
         let output_exceeded = Arc::new(AtomicBool::new(false));
         let capture_failed = Arc::new(AtomicBool::new(false));
         let stdout_reader = capture(
             stdout,
-            Arc::clone(&activity),
             Arc::clone(&output_exceeded),
             Arc::clone(&capture_failed),
         );
         let stderr_reader = capture(
             stderr,
-            Arc::clone(&activity),
             Arc::clone(&output_exceeded),
             Arc::clone(&capture_failed),
         );
-        let deadline = Instant::now() + WALL_TIME_LIMIT;
 
         let terminal = loop {
             if cancelled() {
@@ -131,16 +128,6 @@ impl BashToolExecutor {
             }
             if capture_failed.load(Ordering::Acquire) {
                 break CommandTerminal::Stopped(ToolErrorKind::Uncertain);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                break CommandTerminal::Stopped(ToolErrorKind::TimedOut);
-            }
-            if activity
-                .lock()
-                .map_or(true, |last| now.duration_since(*last) >= INACTIVITY_LIMIT)
-            {
-                break CommandTerminal::Stopped(ToolErrorKind::InactivityTimeout);
             }
             match child.try_wait() {
                 Ok(Some(status)) => break CommandTerminal::Exited(status),
@@ -213,7 +200,6 @@ enum CommandTerminal {
 
 fn capture<R: Read + Send + 'static>(
     mut reader: R,
-    activity: Arc<Mutex<Instant>>,
     exceeded: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
 ) -> thread::JoinHandle<Vec<u8>> {
@@ -229,12 +215,6 @@ fn capture<R: Read + Send + 'static>(
                     break;
                 }
             };
-            if let Ok(mut last) = activity.lock() {
-                *last = Instant::now();
-            } else {
-                failed.store(true, Ordering::Release);
-                break;
-            }
             let remaining = MAX_BASH_OUTPUT_BYTES.saturating_sub(output.len());
             output.extend_from_slice(&buffer[..read.min(remaining)]);
             if read > remaining {
@@ -470,6 +450,32 @@ mod tests {
             } if stdout.len() <= MAX_BASH_OUTPUT_BYTES
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "takes over five minutes to cross the former execution deadlines"]
+    fn bash_silent_command_outlives_former_deadlines() {
+        let root = test_directory("no-deadline");
+        let executor = BashToolExecutor::new(root.clone());
+        let started = std::time::Instant::now();
+        let result = executor.execute(
+            &ToolInput::Bash {
+                command: "sleep 305; printf complete".to_owned(),
+            },
+            &|| started.elapsed() >= Duration::from_secs(360),
+        );
+        fs::remove_dir_all(root).unwrap();
+        assert!(matches!(
+            result,
+            ToolResult::Ok {
+                output: ToolOutput::Bash {
+                    exit_code: Some(0),
+                    ref stdout,
+                    ref stderr,
+                    ..
+                }
+            } if stdout == "complete" && stderr.is_empty()
+        ));
     }
 
     #[test]

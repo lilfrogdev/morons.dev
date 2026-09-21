@@ -1,6 +1,7 @@
 pub(crate) mod conversions;
 pub(crate) mod events;
 mod login;
+pub(crate) mod steering;
 
 use std::{
     error::Error,
@@ -79,6 +80,7 @@ impl Error for ApplicationStartupError {
 }
 
 pub(crate) enum ApplicationOutcome {
+    SteeringSubscription(steering::SteeringSubscription),
     Response(ApplicationResponse),
     SessionCatalogSubscription(SessionCatalogSubscription),
     SessionSubscription(SessionSubscription),
@@ -143,6 +145,10 @@ impl ServerApplication {
         request: ApplicationRequest,
     ) -> Result<ApplicationOutcome, ApplicationError> {
         match request {
+            request @ (ApplicationRequest::MutateSteering { .. }
+            | ApplicationRequest::GetSteering { .. }
+            | ApplicationRequest::ReplaySteering { .. }
+            | ApplicationRequest::SubscribeSteering { .. }) => self.execute_steering(request).await,
             request @ (ApplicationRequest::GetOpenAiCredentialStatus
             | ApplicationRequest::BeginOpenAiLogin { .. }
             | ApplicationRequest::CancelOpenAiLogin { .. }

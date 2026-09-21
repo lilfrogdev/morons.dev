@@ -1260,6 +1260,7 @@ where
             | ServerMessage::ProtocolVersionMismatch { .. }
             | ServerMessage::Event { .. }
             | ServerMessage::OpenAiLoginFinished { .. }
+            | ServerMessage::SteeringChanged { .. }
             | ServerMessage::SubscriptionEnded { .. } => {
                 self.usable = false;
                 Err(ApplicationClientError::UnexpectedServerMessage)

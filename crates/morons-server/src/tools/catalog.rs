@@ -90,7 +90,7 @@ fn tool_definitions() -> Vec<ProviderTool> {
         ProviderTool {
             strict: true,
             name: ToolKind::Bash.name().to_owned(),
-            description: "Run one bounded noninteractive Bash command in the selected working directory with the user's normal development environment. Accepts exactly one argument: command. Do not add timeout, workdir, env or other fields; runtime/output limits are server-owned. Standard input is closed; stdout and stderr are captured separately. This is not sandboxed.".to_owned(),
+            description: "Run one noninteractive Bash command in the selected working directory with the user's normal development environment. Accepts exactly one argument: command. Do not add timeout, workdir, env or other fields. There is no implicit execution deadline; cancellation and server-owned output limits apply. Standard input is closed; stdout and stderr are captured separately. This is not sandboxed.".to_owned(),
             parameters: object_schema(
                 json!({
                     "command": {"type": "string", "minLength": 1, "maxLength": MAX_BASH_COMMAND_BYTES}

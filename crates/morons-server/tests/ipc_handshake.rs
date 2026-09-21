@@ -77,6 +77,66 @@ async fn client_and_server_authenticate_before_protocol_handshake() {
     assert_eq!(server_version, TEST_SERVER_VERSION);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn unauthenticated_steering_requests_are_rejected_before_handshake() {
+    use morons_protocol::{
+        ApplicationRequest, ClientMessage, MutationRequestId, RunId, SessionId, SteeringChange,
+        SteeringCursor, SteeringMutation, write_client_message,
+    };
+    use tokio::io::AsyncWriteExt;
+
+    let session_id = SessionId::from_bytes([1; 16]);
+    let cursor = SteeringCursor {
+        session_id,
+        sequence: 0,
+    };
+    for request in [
+        ApplicationRequest::GetSteering { session_id },
+        ApplicationRequest::ReplaySteering { cursor, limit: 1 },
+        ApplicationRequest::SubscribeSteering { cursor },
+        ApplicationRequest::MutateSteering {
+            mutation: SteeringMutation {
+                request_id: MutationRequestId::from_bytes([2; 16]),
+                session_id,
+                expected_revision: 0,
+                change: SteeringChange::Enqueue {
+                    run_id: RunId::from_bytes([3; 16]),
+                    text: "must not be admitted".into(),
+                },
+            },
+        },
+    ] {
+        let name = test_socket_name().unwrap();
+        let listener = ListenerOptions::new()
+            .name(name.clone())
+            .create_tokio()
+            .unwrap();
+        let exchange = async {
+            let server = async {
+                let mut connection = listener.accept().await.unwrap();
+                authorize_accepted_peer(&connection).unwrap();
+                let key = AuthenticationKey::from_bytes([0x11; AUTHENTICATION_KEY_BYTES]);
+                let epoch = HostEpoch::from_bytes([0x22; HOST_EPOCH_BYTES]);
+                assert!(
+                    authenticate_server(&mut connection, &key, &epoch)
+                        .await
+                        .is_err()
+                );
+            };
+            let client = async {
+                let mut connection = Stream::connect(name).await.unwrap();
+                verify_connected_server_peer(&connection, process::id()).unwrap();
+                write_client_message(&mut connection, &ClientMessage::request(1, request))
+                    .await
+                    .unwrap();
+                connection.shutdown().await.unwrap();
+            };
+            tokio::join!(server, client);
+        };
+        tokio::time::timeout(TEST_TIMEOUT, exchange).await.unwrap();
+    }
+}
+
 fn test_socket_name() -> io::Result<Name<'static>> {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
