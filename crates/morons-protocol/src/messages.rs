@@ -46,6 +46,9 @@ impl ClientMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ServerMessage {
+    SteeringChanged {
+        notice: crate::SteeringNotice,
+    },
     Hello {
         protocol_version: u32,
         server_version: String,

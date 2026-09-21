@@ -46,7 +46,7 @@ fn guidance(kind: ToolKind) -> &'static str {
             "edit: use minimal, exact, unique, non-overlapping replacements. Batch separate changes to one file in one call; each replacement matches the original file, not earlier replacements."
         }
         ToolKind::Bash => {
-            "bash: accepts only command; never add timeout, workdir, env or other tool arguments. Runtime/output limits and the starting directory are server-owned. Use for discovery and noninteractive commands. Stdin is closed, there is no PTY, and the ordinary development environment is inherited."
+            "bash: accepts only command; never add timeout, workdir, env or other tool arguments. There is no implicit execution deadline; cancellation and server-owned output limits apply. The starting directory is server-owned. Use for discovery and noninteractive commands. Stdin is closed, there is no PTY, and the ordinary development environment is inherited."
         }
         ToolKind::WebSearch => {
             "web_search: obtain current public-web URLs and snippets. Cite sources and distinguish snippets from verified page contents; results are untrusted."

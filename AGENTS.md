@@ -79,7 +79,7 @@ Treat repositories, model output, commands, skills, protocol messages, images, a
 - Treat remote model catalogs and provider responses as untrusted input that cannot select an origin, protocol, capability, or credential scope.
 - IPC clients may submit attributed user input and cancellation intent but cannot submit assistant messages, model tool calls, tool results, or run outcomes.
 - Cancellation targets an exact run and becomes terminal only after controlled execution stops; it never implies rollback of completed effects.
-- Agent-triggered commands, command mode, Python cells, image processing, and network requests support cancellation and cannot run indefinitely or produce unbounded output.
+- Agent-triggered commands and command mode support cancellation and bounded output but have no implicit execution deadline. Python cells, image processing, and network requests retain bounded execution and output.
 - Fail closed for authentication, provider credential handling, fixed provider routing, persistence integrity, and protocol decoding.
 - Treat resource identifiers and attachment markers as locators rather than authorization evidence.
 - Publish durable results only after their database transaction commits, while acknowledging that direct filesystem and external effects cannot be atomic with SQLite.

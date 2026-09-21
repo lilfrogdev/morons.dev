@@ -89,6 +89,7 @@ where
         | ServerMessage::RequestFailed { .. }
         | ServerMessage::Event { .. }
         | ServerMessage::OpenAiLoginFinished { .. }
+        | ServerMessage::SteeringChanged { .. }
         | ServerMessage::SubscriptionEnded { .. } => Err(HandshakeError::UnexpectedServerMessage),
     }
 }

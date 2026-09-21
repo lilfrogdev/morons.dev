@@ -63,7 +63,8 @@ where
                 self.usable = false;
                 Err(ApplicationClientError::Application(error))
             }
-            ServerMessage::Hello { .. }
+            ServerMessage::SteeringChanged { .. }
+            | ServerMessage::Hello { .. }
             | ServerMessage::ProtocolVersionMismatch { .. }
             | ServerMessage::Response { .. }
             | ServerMessage::OpenAiLoginFinished { .. }
@@ -119,7 +120,8 @@ where
                 self.usable = false;
                 Err(ApplicationClientError::Application(error))
             }
-            ServerMessage::Hello { .. }
+            ServerMessage::SteeringChanged { .. }
+            | ServerMessage::Hello { .. }
             | ServerMessage::ProtocolVersionMismatch { .. }
             | ServerMessage::Response { .. }
             | ServerMessage::OpenAiLoginFinished { .. }

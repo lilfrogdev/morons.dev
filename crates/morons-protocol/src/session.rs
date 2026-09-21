@@ -247,6 +247,19 @@ pub struct SkillSummary {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApplicationRequest {
+    MutateSteering {
+        mutation: crate::SteeringMutation,
+    },
+    GetSteering {
+        session_id: SessionId,
+    },
+    ReplaySteering {
+        cursor: crate::SteeringCursor,
+        limit: u16,
+    },
+    SubscribeSteering {
+        cursor: crate::SteeringCursor,
+    },
     CreateSession {
         mutation_request_id: MutationRequestId,
         display_name: Option<String>,
@@ -371,6 +384,25 @@ pub enum ApplicationRequest {
 impl fmt::Debug for ApplicationRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MutateSteering { mutation } => formatter
+                .debug_struct("MutateSteering")
+                .field("request_id", &mutation.request_id)
+                .field("session_id", &mutation.session_id)
+                .field("expected_revision", &mutation.expected_revision)
+                .finish_non_exhaustive(),
+            Self::GetSteering { session_id } => formatter
+                .debug_struct("GetSteering")
+                .field("session_id", session_id)
+                .finish(),
+            Self::ReplaySteering { cursor, limit } => formatter
+                .debug_struct("ReplaySteering")
+                .field("cursor", cursor)
+                .field("limit", limit)
+                .finish(),
+            Self::SubscribeSteering { cursor } => formatter
+                .debug_struct("SubscribeSteering")
+                .field("cursor", cursor)
+                .finish(),
             Self::CreateSession {
                 mutation_request_id,
                 display_name,
@@ -575,6 +607,18 @@ impl fmt::Debug for ApplicationRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApplicationResponse {
+    SteeringMutated {
+        receipt: crate::SteeringReceipt,
+    },
+    SteeringFound {
+        snapshot: crate::SteeringSnapshot,
+    },
+    SteeringReplayed {
+        page: crate::SteeringPage,
+    },
+    SteeringSubscriptionStarted {
+        cursor: crate::SteeringCursor,
+    },
     SessionCreated {
         session: SessionSummary,
     },

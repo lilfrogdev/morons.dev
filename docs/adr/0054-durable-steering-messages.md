@@ -5,11 +5,10 @@
 Accepted design; implementation started with an inactive schema foundation. Amends ADR 0005's input acceptance and
 successful-run completion rules once implemented.
 
-Schema 43 reserves per-session queue state and pending text records; no application
-path writes them yet. Queues default to paused, target a run in the same session,
+Schema 43 reserves per-session queue state and pending text records. Queues default to paused, target a run in the same session,
 and hold at most sixteen 64-KiB messages (one MiB total). FIFO order uses enqueue
 sequence, not reusable capacity slots. Actor 1 denotes `LocalOwner`. This migration
-alone does not enable queueing; the storage-only progress below remains inactive.
+alone does not enable queueing; the protocol milestone below exposes storage acceptance only.
 Startup, cancellation intent, terminal run transitions, and archive preparation
 pause existing queues without consuming messages; unarchiving does not resume
 them. Session deletion removes queue records before
@@ -57,13 +56,26 @@ rebuild transaction; the separate final database integrity check runs after comm
 Backend recovery starts only after database open succeeds, and pauses queues before
 recovering nonterminal runs. These are separate commit boundaries, not an atomic
 whole-startup rollback guarantee.
-Gap-free production snapshot/replay remains a prerequisite.
-The test-only storage-worker mutation core exercises enqueue, edit, remove, pause,
+The storage-worker mutation core exercises enqueue, edit, remove, pause,
 and exact-active-run resume with queue/item revision checks and durable retry
-results. It is not application admission: gap-free snapshots/replay, prepared
-skills/attachments, and idle-resume admission must be completed before exposing
-these operations.
-No protocol, UI, or delivery path is enabled.
+results. The protocol milestone exposes these text-only operations with gap-free
+snapshots/replay; prepared skills/attachments and idle-resume admission remain
+prerequisites for delivery. No UI or delivery path is enabled.
+
+### Protocol admission milestone
+
+Authenticated local-owner IPC may mutate text-only queues, read transactional
+snapshots and bounded replay pages, and subscribe using a separate session-bound
+steering cursor. This exposes durable storage acceptance only, not transcript or
+provider delivery. Resume requires an exact active run; idle resume, attachment
+preparation, skill expansion, provider delivery, and CLI queue controls remain
+unavailable. Text is retained literally until a future delivery admission validates
+it. No request can submit attribution, delivery facts, or provider outcomes.
+Subscriptions register commit notifications before reading history, replay durable
+facts in bounded pages, and disconnect slow writers using existing transport limits.
+Notifications are wakeups, not authoritative events; reconnect resumes from the last
+received steering cursor. Session deletion ends the subscription. Exact retries
+resolve unknown mutation acknowledgments without repeating effects.
 
 ## Decision
 
@@ -96,8 +108,8 @@ Pending input and its attachments remain outside provider context and compaction
 until delivery. Enqueue, edit, remove, pause, resume, and delivery commit their
 attribution, idempotency results, projections, and ordered events together.
 Snapshots, replay, and notifications must expose queue state through a consistent,
-gap-free cursor boundary. The storage prototype uses a separate steering cursor;
-production integration with session events remains prerequisite work. Pending items
+gap-free cursor boundary. Steering uses a separate session-bound cursor and
+subscription, not transcript events. Pending items
 are terminal-sanitized like all other input.
 
 ### Delivery boundary
@@ -150,14 +162,14 @@ concurrent delivery or edits return a conflict and refresh the queue.
 
 ### Storage snapshot and replay prototype
 
-Test-only worker requests read queue state and its canonical steering high-water
+Worker requests read queue state and its canonical steering high-water
 in one SQLite read transaction. A separate session-bound cursor replays bounded
 change notices from mutation and lifecycle facts, not transcript delivery events.
 Notices invalidate queue state; clients must refresh a snapshot rather than treat
 notices as historical message payloads. Paginated readers advance to the last
 returned notice, not the page high-water, until caught up. Restart pause facts
 participate in replay; reconnect and reads never resume or consume input.
-Production protocol subscriptions and multi-client integration remain disabled.
+Protocol subscriptions replay the same durable notices through authenticated IPC.
 Steering facts do not change session-list ordering or its event cursor; queue
 consumers must use the separate steering cursor. Any production integration must
 keep snapshot, replay, and notification boundaries consistent.
@@ -165,8 +177,11 @@ keep snapshot, replay, and notification boundaries consistent.
 Storage regression coverage includes competing requests through the serialized
 worker, independent paginated readers across populated sessions, repeated startup
 repair, legacy-row preservation, and repair-transaction rollback on execution or
-post-rebuild validation failure. This does not establish independent-connection
-concurrency, transport disconnect handling, or production subscription guarantees.
+post-rebuild validation failure. Connection regressions additionally cover unknown
+acknowledgments, exact retries, stale revisions, snapshot/subscription boundaries,
+live wakeups, bounded multi-page reconnect replay, session isolation, idle-session
+deletion termination, and slow-writer disconnection. All clients still
+share the single authoritative storage worker.
 
 ## Implementation sequence
 

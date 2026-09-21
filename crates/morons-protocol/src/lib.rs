@@ -13,6 +13,11 @@ mod framing;
 mod messages;
 mod run;
 mod session;
+mod steering;
+pub use steering::{
+    SteeringChange, SteeringCursor, SteeringItem, SteeringMutation, SteeringNotice, SteeringPage,
+    SteeringReceipt, SteeringSnapshot,
+};
 
 pub use authentication::{
     AUTH_PROTOCOL_VERSION, AUTHENTICATION_KEY_BYTES, AuthenticationError, AuthenticationKey,
@@ -45,4 +50,4 @@ pub use session::{
     SkillSource, SkillSummary,
 };
 
-pub const PROTOCOL_VERSION: u32 = 46;
+pub const PROTOCOL_VERSION: u32 = 47;
