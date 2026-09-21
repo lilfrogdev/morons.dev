@@ -30,6 +30,11 @@ mod session_delete;
 mod session_events;
 mod session_mutation;
 mod settings;
+#[cfg(test)]
+mod steering;
+mod steering_lifecycle;
+#[cfg(test)]
+mod steering_queries;
 mod task_binding;
 mod tool_execution;
 mod web_binding;

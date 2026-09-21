@@ -4,6 +4,7 @@ use crate::persistence::PersistenceError;
 
 pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceError> {
     let transaction = connection.transaction()?;
+    super::steering_rebuild::rebuild(&transaction)?;
     transaction.execute("DELETE FROM session_run_states", [])?;
     transaction.execute("DELETE FROM runs", [])?;
     transaction.execute("DELETE FROM sessions", [])?;
@@ -254,6 +255,7 @@ pub(super) fn rebuild(connection: &mut Connection) -> Result<(), PersistenceErro
          FROM tool_uncertainty_acknowledgements",
         [],
     )?;
+    super::validate_steering_mutations(&transaction)?;
     transaction.commit()?;
     Ok(())
 }

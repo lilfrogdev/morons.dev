@@ -93,6 +93,7 @@ impl Backend {
                 UNION SELECT request_id FROM local_commands WHERE session_id = ?1
                 UNION SELECT request_id FROM local_command_cancellations WHERE session_id = ?1
                 UNION SELECT request_id FROM session_rename_requests WHERE session_id = ?1
+                UNION SELECT request_id FROM steering_mutation_requests WHERE session_id = ?1
                 UNION SELECT request_id FROM session_archive_requests WHERE session_id = ?1
              )",
             [&session_id.as_bytes()[..]],
@@ -185,6 +186,7 @@ impl Backend {
                 UNION SELECT request_id FROM local_commands WHERE session_id = ?2
                 UNION SELECT request_id FROM local_command_cancellations WHERE session_id = ?2
                 UNION SELECT request_id FROM session_rename_requests WHERE session_id = ?2
+                UNION SELECT request_id FROM steering_mutation_requests WHERE session_id = ?2
                 UNION SELECT request_id FROM session_archive_requests WHERE session_id = ?2
              )
              INSERT INTO deleted_mutation_tombstones (
@@ -199,6 +201,8 @@ impl Backend {
         )?;
 
         for statement in [
+            "DELETE FROM steering_lifecycle_facts WHERE session_id = ?1",
+            "DELETE FROM steering_mutation_requests WHERE session_id = ?1",
             "DELETE FROM steering_pending_messages WHERE session_id = ?1",
             "DELETE FROM steering_queues WHERE session_id = ?1",
             "DELETE FROM sessions WHERE session_id = ?1",

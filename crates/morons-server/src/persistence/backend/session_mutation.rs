@@ -191,10 +191,13 @@ impl Backend {
             ],
         )?;
         if archived {
-            transaction.execute(
-                "UPDATE steering_queues SET paused = 1, revision = revision + 1
-                 WHERE session_id = ?1 AND paused = 0",
-                [&session_id.as_bytes()[..]],
+            super::steering_lifecycle::pause(
+                &transaction,
+                Some(session_id.as_bytes()),
+                None,
+                super::steering_lifecycle::PauseReason::Archive,
+                Some(sequence),
+                now,
             )?;
         }
         transaction.commit()?;

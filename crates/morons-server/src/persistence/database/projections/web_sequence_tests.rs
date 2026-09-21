@@ -16,6 +16,11 @@ fn web_sequences_reject_collisions_and_unallocated_values() {
         SCHEMA_V37,
         SCHEMA_V38,
         SCHEMA_V39,
+        SCHEMA_V40,
+        SCHEMA_V41,
+        SCHEMA_V42,
+        SCHEMA_V43,
+        SCHEMA_V44,
     ] {
         connection.execute_batch(schema).unwrap();
     }

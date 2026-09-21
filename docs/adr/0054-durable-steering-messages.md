@@ -8,13 +8,62 @@ successful-run completion rules once implemented.
 Schema 43 reserves per-session queue state and pending text records; no application
 path writes them yet. Queues default to paused, target a run in the same session,
 and hold at most sixteen 64-KiB messages (one MiB total). FIFO order uses enqueue
-sequence, not reusable capacity slots. Actor 1 denotes `LocalOwner`. Mutation
-history, attachments, storage-worker mutation operations, projections, integrity,
-and delivery are still pending; this migration alone does not enable queueing.
+sequence, not reusable capacity slots. Actor 1 denotes `LocalOwner`. This migration
+alone does not enable queueing; the storage-only progress below remains inactive.
 Startup, cancellation intent, terminal run transitions, and archive preparation
 pause existing queues without consuming messages; unarchiving does not resume
 them. Session deletion removes queue records before
 run facts, explicitly deleting pending text without touching the selected directory.
+
+Schema 44 adds ordered mutation facts and receipts and reserves a global mutation
+operation kind. Facts retain accepted text, operation kind, and explicit run targets;
+startup repairs mismatched pending text, item revisions, and FIFO provenance from
+validated canonical history.
+Startup also validates canonical text and recomputes each mutation fingerprint from
+its session, prior queue/item revisions, operation, and payload, including superseded edits.
+A queue's revision-one mutation must be enqueue, never pause or resume, even when
+its fingerprint and projected state agree. Item histories must start with one
+enqueue, advance edits by one revision, and allow removal only at the current
+revision, with no subsequent reuse of the item.
+Queue targets must match the latest enqueue/resume target. At an explicit pause,
+resume, or initial enqueue revision, the projected pause state must match that fact.
+Schema 44 also records lifecycle pauses with ordered sequences, exact targets,
+resulting revisions, and cancellation, terminal-transition, archive, or recovery
+reasons. Non-recovery pauses bind their originating durable fact and timestamp;
+pause facts and queue updates commit together. Recovery pauses commit before run
+recovery and never consume or resume pending input. Startup validates source
+bindings, combined mutation/lifecycle revision order, and the latest pause state.
+Historical cancellation, terminal, and archive sources require a corresponding
+pause when the preceding known queue state was active and targeted that source.
+Enqueue and resume histories must target an already accepted run without an earlier
+applied cancellation or terminal transition; mutations cannot occur while archived,
+and only explicit resume can retarget an existing queue. Archive preparation rejects
+new mutations immediately, before the archived session projection is finalized;
+exact retries still return their original receipt. For queues with a recorded
+initial mutation, every pending item must have a canonical enqueue fact.
+Historical occupancy is checked at every mutation boundary, not only at the final
+queue state. After validation, queues with complete mutation history are rebuilt
+transactionally from canonical mutation and lifecycle facts, including edited text,
+FIFO provenance, removals, explicit targets, and pause state. Capacity slots are
+projection details and may be reassigned without changing FIFO order.
+Legacy foundation-only rows remain readable and are not reconstructed. Startup
+validates canonical history independently of projections, reconstructs missing or
+conflicting history-backed projections, and validates the result before committing.
+Regression coverage checks repeated startup repair, canonical corruption rejection,
+recovery pausing once, and transactional reconstruction rollback.
+Database startup migrates and validates schema and quick integrity before canonical
+validation and projection reconstruction. Steering postvalidation runs inside the
+rebuild transaction; the separate final database integrity check runs after commit.
+Backend recovery starts only after database open succeeds, and pauses queues before
+recovering nonterminal runs. These are separate commit boundaries, not an atomic
+whole-startup rollback guarantee.
+Gap-free production snapshot/replay remains a prerequisite.
+The test-only storage-worker mutation core exercises enqueue, edit, remove, pause,
+and exact-active-run resume with queue/item revision checks and durable retry
+results. It is not application admission: gap-free snapshots/replay, prepared
+skills/attachments, and idle-resume admission must be completed before exposing
+these operations.
+No protocol, UI, or delivery path is enabled.
 
 ## Decision
 
@@ -46,8 +95,10 @@ with existing per-message limits retained. Rejection retains the client's draft.
 Pending input and its attachments remain outside provider context and compaction
 until delivery. Enqueue, edit, remove, pause, resume, and delivery commit their
 attribution, idempotency results, projections, and ordered events together.
-Snapshots and replay expose queue state through the existing gap-free event
-cursor boundary. Pending items are terminal-sanitized like all other input.
+Snapshots, replay, and notifications must expose queue state through a consistent,
+gap-free cursor boundary. The storage prototype uses a separate steering cursor;
+production integration with session events remains prerequisite work. Pending items
+are terminal-sanitized like all other input.
 
 ### Delivery boundary
 
@@ -96,6 +147,26 @@ controls to retrieve/edit, remove, and resume. Do not clear a submitted draft
 until durable acceptance is confirmed. Unknown mutation outcomes are resolved by
 identity, not a new submission. Editing must not overwrite newer local drafts;
 concurrent delivery or edits return a conflict and refresh the queue.
+
+### Storage snapshot and replay prototype
+
+Test-only worker requests read queue state and its canonical steering high-water
+in one SQLite read transaction. A separate session-bound cursor replays bounded
+change notices from mutation and lifecycle facts, not transcript delivery events.
+Notices invalidate queue state; clients must refresh a snapshot rather than treat
+notices as historical message payloads. Paginated readers advance to the last
+returned notice, not the page high-water, until caught up. Restart pause facts
+participate in replay; reconnect and reads never resume or consume input.
+Production protocol subscriptions and multi-client integration remain disabled.
+Steering facts do not change session-list ordering or its event cursor; queue
+consumers must use the separate steering cursor. Any production integration must
+keep snapshot, replay, and notification boundaries consistent.
+
+Storage regression coverage includes competing requests through the serialized
+worker, independent paginated readers across populated sessions, repeated startup
+repair, legacy-row preservation, and repair-transaction rollback on execution or
+post-rebuild validation failure. This does not establish independent-connection
+concurrency, transport disconnect handling, or production subscription guarantees.
 
 ## Implementation sequence
 
