@@ -1,4 +1,169 @@
 use super::*;
+use crate::persistence::{ProviderOperationFailureState, RunFailureKind};
+
+#[tokio::test(flavor = "current_thread")]
+async fn steering_provider_completion_pauses_once_and_preserves_pending_input() {
+    use crate::persistence::steering::{SteeringChange, SteeringMutation};
+
+    for operation_state in [
+        None,
+        Some(ProviderOperationFailureState::Failed),
+        Some(ProviderOperationFailureState::Uncertain),
+    ] {
+        let root = TestRoot::new("steering-provider-completion");
+        let store = SessionStore::open_for_test(root.path()).unwrap();
+        configure_credential(&store).await;
+        let session = store
+            .create_session(MutationRequestId::from_bytes([0xe1; 16]), None)
+            .await
+            .unwrap();
+        let run = store
+            .accept_session_input(
+                MutationRequestId::from_bytes([0xe2; 16]),
+                session.id,
+                "Initial".into(),
+                model_selection(),
+            )
+            .await
+            .unwrap()
+            .run;
+        assert_eq!(
+            store.activate_run(run.id).await.unwrap(),
+            ActivationOutcome::Active
+        );
+        let context = store.load_run_context(run.id).await.unwrap();
+        let operation = match store
+            .prepare_provider_operation(
+                run.id,
+                context.current_entry_high_water,
+                context.estimated_input_tokens,
+            )
+            .await
+            .unwrap()
+        {
+            PrepareOperationOutcome::Prepared(operation) => operation,
+            other => panic!("unexpected preparation outcome: {other:?}"),
+        };
+        assert_eq!(
+            store
+                .mark_provider_dispatched(run.id, operation)
+                .await
+                .unwrap(),
+            DispatchOutcome::Dispatched
+        );
+        let enqueue = SteeringMutation {
+            request_id: MutationRequestId::from_bytes([3; 16]),
+            session_id: session.id,
+            expected_revision: 0,
+            change: SteeringChange::Enqueue {
+                run_id: run.id,
+                text: "Retain literal @skill".into(),
+            },
+        };
+        let receipt = store.mutate_steering(enqueue.clone()).await.unwrap();
+        store
+            .mutate_steering(SteeringMutation {
+                request_id: MutationRequestId::from_bytes([4; 16]),
+                session_id: session.id,
+                expected_revision: 1,
+                change: SteeringChange::Resume { run_id: run.id },
+            })
+            .await
+            .unwrap();
+        let before = store.steering_snapshot(session.id).await.unwrap();
+        assert!(!before.paused);
+        let terminal = match operation_state {
+            Some(operation_state) => {
+                let terminal = store
+                    .finish_run_failure(
+                        run.id,
+                        Some(operation),
+                        RunFailureKind::ProviderUnavailable,
+                        operation_state,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(terminal.state, RunState::Failed);
+                let context = store.load_run_context(run.id).await.unwrap();
+                assert!(matches!(
+                    &context.entries[..],
+                    [TranscriptEntry::UserMessage { text, .. }] if text == "Initial"
+                ));
+                terminal
+            }
+            None => {
+                let terminal = store
+                    .complete_run_success(
+                        run.id,
+                        operation,
+                        CompletedAssistant {
+                            text: "durable answer".into(),
+                            refusal: false,
+                            provider_response_id: "resp_test".into(),
+                            usage: ProviderUsage {
+                                input_tokens: 10,
+                                cached_input_tokens: 0,
+                                cache_write_input_tokens: 0,
+                                output_tokens: 4,
+                                reasoning_output_tokens: 0,
+                                total_tokens: 14,
+                            },
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(terminal.state, RunState::Succeeded);
+                let context = store.load_run_context(run.id).await.unwrap();
+                assert!(matches!(
+                    &context.entries[..],
+                    [
+                        TranscriptEntry::UserMessage { text: user_text, .. },
+                        TranscriptEntry::AssistantMessage { text: assistant_text, .. },
+                    ] if user_text == "Initial" && assistant_text == "durable answer"
+                ));
+                terminal
+            }
+        };
+        assert!(terminal.state.is_terminal());
+        let after = store.steering_snapshot(session.id).await.unwrap();
+        assert!(after.paused);
+        assert_eq!(after.revision, 3);
+        assert_eq!(after.items, before.items);
+        let notices = store.steering_replay(before.cursor, 128).await.unwrap();
+        assert_eq!(notices.notices.len(), 1);
+        assert_eq!(notices.notices[0].cursor, after.cursor);
+        assert_eq!(notices.notices[0].revision, 3);
+        assert_eq!(
+            store.mutate_steering(enqueue.clone()).await.unwrap(),
+            receipt
+        );
+        assert!(matches!(
+            store
+                .mutate_steering(SteeringMutation {
+                    request_id: MutationRequestId::from_bytes([5; 16]),
+                    session_id: session.id,
+                    expected_revision: 3,
+                    change: SteeringChange::Resume { run_id: run.id },
+                })
+                .await,
+            Err(PersistenceError::RequestConflict)
+        ));
+        store.finish_run_stopped(run.id, None).await.unwrap();
+        assert_eq!(store.steering_snapshot(session.id).await.unwrap(), after);
+        drop(store);
+        let store = SessionStore::open_for_test(root.path()).unwrap();
+        assert_eq!(store.steering_snapshot(session.id).await.unwrap(), after);
+        assert_eq!(store.mutate_steering(enqueue).await.unwrap(), receipt);
+        assert!(
+            store
+                .steering_replay(after.cursor, 128)
+                .await
+                .unwrap()
+                .notices
+                .is_empty()
+        );
+    }
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn steering_concurrent_readers_and_writers_preserve_replay_boundaries() {
