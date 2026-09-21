@@ -194,6 +194,36 @@ share the single authoritative storage worker.
 4. Add CLI enqueue and queue controls without changing newline or image-marker
    editing behavior.
 
+### Delivery implementation contract
+
+Delivery must add canonical provenance before enabling consumption. Current startup
+validation requires exactly one user entry per run, and queue reconstruction knows
+only mutation and lifecycle facts; simply inserting a user entry and deleting a
+pending row would violate both invariants on restart.
+
+- Record a delivery fact binding the session, exact run, item and item revision,
+  enqueue sequence, queue revision, transcript message, and committed boundary.
+  Validate it against the canonical edited text and FIFO state, not projections.
+- Preserve the unique ordinary run-initiating message and its retry fingerprint.
+  Additional user entries require explicit delivery provenance; do not relax the
+  existing count check without validating every additional entry.
+- Include delivery in sequence uniqueness, queue reconstruction, snapshot/replay,
+  post-commit notifications, session deletion, and startup integrity checks.
+- Prepare skills with ordinary input validation before consumption, outside the
+  storage transaction. Recheck the exact item/queue revision and active run when
+  committing; a concurrent edit, pause, cancellation, or archive invalidates the
+  preparation rather than dispatching stale input. Pending text is not implicitly
+  approved as literal provider input merely because storage admission accepted it.
+- Share consumption eligibility between the between-turn boundary and final
+  response transaction. A final-response delivery must not consume a second item
+  at the next loop iteration, including after compaction. Never consume while a
+  provider operation or any tool from the preceding turn is unresolved.
+- Preserve provider continuation provenance when rebuilding committed context.
+  Recovery validates delivery but never redispatches it. Unsafe preparation or
+  admission retains the item and pauses the queue with a bounded visible reason.
+- Keep idle resume on ordinary new-run admission, including policy, credential,
+  uncertainty, and prepared-input guards; never reopen a terminal run.
+
 ## Required verification
 
 - FIFO, one item per turn, and no delivery during an in-flight operation.
