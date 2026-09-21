@@ -19,6 +19,7 @@ pub(crate) use task_binding::TaskModelBinding;
 mod web_binding;
 pub(crate) use web_binding::{WebBinding, WebInvocation, WebRoute};
 mod runs;
+mod steering;
 mod types;
 mod workspace;
 
@@ -691,6 +692,8 @@ impl Drop for SessionStore {
 
 enum WorkerRequest {
     #[cfg(test)]
+    Steering(steering::Request),
+    #[cfg(test)]
     ChildJournal(child_journal::Request),
     #[cfg(test)]
     TaskModelBinding {
@@ -827,6 +830,8 @@ fn run_worker(
             WorkerRequest::WebBinding(request) => request.execute(&mut backend),
             WorkerRequest::Maintenance(request) => request.execute(&mut backend),
             WorkerRequest::OpenAi(request) => request.execute(&mut backend),
+            #[cfg(test)]
+            WorkerRequest::Steering(request) => request.execute(&mut backend),
             WorkerRequest::LocalCommand(request) => request.execute(&mut backend),
             WorkerRequest::CreateSession {
                 request_id,

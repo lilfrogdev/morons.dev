@@ -1,4 +1,8 @@
 mod rebuild;
+mod steering_lifecycle;
+mod steering_rebuild;
+#[cfg(test)]
+mod steering_tests;
 #[cfg(test)]
 mod web_sequence_tests;
 
@@ -36,6 +40,8 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
         validate_session_delete_facts(connection)?;
         validate_default_model_facts(connection)?;
         validate_subagent_model_facts(connection)?;
+        steering_lifecycle::validate_history(connection)?;
+        validate_steering_mutation_history(connection)?;
         validate_mutation_registry(connection)?;
         validate_local_command_facts(connection)?;
         validate_image_attachment_facts(connection)?;
@@ -2118,6 +2124,8 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
             UNION ALL SELECT audit_sequence FROM local_command_audit_facts
             UNION ALL SELECT accepted_sequence FROM default_model_selections
             UNION ALL SELECT accepted_sequence FROM subagent_model_selections
+            UNION ALL SELECT fact_sequence FROM steering_lifecycle_facts
+            UNION ALL SELECT accepted_sequence FROM steering_mutation_requests
             UNION ALL SELECT accepted_sequence FROM data_use_policies
          )
          SELECT EXISTS (
@@ -2133,6 +2141,7 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
             SELECT 1 FROM logical_sequences
             WHERE singleton != 1
                OR next_value <= COALESCE((SELECT MAX(sequence) FROM canonical_sequences), 0)
+               OR next_value <= COALESCE((SELECT MAX(sequence) FROM other_sequences), 0)
                OR next_value <= COALESCE((SELECT MAX(sequence) FROM web_sequences), 0)
          )",
         [],
@@ -2487,4 +2496,200 @@ const fn invalid_run_context() -> PersistenceError {
     PersistenceError::InvalidState {
         reason: "a persisted run context binding is invalid",
     }
+}
+
+fn validate_steering_capacity_history(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "WITH occupancy AS (
+            SELECT SUM(CASE change_kind WHEN 1 THEN 1 WHEN 3 THEN -1 ELSE 0 END)
+                OVER (PARTITION BY session_id ORDER BY accepted_sequence) AS pending_count
+            FROM steering_mutation_requests
+        ) SELECT EXISTS (SELECT 1 FROM occupancy WHERE pending_count NOT BETWEEN 0 AND 16)",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "steering history exceeds queue capacity",
+        });
+    }
+    Ok(())
+}
+
+fn steering_revision(value: i64) -> Result<u64, PersistenceError> {
+    u64::try_from(value)
+        .ok()
+        .filter(|revision| *revision > 0)
+        .ok_or(PersistenceError::InvalidState {
+            reason: "a persisted steering mutation has an invalid revision",
+        })
+}
+
+fn validate_steering_mutations(connection: &Connection) -> Result<(), PersistenceError> {
+    steering_lifecycle::validate(connection)?;
+    validate_steering_mutation_history(connection)?;
+    validate_steering_mutation_projection(connection)
+}
+
+fn validate_steering_mutation_projection(connection: &Connection) -> Result<(), PersistenceError> {
+    let invalid: bool = connection.query_row(
+        "SELECT EXISTS (
+            SELECT 1 FROM steering_pending_messages AS pending
+            WHERE EXISTS (SELECT 1 FROM steering_mutation_requests AS initial
+                WHERE initial.session_id = pending.session_id AND initial.queue_revision = 1)
+              AND NOT EXISTS (SELECT 1 FROM steering_mutation_requests AS enqueue
+                WHERE enqueue.session_id = pending.session_id AND enqueue.item_id = pending.item_id
+                  AND enqueue.change_kind = 1)
+            UNION ALL
+            SELECT 1 FROM steering_mutation_requests AS request
+            LEFT JOIN steering_queues AS queue USING (session_id)
+            WHERE queue.revision IS NULL OR queue.revision < request.queue_revision
+            UNION ALL
+            SELECT 1 FROM steering_queues AS queue
+            JOIN steering_mutation_requests AS target
+              ON target.session_id = queue.session_id AND target.change_kind IN (1, 5)
+            WHERE target.target_run_id IS NOT queue.target_run_id
+              AND NOT EXISTS (
+                SELECT 1 FROM steering_mutation_requests AS newer
+                WHERE newer.session_id = target.session_id AND newer.change_kind IN (1, 5)
+                  AND newer.accepted_sequence > target.accepted_sequence
+              )
+            UNION ALL
+            SELECT 1 FROM steering_queues AS queue
+            JOIN steering_mutation_requests AS latest
+              ON latest.session_id = queue.session_id AND latest.queue_revision = queue.revision
+            WHERE (latest.change_kind = 4 AND queue.paused IS NOT 1)
+               OR (latest.change_kind = 5 AND queue.paused IS NOT 0)
+               OR (latest.change_kind = 1 AND latest.queue_revision = 1 AND queue.paused IS NOT 1)
+            UNION ALL
+            SELECT 1 FROM steering_mutation_requests AS latest
+            LEFT JOIN steering_pending_messages AS pending
+              ON pending.session_id = latest.session_id AND pending.item_id = latest.item_id
+            WHERE latest.change_kind IN (1, 2, 3)
+              AND NOT EXISTS (
+                SELECT 1 FROM steering_mutation_requests AS newer
+                WHERE newer.session_id = latest.session_id AND newer.item_id = latest.item_id
+                  AND newer.accepted_sequence > latest.accepted_sequence
+              )
+              AND (
+                (latest.change_kind = 3 AND pending.item_id IS NOT NULL)
+                OR (latest.change_kind IN (1, 2) AND (
+                    pending.item_id IS NULL OR pending.text IS NOT latest.text
+                    OR pending.revision IS NOT latest.item_revision
+                    OR pending.actor IS NOT latest.actor
+                    OR NOT EXISTS (
+                        SELECT 1 FROM steering_mutation_requests AS enqueue
+                        WHERE enqueue.session_id = latest.session_id
+                          AND enqueue.item_id = latest.item_id AND enqueue.change_kind = 1
+                          AND enqueue.accepted_sequence = pending.enqueue_sequence
+                          AND enqueue.accepted_at_milliseconds = pending.created_at_milliseconds
+                    )
+                ))
+              )
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "steering mutation receipts conflict with the registry or queue",
+        });
+    }
+    Ok(())
+}
+
+fn validate_steering_mutation_history(connection: &Connection) -> Result<(), PersistenceError> {
+    validate_steering_capacity_history(connection)?;
+    let invalid: bool = connection.query_row(
+        "WITH item_history AS (
+            SELECT change_kind, item_revision,
+                LAG(change_kind) OVER item_order AS previous_kind,
+                LAG(item_revision) OVER item_order AS previous_revision
+            FROM steering_mutation_requests
+            WHERE change_kind IN (1, 2, 3)
+            WINDOW item_order AS (PARTITION BY session_id, item_id ORDER BY accepted_sequence)
+        )
+        SELECT EXISTS (
+            SELECT 1 FROM item_history
+            WHERE (change_kind = 1 AND previous_kind IS NOT NULL)
+               OR (change_kind IN (2, 3) AND (
+                   previous_kind IS NULL OR previous_kind NOT IN (1, 2)
+                   OR (change_kind = 2 AND item_revision - 1 IS NOT previous_revision)
+                   OR (change_kind = 3 AND item_revision IS NOT previous_revision)
+               ))
+            UNION ALL
+            SELECT 1 FROM mutation_requests AS mutation
+            LEFT JOIN steering_mutation_requests AS request USING (request_id)
+            WHERE mutation.operation_kind = 18 AND (
+                request.request_id IS NULL
+                OR request.accepted_sequence IS NOT mutation.accepted_sequence
+                OR request.accepted_at_milliseconds IS NOT mutation.accepted_at_milliseconds
+            )
+            UNION ALL
+            SELECT 1 FROM steering_mutation_requests AS request
+            LEFT JOIN mutation_requests AS mutation USING (request_id)
+            WHERE mutation.operation_kind IS NOT 18
+            UNION ALL
+            SELECT 1 FROM steering_mutation_requests AS request
+            JOIN steering_mutation_requests AS earlier
+              ON earlier.session_id = request.session_id
+             AND earlier.queue_revision < request.queue_revision
+            WHERE earlier.accepted_sequence >= request.accepted_sequence
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if invalid {
+        return Err(PersistenceError::InvalidState {
+            reason: "steering mutation receipts conflict with the registry or queue",
+        });
+    }
+    use crate::persistence::steering::{SteeringChange, fingerprint, validate_text};
+    let mut statement = connection.prepare(
+        "SELECT session_id, queue_revision, change_kind, target_run_id, item_id,
+                item_revision, text, operation_fingerprint FROM steering_mutation_requests",
+    )?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let session_id = SessionId::from_bytes(row.get(0)?);
+        let revision = steering_revision(row.get(1)?)?;
+        let change = match row.get::<_, i64>(2)? {
+            1 => SteeringChange::Enqueue {
+                run_id: crate::persistence::RunId::from_bytes(row.get(3)?),
+                text: row.get(6)?,
+            },
+            2 => SteeringChange::Edit {
+                item_id: row.get(4)?,
+                revision: steering_revision(row.get(5)?)? - 1,
+                text: row.get(6)?,
+            },
+            3 => SteeringChange::Remove {
+                item_id: row.get(4)?,
+                revision: steering_revision(row.get(5)?)?,
+            },
+            4 => SteeringChange::Pause,
+            5 => SteeringChange::Resume {
+                run_id: crate::persistence::RunId::from_bytes(row.get(3)?),
+            },
+            _ => {
+                return Err(PersistenceError::InvalidState {
+                    reason: "a persisted steering mutation has an invalid kind",
+                });
+            }
+        };
+        let invalid_text = match &change {
+            SteeringChange::Enqueue { text, .. } | SteeringChange::Edit { text, .. } => {
+                validate_text(text).is_err()
+            }
+            _ => false,
+        };
+        if invalid_text
+            || fingerprint(session_id, revision - 1, &change) != row.get::<_, [u8; 32]>(7)?
+        {
+            return Err(PersistenceError::InvalidState {
+                reason: "a persisted steering mutation has invalid canonical input",
+            });
+        }
+    }
+    Ok(())
 }

@@ -123,10 +123,13 @@ impl Backend {
             ],
         )?;
         if intent_applied {
-            transaction.execute(
-                "UPDATE steering_queues SET paused = 1, revision = revision + 1
-                 WHERE session_id = ?1 AND target_run_id = ?2 AND paused = 0",
-                params![&session_id.as_bytes()[..], &run_id.as_bytes()[..]],
+            super::steering_lifecycle::pause(
+                &transaction,
+                Some(session_id.as_bytes()),
+                Some(run_id.as_bytes()),
+                super::steering_lifecycle::PauseReason::Cancellation,
+                Some(accepted_sequence),
+                accepted_at_milliseconds,
             )?;
             transaction.execute(
                 "UPDATE runs

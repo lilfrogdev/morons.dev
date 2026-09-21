@@ -104,6 +104,8 @@ pub(crate) fn remove_post_v41_schema(connection: &Connection) {
     connection
         .execute_batch(
             "DROP TABLE IF EXISTS steering_pending_messages;
+             DROP TABLE IF EXISTS steering_mutation_requests;
+             DROP TABLE IF EXISTS steering_lifecycle_facts;
              DROP TABLE IF EXISTS steering_queues;
              DROP INDEX IF EXISTS run_accepted_facts_by_session_run;
              DROP TABLE IF EXISTS child_journal; DROP TABLE IF EXISTS child_runs;",
