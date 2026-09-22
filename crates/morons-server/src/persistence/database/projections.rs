@@ -1118,7 +1118,7 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
          FROM run_input_requests AS request
          LEFT JOIN run_accepted_facts AS accepted ON accepted.request_id = request.request_id
          LEFT JOIN session_entries AS entry
-           ON entry.run_id = request.run_id AND entry.entry_kind = 1",
+           ON entry.message_id = request.user_message_id AND entry.entry_kind = 1",
     )?;
     let inputs = statement
         .query_map([], |row| {
