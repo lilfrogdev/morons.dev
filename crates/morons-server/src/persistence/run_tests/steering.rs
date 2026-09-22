@@ -1,3 +1,5 @@
+mod delivery;
+
 use super::*;
 use crate::persistence::{ProviderOperationFailureState, RunFailureKind};
 

@@ -22,6 +22,9 @@ pub(super) fn rebuild(connection: &Connection) -> Result<(), PersistenceError> {
              UNION ALL
              SELECT session_id, queue_revision, fact_sequence, target_run_id, 1
              FROM steering_lifecycle_facts
+             UNION ALL
+             SELECT session_id, queue_revision, fact_sequence, NULL, NULL
+             FROM steering_delivery_facts
          )
          INSERT INTO steering_queues (session_id, target_run_id, revision, paused)
          SELECT initial.session_id,
@@ -42,6 +45,8 @@ pub(super) fn rebuild(connection: &Connection) -> Result<(), PersistenceError> {
                ON enqueue.session_id = latest.session_id AND enqueue.item_id = latest.item_id
               AND enqueue.change_kind = 1
              WHERE latest.change_kind IN (1, 2)
+               AND NOT EXISTS (SELECT 1 FROM steering_delivery_facts AS delivered
+                   WHERE delivered.item_id = latest.item_id)
                AND EXISTS (SELECT 1 FROM steering_mutation_requests AS initial
                    WHERE initial.session_id = latest.session_id AND initial.queue_revision = 1)
                AND NOT EXISTS (SELECT 1 FROM steering_mutation_requests AS newer

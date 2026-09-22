@@ -201,6 +201,7 @@ impl Backend {
         )?;
 
         for statement in [
+            "DELETE FROM steering_delivery_facts WHERE session_id = ?1",
             "DELETE FROM steering_lifecycle_facts WHERE session_id = ?1",
             "DELETE FROM steering_mutation_requests WHERE session_id = ?1",
             "DELETE FROM steering_pending_messages WHERE session_id = ?1",

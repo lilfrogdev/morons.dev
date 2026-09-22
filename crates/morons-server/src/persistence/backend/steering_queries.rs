@@ -10,7 +10,8 @@ use crate::persistence::{
 };
 
 const HISTORY: &str = "SELECT accepted_sequence AS sequence, queue_revision FROM steering_mutation_requests WHERE session_id = ?1
-    UNION ALL SELECT fact_sequence, queue_revision FROM steering_lifecycle_facts WHERE session_id = ?1";
+    UNION ALL SELECT fact_sequence, queue_revision FROM steering_lifecycle_facts WHERE session_id = ?1
+    UNION ALL SELECT fact_sequence, queue_revision FROM steering_delivery_facts WHERE session_id = ?1";
 
 fn high_water(
     connection: &Connection,

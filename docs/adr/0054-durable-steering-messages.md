@@ -62,6 +62,20 @@ results. The protocol milestone exposes these text-only operations with gap-free
 snapshots/replay; prepared skills/attachments and idle-resume admission remain
 prerequisites for delivery. No UI or delivery path is enabled.
 
+### Delivery provenance storage milestone
+
+Schema 45 records delivered item identity/revision, original enqueue sequence,
+queue revision, exact session/run/message, timestamp, and preceding transcript
+high-water. Additional user entries require this provenance; the initiating
+message remains bound to the original request and fingerprint. Startup rejects
+non-FIFO delivery, mismatched edited text, unresolved provider/tool work, paused
+or cancelled targets, and subsequent edits/removal of consumed items. Delivery
+facts participate in sequence validation, occupancy, queue reconstruction,
+steering replay/high-water, and session deletion. Reconstruction excludes consumed
+items even if their pending projection remains. This storage milestone has no
+production delivery writer; prepared-input admission and supervisor integration
+remain required before consumption is enabled.
+
 ### Protocol admission milestone
 
 Authenticated local-owner IPC may mutate text-only queues, read transactional

@@ -1,8 +1,29 @@
 use super::{steering_rebuild, steering_revision, validate_steering_capacity_history};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension as _, params};
+
+fn steering_test_connection() -> Connection {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE steering_delivery_facts (
+            session_id INTEGER, queue_revision INTEGER, fact_sequence INTEGER, item_id INTEGER
+        );",
+        )
+        .unwrap();
+    connection
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn steering_full_rebuild_rolls_back_execution_and_postvalidation_failures() {
+    assert_steering_rebuild_rollback(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn steering_consumed_item_rebuild_rolls_back_execution_and_postvalidation_failures() {
+    assert_steering_rebuild_rollback(true).await;
+}
+
+async fn assert_steering_rebuild_rollback(delivered: bool) {
     use crate::persistence::{
         MutationRequestId, RunModelSelection, RunService, SessionStore,
         steering::{SteeringChange, SteeringMutation},
@@ -52,20 +73,73 @@ async fn steering_full_rebuild_rolls_back_execution_and_postvalidation_failures(
         })
         .await
         .unwrap();
+    if delivered {
+        store.activate_run(run.id).await.unwrap();
+        store
+            .mutate_steering(SteeringMutation {
+                request_id: MutationRequestId::from_bytes([5; 16]),
+                session_id: session.id,
+                expected_revision: 1,
+                change: SteeringChange::Resume { run_id: run.id },
+            })
+            .await
+            .unwrap();
+    }
     drop(store);
     let mut db = Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    if delivered {
+        // Construct provenance in the isolated fixture; production delivery remains disabled.
+        db.execute_batch(
+            "BEGIN IMMEDIATE;
+             INSERT INTO session_entries
+                 (fact_id, fact_sequence, session_id, entry_sequence, message_id, run_id,
+                  entry_kind, actor_kind, text, refusal, created_at_milliseconds, delivery_event_id)
+             SELECT randomblob(16), logical_sequences.next_value, session_id, 2,
+                    item_id, target_run_id, 1, 1, text, 0, 100, randomblob(16)
+             FROM steering_mutation_requests CROSS JOIN logical_sequences WHERE change_kind = 1;
+             INSERT INTO steering_delivery_facts
+             SELECT logical_sequences.next_value + 1, session_id, target_run_id, item_id,
+                    item_revision, accepted_sequence, 3, item_id, 1, 100
+             FROM steering_mutation_requests CROSS JOIN logical_sequences WHERE change_kind = 1;
+             UPDATE logical_sequences SET next_value = next_value + 2;
+             COMMIT;",
+        )
+        .unwrap();
+    }
     db.execute("UPDATE steering_pending_messages SET text = 'Damaged'", [])
         .unwrap();
     for body in [
         "SELECT RAISE(ABORT, 'injected rebuild failure');",
-        "UPDATE steering_pending_messages SET text = 'Invalid rebuilt text';",
+        if delivered {
+            "INSERT INTO steering_pending_messages
+             (item_id, session_id, slot, enqueue_sequence, revision, text, actor, created_at_milliseconds)
+             SELECT item_id, session_id, 1, accepted_sequence, item_revision, text, actor,
+                    accepted_at_milliseconds FROM steering_mutation_requests WHERE change_kind = 1;"
+        } else {
+            "UPDATE steering_pending_messages SET text = 'Invalid rebuilt text';"
+        },
     ] {
         // Invoke the real repair pipeline after schema admission to inject rebuild failures.
         db.execute_batch(&format!(
             "CREATE TEMP TRIGGER inject_failure AFTER INSERT ON sessions BEGIN {body} END;"
         ))
         .unwrap();
-        assert!(super::repair(&mut db).is_err());
+        let error = super::repair(&mut db).unwrap_err();
+        if body.starts_with("SELECT RAISE") {
+            assert!(matches!(
+                error,
+                crate::persistence::PersistenceError::Sqlite(
+                    rusqlite::Error::SqliteFailure(_, Some(ref message))
+                ) if message == "injected rebuild failure"
+            ));
+        } else {
+            assert!(matches!(
+                error,
+                crate::persistence::PersistenceError::InvalidState {
+                    reason: "steering mutation receipts conflict with the registry or queue"
+                }
+            ));
+        }
         assert!(db.is_autocommit());
         assert_eq!(
             db.query_row("SELECT text FROM steering_pending_messages", [], |row| {
@@ -87,14 +161,22 @@ async fn steering_full_rebuild_rolls_back_execution_and_postvalidation_failures(
         db.query_row("SELECT text FROM steering_pending_messages", [], |row| {
             row.get::<_, String>(0)
         })
+        .optional()
         .unwrap(),
-        "Canonical"
+        (!delivered).then(|| "Canonical".to_owned())
+    );
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM steering_delivery_facts", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        i64::from(delivered)
     );
 }
 
 #[test]
 fn steering_lifecycle_history_validation_is_independent_of_projections() {
-    let connection = Connection::open_in_memory().unwrap();
+    let connection = steering_test_connection();
     connection
         .execute_batch(
             "CREATE TABLE steering_mutation_requests (
@@ -167,7 +249,7 @@ fn steering_mutation_history_validation_is_independent_of_projections() {
         steering::{SteeringChange, fingerprint},
     };
 
-    let connection = Connection::open_in_memory().unwrap();
+    let connection = steering_test_connection();
     connection
         .execute_batch(
             "CREATE TABLE mutation_requests (
@@ -226,7 +308,7 @@ fn steering_persisted_revisions_reject_nonpositive_values() {
 
 #[test]
 fn steering_reconstruction_preserves_fifo_edits_removals_and_lifecycle_pause() {
-    let connection = Connection::open_in_memory().unwrap();
+    let connection = steering_test_connection();
     connection
         .execute_batch(
             "CREATE TABLE steering_mutation_requests (
@@ -342,8 +424,46 @@ fn steering_reconstruction_preserves_fifo_edits_removals_and_lifecycle_pause() {
 }
 
 #[test]
+fn steering_delivery_frees_capacity_only_after_its_boundary() {
+    let connection = steering_test_connection();
+    connection
+        .execute_batch(
+            "CREATE TABLE steering_mutation_requests (
+                session_id INTEGER, accepted_sequence INTEGER, change_kind INTEGER
+            );",
+        )
+        .unwrap();
+    for sequence in 1..=16 {
+        connection
+            .execute(
+                "INSERT INTO steering_mutation_requests VALUES (1, ?1, 1)",
+                [sequence],
+            )
+            .unwrap();
+    }
+    connection
+        .execute_batch(
+            "INSERT INTO steering_delivery_facts VALUES (1, 17, 17, 1);
+             INSERT INTO steering_mutation_requests VALUES (1, 18, 1);",
+        )
+        .unwrap();
+    validate_steering_capacity_history(&connection).unwrap();
+    connection
+        .execute("UPDATE steering_delivery_facts SET fact_sequence = 19", [])
+        .unwrap();
+    assert!(validate_steering_capacity_history(&connection).is_err());
+    connection
+        .execute_batch(
+            "DELETE FROM steering_mutation_requests;
+             INSERT INTO steering_mutation_requests VALUES (1, 20, 1);",
+        )
+        .unwrap();
+    assert!(validate_steering_capacity_history(&connection).is_err());
+}
+
+#[test]
 fn steering_capacity_is_checked_at_every_historical_boundary() {
-    let connection = Connection::open_in_memory().unwrap();
+    let connection = steering_test_connection();
     connection
         .execute_batch(
             "CREATE TABLE steering_mutation_requests (

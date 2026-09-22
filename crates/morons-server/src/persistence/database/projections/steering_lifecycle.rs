@@ -11,6 +11,9 @@ const HISTORY: &str = "WITH history AS (
             UNION ALL
             SELECT session_id, queue_revision, fact_sequence, 1, target_run_id
             FROM steering_lifecycle_facts
+            UNION ALL
+            SELECT session_id, queue_revision, fact_sequence, NULL, NULL
+            FROM steering_delivery_facts
         )";
 
 pub(super) fn validate(connection: &Connection) -> Result<(), PersistenceError> {
