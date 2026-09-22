@@ -103,7 +103,8 @@ pub(crate) fn restore_schema_40(connection: &Connection) {
 pub(crate) fn remove_post_v41_schema(connection: &Connection) {
     connection
         .execute_batch(
-            "DROP TABLE IF EXISTS steering_pending_messages;
+            "DROP TABLE IF EXISTS steering_delivery_facts;
+             DROP TABLE IF EXISTS steering_pending_messages;
              DROP TABLE IF EXISTS steering_mutation_requests;
              DROP TABLE IF EXISTS steering_lifecycle_facts;
              DROP TABLE IF EXISTS steering_queues;

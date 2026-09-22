@@ -30,18 +30,7 @@ const EVENT_LOCAL_COMMAND_ENTRY: i64 = 17;
 
 impl Backend {
     pub(crate) fn notification_high_water(&self) -> Result<u64, PersistenceError> {
-        let value = self.connection.query_row(
-            "SELECT COALESCE(MAX(sequence), 0) FROM (
-                SELECT MAX(event_sequence) AS sequence FROM delivery_events
-                UNION ALL SELECT MAX(accepted_sequence) FROM steering_mutation_requests
-                UNION ALL SELECT MAX(fact_sequence) FROM steering_lifecycle_facts
-            )",
-            [],
-            |row| row.get::<_, i64>(0),
-        )?;
-        u64::try_from(value).map_err(|_| PersistenceError::InvalidState {
-            reason: "the notification high water is invalid",
-        })
+        notification_high_water(&self.connection)
     }
 
     pub(crate) fn read_session_events(
@@ -192,6 +181,26 @@ impl Backend {
         })
     }
 }
+
+fn notification_high_water(connection: &Connection) -> Result<u64, PersistenceError> {
+    let value = connection.query_row(
+        "SELECT COALESCE(MAX(sequence), 0) FROM (
+            SELECT MAX(event_sequence) AS sequence FROM delivery_events
+            UNION ALL SELECT MAX(accepted_sequence) FROM steering_mutation_requests
+            UNION ALL SELECT MAX(fact_sequence) FROM steering_delivery_facts
+            UNION ALL SELECT MAX(fact_sequence) FROM steering_lifecycle_facts
+        )",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    u64::try_from(value).map_err(|_| PersistenceError::InvalidState {
+        reason: "the notification high water is invalid",
+    })
+}
+
+#[cfg(test)]
+#[path = "session_events_tests.rs"]
+mod tests;
 
 pub(super) fn session_event_high_water(
     connection: &Connection,

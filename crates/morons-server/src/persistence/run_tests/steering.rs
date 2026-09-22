@@ -1,5 +1,68 @@
+mod delivery;
+
 use super::*;
 use crate::persistence::{ProviderOperationFailureState, RunFailureKind};
+
+#[tokio::test(flavor = "current_thread")]
+async fn steering_pending_input_cannot_replace_initiating_message_on_restart() {
+    for corruption in [
+        "UPDATE session_entries SET text = 'Queued' WHERE message_id = ?1",
+        "UPDATE session_entries SET message_id = randomblob(16) WHERE message_id = ?1",
+        "UPDATE run_input_requests SET user_message_id = randomblob(16) WHERE user_message_id = ?1",
+        "UPDATE run_accepted_facts SET user_message_id = randomblob(16) WHERE user_message_id = ?1",
+    ] {
+        assert_steering_initiating_message_corruption_rejected(corruption).await;
+    }
+}
+
+async fn assert_steering_initiating_message_corruption_rejected(corruption: &str) {
+    use crate::persistence::steering::{SteeringChange, SteeringMutation};
+
+    let root = TestRoot::new("steering-initiating-message");
+    let store = SessionStore::open_for_test(root.path()).unwrap();
+    configure_credential(&store).await;
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0xe1; 16]), None)
+        .await
+        .unwrap();
+    let run = store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0xe2; 16]),
+            session.id,
+            "Initial".into(),
+            model_selection(),
+        )
+        .await
+        .unwrap()
+        .run;
+    store
+        .mutate_steering(SteeringMutation {
+            request_id: MutationRequestId::from_bytes([0xe3; 16]),
+            session_id: session.id,
+            expected_revision: 0,
+            change: SteeringChange::Enqueue {
+                run_id: run.id,
+                text: "Queued".into(),
+            },
+        })
+        .await
+        .unwrap();
+    drop(store);
+    let db = Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    assert_eq!(
+        db.execute(corruption, [run.user_message_id.as_bytes()])
+            .unwrap(),
+        1
+    );
+    drop(db);
+    assert!(
+        matches!(
+            SessionStore::open_for_test(root.path()),
+            Err(PersistenceError::InvalidState { .. })
+        ),
+        "accepted initiating-message corruption: {corruption}"
+    );
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn steering_provider_completion_pauses_once_and_preserves_pending_input() {

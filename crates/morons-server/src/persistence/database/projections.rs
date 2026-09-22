@@ -1,4 +1,5 @@
 mod rebuild;
+mod steering_delivery;
 mod steering_lifecycle;
 mod steering_rebuild;
 #[cfg(test)]
@@ -40,6 +41,7 @@ pub(super) fn repair(connection: &mut Connection) -> Result<(), PersistenceError
         validate_session_delete_facts(connection)?;
         validate_default_model_facts(connection)?;
         validate_subagent_model_facts(connection)?;
+        steering_delivery::validate(connection)?;
         steering_lifecycle::validate_history(connection)?;
         validate_steering_mutation_history(connection)?;
         validate_mutation_registry(connection)?;
@@ -1118,7 +1120,7 @@ fn validate_run_request_payloads(connection: &Connection) -> Result<(), Persiste
          FROM run_input_requests AS request
          LEFT JOIN run_accepted_facts AS accepted ON accepted.request_id = request.request_id
          LEFT JOIN session_entries AS entry
-           ON entry.run_id = request.run_id AND entry.entry_kind = 1",
+           ON entry.message_id = request.user_message_id AND entry.entry_kind = 1",
     )?;
     let inputs = statement
         .query_map([], |row| {
@@ -1409,10 +1411,12 @@ fn validate_run_canonical_facts(connection: &Connection) -> Result<(), Persisten
                               IS NOT accepted.accepted_at_milliseconds)
                )
                OR (SELECT COUNT(*) FROM session_entries AS entry
-                   WHERE entry.run_id = accepted.run_id AND entry.entry_kind = 1) != 1
+                   WHERE entry.run_id = accepted.run_id AND entry.entry_kind = 1
+                     AND entry.message_id = accepted.user_message_id) != 1
                OR EXISTS (
                     SELECT 1 FROM session_entries AS entry
                     WHERE entry.run_id = accepted.run_id AND entry.entry_kind = 1
+                      AND entry.message_id = accepted.user_message_id
                       AND (entry.session_id IS NOT accepted.session_id
                            OR entry.message_id IS NOT accepted.user_message_id
                            OR entry.entry_sequence IS NOT accepted.source_entry_high_water
@@ -2124,6 +2128,7 @@ fn validate_logical_sequences(connection: &Connection) -> Result<(), Persistence
             UNION ALL SELECT audit_sequence FROM local_command_audit_facts
             UNION ALL SELECT accepted_sequence FROM default_model_selections
             UNION ALL SELECT accepted_sequence FROM subagent_model_selections
+            UNION ALL SELECT fact_sequence FROM steering_delivery_facts
             UNION ALL SELECT fact_sequence FROM steering_lifecycle_facts
             UNION ALL SELECT accepted_sequence FROM steering_mutation_requests
             UNION ALL SELECT accepted_sequence FROM data_use_policies
@@ -2500,10 +2505,14 @@ const fn invalid_run_context() -> PersistenceError {
 
 fn validate_steering_capacity_history(connection: &Connection) -> Result<(), PersistenceError> {
     let invalid: bool = connection.query_row(
-        "WITH occupancy AS (
-            SELECT SUM(CASE change_kind WHEN 1 THEN 1 WHEN 3 THEN -1 ELSE 0 END)
-                OVER (PARTITION BY session_id ORDER BY accepted_sequence) AS pending_count
+        "WITH changes AS (
+            SELECT session_id, accepted_sequence AS sequence,
+                   CASE change_kind WHEN 1 THEN 1 WHEN 3 THEN -1 ELSE 0 END AS delta
             FROM steering_mutation_requests
+            UNION ALL SELECT session_id, fact_sequence, -1 FROM steering_delivery_facts
+        ), occupancy AS (
+            SELECT SUM(delta) OVER (PARTITION BY session_id ORDER BY sequence) AS pending_count
+            FROM changes
         ) SELECT EXISTS (SELECT 1 FROM occupancy WHERE pending_count NOT BETWEEN 0 AND 16)",
         [],
         |row| row.get(0),
@@ -2526,6 +2535,7 @@ fn steering_revision(value: i64) -> Result<u64, PersistenceError> {
 }
 
 fn validate_steering_mutations(connection: &Connection) -> Result<(), PersistenceError> {
+    steering_delivery::validate(connection)?;
     steering_lifecycle::validate(connection)?;
     validate_steering_mutation_history(connection)?;
     validate_steering_mutation_projection(connection)
@@ -2534,6 +2544,9 @@ fn validate_steering_mutations(connection: &Connection) -> Result<(), Persistenc
 fn validate_steering_mutation_projection(connection: &Connection) -> Result<(), PersistenceError> {
     let invalid: bool = connection.query_row(
         "SELECT EXISTS (
+            SELECT 1 FROM steering_pending_messages AS pending
+            JOIN steering_delivery_facts AS delivered USING (item_id)
+            UNION ALL
             SELECT 1 FROM steering_pending_messages AS pending
             WHERE EXISTS (SELECT 1 FROM steering_mutation_requests AS initial
                 WHERE initial.session_id = pending.session_id AND initial.queue_revision = 1)
@@ -2566,6 +2579,8 @@ fn validate_steering_mutation_projection(connection: &Connection) -> Result<(), 
             LEFT JOIN steering_pending_messages AS pending
               ON pending.session_id = latest.session_id AND pending.item_id = latest.item_id
             WHERE latest.change_kind IN (1, 2, 3)
+              AND NOT EXISTS (SELECT 1 FROM steering_delivery_facts AS delivered
+                  WHERE delivered.session_id = latest.session_id AND delivered.item_id = latest.item_id)
               AND NOT EXISTS (
                 SELECT 1 FROM steering_mutation_requests AS newer
                 WHERE newer.session_id = latest.session_id AND newer.item_id = latest.item_id
