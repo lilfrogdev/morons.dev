@@ -1098,6 +1098,9 @@ impl AppState {
         let mut replacement = SessionView::new(window, Vec::new())?;
         replacement.skills = std::mem::take(&mut current.skills);
         replacement.context_status = current.context_status.take();
+        replacement.compacting_run = current
+            .compacting_run
+            .filter(|run| replacement.active_run_id == Some(*run));
         replacement.shared_directory = current.shared_directory;
         replacement.deferred_newer_output =
             navigation != TranscriptNavigation::Latest && deferred_newer_output;
@@ -1205,6 +1208,9 @@ impl AppState {
                 let historical = session.is_historical_window();
                 let had_transient = session.transient.is_some();
                 session.apply_run(run)?;
+                if session.compacting_run != session.active_run_id {
+                    session.compacting_run = None;
+                }
                 if historical {
                     session.deferred_newer_output = true;
                     self.transcript_viewport.note_layout_changed();
@@ -1227,6 +1233,19 @@ impl AppState {
             } => {
                 let session = self.session_mut(session_id)?;
                 session.active_command_id = active.then_some(command_id);
+                Ok(())
+            }
+            ApplicationEvent::SessionCompactionActivity {
+                session_id,
+                run_id,
+                active,
+            } => {
+                let session = self.session_mut(session_id)?;
+                if active && session.active_run_id == Some(run_id) {
+                    session.compacting_run = Some(run_id);
+                } else if !active && session.compacting_run == Some(run_id) {
+                    session.compacting_run = None;
+                }
                 Ok(())
             }
             ApplicationEvent::SessionNativeResponseDiagnostic {

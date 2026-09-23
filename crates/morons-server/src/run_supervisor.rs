@@ -293,6 +293,9 @@ impl RunSupervisor {
                 Err(error) => return self.fail_between_turns(run_id, error).await,
             };
             if let Some(plan) = context.compaction_plan.take() {
+                let _activity = self
+                    .session_events
+                    .compaction_started(context.run.session_id, run_id);
                 match self
                     .execute_compaction(run_id, &context, plan, &mut cancellation)
                     .await?

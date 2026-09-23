@@ -205,6 +205,19 @@ impl Backend {
         Ok(())
     }
 
+    pub(super) fn compaction_prefix_blocks_foreground(
+        &self,
+        session: SessionId,
+        source: u64,
+    ) -> Result<bool, PersistenceError> {
+        self.ensure_context_integrity()?;
+        self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM compaction_maintenance_jobs WHERE session_id = ?1 AND source_entry_high_water = ?2 AND state NOT IN (?3, ?4)
+             UNION ALL SELECT 1 FROM compaction_operations WHERE session_id = ?1 AND source_entry_high_water = ?2)",
+            params![&session.as_bytes()[..], sequence_to_sql(source)?, State::Failed as i64, State::Cancelled as i64], |row| row.get(0),
+        ).map_err(PersistenceError::from)
+    }
+
     pub(super) fn compaction_prefix_was_attempted(
         &self,
         session: SessionId,

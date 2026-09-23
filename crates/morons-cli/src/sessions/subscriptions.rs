@@ -207,6 +207,19 @@ where
                 }
                 self.advance_cursor(*cursor)
             }
+            ApplicationEvent::SessionCompactionActivity {
+                session_id,
+                run_id,
+                active,
+            } => {
+                if *session_id != self.session_id
+                    || self.active_delta_run.is_some_and(|run| run != *run_id)
+                    || (*active && self.terminal_delta_run == Some(*run_id))
+                {
+                    return Err(self.event_scope_mismatch());
+                }
+                Ok(())
+            }
             ApplicationEvent::SessionNativeResponseDiagnostic {
                 session_id, run_id, ..
             } => {

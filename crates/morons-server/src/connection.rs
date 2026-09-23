@@ -296,6 +296,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut pending_diagnostic = None;
+    let mut presented_compaction = None;
     let (mut reader, mut writer) = tokio::io::split(connection);
     let client_message = read_client_message(&mut reader);
     tokio::pin!(client_message);
@@ -325,6 +326,30 @@ where
         if *subscription.notifications.borrow() != observed_notification {
             continue;
         }
+        let compacting = subscription
+            .compactions
+            .borrow_and_update()
+            .get(&subscription.session_id)
+            .copied();
+        let compacting = compacting.filter(|run| subscription.accepts_compaction(*run));
+        if compacting != presented_compaction {
+            for (run, active) in presented_compaction
+                .filter(|run| subscription.accepts_compaction(*run))
+                .map(|run| (run, false))
+                .into_iter()
+                .chain(compacting.map(|run| (run, true)))
+            {
+                let event = morons_protocol::ApplicationEvent::SessionCompactionActivity {
+                    session_id: morons_protocol::SessionId::from_bytes(
+                        *subscription.session_id.as_bytes(),
+                    ),
+                    run_id: morons_protocol::RunId::from_bytes(*run.as_bytes()),
+                    active,
+                };
+                write_subscription_message(&mut writer, &ServerMessage::event(event)).await?;
+            }
+            presented_compaction = compacting;
+        }
         // A diagnostic is published after commit. Catch up the durable stream first.
         if let Some(diagnostic) = pending_diagnostic.take()
             && subscription.accepts_native_diagnostic(&diagnostic)
@@ -345,6 +370,9 @@ where
                 if changed.is_err() {
                     return Ok(());
                 }
+            }
+            changed = subscription.compactions.changed() => {
+                if changed.is_err() { return Ok(()); }
             }
             diagnostic = subscription.native_diagnostics.recv() => {
                 match diagnostic {

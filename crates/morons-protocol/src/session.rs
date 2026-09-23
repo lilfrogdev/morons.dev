@@ -754,6 +754,11 @@ pub enum ApplicationEvent {
         command_id: crate::LocalCommandId,
         active: bool,
     },
+    SessionCompactionActivity {
+        session_id: SessionId,
+        run_id: crate::RunId,
+        active: bool,
+    },
     SessionNativeResponseDiagnostic {
         session_id: SessionId,
         run_id: crate::RunId,
@@ -779,6 +784,7 @@ impl ApplicationEvent {
             | Self::SessionRunChanged { .. }
             | Self::SessionLocalCommandChanged { .. }
             | Self::SessionAssistantDelta { .. }
+            | Self::SessionCompactionActivity { .. }
             | Self::SessionNativeResponseDiagnostic { .. } => None,
         }
     }
@@ -793,6 +799,7 @@ impl ApplicationEvent {
             | Self::SessionChanged { .. }
             | Self::SessionRemoved { .. }
             | Self::SessionAssistantDelta { .. }
+            | Self::SessionCompactionActivity { .. }
             | Self::SessionNativeResponseDiagnostic { .. } => None,
         }
     }
@@ -801,6 +808,16 @@ impl ApplicationEvent {
 impl fmt::Debug for ApplicationEvent {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SessionCompactionActivity {
+                session_id,
+                run_id,
+                active,
+            } => formatter
+                .debug_struct("SessionCompactionActivity")
+                .field("session_id", session_id)
+                .field("run_id", run_id)
+                .field("active", active)
+                .finish(),
             Self::SessionCreated { cursor, session } => formatter
                 .debug_struct("SessionCreated")
                 .field("cursor", cursor)

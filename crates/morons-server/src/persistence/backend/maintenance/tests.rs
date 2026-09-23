@@ -539,6 +539,91 @@ async fn foreground_cannot_repeat_maintenance_prefix_without_explicit_manual_inp
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn only_undispatched_terminal_maintenance_allows_foreground_recovery() {
+    for states in [
+        vec![],
+        vec![State::Failed],
+        vec![State::Cancelled],
+        vec![State::Dispatched],
+        vec![State::Dispatched, State::Uncertain],
+        vec![State::Dispatched, State::Ready],
+        vec![State::Dispatched, State::Ready, State::Discarded],
+    ] {
+        let (_root, _selected, mut backend, session, run) = populated().await;
+        let id = seed(&mut backend, run, 2).unwrap();
+        for &state in &states {
+            advance(&mut backend, id, state).unwrap();
+        }
+        backend.validate_maintenance_records().unwrap();
+        let safe = matches!(states.last(), Some(State::Failed | State::Cancelled));
+        assert_eq!(
+            backend
+                .compaction_prefix_blocks_foreground(session, 2)
+                .unwrap(),
+            !safe,
+            "{states:?}"
+        );
+        assert!(backend.compaction_prefix_was_attempted(session, 2).unwrap());
+        assert!(
+            !backend
+                .compaction_prefix_blocks_foreground(session, 3)
+                .unwrap()
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn foreground_prepares_after_undispatched_maintenance_but_never_repeats_itself() {
+    for state in [State::Failed, State::Cancelled] {
+        let (root, _selected, mut backend, session, run) = populated().await;
+        let triggering = load_required_run(&backend.connection, run).unwrap();
+        let mut budget = backend.context_budget(session, 0, 5).unwrap();
+        budget.observed_input_tokens = Some(70_000);
+        let id = seed(&mut backend, run, 2).unwrap();
+        advance(&mut backend, id, state).unwrap();
+        let plan = backend
+            .plan_context_compaction(&triggering, None, 5, 0, &budget)
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.source_entry_high_water, 2);
+        drop(backend);
+        let store = SessionStore::open_for_test_with_maintenance(root.path()).unwrap();
+        for request in [6, 7] {
+            let accepted = store
+                .accept_session_input(
+                    MutationRequestId::from_bytes([request; 16]),
+                    session,
+                    "continue".into(),
+                    RunModelSelection {
+                        service: RunService::Zen,
+                        model_id: "muse-spark-1.2".into(),
+                        protocol_revision: 1,
+                        maximum_input_tokens: 96_000,
+                        maximum_output_tokens: 32_000,
+                        supports_tool_calls: true,
+                        supports_image_input: false,
+                    },
+                )
+                .await
+                .unwrap();
+            store.activate_run(accepted.run.id).await.unwrap();
+            let prepared = store.prepare_auto_compaction(accepted.run.id, &plan).await;
+            assert_eq!(prepared.is_ok(), request == 6);
+            if let Ok(operation) = prepared {
+                store
+                    .fail_compaction(accepted.run.id, operation, false)
+                    .await
+                    .unwrap();
+            }
+            store
+                .finish_run_stopped(accepted.run.id, None)
+                .await
+                .unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn data_use_policy_blocks_prepared_foreground_compaction_without_a_checkpoint() {
     let (root, _selected, backend, session, _run) = populated().await;
     drop(backend);
