@@ -900,6 +900,7 @@ impl ServerApplication {
                         cursor,
                         notifications,
                         assistant_deltas,
+                        compactions: self.session_event_hub.subscribe_compactions(),
                         native_diagnostics,
                         native_protocol_failure: false,
                         active_run: None,

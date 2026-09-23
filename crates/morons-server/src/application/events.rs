@@ -21,6 +21,7 @@ use crate::persistence::{RunId, SessionCatalogEventCursor, SessionEventCursor, S
 const ASSISTANT_DELTA_QUEUE_CAPACITY: usize = 64;
 
 pub(crate) struct SessionEventHub {
+    compactions: watch::Sender<std::collections::HashMap<SessionId, RunId>>,
     assistant_deltas: broadcast::Sender<AssistantDelta>,
     native_diagnostics: broadcast::Sender<NativeResponseDiagnostic>,
 }
@@ -56,6 +57,7 @@ pub(crate) struct SessionSubscription {
     pub(crate) session_id: SessionId,
     pub(crate) cursor: SessionEventCursor,
     pub(crate) notifications: watch::Receiver<u64>,
+    pub(crate) compactions: watch::Receiver<std::collections::HashMap<SessionId, RunId>>,
     pub(crate) assistant_deltas: broadcast::Receiver<AssistantDelta>,
     pub(crate) native_diagnostics: broadcast::Receiver<NativeResponseDiagnostic>,
     pub(super) native_protocol_failure: bool,
@@ -97,6 +99,10 @@ impl SessionSubscription {
         }
     }
 
+    pub(crate) fn accepts_compaction(&self, run: RunId) -> bool {
+        self.terminal_run != Some(run) && self.active_run.is_none_or(|active| active == run)
+    }
+
     pub(crate) fn accepts_native_diagnostic(&self, diagnostic: &NativeResponseDiagnostic) -> bool {
         diagnostic.session_id == self.session_id
             && self.native_protocol_failure
@@ -121,9 +127,31 @@ impl SessionEventHub {
         let (assistant_deltas, _) = broadcast::channel(ASSISTANT_DELTA_QUEUE_CAPACITY);
         let (native_diagnostics, _) = broadcast::channel(64);
         Arc::new(Self {
+            compactions: watch::channel(std::collections::HashMap::new()).0,
             assistant_deltas,
             native_diagnostics,
         })
+    }
+
+    pub(crate) fn compaction_started(
+        self: &Arc<Self>,
+        session: SessionId,
+        run: RunId,
+    ) -> CompactionActivityGuard {
+        self.compactions.send_modify(|active| {
+            active.insert(session, run);
+        });
+        CompactionActivityGuard {
+            hub: Arc::clone(self),
+            session,
+            run,
+        }
+    }
+
+    pub(super) fn subscribe_compactions(
+        &self,
+    ) -> watch::Receiver<std::collections::HashMap<SessionId, RunId>> {
+        self.compactions.subscribe()
     }
 
     pub(crate) fn publish_native_diagnostic(&self, diagnostic: NativeResponseDiagnostic) {
@@ -145,9 +173,38 @@ impl SessionEventHub {
     }
 }
 
+pub(crate) struct CompactionActivityGuard {
+    hub: Arc<SessionEventHub>,
+    session: SessionId,
+    run: RunId,
+}
+
+impl Drop for CompactionActivityGuard {
+    fn drop(&mut self) {
+        self.hub.compactions.send_modify(|active| {
+            if active.get(&self.session) == Some(&self.run) {
+                active.remove(&self.session);
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compaction_activity_reconnects_and_clears_on_scope_exit() {
+        let hub = SessionEventHub::new();
+        let session = SessionId::from_bytes([1; 16]);
+        let run = RunId::from_bytes([2; 16]);
+        let guard = hub.compaction_started(session, run);
+        let receiver = hub.subscribe_compactions();
+        assert_eq!(receiver.borrow().get(&session), Some(&run));
+        drop(guard);
+        assert!(receiver.has_changed().unwrap());
+        assert!(receiver.borrow().is_empty());
+    }
 
     #[test]
     fn hidden_historical_events_advance_the_durable_cursor() {
@@ -161,6 +218,7 @@ mod tests {
             cursor: first,
             notifications: receiver,
             assistant_deltas,
+            compactions: watch::channel(std::collections::HashMap::new()).1,
             native_diagnostics: broadcast::channel(1).1,
             native_protocol_failure: false,
             active_run: None,

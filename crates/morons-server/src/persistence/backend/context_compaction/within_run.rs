@@ -60,7 +60,7 @@ impl Backend {
             if tail.fits(
                 run.maximum_input_tokens,
                 instructions + MAX_COMPACTION_SUMMARY_BYTES,
-            ) && !self.compaction_prefix_was_attempted(run.session_id, cut)?
+            ) && !self.compaction_prefix_blocks_foreground(run.session_id, cut)?
             {
                 return Ok(Some(cut));
             }

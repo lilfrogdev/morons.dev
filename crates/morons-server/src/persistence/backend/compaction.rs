@@ -180,7 +180,8 @@ impl Backend {
             super::maintenance::ensure_drained(&self.connection, run.session_id)?;
         }
         if !manual
-            && self.compaction_prefix_was_attempted(run.session_id, plan.source_entry_high_water)?
+            && self
+                .compaction_prefix_blocks_foreground(run.session_id, plan.source_entry_high_water)?
         {
             return Err(PersistenceError::InvalidState {
                 reason: "automatic compaction cannot repeat an attempted source prefix",

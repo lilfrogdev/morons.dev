@@ -1007,6 +1007,7 @@ fn active_work_label(session: &SessionView) -> &'static str {
         .map_or("run unavailable", |run| match run.state {
             RunState::Accepted => "run accepted",
             RunState::Active if run.cancellation_requested => "cancelling run",
+            RunState::Active if session.compacting_run == Some(run.id) => "Compacting",
             RunState::Active => "run active",
             RunState::Succeeded
             | RunState::Failed

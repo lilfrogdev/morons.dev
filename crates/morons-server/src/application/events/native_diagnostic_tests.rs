@@ -27,6 +27,7 @@ async fn native_diagnostic_hub_is_bounded_scoped_and_does_not_replay_to_new_subs
         cursor: SessionEventCursor::new(diagnostic.session_id, 0),
         notifications: watch::channel(0).1,
         assistant_deltas: hub.subscribe_assistant_deltas(),
+        compactions: watch::channel(std::collections::HashMap::new()).1,
         native_diagnostics: receiver,
         native_protocol_failure: false,
         active_run: Some(diagnostic.run_id),

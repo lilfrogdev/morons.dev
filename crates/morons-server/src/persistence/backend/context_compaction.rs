@@ -60,7 +60,7 @@ impl Backend {
             },
         };
         if !manual
-            && self.compaction_prefix_was_attempted(run.session_id, source_entry_high_water)?
+            && self.compaction_prefix_blocks_foreground(run.session_id, source_entry_high_water)?
         {
             return Ok(None);
         }
