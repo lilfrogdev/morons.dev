@@ -81,13 +81,8 @@ impl Backend {
             .ok_or(PersistenceError::RequestConflict)?;
         sequence_to_sql(revision)?;
         if let Enqueue { run_id, .. } | Resume { run_id } = &mutation.change {
-            let eligible: bool = tx.query_row(
-                "SELECT EXISTS (SELECT 1 FROM runs WHERE session_id = ?1 AND run_id = ?2
-                 AND state IN (1, 2) AND cancellation_requested = 0)",
-                params![session_bytes, run_id.as_bytes()],
-                |r| r.get(0),
-            )?;
-            if !eligible {
+            if !super::steering_queries::target_accepts_steering(&tx, mutation.session_id, *run_id)?
+            {
                 return Err(PersistenceError::RequestConflict);
             }
             if matches!(mutation.change, Enqueue { .. })

@@ -78,6 +78,9 @@ pub(super) fn validate(connection: &Connection) -> Result<(), PersistenceError> 
                      AND NOT EXISTS (SELECT 1 FROM steering_delivery_facts AS consumed
                          WHERE consumed.item_id = earlier.item_id
                            AND consumed.fact_sequence < delivery.fact_sequence))
+               OR EXISTS (SELECT 1 FROM provider_operation_facts AS uncertain
+                   WHERE uncertain.run_id = delivery.run_id AND uncertain.fact_kind = 5
+                     AND uncertain.fact_sequence < delivery.fact_sequence)
                OR EXISTS (SELECT 1 FROM provider_operation_facts AS prepared
                    WHERE prepared.run_id = delivery.run_id AND prepared.fact_kind = 1
                      AND prepared.fact_sequence < delivery.fact_sequence

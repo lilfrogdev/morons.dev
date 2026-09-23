@@ -232,6 +232,11 @@ pending row would violate both invariants on restart.
   response transaction. A final-response delivery must not consume a second item
   at the next loop iteration, including after compaction. Never consume while a
   provider operation or any tool from the preceding turn is unresolved.
+- An uncertain provider outcome blocks steering delivery for that run, even if a
+  later provider operation completed successfully. It is not a safe resolved-work
+  boundary; recovery or acknowledgement must not authorize more input in that run.
+  New enqueue and active-run resume mutations also reject that target; exact retries
+  still return their original receipts, and pending messages remain editable/removable.
 - Preserve provider continuation provenance when rebuilding committed context.
   Recovery validates delivery but never redispatches it. Unsafe preparation or
   admission retains the item and pauses the queue with a bounded visible reason.

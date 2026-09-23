@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod tests;
+
 use rusqlite::{Connection, OptionalExtension as _, params};
 
 use super::{
@@ -12,6 +15,21 @@ use crate::persistence::{
 const HISTORY: &str = "SELECT accepted_sequence AS sequence, queue_revision FROM steering_mutation_requests WHERE session_id = ?1
     UNION ALL SELECT fact_sequence, queue_revision FROM steering_lifecycle_facts WHERE session_id = ?1
     UNION ALL SELECT fact_sequence, queue_revision FROM steering_delivery_facts WHERE session_id = ?1";
+
+pub(super) fn target_accepts_steering(
+    connection: &Connection,
+    session_id: SessionId,
+    run_id: RunId,
+) -> Result<bool, PersistenceError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM runs WHERE session_id = ?1 AND run_id = ?2
+         AND state IN (1, 2) AND cancellation_requested = 0)
+         AND NOT EXISTS (SELECT 1 FROM provider_operation_facts
+             WHERE run_id = ?2 AND fact_kind = 5)",
+        params![session_id.as_bytes(), run_id.as_bytes()],
+        |row| row.get(0),
+    )?)
+}
 
 fn high_water(
     connection: &Connection,
