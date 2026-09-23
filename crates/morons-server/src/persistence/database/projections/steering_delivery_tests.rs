@@ -104,6 +104,10 @@ fn steering_delivery_rejects_unsafe_boundaries() {
         "INSERT INTO provider_operation_facts VALUES (10, 300, 1, 10)",
         "INSERT INTO provider_operation_facts VALUES (10, 300, 1, 10), (10, 300, 2, 11)",
         "INSERT INTO provider_operation_facts VALUES (10, 300, 1, 10), (10, 300, 3, 22)",
+        "INSERT INTO provider_operation_facts VALUES (10, 300, 1, 10), (10, 300, 5, 11)",
+        "INSERT INTO provider_operation_facts VALUES
+            (10, 300, 1, 10), (10, 300, 5, 11),
+            (10, 301, 1, 12), (10, 301, 3, 13)",
         "INSERT INTO tool_calls VALUES (10, 400, 10)",
         "INSERT INTO tool_calls VALUES (10, 400, 10);
          INSERT INTO session_entries VALUES (102, 1, 10, 4, 3, 100, 3, 22, 'Result', 400)",
@@ -133,7 +137,8 @@ fn steering_delivery_accepts_resolved_work_and_later_lifecycle_changes() {
             (1, 3, 10, 1, 1, 199, 1, 'Earlier'), (1, 7, NULL, 3, 4, 199, 2, NULL)",
         "INSERT INTO provider_operation_facts VALUES (10, 300, 1, 10), (10, 300, 3, 11)",
         "INSERT INTO provider_operation_facts VALUES (10, 300, 1, 10), (10, 300, 4, 11)",
-        "INSERT INTO provider_operation_facts VALUES (10, 300, 1, 10), (10, 300, 5, 11)",
+        "INSERT INTO provider_operation_facts VALUES (10, 300, 1, 22), (10, 300, 5, 23)",
+        "INSERT INTO provider_operation_facts VALUES (11, 300, 1, 10), (11, 300, 5, 11)",
         "INSERT INTO provider_operation_facts VALUES (10, 300, 1, 10), (10, 300, 6, 11)",
         "INSERT INTO tool_calls VALUES (10, 400, 10);
          INSERT INTO session_entries VALUES (102, 1, 10, 4, 3, 100, 2, 11, 'Result', 400);
