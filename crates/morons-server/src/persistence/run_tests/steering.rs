@@ -874,6 +874,69 @@ fn steering_projection_snapshot(db: &Connection) -> Vec<Vec<Vec<rusqlite::types:
 #[tokio::test(flavor = "current_thread")]
 async fn steering_startup_repairs_pending_projection_but_rejects_item_history_corruption() {
     use crate::persistence::steering::{SteeringChange, SteeringMutation};
+    let root = TestRoot::new("steering-corruption");
+    let store = SessionStore::open_for_test(root.path()).unwrap();
+    configure_credential(&store).await;
+    let session = store
+        .create_session(MutationRequestId::from_bytes([0xc1; 16]), None)
+        .await
+        .unwrap();
+    let run = store
+        .accept_session_input(
+            MutationRequestId::from_bytes([0xc2; 16]),
+            session.id,
+            "Initial".into(),
+            model_selection(),
+        )
+        .await
+        .unwrap()
+        .run;
+    let enqueued = store
+        .mutate_steering(SteeringMutation {
+            request_id: MutationRequestId::from_bytes([0xc3; 16]),
+            session_id: session.id,
+            expected_revision: 0,
+            change: SteeringChange::Enqueue {
+                run_id: run.id,
+                text: "Queued".into(),
+            },
+        })
+        .await
+        .unwrap();
+    for revision in 1..=2 {
+        store
+            .mutate_steering(SteeringMutation {
+                request_id: MutationRequestId::from_bytes([0xc3 + revision as u8; 16]),
+                session_id: session.id,
+                expected_revision: revision,
+                change: SteeringChange::Edit {
+                    item_id: enqueued.item_id.unwrap(),
+                    revision,
+                    text: format!("Edited {revision}"),
+                },
+            })
+            .await
+            .unwrap();
+    }
+    store
+        .mutate_steering(SteeringMutation {
+            request_id: MutationRequestId::from_bytes([0xc6; 16]),
+            session_id: session.id,
+            expected_revision: 3,
+            change: SteeringChange::Pause,
+        })
+        .await
+        .unwrap();
+    drop(store);
+    // Verify the intact history before corrupting an isolated database.
+    drop(SessionStore::open_for_test(root.path()).unwrap());
+    let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    let expected = steering_projection_snapshot(&db);
+    let baseline = root.path().join("baseline.sqlite3");
+    db.backup(rusqlite::MAIN_DB, &baseline, None).unwrap();
+    drop(db);
+    let baseline = Connection::open(baseline).unwrap();
+    // Restore only the disposable test database; fixture credentials remain unchanged.
     for corruption in [
         "UPDATE steering_mutation_requests SET operation_fingerprint = zeroblob(32)",
         "UPDATE steering_mutation_requests SET text = 'Changed historical text' WHERE queue_revision = 2",
@@ -894,64 +957,10 @@ async fn steering_startup_repairs_pending_projection_but_rejects_item_history_co
         "UPDATE steering_mutation_requests SET change_kind = 2, item_revision = 2,
             target_run_id = NULL WHERE queue_revision = 1",
     ] {
-        let root = TestRoot::new("steering-corruption");
-        let store = SessionStore::open_for_test(root.path()).unwrap();
-        configure_credential(&store).await;
-        let session = store
-            .create_session(MutationRequestId::from_bytes([0xc1; 16]), None)
-            .await
+        baseline
+            .backup(rusqlite::MAIN_DB, root.path().join("data/sessions.sqlite3"), None)
             .unwrap();
-        let run = store
-            .accept_session_input(
-                MutationRequestId::from_bytes([0xc2; 16]),
-                session.id,
-                "Initial".into(),
-                model_selection(),
-            )
-            .await
-            .unwrap()
-            .run;
-        let enqueued = store
-            .mutate_steering(SteeringMutation {
-                request_id: MutationRequestId::from_bytes([0xc3; 16]),
-                session_id: session.id,
-                expected_revision: 0,
-                change: SteeringChange::Enqueue {
-                    run_id: run.id,
-                    text: "Queued".into(),
-                },
-            })
-            .await
-            .unwrap();
-        for revision in 1..=2 {
-            store
-                .mutate_steering(SteeringMutation {
-                    request_id: MutationRequestId::from_bytes([0xc3 + revision as u8; 16]),
-                    session_id: session.id,
-                    expected_revision: revision,
-                    change: SteeringChange::Edit {
-                        item_id: enqueued.item_id.unwrap(),
-                        revision,
-                        text: format!("Edited {revision}"),
-                    },
-                })
-                .await
-                .unwrap();
-        }
-        store
-            .mutate_steering(SteeringMutation {
-                request_id: MutationRequestId::from_bytes([0xc6; 16]),
-                session_id: session.id,
-                expected_revision: 3,
-                change: SteeringChange::Pause,
-            })
-            .await
-            .unwrap();
-        drop(store);
-        // Verify the intact history before corrupting an isolated database.
-        drop(SessionStore::open_for_test(root.path()).unwrap());
-        let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
-        let expected = steering_projection_snapshot(&db);
+        let db = Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
         db.execute_batch(corruption).unwrap();
         drop(db);
         if corruption.contains("steering_mutation_requests") {

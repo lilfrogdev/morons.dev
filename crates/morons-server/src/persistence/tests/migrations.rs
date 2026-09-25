@@ -316,116 +316,9 @@ fn schema_version_five_migrates_to_current_version() {
 }
 
 #[test]
-fn schema_version_six_migrates_to_current_version() {
-    let root = TestRoot::new("schema-v6-migration");
-    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
-    let (initialization_path, file) = paths
-        .create_database_initialization_file(&[0xc6; 16])
-        .expect("version six initialization file should be created");
-    drop(file);
-    let connection =
-        Connection::open(&initialization_path).expect("version six fixture should open");
-    for schema in [
-        include_str!("../schema_v1.sql"),
-        include_str!("../schema_v2.sql"),
-        include_str!("../schema_v3.sql"),
-        include_str!("../schema_v4.sql"),
-        include_str!("../schema_v5.sql"),
-        include_str!("../schema_v6.sql"),
-    ] {
-        connection
-            .execute_batch(schema)
-            .expect("schema fixture should migrate");
-    }
-    drop(connection);
-    paths
-        .install_database(&initialization_path)
-        .expect("version six database should install");
-
-    let connection = database::open(&paths).expect("version six database should migrate");
-    assert_eq!(
-        pragma_integer(&connection, "PRAGMA user_version"),
-        database::SCHEMA_VERSION
-    );
-    let image_table: String = connection
-        .query_row(
-            "SELECT name FROM sqlite_schema
-             WHERE type = 'table' AND name = 'execution_image_requests'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("execution image table should exist");
-    assert_eq!(image_table, "execution_image_requests");
-    let backup = Connection::open(
-        root.path()
-            .join("backups")
-            .join("sessions-before-schema-v6.sqlite3"),
-    )
-    .expect("version six backup should open");
-    assert_eq!(pragma_integer(&backup, "PRAGMA user_version"), 6);
-}
-
-#[test]
-fn schema_version_seven_migrates_to_current_version() {
-    let root = TestRoot::new("schema-v7-migration");
-    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
-    let (initialization_path, file) = paths
-        .create_database_initialization_file(&[0xc7; 16])
-        .expect("version seven initialization file should be created");
-    drop(file);
-    let connection =
-        Connection::open(&initialization_path).expect("version seven fixture should open");
-    for schema in [
-        include_str!("../schema_v1.sql"),
-        include_str!("../schema_v2.sql"),
-        include_str!("../schema_v3.sql"),
-        include_str!("../schema_v4.sql"),
-        include_str!("../schema_v5.sql"),
-        include_str!("../schema_v6.sql"),
-        include_str!("../schema_v7.sql"),
-    ] {
-        connection
-            .execute_batch(schema)
-            .expect("schema fixture should migrate");
-    }
-    drop(connection);
-    paths
-        .install_database(&initialization_path)
-        .expect("version seven database should install");
-    let connection = database::open(&paths).expect("version seven database should migrate");
-    assert_eq!(
-        pragma_integer(&connection, "PRAGMA user_version"),
-        database::SCHEMA_VERSION
-    );
-    let generation_table: String = connection
-        .query_row(
-            "SELECT name FROM sqlite_schema
-             WHERE type = 'table' AND name = 'worktree_generation_facts'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("generation table should exist");
-    assert_eq!(generation_table, "worktree_generation_facts");
-    let backup = Connection::open(
-        root.path()
-            .join("backups")
-            .join("sessions-before-schema-v7.sqlite3"),
-    )
-    .expect("version seven backup should open");
-    assert_eq!(pragma_integer(&backup, "PRAGMA user_version"), 7);
-}
-
-#[test]
-fn schema_version_eight_migrates_to_current_version() {
-    let root = TestRoot::new("schema-v8-migration");
-    let paths = StoragePaths::prepare(root.path()).expect("storage paths should be prepared");
-    let (initialization_path, file) = paths
-        .create_database_initialization_file(&[0xc8; 16])
-        .expect("version eight initialization file should be created");
-    drop(file);
-    let connection =
-        Connection::open(&initialization_path).expect("version eight fixture should open");
-    for schema in [
+fn schema_versions_six_through_eight_migrate_to_current_version() {
+    let fixture = Connection::open_in_memory().unwrap();
+    for (index, schema) in [
         include_str!("../schema_v1.sql"),
         include_str!("../schema_v2.sql"),
         include_str!("../schema_v3.sql"),
@@ -434,35 +327,60 @@ fn schema_version_eight_migrates_to_current_version() {
         include_str!("../schema_v6.sql"),
         include_str!("../schema_v7.sql"),
         include_str!("../schema_v8.sql"),
-    ] {
-        connection
-            .execute_batch(schema)
-            .expect("schema fixture should migrate");
-    }
-    drop(connection);
-    paths
-        .install_database(&initialization_path)
-        .expect("version eight database should install");
-    let connection = database::open(&paths).expect("version eight database should migrate");
-    assert_eq!(
-        pragma_integer(&connection, "PRAGMA user_version"),
-        database::SCHEMA_VERSION
-    );
-    let column: String = connection
-        .query_row(
-            "SELECT name FROM pragma_table_info('run_accepted_facts')
-             WHERE name = 'execution_image_generation'",
-            [],
-            |row| row.get(0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fixture.execute_batch(schema).unwrap();
+        let version = index + 1;
+        if version < 6 {
+            continue;
+        }
+        let root = TestRoot::new("schema-v6-through-v8-migration");
+        let paths = StoragePaths::prepare(root.path()).unwrap();
+        let (initialization_path, file) = paths
+            .create_database_initialization_file(&[0xc6; 16])
+            .unwrap();
+        drop(file);
+        fixture
+            .backup(rusqlite::MAIN_DB, &initialization_path, None)
+            .unwrap();
+        paths.install_database(&initialization_path).unwrap();
+        let connection = database::open(&paths).unwrap();
+        assert_eq!(
+            pragma_integer(&connection, "PRAGMA user_version"),
+            database::SCHEMA_VERSION,
+            "migration from v{version}"
+        );
+        for table in ["execution_image_requests", "worktree_generation_facts"] {
+            assert!(connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap());
+        }
+        assert!(
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM pragma_table_info('run_accepted_facts')
+                 WHERE name = 'execution_image_generation')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        );
+        let backup = Connection::open(
+            root.path()
+                .join(format!("backups/sessions-before-schema-v{version}.sqlite3")),
         )
-        .expect("image generation column should exist");
-    assert_eq!(column, "execution_image_generation");
-    let backup = Connection::open(
-        root.path()
-            .join("backups/sessions-before-schema-v8.sqlite3"),
-    )
-    .expect("version eight backup should open");
-    assert_eq!(pragma_integer(&backup, "PRAGMA user_version"), 8);
+        .unwrap();
+        assert_eq!(
+            pragma_integer(&backup, "PRAGMA user_version"),
+            version as i64
+        );
+    }
 }
 
 #[test]

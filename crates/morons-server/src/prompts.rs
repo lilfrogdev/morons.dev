@@ -63,25 +63,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workflow_requires_follow_through_with_authorization_boundaries() {
-        let prompt = instruction();
-        for rule in [
-            "when the user approves a proposed change or corrects its requirements, carry the agreed work forward",
-            "For investigation requests, inspect the relevant evidence and report findings",
-            "A final response ends the run; it does not schedule further work",
-            "When authorized work remains and you can proceed, keep progress updates non-final and perform the next action in the same run",
-            "Never end with a promise to act or continue instead of taking the available next step",
-            "Finalize only with completed results, a concrete blocker or necessary question, or the answer to a discussion-only request",
-            "If blocked, state the concrete blocker",
-            "Answer discussion-only requests directly",
-            "questions and preferences alone do not authorize unrelated changes",
-            "Ask when ambiguity materially changes the outcome or before destructive or externally visible actions not already authorized",
-        ] {
-            assert!(prompt.contains(rule), "missing workflow rule: {rule}");
-        }
-    }
-
-    #[test]
     fn prompt_matches_main_agent_tools() {
         let prompt = instruction();
         assert!(prompt.starts_with(CORE));

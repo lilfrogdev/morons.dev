@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test(flavor = "current_thread")]
 async fn context_rejection_requires_complete_bounded_body_and_never_replays() {
+    let (_root, _store, provider, mut listener) = setup().await;
     for case in [
         "complete",
         "truncated",
@@ -11,7 +12,6 @@ async fn context_rejection_requires_complete_bounded_body_and_never_replays() {
         "chunked_oversized",
         "chunked_trailers",
     ] {
-        let (_root, _store, provider, listener) = setup().await;
         let peer = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let _ = mock_request(&mut socket).await;
@@ -95,7 +95,7 @@ async fn context_rejection_requires_complete_bounded_body_and_never_replays() {
                 .await
                 .is_err()
         );
-        let listener = peer.await.unwrap();
+        listener = peer.await.unwrap();
         assert!(
             time::timeout(Duration::from_millis(30), listener.accept())
                 .await
