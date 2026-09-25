@@ -24,7 +24,9 @@ pub(super) fn failure(stage: WebStage, error: ProviderError) -> WebFailure {
         ProviderError::AuthenticationOrEntitlement => WebCategory::AuthenticationOrEntitlement,
         ProviderError::RateLimited => WebCategory::RateLimited,
         ProviderError::Unavailable => WebCategory::Unavailable,
-        ProviderError::RequestRejected => WebCategory::RequestRejected,
+        ProviderError::RequestRejected | ProviderError::ContextWindowRejected => {
+            WebCategory::RequestRejected
+        }
         ProviderError::ProviderExecutionFailed => WebCategory::ProviderExecutionFailed,
         ProviderError::MalformedCatalog => WebCategory::MalformedCatalog,
         ProviderError::MalformedResponse => WebCategory::MalformedResponse,

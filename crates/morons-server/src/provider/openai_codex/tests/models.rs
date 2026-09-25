@@ -25,6 +25,33 @@ fn requested_native_models_have_exact_full_responses_contracts_not_remote_admiss
             (model.maximum_input_tokens, model.maximum_output_tokens),
             (96_000, 32_000)
         );
+        let profile =
+            crate::provider::find_model_profile(crate::provider::ModelService::OpenAiChatGpt, id)
+                .unwrap();
+        assert_eq!(profile.maximum_input_tokens, model.maximum_input_tokens);
+        assert_eq!(profile.maximum_output_tokens, model.maximum_output_tokens);
+        for (input, output, accepted) in [
+            (96_000, 32_000, true),
+            (96_001, 32_000, false),
+            (96_000, 32_001, false),
+        ] {
+            let request = CodexRequest::new(
+                &t,
+                "instructions",
+                vec![ProviderInputItem::Message {
+                    role: crate::provider::ProviderMessageRole::User,
+                    text: "hello".into(),
+                    phase: None,
+                }],
+                vec![],
+                CodexRequestLimits {
+                    estimated_input_tokens: input,
+                    maximum_output_tokens: output,
+                },
+                DataUseRestrictions::default(),
+            );
+            assert_eq!(request.is_ok(), accepted, "{id}: {input}/{output}");
+        }
         assert_eq!(model.capabilities, MODELS[0].capabilities);
         assert_eq!(model.data_use, MODELS[0].data_use);
         for policy in [

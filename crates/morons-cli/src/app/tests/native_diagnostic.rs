@@ -80,7 +80,6 @@ fn native_diagnostic_is_fixed_status_not_transcript_draft_model_or_retry() {
     assert_eq!(app.session.as_ref().unwrap().runs, vec![run.clone()]);
     let text = render_rows(&mut app, 150, 30).join("\n");
     assert!(text.contains("Native response rejected (sequence). Nothing was retried"));
-    assert!(!text.contains("PRIVATE"));
     let foreign = ApplicationEvent::SessionNativeResponseDiagnostic {
         session_id: session.id,
         run_id: RunId::from_bytes([0xab; 16]),

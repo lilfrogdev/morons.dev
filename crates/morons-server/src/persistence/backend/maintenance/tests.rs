@@ -69,6 +69,41 @@ fn result(summary: &str) -> String {
         "cache_write_input_tokens": 10, "output_tokens": 20, "reasoning_output_tokens": 5, "total_tokens": 120 }).to_string()
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn native_maintenance_usage_is_observed_not_admitted() {
+    let (_root, _selected, backend, _session, run_id) = populated().await;
+    let mut run = load_required_run(&backend.connection, run_id).unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&result("SUMMARY")).unwrap();
+    let input = u64::from(run.maximum_input_tokens) + 1;
+    payload["input_tokens"] = input.into();
+    payload["total_tokens"] = (input + 20).into();
+    assert!(validate_result(&payload.to_string(), &run).is_err());
+    run.service = crate::persistence::RunService::OpenAiChatGpt;
+    validate_result(&payload.to_string(), &run).unwrap();
+
+    for (field, value) in [
+        ("total_tokens", input + 21),
+        ("cached_input_tokens", input + 1),
+        ("reasoning_output_tokens", 21),
+    ] {
+        let mut invalid = payload.clone();
+        invalid[field] = value.into();
+        assert!(validate_result(&invalid.to_string(), &run).is_err());
+    }
+    let mut excessive_output = payload.clone();
+    let output = u64::from(crate::prompts::COMPACTION_OUTPUT_TOKENS) + 1;
+    excessive_output["output_tokens"] = output.into();
+    excessive_output["total_tokens"] = (input + output).into();
+    assert!(validate_result(&excessive_output.to_string(), &run).is_err());
+
+    payload["input_tokens"] = (crate::provider::MAX_USAGE_TOKENS - 20).into();
+    payload["total_tokens"] = crate::provider::MAX_USAGE_TOKENS.into();
+    validate_result(&payload.to_string(), &run).unwrap();
+    payload["input_tokens"] = (crate::provider::MAX_USAGE_TOKENS - 19).into();
+    payload["total_tokens"] = (crate::provider::MAX_USAGE_TOKENS + 1).into();
+    assert!(validate_result(&payload.to_string(), &run).is_err());
+}
+
 fn advance(backend: &mut Backend, id: [u8; 16], state: State) -> Result<(), PersistenceError> {
     let job = Job::load(&backend.connection, id)?;
     let payload = (state == State::Ready).then(|| result("READY_SUMMARY"));
@@ -519,7 +554,11 @@ async fn foreground_cannot_repeat_maintenance_prefix_without_explicit_manual_inp
         assert_eq!(prepared.is_ok(), allowed);
         if let Ok(operation) = prepared {
             store
-                .fail_compaction(accepted.run.id, operation, false)
+                .fail_compaction(
+                    accepted.run.id,
+                    operation,
+                    crate::persistence::CompactionFailure::Undispatched,
+                )
                 .await
                 .unwrap();
         }
@@ -611,7 +650,11 @@ async fn foreground_prepares_after_undispatched_maintenance_but_never_repeats_it
             assert_eq!(prepared.is_ok(), request == 6);
             if let Ok(operation) = prepared {
                 store
-                    .fail_compaction(accepted.run.id, operation, false)
+                    .fail_compaction(
+                        accepted.run.id,
+                        operation,
+                        crate::persistence::CompactionFailure::Undispatched,
+                    )
                     .await
                     .unwrap();
             }
@@ -670,7 +713,11 @@ async fn data_use_policy_blocks_prepared_foreground_compaction_without_a_checkpo
         Err(PersistenceError::DataUseRestricted)
     ));
     store
-        .fail_compaction(accepted.run.id, operation, false)
+        .fail_compaction(
+            accepted.run.id,
+            operation,
+            crate::persistence::CompactionFailure::Undispatched,
+        )
         .await
         .unwrap();
     store

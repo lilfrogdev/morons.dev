@@ -35,6 +35,34 @@ use crate::{
     },
 };
 
+#[test]
+fn response_limit_is_a_resource_failure_without_retry_permission() {
+    assert_eq!(
+        super::map_provider_failure(ProviderError::ResponseLimitExceeded),
+        RunFailureKind::ResourceLimit
+    );
+    assert_eq!(
+        super::provider_failure_state(ProviderError::ResponseLimitExceeded),
+        ProviderOperationFailureState::Uncertain
+    );
+}
+
+#[test]
+fn explicit_context_rejection_is_failed_not_uncertain() {
+    assert_eq!(
+        super::map_provider_failure(ProviderError::ContextWindowRejected),
+        RunFailureKind::ResourceLimit
+    );
+    assert_eq!(
+        super::provider_failure_state(ProviderError::ContextWindowRejected),
+        ProviderOperationFailureState::Failed
+    );
+    assert_eq!(
+        super::provider_failure_state(ProviderError::IncompleteResponse),
+        ProviderOperationFailureState::Uncertain
+    );
+}
+
 mod data_use;
 mod hardening;
 pub(crate) mod maintenance;

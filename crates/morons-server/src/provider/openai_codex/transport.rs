@@ -176,7 +176,7 @@ impl PreparedCodexDispatch<'_> {
             .map_err(|e| self.turn.record_failure(e, ResponseStage::Headers))?;
         if response.status() != http::StatusCode::OK {
             let status = response.status();
-            read_response_body_with_cancellation(
+            let body = read_response_body_with_cancellation(
                 response.into_body(),
                 MAX_ERROR_BODY_BYTES,
                 deadline,
@@ -184,7 +184,7 @@ impl PreparedCodexDispatch<'_> {
             )
             .await
             .map_err(|e| self.turn.record_failure(e, ResponseStage::BodyBounds))?;
-            let error = classify_status(status);
+            let error = classify_rejection(status, &body);
             return Err(self.turn.record_failure(error, ResponseStage::Redirect));
         }
         for name in [http::header::CONTENT_TYPE, http::header::CONTENT_LENGTH] {
@@ -281,6 +281,25 @@ impl PreparedCodexDispatch<'_> {
         Ok(outcome)
     }
 }
+fn classify_rejection(status: http::StatusCode, body: &[u8]) -> ProviderError {
+    #[derive(serde::Deserialize)]
+    struct Rejection {
+        error: RejectionCode,
+    }
+    #[derive(serde::Deserialize)]
+    struct RejectionCode {
+        code: String,
+    }
+    if status == http::StatusCode::BAD_REQUEST
+        && serde_json::from_slice::<Rejection>(body)
+            .is_ok_and(|rejection| rejection.error.code == "context_length_exceeded")
+    {
+        ProviderError::ContextWindowRejected
+    } else {
+        classify_status(status)
+    }
+}
+
 pub(in crate::provider) fn credential_error(error: OpenAiCredentialError) -> ProviderError {
     match error {
         OpenAiCredentialError::Cancelled => ProviderError::Cancelled,
@@ -296,5 +315,40 @@ pub(in crate::provider) fn credential_error(error: OpenAiCredentialError) -> Pro
             PersistenceError::CredentialReauthenticationRequired,
         ) => ProviderError::CredentialReauthenticationRequired,
         OpenAiCredentialError::Persistence(_) => ProviderError::CredentialStoreUnavailable,
+    }
+}
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::*;
+
+    #[test]
+    fn only_exact_structured_bad_request_proves_context_rejection() {
+        let body = br#"{"error":{"code":"context_length_exceeded","message":"not retained"}}"#;
+        assert_eq!(
+            classify_rejection(http::StatusCode::BAD_REQUEST, body),
+            ProviderError::ContextWindowRejected
+        );
+        for status in [
+            http::StatusCode::OK,
+            http::StatusCode::UNPROCESSABLE_ENTITY,
+            http::StatusCode::TOO_MANY_REQUESTS,
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert_eq!(classify_rejection(status, body), classify_status(status));
+        }
+        for body in [
+            &b"context_length_exceeded"[..],
+            br#"{"error":{"message":"context_length_exceeded"}}"#,
+            br#"{"error":{"code":"other"}}"#,
+            br#"{"error":{"code":"context_length_exceeded","code":"other"}}"#,
+            br#"{"error":{"code":"context_length_exceeded"}} trailing"#,
+            br#"{"error":{"code":"context_length_exceeded"}"#,
+        ] {
+            assert_eq!(
+                classify_rejection(http::StatusCode::BAD_REQUEST, body),
+                ProviderError::RequestRejected
+            );
+        }
     }
 }

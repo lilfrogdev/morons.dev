@@ -280,6 +280,7 @@ impl RunSupervisor {
         let mut delta_sequence = 0_u64;
         let mut provider_continuation = None;
         let mut provider_turn = None;
+        let mut recovery_requires_compaction = false;
         loop {
             if cancellation.is_cancelled() {
                 self.sessions.finish_run_stopped(run_id, None).await?;
@@ -292,6 +293,17 @@ impl RunSupervisor {
                 Ok(context) => context,
                 Err(error) => return self.fail_between_turns(run_id, error).await,
             };
+            if recovery_requires_compaction && context.compaction_plan.is_none() {
+                self.sessions
+                    .finish_run_failure(
+                        run_id,
+                        None,
+                        RunFailureKind::ResourceLimit,
+                        ProviderOperationFailureState::Failed,
+                    )
+                    .await?;
+                return Ok(());
+            }
             if let Some(plan) = context.compaction_plan.take() {
                 let _activity = self
                     .session_events
@@ -301,6 +313,7 @@ impl RunSupervisor {
                     .await?
                 {
                     Ok(()) => {
+                        recovery_requires_compaction = false;
                         provider_continuation = None;
                         provider_turn = None;
                         continue;
@@ -318,9 +331,17 @@ impl RunSupervisor {
                                     &context,
                                     crate::debug_log::DebugProviderStage::Compaction,
                                     error,
-                                    error != ProviderError::DataUseRestricted,
+                                    !matches!(
+                                        error,
+                                        ProviderError::DataUseRestricted
+                                            | ProviderError::ContextWindowRejected
+                                    ),
                                 ),
-                                if error == ProviderError::DataUseRestricted {
+                                if matches!(
+                                    error,
+                                    ProviderError::DataUseRestricted
+                                        | ProviderError::ContextWindowRejected
+                                ) {
                                     ProviderOperationFailureState::Failed
                                 } else {
                                     ProviderOperationFailureState::Uncertain
@@ -467,6 +488,17 @@ impl RunSupervisor {
                 })
                 .await;
             let outcome = match outcome {
+                Err(ProviderError::ContextWindowRejected)
+                    if self
+                        .sessions
+                        .settle_context_rejection(run_id, operation_id)
+                        .await? =>
+                {
+                    recovery_requires_compaction = true;
+                    provider_continuation = None;
+                    provider_turn = None;
+                    continue;
+                }
                 Ok(outcome) => outcome,
                 Err(ProviderError::Cancelled) => {
                     self.sessions
@@ -698,7 +730,11 @@ impl RunSupervisor {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.sessions
-                    .fail_compaction(run_id, operation_id, false)
+                    .fail_compaction(
+                        run_id,
+                        operation_id,
+                        crate::persistence::CompactionFailure::Undispatched,
+                    )
                     .await?;
                 return Ok(Err(error));
             }
@@ -712,7 +748,11 @@ impl RunSupervisor {
             Ok(dispatch) => dispatch,
             Err(error) => {
                 self.sessions
-                    .fail_compaction(run_id, operation_id, false)
+                    .fail_compaction(
+                        run_id,
+                        operation_id,
+                        crate::persistence::CompactionFailure::Undispatched,
+                    )
                     .await?;
                 return Ok(Err(error));
             }
@@ -725,7 +765,11 @@ impl RunSupervisor {
             Ok(()) => {}
             Err(PersistenceError::DataUseRestricted) => {
                 self.sessions
-                    .fail_compaction(run_id, operation_id, false)
+                    .fail_compaction(
+                        run_id,
+                        operation_id,
+                        crate::persistence::CompactionFailure::Undispatched,
+                    )
                     .await?;
                 return Ok(Err(ProviderError::DataUseRestricted));
             }
@@ -736,7 +780,15 @@ impl RunSupervisor {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.sessions
-                    .fail_compaction(run_id, operation_id, true)
+                    .fail_compaction(
+                        run_id,
+                        operation_id,
+                        if error == ProviderError::ContextWindowRejected {
+                            crate::persistence::CompactionFailure::ContextRejected
+                        } else {
+                            crate::persistence::CompactionFailure::Uncertain
+                        },
+                    )
                     .await?;
                 return Ok(Err(error));
             }
@@ -745,7 +797,11 @@ impl RunSupervisor {
             Ok(assistant) => assistant,
             Err(failure) => {
                 self.sessions
-                    .fail_compaction(run_id, operation_id, true)
+                    .fail_compaction(
+                        run_id,
+                        operation_id,
+                        crate::persistence::CompactionFailure::Uncertain,
+                    )
                     .await?;
                 return Ok(Err(match failure {
                     RunFailureKind::ResourceLimit => ProviderError::ResponseLimitExceeded,
@@ -767,7 +823,11 @@ impl RunSupervisor {
             Ok(_) => Ok(Ok(())),
             Err(PersistenceError::ResourceLimit { .. }) => {
                 self.sessions
-                    .fail_compaction(run_id, operation_id, true)
+                    .fail_compaction(
+                        run_id,
+                        operation_id,
+                        crate::persistence::CompactionFailure::Uncertain,
+                    )
                     .await?;
                 Ok(Err(ProviderError::ResponseLimitExceeded))
             }
@@ -1453,8 +1513,10 @@ const fn map_provider_failure(error: ProviderError) -> RunFailureKind {
         ProviderError::UnexpectedContentType
         | ProviderError::RedirectDenied
         | ProviderError::MalformedResponse
-        | ProviderError::IncompleteResponse
-        | ProviderError::ResponseLimitExceeded => RunFailureKind::ProviderProtocol,
+        | ProviderError::IncompleteResponse => RunFailureKind::ProviderProtocol,
+        ProviderError::ResponseLimitExceeded | ProviderError::ContextWindowRejected => {
+            RunFailureKind::ResourceLimit
+        }
         ProviderError::DataUseRestricted => RunFailureKind::DataUseRestricted,
         ProviderError::InvalidRequest | ProviderError::UnsupportedModel => RunFailureKind::Internal,
         ProviderError::MalformedCatalog
@@ -1472,6 +1534,7 @@ const fn provider_failure_state(error: ProviderError) -> ProviderOperationFailur
         | ProviderError::RateLimited
         | ProviderError::Unavailable
         | ProviderError::RequestRejected
+        | ProviderError::ContextWindowRejected
         | ProviderError::ProviderExecutionFailed => ProviderOperationFailureState::Failed,
         ProviderError::InvalidRequest
         | ProviderError::UnsupportedModel

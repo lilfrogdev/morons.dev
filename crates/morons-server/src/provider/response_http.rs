@@ -74,18 +74,20 @@ pub(super) async fn read_response_body_with_cancellation(
     maximum_bytes: usize,
     deadline: Instant,
     cancellation: &mut ProviderCancellation,
-) -> Result<(), ProviderError> {
-    let mut bytes = 0_usize;
+) -> Result<Vec<u8>, ProviderError> {
+    let mut bytes = Vec::new();
     while let Some(frame) = next_frame(&mut body, deadline, cancellation).await? {
         let data = frame
             .into_data()
             .map_err(|_| ProviderError::MalformedResponse)?;
-        bytes = bytes
+        bytes
+            .len()
             .checked_add(data.len())
             .filter(|n| *n <= maximum_bytes)
             .ok_or(ProviderError::ResponseLimitExceeded)?;
+        bytes.extend_from_slice(&data);
     }
-    Ok(())
+    Ok(bytes)
 }
 pub(super) async fn next_frame(
     body: &mut Incoming,

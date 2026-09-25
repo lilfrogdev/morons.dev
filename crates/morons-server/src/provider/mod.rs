@@ -22,6 +22,7 @@ mod opencode;
 mod outcome;
 mod request;
 mod responses;
+pub(crate) use responses::MAX_USAGE_TOKENS;
 #[cfg(test)]
 pub(crate) use responses::native_tests::completed_item_stream_fixture;
 mod sse;

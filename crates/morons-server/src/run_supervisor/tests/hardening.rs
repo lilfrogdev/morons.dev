@@ -306,7 +306,8 @@ async fn oversized_prefix_uses_disclosed_bounded_excerpts_and_external_corruptio
 
 #[tokio::test(flavor = "current_thread")]
 async fn compaction_rejection_or_oversized_summary_fails_once_without_installing_a_checkpoint() {
-    for oversized_summary in [false, true] {
+    for summary in [None, Some("s".repeat(20_000)), Some("🐸".repeat(4_097))] {
+        let oversized_summary = summary.is_some();
         let (root, _selected, store, session) = fixture("failed-compaction").await;
         append_completed_context_run(&store, session, 1, "OLD_SOURCE", 0).await;
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -319,8 +320,8 @@ async fn compaction_rejection_or_oversized_summary_fails_once_without_installing
                     .unwrap()
                     .contains("Summarize the supplied earlier session prefix")
             );
-            if oversized_summary {
-                let output = serde_json::json!({"id":"summary_message","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"s".repeat(20_000),"annotations":[]}]}).to_string();
+            if let Some(summary) = summary {
+                let output = serde_json::json!({"id":"summary_message","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":summary,"annotations":[]}]}).to_string();
                 write_provider_output(&mut stream, "oversized_summary", &output).await;
             } else {
                 stream.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
@@ -353,6 +354,20 @@ async fn compaction_rejection_or_oversized_summary_fails_once_without_installing
             )
             .unwrap();
         assert_eq!(count, 1);
+        if oversized_summary {
+            for query in [
+                "SELECT failure_kind FROM run_state_facts WHERE run_id = ?1 AND state = 4",
+                "SELECT failure_kind FROM runs WHERE run_id = ?1 AND state = 4",
+            ] {
+                let failure: i64 = connection
+                    .query_row(query, [run.id.as_bytes().as_slice()], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(failure, 9); // Durable ResourceLimit classification.
+            }
+        }
+        drop(connection);
+        drop(application);
+        drop(SessionStore::open_for_test(root.path()).expect("failed compaction should reopen"));
     }
 }
 

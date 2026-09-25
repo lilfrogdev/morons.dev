@@ -23,6 +23,52 @@ fn check(value: Value, active: bool, expected: ResponseStage, error: ProviderErr
 }
 
 #[test]
+fn native_completed_input_usage_can_exceed_admission_budget() {
+    let mut value = completed();
+    value["response"]["usage"]["input_tokens"] = json!(100_000);
+    value["response"]["usage"]["total_tokens"] = json!(100_005);
+    let mut decoder = ResponsesDecoder::new_native("gpt-5.5", 96_000, 32_000);
+    decoder.push(&record(created())).unwrap();
+    decoder.push(&record(value.clone())).unwrap();
+    let outcome = decoder.finish().unwrap();
+    assert_eq!(outcome.usage.input_tokens, 100_000);
+    assert!(!outcome.output.is_empty());
+    check(
+        value,
+        true,
+        ResponseStage::Usage,
+        ProviderError::MalformedResponse,
+    );
+}
+
+#[test]
+fn native_completed_usage_retains_integrity_and_resource_bounds() {
+    for (input, output, total, cached, reasoning) in [
+        (100_000, 5, 100_006, 0, 0),
+        (100_000, 5, 100_005, 100_001, 0),
+        (100_000, 5, 100_005, 0, 6),
+        (100_000, 32_001, 132_001, 0, 0),
+        (10_000_000, 5, 10_000_005, 0, 0),
+    ] {
+        let mut value = completed();
+        value["response"]["usage"] = json!({
+            "input_tokens": input,
+            "output_tokens": output,
+            "total_tokens": total,
+            "input_tokens_details": {"cached_tokens": cached},
+            "output_tokens_details": {"reasoning_tokens": reasoning}
+        });
+        let mut decoder = ResponsesDecoder::new_native("gpt-5.5", 96_000, 32_000);
+        decoder.push(&record(created())).unwrap();
+        assert_eq!(
+            decoder.push(&record(value)).err(),
+            Some(ProviderError::MalformedResponse)
+        );
+        assert_eq!(decoder.failure_stage(), ResponseStage::Usage);
+    }
+}
+
+#[test]
 fn response_guard_diagnostics_are_fixed_without_changing_rejection_categories() {
     let cases: &[GuardCase] = &[
         (ResponseStage::Sequence, |v| v["sequence_number"] = json!(9)),

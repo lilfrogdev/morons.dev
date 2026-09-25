@@ -62,6 +62,16 @@ jobs:
             cross_target: ""
             timeout_minutes: 40
             test_shard: persistence
+            test_filter: "persistence::"
+            test_skip: "--skip persistence::run_tests::"
+          - os: windows-latest
+            platform: Windows persistence run lifecycle
+            runner_arch: X64
+            target: x86_64-pc-windows-msvc
+            cross_target: ""
+            timeout_minutes: 40
+            test_shard: persistence
+            test_filter: "persistence::run_tests::"
             test_skip: ""
           - os: windows-11-arm
             platform: Windows aarch64
@@ -123,7 +133,8 @@ jobs:
       - name: Run persistence tests
         if: ${{ matrix.test_shard == 'persistence' }}
         run: >-
-          cargo test -p morons-server --lib --target ${{ matrix.target }} --locked persistence:: -- --test-threads 2
+          cargo test -p morons-server --lib --target ${{ matrix.target }} --locked
+          ${{ matrix.test_filter || 'persistence::' }} -- ${{ matrix.test_skip }} --test-threads 2
 
       - name: Install cross-compilation target
         if: ${{ matrix.cross_target != '' }}

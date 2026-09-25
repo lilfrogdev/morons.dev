@@ -228,22 +228,16 @@ impl Backend {
         &mut self,
         run_id: RunId,
         operation_id: CompactionOperationId,
-        uncertain: bool,
+        failure: crate::persistence::CompactionFailure,
     ) -> Result<(), PersistenceError> {
-        self.transition_compaction(
-            run_id,
-            operation_id,
-            if uncertain {
-                STATE_DISPATCHED
-            } else {
-                STATE_PREPARED
-            },
-            if uncertain {
-                STATE_UNCERTAIN
-            } else {
-                STATE_FAILED
-            },
-        )
+        use crate::persistence::CompactionFailure;
+
+        let (expected, target) = match failure {
+            CompactionFailure::Undispatched => (STATE_PREPARED, STATE_FAILED),
+            CompactionFailure::ContextRejected => (STATE_DISPATCHED, STATE_FAILED),
+            CompactionFailure::Uncertain => (STATE_DISPATCHED, STATE_UNCERTAIN),
+        };
+        self.transition_compaction(run_id, operation_id, expected, target)
     }
 
     fn transition_compaction(

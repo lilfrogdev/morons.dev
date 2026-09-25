@@ -160,7 +160,9 @@ pub(super) fn validate_result(payload: &str, run: &Run) -> Result<(), Persistenc
     if result.summary.trim().is_empty()
         || result.summary.len() > super::super::context_budget::MAX_COMPACTION_SUMMARY_BYTES
         || result.summary.contains('\0')
-        || result.input_tokens > u64::from(run.maximum_input_tokens)
+        || (run.service != crate::persistence::RunService::OpenAiChatGpt
+            && result.input_tokens > u64::from(run.maximum_input_tokens))
+        || result.total_tokens > crate::provider::MAX_USAGE_TOKENS
         || result.output_tokens
             > u64::from(
                 run.maximum_output_tokens
