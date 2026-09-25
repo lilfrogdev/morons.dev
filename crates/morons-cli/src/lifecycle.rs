@@ -71,6 +71,7 @@ pub enum ConnectOrStartError {
     Handshake(HandshakeError),
     HandshakeTimedOut,
     DebugRequiresStoppedServer,
+    CompanionExited,
     StartupTimedOut,
 }
 
@@ -107,6 +108,9 @@ impl ConnectOrStartError {
             Self::DebugRequiresStoppedServer => {
                 "debug startup requires a stopped server; connect with morons, stop with Ctrl+S when work is idle, then run morons --debug; use morons to reconnect to an existing debug server"
             }
+            Self::CompanionExited => {
+                "server companion exited before becoming available; run the matching morons-server directly to diagnose startup; do not delete or downgrade existing state"
+            }
             Self::StartupTimedOut => {
                 "server companion did not become available before the startup timeout"
             }
@@ -127,6 +131,7 @@ impl fmt::Debug for ConnectOrStartError {
             Self::Handshake(_) => "ConnectOrStartError::Handshake",
             Self::HandshakeTimedOut => "ConnectOrStartError::HandshakeTimedOut",
             Self::DebugRequiresStoppedServer => "ConnectOrStartError::DebugRequiresStoppedServer",
+            Self::CompanionExited => "ConnectOrStartError::CompanionExited",
             Self::StartupTimedOut => "ConnectOrStartError::StartupTimedOut",
         })
     }
@@ -151,6 +156,7 @@ impl Error for ConnectOrStartError {
             | Self::AuthenticationTimedOut
             | Self::HandshakeTimedOut
             | Self::DebugRequiresStoppedServer
+            | Self::CompanionExited
             | Self::StartupTimedOut => None,
         }
     }
@@ -220,8 +226,27 @@ async fn connect_or_start_until_mode(
     let mut incomplete_control_since = None;
     let mut initialization_progress = StartupInitializationProgress::default();
     let mut child: Option<Child> = None;
+    let mut companion_exited = false;
+    let mut companion_exit_observed_at = None;
     loop {
+        companion_exited |= reap_exited_child(&mut child)?;
         let discovery = discover()?;
+        if companion_exited
+            && matches!(
+                &discovery,
+                ClientEndpointDiscovery::Absent | ClientEndpointDiscovery::Incomplete
+            )
+        {
+            // A competing initializer may be between creating the control root
+            // and acquiring/publishing its stable lock. Give discovery the same
+            // bounded grace used for incomplete control initialization.
+            let observed = companion_exit_observed_at.get_or_insert_with(Instant::now);
+            if observed.elapsed() >= INCOMPLETE_CONTROL_GRACE {
+                return Err(ConnectOrStartError::CompanionExited);
+            }
+        } else {
+            companion_exit_observed_at = None;
+        }
         let discovery_is_starting = matches!(&discovery, ClientEndpointDiscovery::Starting);
         let (should_report_starting, left_starting) =
             initialization_progress.observe(discovery_is_starting);
@@ -281,7 +306,7 @@ async fn connect_or_start_until_mode(
             child = Some(spawn_companion(path, debug)?);
             launched_companion = true;
         }
-        reap_exited_child(&mut child)?;
+        companion_exited |= reap_exited_child(&mut child)?;
         let next_discovery = Instant::now() + DISCOVERY_RETRY_DELAY;
         if initialization_progress.latest_discovery_was_starting {
             time::sleep_until(next_discovery).await;
@@ -442,6 +467,11 @@ mod tests {
                 "registered local server protocol negotiation timed out",
             ),
             (
+                ConnectOrStartError::CompanionExited,
+                "ConnectOrStartError::CompanionExited",
+                "server companion exited before becoming available; run the matching morons-server directly to diagnose startup; do not delete or downgrade existing state",
+            ),
+            (
                 ConnectOrStartError::StartupTimedOut,
                 "ConnectOrStartError::StartupTimedOut",
                 "server companion did not become available before the startup timeout",
@@ -454,6 +484,64 @@ mod tests {
             assert!(!error.to_string().contains(SENSITIVE));
             assert!(!format!("{error:?}").contains(SENSITIVE));
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_companion_is_reported_without_waiting_for_startup_timeout() {
+        // With null stdin, the shell exits without executing commands. Even a
+        // successful child exit is unexpected when no server became available.
+        let budget = Duration::from_secs(60);
+        let result = time::timeout(
+            Duration::from_secs(5),
+            connect_or_start_until(
+                Some(PathBuf::from("/bin/sh")),
+                Instant::now() + budget,
+                budget,
+                || Ok(ClientEndpointDiscovery::Absent),
+                || {},
+            ),
+        )
+        .await
+        .expect("child exit should not wait for the startup deadline");
+        assert!(matches!(result, Err(ConnectOrStartError::CompanionExited)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_companion_allows_a_competing_initializer_to_publish_its_lock() {
+        let mut observations = 0;
+        let mut reported_starting = false;
+        let budget = Duration::from_secs(60);
+        let result = time::timeout(
+            Duration::from_secs(5),
+            connect_or_start_until(
+                Some(PathBuf::from("/bin/sh")),
+                Instant::now() + budget,
+                budget,
+                || {
+                    observations += 1;
+                    match observations {
+                        1 => Ok(ClientEndpointDiscovery::Absent),
+                        2..=8 => Ok(ClientEndpointDiscovery::Incomplete),
+                        9 => Ok(ClientEndpointDiscovery::Starting),
+                        _ => Err(ControlError::InvalidState {
+                            reason: "end of competing-initializer fixture",
+                        }),
+                    }
+                },
+                || reported_starting = true,
+            ),
+        )
+        .await
+        .expect("fixture should finish before its watchdog");
+        assert!(reported_starting);
+        assert!(matches!(
+            result,
+            Err(ConnectOrStartError::Control(ControlError::InvalidState {
+                reason: "end of competing-initializer fixture"
+            }))
+        ));
     }
 
     #[test]

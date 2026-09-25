@@ -229,9 +229,9 @@ fn companion_command(path: &Path, debug: bool) -> Command {
     command
 }
 
-pub(super) fn reap_exited_child(child: &mut Option<Child>) -> Result<(), ConnectOrStartError> {
+pub(super) fn reap_exited_child(child: &mut Option<Child>) -> Result<bool, ConnectOrStartError> {
     let Some(process) = child.as_mut() else {
-        return Ok(());
+        return Ok(false);
     };
     if process
         .try_wait()
@@ -239,8 +239,9 @@ pub(super) fn reap_exited_child(child: &mut Option<Child>) -> Result<(), Connect
         .is_some()
     {
         *child = None;
+        return Ok(true);
     }
-    Ok(())
+    Ok(false)
 }
 
 #[cfg(test)]

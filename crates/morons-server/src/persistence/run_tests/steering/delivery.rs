@@ -61,6 +61,8 @@ async fn steering_delivery_schema_migrates_populated_v44_without_consumption() {
     let db = Connection::open(&database_path).unwrap();
     db.execute_batch(
         "BEGIN IMMEDIATE;
+         ALTER TABLE steering_mutation_requests DROP COLUMN skill_context_digest;
+         ALTER TABLE steering_mutation_requests DROP COLUMN skill_context;
          DROP TABLE steering_delivery_facts;
          DROP INDEX session_entries_user_by_run;
          CREATE UNIQUE INDEX session_entries_user_by_run
@@ -77,7 +79,7 @@ async fn steering_delivery_schema_migrates_populated_v44_without_consumption() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        45
+        crate::persistence::database::SCHEMA_VERSION
     );
     assert_eq!(
         db.query_row("SELECT COUNT(*) FROM steering_delivery_facts", [], |row| {

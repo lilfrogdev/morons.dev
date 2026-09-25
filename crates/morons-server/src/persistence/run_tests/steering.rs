@@ -1,4 +1,5 @@
 mod delivery;
+mod schema46;
 
 use super::*;
 use crate::persistence::{ProviderOperationFailureState, RunFailureKind};
