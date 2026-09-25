@@ -21,7 +21,7 @@ use super::{
 };
 
 const APPLICATION_ID: i64 = 1_297_044_046;
-pub(super) const SCHEMA_VERSION: i64 = 45;
+pub(super) const SCHEMA_VERSION: i64 = 46;
 const SQLITE_HEADER_BYTES: usize = 72;
 const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const APPLICATION_ID_OFFSET: usize = 68;
@@ -60,6 +60,7 @@ const SCHEMA_V32: &str = include_str!("../schema_v32.sql");
 const SCHEMA_V33: &str = include_str!("../schema_v33.sql");
 const SCHEMA_V34: &str = include_str!("../schema_v34.sql");
 const SCHEMA_V34_SEARCH: &str = include_str!("../schema_v34_search.sql");
+const SCHEMA_V46: &str = include_str!("../schema_v46.sql");
 const SCHEMA_V45: &str = include_str!("../schema_v45.sql");
 const SCHEMA_V44: &str = include_str!("../schema_v44.sql");
 const SCHEMA_V43: &str = include_str!("../schema_v43.sql");
@@ -313,6 +314,7 @@ fn initialize_at_path(
     connection.execute_batch(SCHEMA_V43)?;
     connection.execute_batch(SCHEMA_V44)?;
     connection.execute_batch(SCHEMA_V45)?;
+    connection.execute_batch(SCHEMA_V46)?;
     validate_identity_and_schema(&connection)?;
     validate_integrity(&connection)?;
     drop(connection);
@@ -448,6 +450,7 @@ fn migrate(connection: &Connection, paths: &StoragePaths) -> Result<(), Persiste
         (43, SCHEMA_V43),
         (44, SCHEMA_V44),
         (45, SCHEMA_V45),
+        (46, SCHEMA_V46),
     ] {
         if version > schema_version {
             if version == 35 {
@@ -587,6 +590,19 @@ fn validate_identity_and_schema(connection: &Connection) -> Result<(), Persisten
     if actual != expected {
         return Err(PersistenceError::InvalidState {
             reason: "the authoritative database schema objects are invalid",
+        });
+    }
+    // Schema46 originated in the steering prototype. Preserve its columns, but
+    // do not admit skill snapshots whose fingerprints/delivery we cannot validate.
+    let has_steering_skills: bool = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM steering_mutation_requests
+         WHERE skill_context IS NOT NULL OR skill_context_digest IS NOT NULL)",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_steering_skills {
+        return Err(PersistenceError::InvalidState {
+            reason: "stored steering skill context is not supported by this server",
         });
     }
     Ok(())

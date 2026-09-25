@@ -21,6 +21,7 @@ use morons_protocol::{
 
 const HELPER_ENVIRONMENT: &str = "MORONS_SERVER_LIFECYCLE_HELPER";
 const AUTO_START_HELPER_ENVIRONMENT: &str = "MORONS_AUTO_START_HELPER";
+const FAILED_START_HELPER_ENVIRONMENT: &str = "MORONS_FAILED_START_HELPER";
 const INCOMPLETE_CONTROL_HELPER_ENVIRONMENT: &str = "MORONS_INCOMPLETE_CONTROL_HELPER";
 const CONCURRENT_CONNECT_HELPER_ENVIRONMENT: &str = "MORONS_CONCURRENT_CONNECT_HELPER";
 const STOP_EXISTING_HELPER_ENVIRONMENT: &str = "MORONS_STOP_EXISTING_HELPER";
@@ -79,6 +80,56 @@ fn exact_sibling_companion_is_started_and_authenticated() {
     assert!(!home.join(".morons/control/endpoint.json").exists());
     fs::remove_dir_all(home).expect("test home should be removable");
     fs::remove_dir_all(package).expect("test package should be removable");
+}
+
+#[test]
+fn incompatible_database_reports_companion_exit_instead_of_timeout() {
+    let _process_test = process_test_guard();
+    let home = test_private_directory("failed-start-home");
+    let (package, client) = package_test_client("failed-start-package", true);
+    let database = home.join(".morons/data/sessions.sqlite3");
+    for (helper_name, environment) in [
+        ("auto_start_helper", AUTO_START_HELPER_ENVIRONMENT),
+        ("failed_start_helper", FAILED_START_HELPER_ENVIRONMENT),
+    ] {
+        let mut helper = minimal_command(client.clone(), &home);
+        helper
+            .arg("--exact")
+            .arg(helper_name)
+            .arg("--nocapture")
+            .env(environment, "1");
+        let mut helper = helper.spawn().expect("startup helper should start");
+        assert!(
+            wait_for_exit(&mut helper, PROCESS_TIMEOUT)
+                .unwrap()
+                .success()
+        );
+        if helper_name == "auto_start_helper" {
+            let db = rusqlite::Connection::open(&database).unwrap();
+            db.pragma_update(None, "user_version", 9999).unwrap();
+        }
+    }
+    let db = rusqlite::Connection::open(&database).unwrap();
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        9999
+    );
+    drop(db);
+    assert!(!home.join(".morons/control/endpoint.json").exists());
+    fs::remove_dir_all(home).unwrap();
+    fs::remove_dir_all(package).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn failed_start_helper() {
+    if std::env::var_os(FAILED_START_HELPER_ENVIRONMENT).is_none() {
+        return;
+    }
+    assert!(matches!(
+        connect_or_start().await,
+        Err(ConnectOrStartError::CompanionExited)
+    ));
 }
 
 #[test]
