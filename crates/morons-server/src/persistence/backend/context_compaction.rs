@@ -35,7 +35,17 @@ impl Backend {
         )?;
         let manual = prompt == "/compact" || prompt.starts_with("/compact ");
         let covered = checkpoint.map_or(0, |checkpoint| checkpoint.source_entry_high_water);
+        let rejected: bool = self.connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM provider_operation_facts AS failure
+             WHERE failure.run_id = ?1 AND failure.fact_kind = 4 AND failure.failure_kind = 9
+             AND NOT EXISTS (SELECT 1 FROM compaction_operations AS compact
+                 WHERE compact.run_id = failure.run_id AND compact.state = 3
+                 AND compact.updated_sequence > failure.fact_sequence))",
+            [&run.id.as_bytes()[..]],
+            |row| row.get(0),
+        )?;
         if !manual
+            && !rejected
             && !execution.pressure(
                 budget,
                 run.maximum_input_tokens,

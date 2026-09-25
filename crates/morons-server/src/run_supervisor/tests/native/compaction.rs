@@ -1,3 +1,5 @@
+mod recovery;
+
 use super::*;
 use crate::persistence::maintenance::MaintenanceState;
 
@@ -155,6 +157,203 @@ async fn foreground_compaction(model: &'static str) {
     );
     drop(db);
     let _store = SessionStore::open_for_test(root.path()).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_compaction_context_rejection_is_failed_not_uncertain_and_never_retried() {
+    compaction_rejection(
+        r#"{"error":{"code":"context_length_exceeded","message":"PRIVATE_REJECTION_DETAIL"}}"#,
+        false,
+        4,
+        9,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_compaction_unproven_context_rejections_remain_uncertain_and_never_retry() {
+    for body in [
+        r#"{"error":{"message":"context_length_exceeded"}}"#,
+        r#"{"error":{"code":"context_length_exceeded","code":"other"}}"#,
+        r#"{"error":{"code":"context_length_exceeded"}} trailing"#,
+    ] {
+        compaction_rejection(body, false, 5, 6).await;
+    }
+    compaction_rejection(
+        r#"{"error":{"code":"context_length_exceeded"}}"#,
+        true,
+        5,
+        5,
+    )
+    .await;
+}
+
+async fn compaction_rejection(
+    rejection: &'static str,
+    truncated: bool,
+    expected_operation_state: i64,
+    expected_failure: i64,
+) {
+    context_rejection(
+        rejection,
+        truncated,
+        expected_operation_state,
+        expected_failure,
+        true,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_foreground_unproven_overflow_never_compacts_or_retries() {
+    for body in [
+        r#"{"error":{"message":"context_length_exceeded"}}"#,
+        r#"{"error":{"code":"context_length_exceeded","code":"other"}}"#,
+        r#"{"error":{"code":"context_length_exceeded"}} trailing"#,
+    ] {
+        context_rejection(body, false, 4, 6, false).await;
+    }
+    context_rejection(
+        r#"{"error":{"code":"context_length_exceeded"}}"#,
+        true,
+        5,
+        5,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_foreground_proven_overflow_without_safe_cut_stops() {
+    context_rejection(
+        r#"{"error":{"code":"context_length_exceeded"}}"#,
+        false,
+        4,
+        9,
+        false,
+    )
+    .await;
+}
+
+async fn context_rejection(
+    rejection: &'static str,
+    truncated: bool,
+    expected_operation_state: i64,
+    expected_failure: i64,
+    compaction: bool,
+) {
+    let model = "gpt-5.5";
+    let (root, _selected, store, mut session, _) = fixture(false, model).await;
+    if !compaction && expected_failure == 9 {
+        session = store
+            .create_session_at(
+                PersistenceMutationRequestId::from_bytes([0xa5; 16]),
+                None,
+                _selected.path().to_str().unwrap().into(),
+            )
+            .await
+            .unwrap()
+            .id;
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let (settled, mut settlement) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = time::timeout(TERMINAL_RUN_TEST_TIMEOUT, listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let request = String::from_utf8(read_http_request(&mut stream).await).unwrap();
+        assert!(request.starts_with("POST /backend-api/codex/responses"));
+        let body: serde_json::Value =
+            serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["tools"].as_array().unwrap().is_empty(), compaction);
+        assert_eq!(body["model"], model);
+        let declared_length = rejection.len() + usize::from(truncated);
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{rejection}",
+                    declared_length
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        stream.shutdown().await.unwrap();
+        tokio::select! {
+            biased;
+            _ = listener.accept() => panic!("unrecoverable rejection must not dispatch again"),
+            result = &mut settlement => result.unwrap(),
+        }
+    });
+    let app = ServerApplication::from_native_shared_for_test(store.clone(), &base);
+    let session_id = SessionId::from_bytes(*session.as_bytes());
+    let response = app
+        .execute_for_local_owner(ApplicationRequest::SubmitSessionInput {
+            mutation_request_id: MutationRequestId::from_bytes([0xa3; 16]),
+            session_id,
+            text: if compaction { "/compact" } else { "continue" }.into(),
+            attachments: Vec::new(),
+            service: ModelService::OpenAiChatGpt,
+            model_id: model.into(),
+        })
+        .await
+        .unwrap();
+    let ApplicationOutcome::Response(ApplicationResponse::SessionInputAccepted { run, .. }) =
+        response
+    else {
+        panic!("expected run")
+    };
+    assert_eq!(
+        wait_for_terminal(&app, session_id, run.id).await,
+        RunState::Failed
+    );
+    assert!(!*app.subscribe_shutdown_requests().borrow());
+    app.shutdown().await;
+    settled.send(()).unwrap();
+    server.await.unwrap();
+    drop(app);
+    drop(store);
+    let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM context_checkpoints", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap(),
+        0
+    );
+    let states = db
+        .prepare("SELECT state FROM compaction_operations")
+        .unwrap()
+        .query_map([], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    if compaction {
+        assert_eq!(states, vec![expected_operation_state]);
+    } else {
+        assert!(states.is_empty());
+        let facts = db
+            .prepare("SELECT fact_kind FROM provider_operation_facts WHERE run_id = ?1 ORDER BY fact_sequence")
+            .unwrap()
+            .query_map([run.id.as_bytes().as_slice()], |row| row.get::<_, i64>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(facts, vec![1, 2, expected_operation_state]);
+    }
+    for query in [
+        "SELECT failure_kind FROM run_state_facts WHERE run_id = ?1 AND state = 4",
+        "SELECT failure_kind FROM runs WHERE run_id = ?1 AND state = 4",
+    ] {
+        let failure: i64 = db
+            .query_row(query, [run.id.as_bytes().as_slice()], |row| row.get(0))
+            .unwrap();
+        assert_eq!(failure, expected_failure);
+    }
+    drop(db);
+    drop(SessionStore::open_for_test(root.path()).expect("settled rejection must reopen"));
 }
 
 #[tokio::test(flavor = "current_thread")]

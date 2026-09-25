@@ -780,6 +780,13 @@ pub(crate) struct CompactionPlan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompactionFailure {
+    Undispatched,
+    ContextRejected,
+    Uncertain,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CompactionOperationId([u8; IDENTIFIER_BYTES]);
 
 impl CompactionOperationId {

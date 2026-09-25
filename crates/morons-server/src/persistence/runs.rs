@@ -203,12 +203,12 @@ impl SessionStore {
         &self,
         run_id: RunId,
         operation_id: crate::persistence::CompactionOperationId,
-        uncertain: bool,
+        failure: crate::persistence::CompactionFailure,
     ) -> Result<(), PersistenceError> {
         self.run_request(|response| RunWorkerRequest::FailCompaction {
             run_id,
             operation_id,
-            uncertain,
+            failure,
             response,
         })
         .await
@@ -445,6 +445,19 @@ impl SessionStore {
         .await
     }
 
+    pub(crate) async fn settle_context_rejection(
+        &self,
+        run_id: RunId,
+        operation_id: ProviderOperationId,
+    ) -> Result<bool, PersistenceError> {
+        self.run_request(|response| RunWorkerRequest::SettleContextRejection {
+            run_id,
+            operation_id,
+            response,
+        })
+        .await
+    }
+
     pub(crate) async fn load_run_context(
         &self,
         run_id: RunId,
@@ -539,7 +552,7 @@ pub(super) enum RunWorkerRequest {
     FailCompaction {
         run_id: RunId,
         operation_id: crate::persistence::CompactionOperationId,
-        uncertain: bool,
+        failure: crate::persistence::CompactionFailure,
         response: oneshot::Sender<Result<(), PersistenceError>>,
     },
     Activate {
@@ -632,6 +645,11 @@ pub(super) enum RunWorkerRequest {
         response:
             oneshot::Sender<Result<crate::persistence::SessionContextStatus, PersistenceError>>,
     },
+    SettleContextRejection {
+        run_id: RunId,
+        operation_id: ProviderOperationId,
+        response: oneshot::Sender<Result<bool, PersistenceError>>,
+    },
     LoadContext {
         run_id: RunId,
         response: oneshot::Sender<Result<RunContext, PersistenceError>>,
@@ -709,10 +727,10 @@ impl RunWorkerRequest {
             Self::FailCompaction {
                 run_id,
                 operation_id,
-                uncertain,
+                failure,
                 response,
             } => {
-                let _ = response.send(backend.fail_compaction(run_id, operation_id, uncertain));
+                let _ = response.send(backend.fail_compaction(run_id, operation_id, failure));
             }
             Self::Activate { run_id, response } => {
                 let _ = response.send(backend.activate_run(run_id));
@@ -853,6 +871,13 @@ impl RunWorkerRequest {
                 response,
             } => {
                 let _ = response.send(backend.session_context_status(session_id, &selection));
+            }
+            Self::SettleContextRejection {
+                run_id,
+                operation_id,
+                response,
+            } => {
+                let _ = response.send(backend.settle_context_rejection(run_id, operation_id));
             }
             Self::LoadContext { run_id, response } => {
                 let _ = response.send(backend.load_run_context(run_id));

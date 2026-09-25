@@ -23,7 +23,7 @@ const MAX_OUTPUT_ITEMS: usize = 128;
 const MAX_MESSAGE_CONTENT_PARTS: usize = 64;
 const MAX_ACCUMULATED_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_DELTA_BYTES: usize = 64 * 1024;
-const MAX_USAGE_TOKENS: u64 = 10_000_000;
+pub(crate) const MAX_USAGE_TOKENS: u64 = 10_000_000;
 const MAX_REASONING_SUMMARIES: usize = 64;
 const MAX_ENCRYPTED_REASONING_BYTES: usize = 512 * 1024;
 const MAX_EVENT_DEPTH: usize = 32;
@@ -472,7 +472,12 @@ impl ResponsesDecoder {
         let usage = validate_usage(
             serde_json::from_value(response.usage.ok_or(ProviderError::MalformedResponse)?)
                 .map_err(|_| ProviderError::MalformedResponse)?,
-            self.maximum_input_tokens,
+            // Native input usage is an observation, not a request-admission check.
+            if self.native_items.is_some() {
+                MAX_USAGE_TOKENS as u32
+            } else {
+                self.maximum_input_tokens
+            },
             self.maximum_output_tokens,
         )?;
         self.stage.set(ResponseStage::OutputConsistency);

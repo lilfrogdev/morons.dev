@@ -175,7 +175,13 @@ async fn conservative_parent_cut_guarantees_reduction_with_maximum_summary() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn conservative_parent_failed_and_interrupted_compactions_never_replay() {
-    for dispatched in [false, true] {
+    use crate::persistence::CompactionFailure;
+    for failure in [
+        CompactionFailure::Undispatched,
+        CompactionFailure::Uncertain,
+        CompactionFailure::ContextRejected,
+    ] {
+        let dispatched = failure != CompactionFailure::Undispatched;
         for recover in [false, true] {
             let mut f = conservative_fixture().await;
             let run = f.accept_model(1, "/compact", model());
@@ -189,9 +195,19 @@ async fn conservative_parent_failed_and_interrupted_compactions_never_replay() {
                 .unwrap();
             let operation = f.backend.prepare_auto_compaction(run.id, &plan).unwrap();
             if dispatched {
+                assert!(
+                    f.backend
+                        .fail_compaction(run.id, operation, CompactionFailure::ContextRejected)
+                        .is_err()
+                );
                 f.backend
                     .mark_compaction_dispatched(run.id, operation)
                     .unwrap();
+                assert!(
+                    f.backend
+                        .fail_compaction(run.id, operation, CompactionFailure::Undispatched)
+                        .is_err()
+                );
             }
             let history = rows(&f.backend.connection, "session_entries");
             if recover {
@@ -199,7 +215,7 @@ async fn conservative_parent_failed_and_interrupted_compactions_never_replay() {
                 f.backend = Backend::open(f.root.path()).unwrap();
             } else {
                 f.backend
-                    .fail_compaction(run.id, operation, dispatched)
+                    .fail_compaction(run.id, operation, failure)
                     .unwrap();
             }
             let state: u32 = f
@@ -207,7 +223,14 @@ async fn conservative_parent_failed_and_interrupted_compactions_never_replay() {
                 .connection
                 .query_row("SELECT state FROM compaction_operations", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(state, if dispatched { 5 } else { 4 });
+            assert_eq!(
+                state,
+                if dispatched && (recover || failure == CompactionFailure::Uncertain) {
+                    5
+                } else {
+                    4
+                }
+            );
             assert!(!can_compact(&f.backend.connection, run.id).unwrap());
             assert!(
                 f.backend

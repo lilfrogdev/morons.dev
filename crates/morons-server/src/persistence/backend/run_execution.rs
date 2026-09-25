@@ -26,6 +26,60 @@ use crate::persistence::{
 };
 
 impl Backend {
+    pub(crate) fn settle_context_rejection(
+        &mut self,
+        run_id: RunId,
+        operation_id: ProviderOperationId,
+    ) -> Result<bool, PersistenceError> {
+        self.ensure_context_integrity()?;
+        let fact_id = random_identifier()?;
+        let audit_id = random_identifier()?;
+        let now = current_time_milliseconds()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let run = load_required_run(&transaction, run_id)?;
+        if run.state != RunState::Active
+            || run.cancellation_requested
+            || super::context_execution::policy(&transaction, run_id)?
+                != super::context_execution::ExecutionPolicy::NativeUsage
+        {
+            return Ok(false);
+        }
+        let blocked: bool = transaction.query_row(
+            "SELECT EXISTS (SELECT 1 FROM provider_operation_facts WHERE run_id = ?1 AND fact_kind IN (4, 5, 6))",
+            [&run_id.as_bytes()[..]], |row| row.get(0),
+        )?;
+        if blocked {
+            return Ok(false);
+        }
+        require_provider_fact(&transaction, run_id, operation_id, PROVIDER_FACT_DISPATCHED)?;
+        ensure_provider_not_terminal(&transaction, operation_id)?;
+        insert_provider_simple_fact(
+            &transaction,
+            ProviderSimpleFact {
+                fact_id,
+                fact_sequence: next_sequence(&transaction)?,
+                operation_id,
+                run_id,
+                fact_kind: PROVIDER_FACT_FAILED,
+                failure: Some(RunFailureKind::ResourceLimit),
+                created_at_milliseconds: now,
+            },
+        )?;
+        insert_run_audit(
+            &transaction,
+            &audit_id,
+            next_sequence(&transaction)?,
+            &run,
+            Some(operation_id),
+            AUDIT_PROVIDER_FAILED,
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
     pub(crate) fn activate_run(
         &mut self,
         run_id: RunId,
@@ -147,8 +201,13 @@ impl Backend {
             [&run_id.as_bytes()[..]],
             |row| row.get(0),
         )?;
+        let prepared_count: u32 = transaction.query_row(
+            "SELECT COUNT(*) FROM provider_operation_facts WHERE run_id = ?1 AND fact_kind = 1",
+            [&run_id.as_bytes()[..]],
+            |row| row.get(0),
+        )?;
         let turn_index =
-            run.provider_turns
+            u64::from(prepared_count)
                 .checked_add(1)
                 .ok_or(PersistenceError::ResourceLimit {
                     resource: PersistenceResourceLimit::Context,
