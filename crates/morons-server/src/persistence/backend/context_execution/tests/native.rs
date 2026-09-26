@@ -16,6 +16,105 @@ use crate::{
 
 mod conservative;
 
+#[tokio::test(flavor = "current_thread")]
+async fn capacity_migration_preserves_history_and_admits_only_reviewed_larger_budgets() {
+    let mut f = fixture().await;
+    let old = f.accept(1, "historical budget");
+    f.read_turn(&old, 12_000, 100);
+    f.backend.finish_run_stopped(old.id, None).unwrap();
+    // Rebuild the temporary fixture with the previous capacity constraints.
+    f.backend
+        .connection
+        .execute_batch("PRAGMA foreign_keys = OFF;")
+        .unwrap();
+    f.backend
+        .connection
+        .execute_batch(
+            &include_str!("../../../schema_v47.sql")
+                .replace("THEN 258400", "THEN 96000")
+                .replace("user_version = 47", "user_version = 46"),
+        )
+        .unwrap();
+    let snapshot = |db: &Connection, table: &str| {
+        let mut statement = db
+            .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let tables = [
+        "run_accepted_facts",
+        "runs",
+        "provider_operation_facts",
+        "task_model_bindings",
+    ];
+    let before: Vec<_> = tables
+        .iter()
+        .map(|table| snapshot(&f.backend.connection, table))
+        .collect();
+    drop(f.backend);
+    f.backend = Backend::open(f.root.path()).unwrap();
+    for (table, rows) in tables.iter().zip(before) {
+        assert_eq!(snapshot(&f.backend.connection, table), rows);
+    }
+    assert_eq!(
+        load_required_run(&f.backend.connection, old.id)
+            .unwrap()
+            .maximum_input_tokens,
+        96_000
+    );
+    let backup = Connection::open(
+        f.root
+            .path()
+            .join("backups/sessions-before-schema-v46.sqlite3"),
+    )
+    .unwrap();
+    assert_eq!(
+        backup
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap(),
+        46
+    );
+    assert_eq!(
+        snapshot(&backup, "run_accepted_facts"),
+        snapshot(&f.backend.connection, "run_accepted_facts")
+    );
+    let mut model = selection();
+    model.maximum_input_tokens = crate::provider::openai_codex::USABLE_INPUT_TOKENS;
+    let run = f.accept_model(2, &"x".repeat(50_000), model);
+    assert_eq!(
+        policy(&f.backend.connection, run.id).unwrap(),
+        ExecutionPolicy::NativeUsage
+    );
+    f.read_turn(&run, 100_000, 100);
+    f.prepare(&run);
+    for update in [
+        "maximum_input_tokens = 258401",
+        "model_id = 'unreviewed'",
+        "protocol_revision = 4",
+        "open_code_service = 1",
+        "maximum_output_tokens = 32001",
+    ] {
+        assert!(
+            f.backend
+                .connection
+                .execute(
+                    &format!("UPDATE run_accepted_facts SET {update} WHERE run_id = ?1"),
+                    [&run.id.as_bytes()[..]],
+                )
+                .is_err()
+        );
+    }
+}
+
 struct Fixture {
     backend: Backend,
     root: TestRoot,

@@ -147,7 +147,14 @@ impl Backend {
             last_compaction_milliseconds,
             maximum_input_tokens: selection.maximum_input_tokens,
             maximum_output_tokens: selection.maximum_output_tokens,
-            compaction_threshold_tokens: selection.maximum_input_tokens.saturating_mul(7) / 10,
+            compaction_threshold_tokens: if selection.service
+                == crate::persistence::RunService::OpenAiChatGpt
+            {
+                super::context_execution::ExecutionPolicy::NativeUsage
+                    .token_pressure_threshold(selection.maximum_input_tokens)
+            } else {
+                execution.token_pressure_threshold(selection.maximum_input_tokens)
+            },
             checkpoint_source_entry_high_water: checkpoint
                 .as_ref()
                 .map(|checkpoint| checkpoint.source_entry_high_water),

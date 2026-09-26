@@ -186,7 +186,7 @@ fn request_bounds_and_conversation_identifiers_do_not_cross_credentials_or_runs(
         (
             "core".into(),
             CodexRequestLimits {
-                estimated_input_tokens: 96001,
+                estimated_input_tokens: 258_401,
                 ..limits
             },
         ),

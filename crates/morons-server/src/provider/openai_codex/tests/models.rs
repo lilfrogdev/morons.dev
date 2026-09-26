@@ -23,7 +23,7 @@ fn requested_native_models_have_exact_full_responses_contracts_not_remote_admiss
         assert_eq!(model.protocol_revision, 5);
         assert_eq!(
             (model.maximum_input_tokens, model.maximum_output_tokens),
-            (96_000, 32_000)
+            (258_400, 32_000)
         );
         let profile =
             crate::provider::find_model_profile(crate::provider::ModelService::OpenAiChatGpt, id)
@@ -31,9 +31,9 @@ fn requested_native_models_have_exact_full_responses_contracts_not_remote_admiss
         assert_eq!(profile.maximum_input_tokens, model.maximum_input_tokens);
         assert_eq!(profile.maximum_output_tokens, model.maximum_output_tokens);
         for (input, output, accepted) in [
-            (96_000, 32_000, true),
-            (96_001, 32_000, false),
-            (96_000, 32_001, false),
+            (258_400, 32_000, true),
+            (258_401, 32_000, false),
+            (258_400, 32_001, false),
         ] {
             let request = CodexRequest::new(
                 &t,
