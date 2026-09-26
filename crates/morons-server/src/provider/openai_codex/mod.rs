@@ -12,6 +12,10 @@ pub use transport::{OpenAiCodexProvider, PreparedCodexDispatch};
 pub use turn::CodexTurn;
 
 pub const CODEX_RESPONSES_PROTOCOL_REVISION: u16 = 5;
+// Codex 25270df2615e defaults; optional extended context is not enabled.
+pub const CONTEXT_WINDOW_TOKENS: u32 = 272_000;
+pub const USABLE_INPUT_TOKENS: u32 = CONTEXT_WINDOW_TOKENS * 95 / 100;
+pub const AUTO_COMPACT_TOKENS: u32 = CONTEXT_WINDOW_TOKENS * 90 / 100;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenAiCodexModel {
     pub id: &'static str,
@@ -42,7 +46,7 @@ const fn model(id: &'static str, display_name: &'static str) -> OpenAiCodexModel
         id,
         display_name,
         protocol_revision: CODEX_RESPONSES_PROTOCOL_REVISION,
-        maximum_input_tokens: super::MAXIMUM_INPUT_TOKENS,
+        maximum_input_tokens: USABLE_INPUT_TOKENS,
         maximum_output_tokens: super::MAXIMUM_OUTPUT_TOKENS,
         capabilities: ModelCapabilities {
             text_input: true,

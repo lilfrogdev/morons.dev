@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn native_capacity_preserves_old_pressure_and_independent_bounds() {
+    let policy = ExecutionPolicy::NativeUsage;
+    let maximum = crate::provider::openai_codex::USABLE_INPUT_TOKENS;
+    assert_eq!(policy.token_pressure_threshold(96_000), 67_200);
+    assert_eq!(policy.token_pressure_threshold(maximum), 244_800);
+    let mut budget = ContextBudget {
+        observed_input_tokens: Some(244_799),
+        ..Default::default()
+    };
+    assert!(!policy.pressure(&budget, maximum, 0));
+    budget.observed_input_tokens = Some(244_800);
+    assert!(policy.pressure(&budget, maximum, 0));
+    budget.observed_input_tokens = Some(u64::from(maximum));
+    assert!(policy.fits(&budget, maximum, 0));
+    budget.observed_input_tokens = Some(u64::from(maximum) + 1);
+    assert!(!policy.fits(&budget, maximum, 0));
+    budget.observed_input_tokens = Some(1);
+    budget.bytes = MAX_SOURCE_BYTES + 1;
+    assert!(!policy.fits(&budget, maximum, 0));
+}
+
+#[test]
 fn rejected_budget_diagnostics_match_policy_guards() {
     let run = RunId::from_bytes([7; 16]);
     for policy in [

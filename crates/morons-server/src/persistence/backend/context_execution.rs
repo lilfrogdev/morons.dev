@@ -26,7 +26,9 @@ pub(in crate::persistence) fn policy(
           AND accepted.tool_catalog_version IN (13, 14, 15, 16)
           AND ((accepted.tool_catalog_version IN (13, 14) AND accepted.tool_limits_version = accepted.tool_catalog_version)
                OR (accepted.tool_catalog_version IN (13, 15, 16) AND accepted.tool_limits_version = 14))
-          AND accepted.maximum_input_tokens = 96000 AND accepted.maximum_output_tokens = 32000
+          AND (accepted.maximum_input_tokens = 96000
+               OR (accepted.maximum_input_tokens = 258400 AND accepted.tool_catalog_version = 16 AND accepted.tool_limits_version = 14))
+          AND accepted.maximum_output_tokens = 32000
           AND accepted.model_id IN ('gpt-5.5','gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-5.6-terra','gpt-daybreak-blue-latest')
          FROM run_accepted_facts AS accepted CROSS JOIN context_accounting_epoch AS epoch
          WHERE accepted.run_id = ?1 AND epoch.singleton = 1",
@@ -147,12 +149,23 @@ impl ExecutionPolicy {
             })
     }
 
+    pub(super) fn token_pressure_threshold(self, maximum: u32) -> u32 {
+        if self == Self::NativeUsage
+            && maximum == crate::provider::openai_codex::USABLE_INPUT_TOKENS
+        {
+            crate::provider::openai_codex::AUTO_COMPACT_TOKENS
+        } else {
+            maximum.saturating_mul(7) / 10
+        }
+    }
+
     pub(super) fn pressure(self, budget: &ContextBudget, maximum: u32, extra: usize) -> bool {
         if self != Self::NativeUsage {
             return budget.pressure(maximum, extra);
         }
+        let token_pressure = u64::from(self.token_pressure_threshold(maximum));
         !self.fits(budget, maximum, extra)
-            || self.estimate(budget, extra) >= u64::from(maximum) * 7 / 10
+            || self.estimate(budget, extra) >= token_pressure
             || budget.bytes.saturating_add(extra as u64) >= MAX_SOURCE_BYTES * 3 / 4
             || budget
                 .entries

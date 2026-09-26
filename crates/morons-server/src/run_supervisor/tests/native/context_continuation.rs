@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test(flavor = "current_thread")]
 async fn native_long_first_run_compacts_batches_preserves_intent_and_reopens() {
-    run_case(6, 12_000, 4, false, true).await;
+    run_case(6, 190_000, 4, false, true).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -12,7 +12,7 @@ async fn native_same_run_usage_allows_two_large_reads_without_compaction() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn native_uncertain_within_run_compaction_stops_without_retry_and_reopens() {
-    run_case(6, 12_000, 0, true, true).await;
+    run_case(6, 190_000, 0, true, true).await;
 }
 
 #[tokio::test(flavor = "current_thread")]

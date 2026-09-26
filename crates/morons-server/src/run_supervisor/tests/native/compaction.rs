@@ -8,7 +8,7 @@ fn selection(model: &str) -> RunModelSelection {
         service: RunService::OpenAiChatGpt,
         model_id: model.into(),
         protocol_revision: 5,
-        maximum_input_tokens: 96_000,
+        maximum_input_tokens: crate::provider::openai_codex::USABLE_INPUT_TOKENS,
         maximum_output_tokens: 32_000,
         supports_tool_calls: true,
         supports_image_input: true,
@@ -58,7 +58,7 @@ async fn fixture(
                 session.id,
                 index,
                 &format!("NATIVE_SOURCE_{index}"),
-                if background { 11_000 } else { 100 },
+                if background { 30_000 } else { 100 },
                 selection(model),
             )
             .await,
@@ -366,7 +366,7 @@ async fn native_background_compaction_pins_its_provider_and_ignores_unrelated_cr
 async fn background_compaction(model: &'static str) {
     let (root, _selected, store, session, trigger) = fixture(true, model).await;
     let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
-    db.execute("UPDATE provider_operation_facts SET input_tokens=60000,total_tokens=60010 WHERE fact_kind=3",[]).unwrap();
+    db.execute("UPDATE provider_operation_facts SET input_tokens=170000,total_tokens=170010 WHERE fact_kind=3",[]).unwrap();
     drop(db);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());

@@ -66,7 +66,7 @@ async fn schema46_migrates_legacy_steering_without_rewriting_fingerprints() {
     assert_eq!(
         db.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        46
+        crate::persistence::database::SCHEMA_VERSION
     );
     assert_eq!(db.query_row(
         "SELECT count(*) FROM steering_mutation_requests WHERE skill_context IS NULL AND skill_context_digest IS NULL",
