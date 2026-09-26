@@ -48,6 +48,7 @@ pub(super) enum Request {
     },
     Mutate {
         mutation: SteeringMutation,
+        skills: Option<crate::skills::RunSkillContext>,
         response: oneshot::Sender<Result<SteeringReceipt, PersistenceError>>,
     },
     Snapshot {
@@ -150,14 +151,24 @@ impl SessionStore {
             .map_err(|_| PersistenceError::WorkerStopped)?
     }
 
+    #[cfg(test)]
     pub(crate) async fn mutate_steering(
         &self,
         mutation: SteeringMutation,
+    ) -> Result<SteeringReceipt, PersistenceError> {
+        self.mutate_steering_with_skills(mutation, None).await
+    }
+
+    pub(crate) async fn mutate_steering_with_skills(
+        &self,
+        mutation: SteeringMutation,
+        skills: Option<crate::skills::RunSkillContext>,
     ) -> Result<SteeringReceipt, PersistenceError> {
         let (response, receiver) = oneshot::channel();
         self.sender()?
             .send(WorkerRequest::Steering(Request::Mutate {
                 mutation,
+                skills,
                 response,
             }))
             .await
@@ -174,8 +185,12 @@ impl Request {
             Self::LookupMutation { mutation, response } => {
                 let _ = response.send(backend.lookup_steering_mutation(&mutation));
             }
-            Self::Mutate { mutation, response } => {
-                let _ = response.send(backend.mutate_steering(mutation));
+            Self::Mutate {
+                mutation,
+                skills,
+                response,
+            } => {
+                let _ = response.send(backend.mutate_steering(mutation, skills));
             }
             Self::Snapshot {
                 session_id,
@@ -194,7 +209,7 @@ impl Request {
     }
 }
 
-pub(super) fn validate_text(text: &str) -> Result<(), PersistenceError> {
+pub(crate) fn validate_text(text: &str) -> Result<(), PersistenceError> {
     validate_user_text(text)?;
     if text.len() > 65536 || text.trim_start().starts_with(['!', '/']) {
         return Err(PersistenceError::InvalidInput {

@@ -89,6 +89,96 @@ async fn request(app: &ServerApplication, request: Request) -> ServerMessage {
 }
 
 #[tokio::test]
+async fn steering_prepares_skills_and_retry_does_not_reload_files() {
+    let root = TestRoot::new("steering-prepared-skills");
+    let skill_dir = root.path().join(".agents/skills/example");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    let skill_file = skill_dir.join("SKILL.md");
+    std::fs::write(
+        &skill_file,
+        "---\nname: example\ndescription: Example skill\n---\nOriginal instructions\n",
+    )
+    .unwrap();
+    let (app, session_id, run_id) = fixture(&root).await;
+    let mutation = SteeringMutation {
+        request_id: morons_protocol::MutationRequestId::from_bytes([11; 16]),
+        session_id,
+        expected_revision: 0,
+        change: SteeringChange::Enqueue {
+            run_id,
+            text: "@example".into(),
+        },
+    };
+    let accepted = request(
+        &app,
+        Request::MutateSteering {
+            mutation: mutation.clone(),
+        },
+    )
+    .await;
+    let ServerMessage::Response {
+        response: ApplicationResponse::SteeringMutated { ref receipt },
+        ..
+    } = accepted
+    else {
+        panic!("enqueue receipt")
+    };
+    let item_id = receipt.item_id.unwrap();
+    let db = rusqlite::Connection::open(root.path().join("data/sessions.sqlite3")).unwrap();
+    let snapshot = |id: &[u8; 16]| {
+        db.query_row(
+            "SELECT skill_context FROM steering_mutation_requests WHERE request_id = ?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    };
+    let before = snapshot(mutation.request_id.as_bytes());
+    assert!(before.contains("Original instructions"));
+    std::fs::write(
+        &skill_file,
+        "---\nname: example\ndescription: Example skill\n---\nChanged instructions\n",
+    )
+    .unwrap();
+    assert_eq!(
+        accepted,
+        request(
+            &app,
+            Request::MutateSteering {
+                mutation: mutation.clone()
+            }
+        )
+        .await
+    );
+    assert_eq!(snapshot(mutation.request_id.as_bytes()), before);
+    let edit = SteeringMutation {
+        request_id: morons_protocol::MutationRequestId::from_bytes([12; 16]),
+        expected_revision: 1,
+        change: SteeringChange::Edit {
+            item_id,
+            revision: 1,
+            text: "@example revised".into(),
+        },
+        ..mutation
+    };
+    assert!(matches!(
+        request(
+            &app,
+            Request::MutateSteering {
+                mutation: edit.clone()
+            }
+        )
+        .await,
+        ServerMessage::Response {
+            response: ApplicationResponse::SteeringMutated { .. },
+            ..
+        }
+    ));
+    assert!(snapshot(edit.request_id.as_bytes()).contains("Changed instructions"));
+    app.shutdown().await;
+}
+
+#[tokio::test]
 async fn steering_stop_admission_preserves_retries_and_queue_controls() {
     let root = TestRoot::new("steering-stop-admission");
     let (app, session_id, run_id) = fixture(&root).await;

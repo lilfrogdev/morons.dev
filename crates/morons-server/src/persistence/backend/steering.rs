@@ -46,6 +46,7 @@ impl Backend {
     pub(crate) fn mutate_steering(
         &mut self,
         mutation: SteeringMutation,
+        skills: Option<crate::skills::RunSkillContext>,
     ) -> Result<SteeringReceipt, PersistenceError> {
         use SteeringChange::{Edit, Enqueue, Pause, Remove, Resume};
         if let Some(receipt) = self.lookup_steering_mutation(&mutation)? {
@@ -56,6 +57,24 @@ impl Backend {
             mutation.expected_revision,
             &mutation.change,
         );
+        if let Some(skills) = &skills {
+            let text = match &mutation.change {
+                Enqueue { text, .. } | Edit { text, .. } => text,
+                _ => {
+                    return Err(PersistenceError::InvalidInput {
+                        reason: "only steering text mutations accept skills",
+                    });
+                }
+            };
+            if !skills.invocations_match(text) {
+                return Err(PersistenceError::InvalidInput {
+                    reason: "steering skills require explicit invocation",
+                });
+            }
+        }
+        let prepared = skills
+            .map(|skills| crate::persistence::steering_skills::encode(skills, &fingerprint))
+            .transpose()?;
         if let Enqueue { text, .. } | Edit { text, .. } = &mutation.change {
             validate_text(text)?;
         }
@@ -204,8 +223,8 @@ impl Backend {
             "INSERT INTO steering_mutation_requests
              (request_id, session_id, operation_fingerprint, accepted_sequence,
               accepted_at_milliseconds, queue_revision, item_id, item_revision, actor,
-              change_kind, target_run_id, text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11)",
+              change_kind, target_run_id, text, skill_context, skill_context_digest)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, ?10, ?11, ?12, ?13)",
             params![
                 mutation.request_id.as_bytes(),
                 session_bytes,
@@ -217,7 +236,9 @@ impl Backend {
                 receipt.item_revision.map(sequence_to_sql).transpose()?,
                 change_kind,
                 target_run_id,
-                text
+                text,
+                prepared.as_ref().map(|(text, _)| text),
+                prepared.as_ref().map(|(_, digest)| digest),
             ],
         )?;
         tx.commit()?;
