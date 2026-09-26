@@ -81,16 +81,35 @@ impl ServerApplication {
                         }
                     }
                 };
-                let receipt = self
+                let mutation = storage::SteeringMutation {
+                    request_id: to_persistence_mutation_id(mutation.request_id),
+                    session_id: to_persistence_session_id(mutation.session_id),
+                    expected_revision: mutation.expected_revision,
+                    change,
+                };
+                let receipt = match self
                     .sessions
-                    .mutate_steering(storage::SteeringMutation {
-                        request_id: to_persistence_mutation_id(mutation.request_id),
-                        session_id: to_persistence_session_id(mutation.session_id),
-                        expected_revision: mutation.expected_revision,
-                        change,
-                    })
+                    .lookup_steering_mutation(mutation.clone())
                     .await
-                    .map_err(to_application_error)?;
+                    .map_err(to_application_error)?
+                {
+                    Some(receipt) => receipt,
+                    None => {
+                        if matches!(
+                            mutation.change,
+                            storage::SteeringChange::Enqueue { .. }
+                                | storage::SteeringChange::Resume { .. }
+                        ) && (self.stopping.load(std::sync::atomic::Ordering::Acquire)
+                            || self.run_supervisor.is_stopping())
+                        {
+                            return Err(protocol::ApplicationError::ServiceUnavailable);
+                        }
+                        self.sessions
+                            .mutate_steering(mutation)
+                            .await
+                            .map_err(to_application_error)?
+                    }
+                };
                 Response::SteeringMutated {
                     receipt: protocol::SteeringReceipt {
                         sequence: receipt.sequence,
