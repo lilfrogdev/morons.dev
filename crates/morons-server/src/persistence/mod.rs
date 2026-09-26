@@ -20,6 +20,7 @@ mod web_binding;
 pub(crate) use web_binding::{WebBinding, WebInvocation, WebRoute};
 mod runs;
 pub(crate) mod steering;
+mod steering_skills;
 mod types;
 mod workspace;
 

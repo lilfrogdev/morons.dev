@@ -54,7 +54,7 @@ impl ServerApplication {
         use protocol::{ApplicationRequest as Request, ApplicationResponse as Response};
         let response = match request {
             Request::MutateSteering { mutation } => {
-                let _guard = self.lifecycle_mutations.lock().await;
+                let guard = self.lifecycle_mutations.lock().await;
                 let change = match mutation.change {
                     protocol::SteeringChange::Enqueue { run_id, text } => {
                         storage::SteeringChange::Enqueue {
@@ -104,10 +104,56 @@ impl ServerApplication {
                         {
                             return Err(protocol::ApplicationError::ServiceUnavailable);
                         }
-                        self.sessions
-                            .mutate_steering(mutation)
+                        drop(guard);
+                        let skills = match &mutation.change {
+                            storage::SteeringChange::Enqueue { text, .. }
+                            | storage::SteeringChange::Edit { text, .. } => {
+                                storage::validate_text(text).map_err(to_application_error)?;
+                                let directory = self
+                                    .sessions
+                                    .get_session(mutation.session_id)
+                                    .await
+                                    .map_err(to_application_error)?
+                                    .ok_or(protocol::ApplicationError::SessionNotFound)?
+                                    .working_directory
+                                    .ok_or(
+                                        protocol::ApplicationError::WorkingDirectoryUnavailable,
+                                    )?;
+                                let service = std::sync::Arc::clone(&self.skills);
+                                let text = text.clone();
+                                Some(
+                                    tokio::task::spawn_blocking(move || {
+                                        service.context(std::path::Path::new(&directory), &text)
+                                    })
+                                    .await
+                                    .map_err(|_| protocol::ApplicationError::ServiceUnavailable)?,
+                                )
+                            }
+                            _ => None,
+                        };
+                        let _guard = self.lifecycle_mutations.lock().await;
+                        if let Some(receipt) = self
+                            .sessions
+                            .lookup_steering_mutation(mutation.clone())
                             .await
                             .map_err(to_application_error)?
+                        {
+                            receipt
+                        } else {
+                            if matches!(
+                                mutation.change,
+                                storage::SteeringChange::Enqueue { .. }
+                                    | storage::SteeringChange::Resume { .. }
+                            ) && (self.stopping.load(std::sync::atomic::Ordering::Acquire)
+                                || self.run_supervisor.is_stopping())
+                            {
+                                return Err(protocol::ApplicationError::ServiceUnavailable);
+                            }
+                            self.sessions
+                                .mutate_steering_with_skills(mutation, skills)
+                                .await
+                                .map_err(to_application_error)?
+                        }
                     }
                 };
                 Response::SteeringMutated {

@@ -98,6 +98,21 @@ changing the restricted schema-46 skill-context contract. After server stop inte
 fresh enqueue and active-run resume fail admission; accepted retries still return
 their receipts, and pending items remain editable, removable, and pausable.
 
+### Prepared skill admission milestone
+
+Fresh protocol enqueue/edit prepares the ordinary bounded skill catalog and explicit
+invocations outside the lifecycle lock. Commit repeats retry resolution, stop admission,
+and storage revision/lifecycle checks. Exact retries never rediscover files. Each
+accepted text revision stores a versioned JSON snapshot with a domain-separated SHA-256
+digest binding its mutation fingerprint and snapshot bytes; this is corruption detection,
+not authentication against the local owner. Startup validates bounds, structure, skill
+semantics, and digest for every snapshot, including superseded edits. Legacy null
+snapshots remain valid but are not prepared input. Unsupported prototype encodings
+remain rejected. Delivery of snapshot-bearing items remains rejected until delivery
+provenance and context integration are implemented. No provider delivery is enabled.
+Older servers reject databases containing these snapshots; no schema downgrade or
+live migration is performed by this milestone.
+
 ## Decision
 
 The local owner can queue steering messages while a session's run is active.

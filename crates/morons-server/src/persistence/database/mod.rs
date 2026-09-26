@@ -595,19 +595,7 @@ fn validate_identity_and_schema(connection: &Connection) -> Result<(), Persisten
             reason: "the authoritative database schema objects are invalid",
         });
     }
-    // Schema46 originated in the steering prototype. Preserve its columns, but
-    // do not admit skill snapshots whose fingerprints/delivery we cannot validate.
-    let has_steering_skills: bool = connection.query_row(
-        "SELECT EXISTS (SELECT 1 FROM steering_mutation_requests
-         WHERE skill_context IS NOT NULL OR skill_context_digest IS NOT NULL)",
-        [],
-        |row| row.get(0),
-    )?;
-    if has_steering_skills {
-        return Err(PersistenceError::InvalidState {
-            reason: "stored steering skill context is not supported by this server",
-        });
-    }
+    super::steering_skills::validate(connection)?;
     Ok(())
 }
 

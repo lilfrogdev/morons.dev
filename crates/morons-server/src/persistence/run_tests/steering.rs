@@ -1,6 +1,7 @@
 mod delivery;
 mod lookup;
 mod schema46;
+mod skills;
 
 use super::*;
 use crate::persistence::{ProviderOperationFailureState, RunFailureKind};

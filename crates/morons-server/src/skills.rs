@@ -32,7 +32,7 @@ pub(crate) const MAX_SKILL_CATALOG_CONTEXT_BYTES: usize = 128 * 1024;
 pub(crate) const MAX_ACTIVE_SKILL_CONTEXT_BYTES: usize = 192 * 1024;
 const MAX_SKILL_DEVELOPER_TEXT_BYTES: usize = 512 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum SkillSource {
     Bundled,
     User,
@@ -58,7 +58,8 @@ impl SkillSource {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SkillSnapshot {
     pub name: String,
     pub description: String,
@@ -68,12 +69,27 @@ pub(crate) struct SkillSnapshot {
     pub instructions: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RunSkillContext {
     pub skills: Vec<SkillSnapshot>,
 }
 
 impl RunSkillContext {
+    pub(crate) fn invocations_match(&self, prompt: &str) -> bool {
+        let invoked =
+            active_skill_names(prompt, self.skills.iter().map(|skill| skill.name.as_str()));
+        self.skills
+            .iter()
+            .filter(|skill| skill.active)
+            .all(|skill| {
+                invoked
+                    .iter()
+                    .take(MAX_ACTIVE_SKILLS)
+                    .any(|name| name == &skill.name)
+            })
+    }
+
     pub(crate) fn context_bytes(&self) -> Option<usize> {
         if self.skills.is_empty() {
             Some(0)

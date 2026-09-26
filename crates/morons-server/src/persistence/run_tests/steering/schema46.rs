@@ -115,7 +115,7 @@ async fn schema46_rejects_populated_reserved_columns_without_erasing_them() {
         assert!(matches!(
             SessionStore::open_for_test(root.path()),
             Err(PersistenceError::InvalidState {
-                reason: "stored steering skill context is not supported by this server"
+                reason: "stored steering skill context is invalid"
             })
         ));
         let db = Connection::open(path).unwrap();
