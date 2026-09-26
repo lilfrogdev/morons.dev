@@ -89,6 +89,131 @@ async fn request(app: &ServerApplication, request: Request) -> ServerMessage {
 }
 
 #[tokio::test]
+async fn steering_stop_admission_preserves_retries_and_queue_controls() {
+    let root = TestRoot::new("steering-stop-admission");
+    let (app, session_id, run_id) = fixture(&root).await;
+    let mutation = SteeringMutation {
+        request_id: morons_protocol::MutationRequestId::from_bytes([4; 16]),
+        session_id,
+        expected_revision: 0,
+        change: SteeringChange::Enqueue {
+            run_id,
+            text: "Queued".into(),
+        },
+    };
+    let accepted = request(
+        &app,
+        Request::MutateSteering {
+            mutation: mutation.clone(),
+        },
+    )
+    .await;
+    let ServerMessage::Response {
+        response: ApplicationResponse::SteeringMutated { ref receipt },
+        ..
+    } = accepted
+    else {
+        panic!("enqueue receipt")
+    };
+    let item_id = receipt.item_id.unwrap();
+    assert!(matches!(
+        app.execute_for_local_owner(Request::StopServer {
+            mutation_request_id: morons_protocol::MutationRequestId::from_bytes([5; 16]),
+        })
+        .await
+        .unwrap(),
+        ApplicationOutcome::StopServerAccepted {
+            current_server_stopping: true
+        }
+    ));
+    assert_eq!(
+        accepted,
+        request(
+            &app,
+            Request::MutateSteering {
+                mutation: mutation.clone()
+            }
+        )
+        .await
+    );
+    let before = request(&app, Request::GetSteering { session_id }).await;
+    for (id, change) in [
+        (
+            6,
+            SteeringChange::Enqueue {
+                run_id,
+                text: "Rejected".into(),
+            },
+        ),
+        (7, SteeringChange::Resume { run_id }),
+    ] {
+        assert!(matches!(
+            request(
+                &app,
+                Request::MutateSteering {
+                    mutation: SteeringMutation {
+                        request_id: morons_protocol::MutationRequestId::from_bytes([id; 16]),
+                        expected_revision: 1,
+                        change,
+                        ..mutation.clone()
+                    }
+                }
+            )
+            .await,
+            ServerMessage::RequestFailed {
+                error: morons_protocol::ApplicationError::ServiceUnavailable,
+                ..
+            }
+        ));
+    }
+    assert_eq!(
+        before,
+        request(&app, Request::GetSteering { session_id }).await
+    );
+    let mut conflict = mutation.clone();
+    conflict.change = SteeringChange::Pause;
+    assert!(matches!(
+        request(&app, Request::MutateSteering { mutation: conflict }).await,
+        ServerMessage::RequestFailed {
+            error: morons_protocol::ApplicationError::RequestConflict,
+            ..
+        }
+    ));
+    for (id, revision, change) in [
+        (
+            8,
+            1,
+            SteeringChange::Edit {
+                item_id,
+                revision: 1,
+                text: "Edited".into(),
+            },
+        ),
+        (9, 2, SteeringChange::Pause),
+        (
+            10,
+            3,
+            SteeringChange::Remove {
+                item_id,
+                revision: 2,
+            },
+        ),
+    ] {
+        assert!(matches!(request(&app, Request::MutateSteering {
+            mutation: SteeringMutation {
+                request_id: morons_protocol::MutationRequestId::from_bytes([id; 16]),
+                expected_revision: revision,
+                change,
+                ..mutation.clone()
+            }
+        }).await, ServerMessage::Response {
+            response: ApplicationResponse::SteeringMutated { receipt }, ..
+        } if receipt.queue_revision == revision + 1));
+    }
+    app.shutdown().await;
+}
+
+#[tokio::test]
 async fn steering_connections_retry_unknown_ack_and_replay_without_gaps() {
     let root = TestRoot::new("steering-connections");
     let (app, session_id, run_id) = fixture(&root).await;

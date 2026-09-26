@@ -90,6 +90,13 @@ facts in bounded pages, and disconnect slow writers using existing transport lim
 Notifications are wakeups, not authoritative events; reconnect resumes from the last
 received steering cursor. Session deletion ends the subscription. Exact retries
 resolve unknown mutation acknowledgments without repeating effects.
+The application resolves accepted retries through a read-only storage-worker lookup
+before fresh admission. The mutation worker repeats the lookup; a miss reserves
+nothing and cannot bypass revision, lifecycle, or uncertain-outcome guards. This
+prepares the admission boundary for skill discovery without enabling delivery or
+changing the restricted schema-46 skill-context contract. After server stop intent,
+fresh enqueue and active-run resume fail admission; accepted retries still return
+their receipts, and pending items remain editable, removable, and pausable.
 
 ## Decision
 

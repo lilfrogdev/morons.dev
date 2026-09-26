@@ -13,11 +13,10 @@ use crate::persistence::{
 };
 
 impl Backend {
-    pub(crate) fn mutate_steering(
-        &mut self,
-        mutation: SteeringMutation,
-    ) -> Result<SteeringReceipt, PersistenceError> {
-        use SteeringChange::{Edit, Enqueue, Pause, Remove, Resume};
+    pub(crate) fn lookup_steering_mutation(
+        &self,
+        mutation: &SteeringMutation,
+    ) -> Result<Option<SteeringReceipt>, PersistenceError> {
         if mutation.request_id.is_zero() {
             return Err(PersistenceError::InvalidInput {
                 reason: "a steering mutation requires a nonzero request identifier",
@@ -38,10 +37,25 @@ impl Backend {
             load_mutation_operation(&self.connection, mutation.request_id)?,
             existing,
         ) {
-            (Some(18), Some((stored, result))) if stored == fingerprint => return Ok(result),
-            (None, None) => {}
-            _ => return Err(PersistenceError::RequestConflict),
+            (Some(18), Some((stored, result))) if stored == fingerprint => Ok(Some(result)),
+            (None, None) => Ok(None),
+            _ => Err(PersistenceError::RequestConflict),
         }
+    }
+
+    pub(crate) fn mutate_steering(
+        &mut self,
+        mutation: SteeringMutation,
+    ) -> Result<SteeringReceipt, PersistenceError> {
+        use SteeringChange::{Edit, Enqueue, Pause, Remove, Resume};
+        if let Some(receipt) = self.lookup_steering_mutation(&mutation)? {
+            return Ok(receipt);
+        }
+        let fingerprint = crate::persistence::steering::fingerprint(
+            mutation.session_id,
+            mutation.expected_revision,
+            &mutation.change,
+        );
         if let Enqueue { text, .. } | Edit { text, .. } = &mutation.change {
             validate_text(text)?;
         }

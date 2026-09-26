@@ -1,4 +1,5 @@
 mod delivery;
+mod lookup;
 mod schema46;
 
 use super::*;

@@ -42,6 +42,10 @@ pub(crate) struct SteeringReceipt {
 }
 
 pub(super) enum Request {
+    LookupMutation {
+        mutation: SteeringMutation,
+        response: oneshot::Sender<Result<Option<SteeringReceipt>, PersistenceError>>,
+    },
     Mutate {
         mutation: SteeringMutation,
         response: oneshot::Sender<Result<SteeringReceipt, PersistenceError>>,
@@ -93,6 +97,23 @@ pub(crate) struct SteeringPage {
 }
 
 impl SessionStore {
+    pub(crate) async fn lookup_steering_mutation(
+        &self,
+        mutation: SteeringMutation,
+    ) -> Result<Option<SteeringReceipt>, PersistenceError> {
+        let (response, receiver) = oneshot::channel();
+        self.sender()?
+            .send(WorkerRequest::Steering(Request::LookupMutation {
+                mutation,
+                response,
+            }))
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?;
+        receiver
+            .await
+            .map_err(|_| PersistenceError::WorkerStopped)?
+    }
+
     pub(crate) async fn steering_snapshot(
         &self,
         session_id: SessionId,
@@ -150,6 +171,9 @@ impl SessionStore {
 impl Request {
     pub(super) fn execute(self, backend: &mut super::backend::Backend) {
         match self {
+            Self::LookupMutation { mutation, response } => {
+                let _ = response.send(backend.lookup_steering_mutation(&mutation));
+            }
             Self::Mutate { mutation, response } => {
                 let _ = response.send(backend.mutate_steering(mutation));
             }
